@@ -366,6 +366,24 @@
 
   .sidebar-footer{padding:16px 20px 4px;margin-top:12px;border-top:1px solid var(--pharm-100);}
   .sidebar-footer p{font-size:11px;color:var(--pharm-400);line-height:1.5;}
+  /* Indicador discreto de Online/Offline, por baixo de "Definições" */
+  .conexao-indicador{position:relative;display:inline-flex;align-items:center;gap:7px;
+    border:none;background:none;padding:4px 2px;cursor:pointer;font-family:inherit;
+    font-size:11.5px;font-weight:700;color:var(--pharm-400);}
+  .conexao-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;background:var(--pharm-300);
+    transition:background-color .2s ease,box-shadow .2s ease;}
+  .conexao-online .conexao-dot{background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.18);}
+  .conexao-offline .conexao-dot{background:var(--orange);box-shadow:0 0 0 3px rgba(234,88,12,.18);
+    animation:conexaoOfflinePulse 1.6s ease-in-out infinite;}
+  @keyframes conexaoOfflinePulse{
+    0%,100%{opacity:1;}
+    50%{opacity:.45;}
+  }
+  .conexao-online .conexao-label{color:#15803d;}
+  .conexao-offline .conexao-label{color:#9a3412;}
+  .conexao-pendentes-badge{margin-left:2px;min-width:15px;height:15px;padding:0 4px;border-radius:999px;
+    background:var(--orange);color:#fff;font-size:9px;font-weight:800;line-height:15px;text-align:center;
+    display:inline-block;}
 
   /* Topbar mobile */
   .topbar-mobile{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;
@@ -875,16 +893,6 @@
   .hub-card.hub-card-boanova:active{background:var(--green);border-color:var(--green);}
   .hub-card.hub-card-boanova:active .icon-wrap,
   .hub-card.hub-card-boanova:active span.label{color:#fff;}
-  /* Registo de Indisponibilidades — mesmo estilo/tamanho dos cartões de
-     farmácia, com um tom âmbar para se distinguir visualmente (associação
-     a "bloqueio/restrição"). */
-  .hub-card.hub-card-indisponibilidades{border-color:var(--orange-bd);}
-  .hub-card.hub-card-indisponibilidades .icon-wrap{color:var(--orange);}
-  .hub-card.hub-card-indisponibilidades span.label{color:#9a3412;}
-  .hub-card.hub-card-indisponibilidades:hover{border-color:#fdba74;box-shadow:0 10px 24px rgba(234,88,12,.18);}
-  .hub-card.hub-card-indisponibilidades:active{background:var(--orange);border-color:var(--orange);}
-  .hub-card.hub-card-indisponibilidades:active .icon-wrap,
-  .hub-card.hub-card-indisponibilidades:active span.label{color:#fff;}
   /* Espaçamento limpo entre planos/níveis de um hub de navegação — sem
      texto de rótulo, só uma quebra vertical entre linhas de cartões. */
   .hub-tier-row{margin-top:18px;}
@@ -1890,16 +1898,6 @@ const FARMACIAS_ENTREGA = ['Juncal', 'Boa Nova'];
 const BLOCOS_HORARIOS = ['1º (10H - 12H)', '2º (14H - 16H)', '3º (19H - 21H)'];
 const BLOCO_SABADO = 'Sábado (14H - 18H)';
 const METODOS_PAGAMENTO_ENTREGA = ['MB', 'MBWay', 'Dinheiro', 'Transferência', 'A Crédito', 'Pago no Balcão / Reserva'];
-// Registo de Indisponibilidades — bloqueios de agenda dos estafetas, por
-// farmácia + dia + bloco horário definido no sistema (os mesmos blocos já
-// usados nas Entregas — nunca um período livre/genérico).
-const indisponibilidadesSchema = [
-  { name: 'data', label: 'Data', type: 'date', size: 'xs' },
-  { name: 'farmacia', label: 'Farmácia', type: 'select', options: FARMACIAS_ENTREGA, size: 'sm' },
-  { name: 'blocoHorario', label: 'Bloco Horário', type: 'select', options: [...BLOCOS_HORARIOS, BLOCO_SABADO], size: 'sm' },
-  { name: 'estafeta', label: 'Estafeta', type: 'select', options: [], size: 'sm' },
-  { name: 'motivo', label: 'Motivo (opcional)', type: 'text', col: 2, maxLength: 150 },
-];
 const entregasSchema = [
   { name: 'tipoDestinatario', label: 'Tipo de Destinatário', type: 'select', options: ['Particular', 'Empresa Parceira'], size: 'sm' },
   { name: 'empresaParceiraId', label: 'Empresa Parceira', type: 'select', options: [], size: 'sm' },
@@ -2964,6 +2962,107 @@ async function fetchTabelaViaRest(tabela, ordenarPor, ascending, eliminadoVal) {
   return await resp.json();
 }
 
+/* =================================================================
+   ESTADO DE LIGAÇÃO — indicador Online/Offline na sidebar, deteção via
+   eventos nativos do browser + falhas de rede reais do Supabase, e fila
+   de sincronização automática para edições feitas sem ligação.
+================================================================= */
+let conexaoOnline = navigator.onLine !== false;
+let filaOperacoesPendentes = [];
+let sincronizandoFila = false;
+const FILA_OFFLINE_KEY = 'sigajuncal_fila_offline_v1';
+
+function carregarFilaOffline() {
+  try {
+    const bruto = localStorage.getItem(FILA_OFFLINE_KEY);
+    filaOperacoesPendentes = bruto ? JSON.parse(bruto) : [];
+  } catch (e) { filaOperacoesPendentes = []; }
+}
+function gravarFilaOffline() {
+  try { localStorage.setItem(FILA_OFFLINE_KEY, JSON.stringify(filaOperacoesPendentes)); } catch (e) { /* localStorage indisponível — a fila fica só em memória até recarregar */ }
+}
+// Distingue uma falha de REDE (sem ligação, timeout, DNS, etc.) de um erro
+// normal do Supabase (validação, permissões) — só a primeira acende o
+// indicador offline e justifica pôr a operação em fila.
+function erroDeRede(e) {
+  if (!e) return false;
+  const msg = String(e.message || e || '').toLowerCase();
+  return !navigator.onLine || msg.includes('failed to fetch') || msg.includes('load failed')
+    || msg.includes('network') || msg.includes('timeout') || msg.includes('fetch');
+}
+function atualizarIndicadorLigacao() {
+  document.querySelectorAll('.conexao-indicador').forEach(el => {
+    el.classList.toggle('conexao-online', conexaoOnline);
+    el.classList.toggle('conexao-offline', !conexaoOnline);
+    const pendentes = filaOperacoesPendentes.length;
+    const texto = conexaoOnline
+      ? (pendentes ? `Ligação ativa — a sincronizar ${pendentes} alteração${pendentes === 1 ? '' : 'ões'} pendente${pendentes === 1 ? '' : 's'}...` : 'Ligação ativa ao servidor')
+      : `Modo offline — alterações guardadas localmente${pendentes ? ` (${pendentes} pendente${pendentes === 1 ? '' : 's'})` : ''}.`;
+    el.title = texto;
+    el.setAttribute('aria-label', texto);
+    const badge = el.querySelector('.conexao-pendentes-badge');
+    if (badge) badge.remove();
+    if (pendentes > 0) el.appendChild(h('span', { class: 'conexao-pendentes-badge' }, String(pendentes > 9 ? '9+' : pendentes)));
+  });
+}
+function marcarConexao(estaOnline) {
+  const mudou = conexaoOnline !== estaOnline;
+  conexaoOnline = estaOnline;
+  atualizarIndicadorLigacao();
+  if (mudou && estaOnline) sincronizarFilaOffline();
+}
+// Só campos que MUDARAM face ao que já está no STATE — nunca o objeto
+// completo. Evita que gravar uma edição sobreponha, sem querer, alterações
+// que outro colega tenha feito entretanto no mesmo registo (ex: enquanto o
+// formulário esteve aberto no nosso ecrã). Comparação por JSON.stringify
+// para cobrir também campos com listas/objetos simples (ex: os "produtos"
+// dos Objetivos), não só texto/número/booleano.
+function apenasCamposAlterados(atual, patch) {
+  if (!atual) return patch;
+  const alterado = {};
+  Object.keys(patch).forEach(k => {
+    if (k === 'id') return;
+    const novo = patch[k];
+    const antigo = atual[k];
+    const ehComposto = (novo && typeof novo === 'object') || (antigo && typeof antigo === 'object');
+    const mudou = ehComposto ? JSON.stringify(novo) !== JSON.stringify(antigo) : novo !== antigo;
+    if (mudou) alterado[k] = novo;
+  });
+  return alterado;
+}
+// Guarda uma atualização que falhou por falta de rede, para tentar de novo
+// automaticamente assim que a ligação voltar (evento "online" do browser,
+// ou a próxima chamada ao Supabase que tenha sucesso).
+function enfileirarOperacaoOffline(listKey, id, patch) {
+  filaOperacoesPendentes.push({ listKey, id, patch, tentativas: 0, criadoEm: new Date().toISOString() });
+  gravarFilaOffline();
+  atualizarIndicadorLigacao();
+}
+async function sincronizarFilaOffline() {
+  if (sincronizandoFila || !conexaoOnline || filaOperacoesPendentes.length === 0 || !sb) return;
+  sincronizandoFila = true;
+  const pendentes = filaOperacoesPendentes.slice();
+  const restantes = [];
+  for (const op of pendentes) {
+    try {
+      const { error } = await sb.from(TABLES[op.listKey]).update(recordToRow(op.patch)).eq('id', op.id);
+      if (error) {
+        if (erroDeRede(error)) { restantes.push(op); marcarConexao(false); break; } // voltou a cair — para e tenta mais tarde
+        // Erro que não é de rede (ex: registo entretanto eliminado) — descarta-se, não faz sentido insistir.
+        console.error(`[Offline] não foi possível sincronizar ${op.listKey}#${op.id}:`, error.message);
+      }
+    } catch (e) {
+      if (erroDeRede(e)) { restantes.push(op); marcarConexao(false); break; }
+      console.error(`[Offline] não foi possível sincronizar ${op.listKey}#${op.id}:`, formatarErroSeguro(e));
+    }
+  }
+  filaOperacoesPendentes = restantes;
+  gravarFilaOffline();
+  sincronizandoFila = false;
+  atualizarIndicadorLigacao();
+  if (restantes.length === 0 && pendentes.length > 0) showToast('Alterações sincronizadas com sucesso.', 'success');
+}
+
 // Nome da tabela Supabase correspondente a cada módulo da app
 const TABLES = {
   manipulados: 'manipulados',
@@ -2989,7 +3088,6 @@ const TABLES = {
   usuarios: 'usuarios_app',
   empresasParceiras: 'empresas_parceiras',
   validades: 'farmacia_validades',
-  indisponibilidades: 'farmacia_indisponibilidades',
 };
 
 function camelToSnake(s) { return s.replace(/[A-Z]/g, m => '_' + m.toLowerCase()); }
@@ -3094,13 +3192,16 @@ async function dbFetchAll(listKey) {
       if (/DataCloneError/i.test(error.message || '')) {
         try {
           const dataFallback = await fetchTabelaViaRest(TABLES[listKey], ordenarPor, ascending);
+          marcarConexao(true);
           return sanitizarSupabase(dataFallback || []).map(rowToRecord);
         } catch (e2) {
           console.error(`[Supabase] leitura alternativa (REST) também falhou para ${listKey}:`, formatarErroSeguro(e2));
         }
       }
+      if (erroDeRede(error)) marcarConexao(false);
       lastDbError = error.message; console.error(`[Supabase] erro ao ler ${listKey}:`, error.message); return [];
     }
+    marcarConexao(true);
     return sanitizarSupabase(data || []).map(rowToRecord);
   } catch (e) {
     // O mesmo erro também pode chegar aqui, como exceção em vez de
@@ -3108,11 +3209,13 @@ async function dbFetchAll(listKey) {
     if (e && /DataCloneError/i.test(e.message || String(e))) {
       try {
         const dataFallback = await fetchTabelaViaRest(TABLES[listKey], ordenarPor, ascending);
+        marcarConexao(true);
         return sanitizarSupabase(dataFallback || []).map(rowToRecord);
       } catch (e2) {
         console.error(`[Supabase] leitura alternativa (REST) também falhou para ${listKey}:`, formatarErroSeguro(e2));
       }
     }
+    if (erroDeRede(e)) marcarConexao(false);
     lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error(`[Supabase] erro de rede ao ler ${listKey}:`, formatarErroSeguro(e)); return [];
   }
 }
@@ -3161,17 +3264,43 @@ async function dbInsert(listKey, record) {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível (verifique se o CDN do Supabase carregou).'; return null; }
   try {
     const { data, error } = await sb.from(TABLES[listKey]).insert(recordToRow(record)).select().single();
-    if (error) { lastDbError = error.message; console.error(`[Supabase] erro ao inserir em ${listKey}:`, error.message); return null; }
+    if (error) { if (erroDeRede(error)) marcarConexao(false); lastDbError = error.message; console.error(`[Supabase] erro ao inserir em ${listKey}:`, error.message); return null; }
+    marcarConexao(true);
     return rowToRecord(data);
-  } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error(`[Supabase] erro de rede ao inserir em ${listKey}:`, formatarErroSeguro(e)); return null; }
+  } catch (e) { if (erroDeRede(e)) marcarConexao(false); lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error(`[Supabase] erro de rede ao inserir em ${listKey}:`, formatarErroSeguro(e)); return null; }
 }
 async function dbUpdate(listKey, id, patch) {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível.'; return null; }
+  // Atualização parcial: só envia os campos que realmente mudaram face ao
+  // que já está no STATE — nunca o registo completo — para nunca
+  // sobrepor, sem querer, uma edição que outro colega tenha feito
+  // entretanto no mesmo registo.
+  const atual = (STATE[listKey] || []).find(r => r.id === id);
+  const patchFinal = apenasCamposAlterados(atual, patch);
+  if (atual && Object.keys(patchFinal).length === 0) return atual; // nada mudou de facto — poupa um pedido ao servidor
   try {
-    const { data, error } = await sb.from(TABLES[listKey]).update(recordToRow(patch)).eq('id', id).select().single();
-    if (error) { lastDbError = error.message; console.error(`[Supabase] erro ao atualizar ${listKey}#${id}:`, error.message); return null; }
+    const { data, error } = await sb.from(TABLES[listKey]).update(recordToRow(patchFinal)).eq('id', id).select().single();
+    if (error) {
+      if (erroDeRede(error)) {
+        marcarConexao(false);
+        enfileirarOperacaoOffline(listKey, id, patchFinal);
+        // Devolve uma versão otimista do registo (aplica o patch já
+        // localmente), para a interface continuar fluida mesmo sem
+        // ligação — sincroniza-se sozinho assim que a rede voltar.
+        return atual ? Object.assign({}, atual, patchFinal) : null;
+      }
+      lastDbError = error.message; console.error(`[Supabase] erro ao atualizar ${listKey}#${id}:`, error.message); return null;
+    }
+    marcarConexao(true);
     return rowToRecord(data);
-  } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error(`[Supabase] erro de rede ao atualizar ${listKey}#${id}:`, formatarErroSeguro(e)); return null; }
+  } catch (e) {
+    if (erroDeRede(e)) {
+      marcarConexao(false);
+      enfileirarOperacaoOffline(listKey, id, patchFinal);
+      return atual ? Object.assign({}, atual, patchFinal) : null;
+    }
+    lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error(`[Supabase] erro de rede ao atualizar ${listKey}#${id}:`, formatarErroSeguro(e)); return null;
+  }
 }
 // "Eliminar" nunca apaga em definitivo — move o registo para o Lixo (soft delete)
 async function dbDelete(listKey, id) {
@@ -3180,9 +3309,10 @@ async function dbDelete(listKey, id) {
     const { error } = await sb.from(TABLES[listKey])
       .update({ eliminado: true, data_eliminacao: new Date().toISOString() })
       .eq('id', id);
-    if (error) { lastDbError = error.message; console.error(`[Supabase] erro ao mover ${listKey}#${id} para o lixo:`, error.message); return false; }
+    if (error) { if (erroDeRede(error)) marcarConexao(false); lastDbError = error.message; console.error(`[Supabase] erro ao mover ${listKey}#${id} para o lixo:`, error.message); return false; }
+    marcarConexao(true);
     return true;
-  } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error(`[Supabase] erro de rede ao mover ${listKey}#${id} para o lixo:`, formatarErroSeguro(e)); return false; }
+  } catch (e) { if (erroDeRede(e)) marcarConexao(false); lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error(`[Supabase] erro de rede ao mover ${listKey}#${id} para o lixo:`, formatarErroSeguro(e)); return false; }
 }
 // Elimina em lote (bulk) através de dbDelete, devolvendo o conjunto de ids
 // que foi mesmo apagado — usado por todos os módulos com eliminação
@@ -3557,7 +3687,6 @@ const STATE = {
   usuarios: [],
   empresasParceiras: [],
   validades: [],
-  indisponibilidades: [],
   mensagemDia: null,
   mensagensChat: [],
   documentosEmitidos: [],
@@ -4461,7 +4590,6 @@ const PAGINA_PAI = {
   // Entregas — item único, sem hub próprio
   entregas: 'home',
   'gestao-empresas-parceiras': 'entregas', // gerido a partir de Entregas
-  indisponibilidades: 'entregas', // agora um 3.º cartão dentro do seletor de Entregas
 
   // Agendas
   'hub-agendas': 'home', 'hub-agendas-nutricao': 'hub-agendas',
@@ -6175,157 +6303,6 @@ function buildValidadesPage(container, goTo) {
   }
 
   rerender();
-}
-
-/* =================================================================
-   REGISTO DE INDISPONIBILIDADES — bloqueios de agenda dos estafetas por
-   farmácia + dia + bloco horário (Entregas). Acesso exclusivo a
-   Administrador e Estafeta; qualquer outro perfil nem sequer vê o menu
-   (ver buildSidebarContent) nem consegue navegar para aqui (ver a rede de
-   segurança em render()) — este `if` é só uma terceira camada de defesa
-   caso a página seja invocada diretamente por engano.
-================================================================= */
-function buildIndisponibilidadesPage(container, goTo) {
-  if (!isAdministrador() && !isEstafeta()) {
-    clear(container);
-    const wrap = h('div', { class: 'animate-in' });
-    wrap.appendChild(withBackButton(buildPageHeader('lockClosed', 'Acesso Não Autorizado', 'O seu perfil não tem acesso ao Registo de Indisponibilidades.', undefined), goTo));
-    wrap.appendChild(EmptyState('Esta área está disponível apenas para o Administrador e para o Estafeta.'));
-    container.appendChild(wrap);
-    return;
-  }
-
-  let showForm = false, editingId = null, draft = emptyRecord(indisponibilidadesSchema);
-  let formError = '';
-  let saving = false;
-  let selectedIds = new Set();
-
-  function records() { return STATE.indisponibilidades; }
-  function rerender() { clear(container); container.appendChild(build()); }
-  function openNew() {
-    draft = emptyRecord(indisponibilidadesSchema);
-    draft.data = todayISO();
-    // Com um só Estafeta atualmente na equipa, já vem pré-selecionado —
-    // continua totalmente editável se um dia houver mais do que um.
-    const estafetas = estafetasDisponiveis();
-    if (estafetas.length === 1) draft.estafeta = estafetas[0].nomeCompleto || estafetas[0].username;
-    editingId = null; formError = ''; showForm = true; rerender();
-  }
-  function openEditSelected() {
-    if (selectedIds.size !== 1) return;
-    const id = [...selectedIds][0];
-    const r = records().find(x => x.id === id);
-    if (!r) return;
-    draft = Object.assign({}, r); editingId = r.id; formError = ''; showForm = true; rerender();
-  }
-  function cancel() { formError = ''; showForm = false; rerender(); }
-
-  function indisponibilidadesFormSchema() {
-    const nomes = estafetasDisponiveis().map(u => u.nomeCompleto || u.username).filter(Boolean);
-    return indisponibilidadesSchema.map(f => f.name === 'estafeta'
-      ? Object.assign({}, f, { options: nomes.length ? nomes : [draft.estafeta || ''].filter(Boolean) })
-      : f);
-  }
-
-  async function submit() {
-    const missing = [];
-    if (!String(draft.data || '').trim()) missing.push('Data');
-    if (!String(draft.farmacia || '').trim()) missing.push('Farmácia');
-    if (!String(draft.blocoHorario || '').trim()) missing.push('Bloco Horário');
-    if (!String(draft.estafeta || '').trim()) missing.push('Estafeta');
-    if (missing.length) {
-      formError = `Por favor, preencha: ${missing.join(', ')}.`;
-      rerender();
-      return;
-    }
-    formError = '';
-    draft.responsavel = currentUserName();
-    saving = true; rerender();
-    if (editingId) {
-      const updated = await dbUpdate('indisponibilidades', editingId, draft);
-      if (updated) STATE.indisponibilidades = records().map(r => r.id === editingId ? updated : r);
-      else formError = `Não foi possível guardar as alterações. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
-    } else {
-      const created = await dbInsert('indisponibilidades', draft);
-      if (created) STATE.indisponibilidades = [created, ...records()];
-      else formError = `Não foi possível adicionar o registo. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
-    }
-    saving = false;
-    if (!formError) { showForm = false; selectedIds = new Set(); }
-    rerender();
-  }
-
-  function removeSelecionadas() {
-    if (selectedIds.size === 0) return;
-    const ids = [...selectedIds];
-    const plural = ids.length > 1;
-    confirmDialog(`Eliminar ${ids.length} indisponibilidade${plural ? 's' : ''} selecionada${plural ? 's' : ''}?`, async () => {
-      const apagados = await bulkSoftDelete('indisponibilidades', ids);
-      STATE.indisponibilidades = records().filter(r => !apagados.has(r.id));
-      selectedIds = new Set([...selectedIds].filter(id => !apagados.has(id)));
-      showForm = false; rerender();
-    }, { danger: true, confirmLabel: 'Eliminar' });
-  }
-
-  function build() {
-    const wrap = h('div', { class: 'animate-in' });
-    wrap.appendChild(withBackButton(buildPageHeader('lockClosed', 'Registo de Indisponibilidades', 'Bloqueios de agenda dos estafetas, por farmácia, dia e bloco horário — impede marcar entregas nesses períodos.', records().length), goTo));
-
-    if (showForm) {
-      wrap.appendChild(buildRecordForm(indisponibilidadesFormSchema(), draft, {
-        editing: !!editingId, onSubmit: submit, onCancel: cancel, errorMessage: formError, saving,
-      }));
-      return wrap;
-    }
-
-    const lista = records().slice().sort((a, b) => (a.data || '').localeCompare(b.data || ''));
-    if (!lista.length) {
-      wrap.appendChild(h('p', { class: 'cell-muted', style: 'margin-top:16px;' }, 'Ainda não há indisponibilidades registadas.'));
-    } else {
-      const thead = h('thead', {}, h('tr', {}, ['', 'Data', 'Farmácia', 'Bloco Horário', 'Estafeta', 'Motivo'].map(t => h('th', {}, t))));
-      const tbody = h('tbody', {}, lista.map(r => {
-        const selected = selectedIds.has(r.id);
-        const cb = h('input', { type: 'checkbox', checked: selected });
-        cb.addEventListener('click', (e) => e.stopPropagation());
-        cb.addEventListener('change', () => { if (selectedIds.has(r.id)) selectedIds.delete(r.id); else selectedIds.add(r.id); rerender(); });
-        const row = h('tr', { class: 'selectable-row' + (selected ? ' row-selected' : '') }, [
-          h('td', {}, cb),
-          h('td', { class: 'cell-strong' }, formatDate(r.data)),
-          h('td', {}, r.farmacia || '—'),
-          h('td', {}, h('span', { class: 'badge-bloco' }, r.blocoHorario || '—')),
-          h('td', {}, r.estafeta || '—'),
-          h('td', { class: 'cell-muted' }, r.motivo || '—'),
-        ]);
-        row.addEventListener('click', () => { if (selectedIds.has(r.id)) selectedIds.delete(r.id); else selectedIds.add(r.id); rerender(); });
-        return row;
-      }));
-      wrap.appendChild(h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', {}, [thead, tbody]))));
-    }
-
-    if (!showForm) {
-      wrap.appendChild(buildBottomActionBar({
-        selectedCount: selectedIds.size,
-        addLabel: 'Nova Indisponibilidade',
-        onAdd: openNew,
-        onEdit: openEditSelected,
-        onDelete: removeSelecionadas,
-      }));
-    }
-    return wrap;
-  }
-
-  rerender();
-}
-// Verifica se há uma indisponibilidade registada para a farmácia + data +
-// bloco horário de uma entrega — e, se a entrega já tiver um estafeta
-// escolhido, cruza também com esse nome (uma indisponibilidade sem
-// estafeta específico aplica-se a qualquer um). Usada ao gravar uma
-// Entrega, para nunca marcar em cima de um bloqueio já conhecido.
-function indisponibilidadeCorrespondente(farmacia, dataEntrega, blocoHorario, estafetaNome) {
-  return (STATE.indisponibilidades || []).find(x =>
-    x.farmacia === farmacia && x.data === dataEntrega && x.blocoHorario === blocoHorario &&
-    (!estafetaNome || !x.estafeta || x.estafeta === estafetaNome)
-  );
 }
 
 /* =================================================================
@@ -10831,15 +10808,6 @@ function buildEntregasPage(container, goTo) {
       alert('Este bloco horário já expirou para o dia de hoje. Para realizar uma entrega fora de prazo/imediata, deve assinalar a opção "URGENTE — Entrega Imediata".');
       return;
     }
-    // Bloqueio de agenda do estafeta (Registo de Indisponibilidades): nunca
-    // deixa gravar uma entrega em cima de um período já marcado como
-    // indisponível para esta farmácia/data/bloco.
-    const conflitoIndisponibilidade = indisponibilidadeCorrespondente(draft.farmacia || farmaciaAtiva, draft.dataEntrega, draft.blocoHorario, draft.entreguePor);
-    if (conflitoIndisponibilidade) {
-      formError = 'O estafeta selecionado definiu indisponibilidade para este bloco horário.';
-      rerender();
-      return;
-    }
     formError = '';
     draft.responsavel = currentUserName();
     normalizeNameFields(draft);
@@ -11042,18 +11010,10 @@ function buildEntregasPage(container, goTo) {
       juncalBadge,
     ]);
 
-    // Todos os cartões vivem dentro do MESMO container .quick-grid — nunca
-    // em divs .hub-tier-row separadas umas das outras, que já causaram um
-    // desalinhamento visual a fazer o 3.º cartão parecer "cair" para cima
-    // da sidebar. Um único grid trata do alinhamento vertical dos 3 de
-    // forma consistente.
     const cartoes = [juncalBtn];
 
     // Escolha entre farmácias reservada a Estafeta/Administrador — os
     // restantes colaboradores nem chegam a este ecrã (ver farmaciaAtiva).
-    // O mesmo grupo tem também acesso ao 3.º cartão "Registo de
-    // Indisponibilidades", integrado aqui em vez de um menu próprio na
-    // sidebar — mesma restrição de perfil, só mudou de sítio.
     if (isEstafeta() || isAdministrador()) {
       const boaNovaBtn = h('button', { class: 'hub-card hub-card-boanova', onclick: () => trocarFarmacia('Boa Nova') }, [
         h('span', { class: 'icon-wrap' }, Icon('truck', { size: 40, strokeWidth: 1.6 })),
@@ -11061,12 +11021,6 @@ function buildEntregasPage(container, goTo) {
         boaNovaBadge,
       ]);
       cartoes.push(boaNovaBtn);
-
-      const indisponibilidadesBtn = h('button', { class: 'hub-card hub-card-indisponibilidades', onclick: () => requireAuth(() => goTo('indisponibilidades')) }, [
-        h('span', { class: 'icon-wrap' }, Icon('lockClosed', { size: 40, strokeWidth: 1.6 })),
-        h('span', { class: 'label' }, 'Registo de Indisponibilidades'),
-      ]);
-      cartoes.push(indisponibilidadesBtn);
     }
 
     wrap.appendChild(h('div', { class: 'quick-grid hub-tier-row' }, cartoes));
@@ -11741,7 +11695,6 @@ const LIXO_SOURCES = [
   { key: 'formacoes', schema: formacoesSchema, categoria: 'Formações', icon: 'graduation', itemField: 'gamaTema' },
   { key: 'desafios', schema: desafiosSchema, categoria: 'Prémios', icon: 'award', itemField: 'tituloDesafio' },
   { key: 'objetivos', schema: objetivosSchema, categoria: 'Objetivos', icon: 'target', itemField: 'titulo' },
-  { key: 'indisponibilidades', schema: indisponibilidadesSchema, categoria: 'Indisponibilidades', icon: 'lockClosed', itemField: 'estafeta' },
 ];
 
 const LIXO_RETENCAO_DIAS = 180; // 6 meses
@@ -12119,8 +12072,29 @@ function buildSidebarContent(onClose, goTo) {
     onClose ? h('button', { class: 'close-btn close-btn-abs', onclick: onClose }, Icon('x', { size: 16 })) : null,
   ]);
   const badgeSlot = h('div', { class: 'sidebar-badge-slot' }, buildSidebarBadgeSlotContent());
-  const footer = h('div', { class: 'sidebar-footer' });
+  const footer = h('div', { class: 'sidebar-footer' }, [buildConexaoIndicador()]);
   return [brand, badgeSlot, h('nav', { class: 'nav' }, navChildren), footer];
+}
+// Indicador discreto de Online/Offline — vive na base da sidebar, por
+// baixo de "Definições". Verde: ligação ativa ao Supabase. Laranja: rede
+// em baixo ou o Supabase não respondeu (a app continua a funcionar em
+// modo offline/cache, com as edições guardadas localmente até
+// sincronizar sozinha assim que a ligação voltar).
+function buildConexaoIndicador() {
+  const dot = h('span', { class: 'conexao-dot' });
+  const el = h('button', {
+    class: 'conexao-indicador' + (conexaoOnline ? ' conexao-online' : ' conexao-offline'),
+    type: 'button',
+    title: conexaoOnline ? 'Ligação ativa ao servidor' : 'Modo offline — alterações guardadas localmente.',
+    'aria-label': 'Estado de ligação',
+  }, [dot, h('span', { class: 'conexao-label' }, conexaoOnline ? 'Online' : 'Offline')]);
+  // Clicar tenta logo uma sincronização (útil se a pessoa já sabe que a
+  // rede voltou mas o evento "online" do browser ainda não disparou).
+  el.addEventListener('click', () => { if (navigator.onLine) marcarConexao(true); sincronizarFilaOffline(); });
+  if (filaOperacoesPendentes.length > 0) {
+    el.appendChild(h('span', { class: 'conexao-pendentes-badge' }, String(filaOperacoesPendentes.length > 9 ? '9+' : filaOperacoesPendentes.length)));
+  }
+  return el;
 }
 
 function render() {
@@ -12147,10 +12121,9 @@ function render() {
   }
 
   // Rede de segurança: um Estafeta só pode estar na Página Inicial (restrita,
-  // com apenas o botão de Entregas), no próprio ecrã de Entregas, ou no
-  // Registo de Indisponibilidades (exclusivo a Administrador + Estafeta) —
-  // qualquer outra página é bloqueada e devolve-o imediatamente a Entregas.
-  if (isEstafeta() && STATE.page !== 'entregas' && STATE.page !== 'home' && STATE.page !== 'indisponibilidades') {
+  // com apenas o botão de Entregas) ou no próprio ecrã de Entregas — qualquer
+  // outra página é bloqueada e devolve-o imediatamente a Entregas.
+  if (isEstafeta() && STATE.page !== 'entregas' && STATE.page !== 'home') {
     STATE.page = 'entregas';
   }
   // Mesma lógica para o Prestador de Serviço: só a Página Inicial (restrita)
@@ -12228,7 +12201,6 @@ function render() {
       case 'objetivos': buildObjetivosPage(pageContainer, goTo); break;
       case 'historico-mensagens': buildHistoricoMensagensPage(pageContainer, goTo); break;
       case 'validades': buildValidadesPage(pageContainer, goTo); break;
-      case 'indisponibilidades': buildIndisponibilidadesPage(pageContainer, goTo); break;
       case 'doc-despesas': buildDeclaracaoDespesasPage(pageContainer, goTo); break;
       case 'doc-presenca': buildDeclaracaoPresencaPage(pageContainer, goTo); break;
       case 'doc-avaliacao-fisica': buildDeclaracaoAvaliacaoFisicaPage(pageContainer, goTo); break;
@@ -12776,6 +12748,13 @@ function setupInactivityWatcher() {
 }
 
 async function startApp() {
+  carregarFilaOffline();
+  window.addEventListener('online', () => marcarConexao(true));
+  window.addEventListener('offline', () => marcarConexao(false));
+  // Se já havia alterações pendentes de uma sessão offline anterior e a
+  // app arranca já com ligação, tenta sincronizá-las de imediato — não
+  // espera necessariamente por uma transição do evento "online".
+  if (filaOperacoesPendentes.length > 0 && conexaoOnline) sincronizarFilaOffline();
   const loadingEl = buildLoadingScreen();
   document.body.appendChild(loadingEl);
   // Rede de segurança de topo: loadAllData() e autoCancelOldOrders() já têm
