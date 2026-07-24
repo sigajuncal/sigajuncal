@@ -2945,6 +2945,24 @@ const sb = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE
   auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
 }) : null;
 let lastDbError = '';
+// Leitura de recurso: continua a existir "DataCloneError: The object can
+// not be cloned" nalguns ambientes de pré-visualização mesmo com a sessão
+// desativada acima — a mensagem vem de dentro do próprio cliente
+// supabase-js (algum mecanismo interno de postMessage/clonagem entre
+// frames/workers), não dos nossos dados, por isso sanitizar a resposta não
+// chega a resolver: o erro acontece ANTES de recebermos qualquer resposta.
+// Esta função lê a mesma tabela diretamente pela API REST do Supabase via
+// fetch() nativo — sem passar pelo cliente supabase-js — e serve de
+// alternativa só quando esse erro específico acontece (ver dbFetchAll).
+async function fetchTabelaViaRest(tabela, ordenarPor, ascending, eliminadoVal) {
+  const eliminado = eliminadoVal === undefined ? 'false' : eliminadoVal;
+  const url = `${SUPABASE_URL}/rest/v1/${encodeURIComponent(tabela)}?select=*&eliminado=eq.${eliminado}&order=${encodeURIComponent(ordenarPor)}.${ascending ? 'asc' : 'desc'}`;
+  const resp = await fetch(url, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+  });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status} ao ler ${tabela} via REST`);
+  return await resp.json();
+}
 
 // Nome da tabela Supabase correspondente a cada módulo da app
 const TABLES = {
@@ -3060,6 +3078,8 @@ function recordToRow(record) {
 
 async function dbFetchAll(listKey) {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível.'; return []; }
+  const ordenarPor = listKey === 'usuarios' ? 'nome_completo' : 'id';
+  const ascending = listKey === 'usuarios';
   try {
     // Utilizadores são sempre devolvidos por ordem alfabética do nome completo;
     // as restantes tabelas mantêm a ordem cronológica habitual (mais recente primeiro).
@@ -3067,17 +3087,62 @@ async function dbFetchAll(listKey) {
       ? sb.from(TABLES[listKey]).select('*').eq('eliminado', false).order('nome_completo', { ascending: true })
       : sb.from(TABLES[listKey]).select('*').eq('eliminado', false).order('id', { ascending: false });
     const { data, error } = await query;
-    if (error) { lastDbError = error.message; console.error(`[Supabase] erro ao ler ${listKey}:`, error.message); return []; }
+    if (error) {
+      // "DataCloneError" nesta mensagem vem de dentro do próprio cliente
+      // supabase-js, não dos dados — tenta-se logo a leitura alternativa
+      // via fetch() nativo antes de desistir e mostrar erro ao utilizador.
+      if (/DataCloneError/i.test(error.message || '')) {
+        try {
+          const dataFallback = await fetchTabelaViaRest(TABLES[listKey], ordenarPor, ascending);
+          return sanitizarSupabase(dataFallback || []).map(rowToRecord);
+        } catch (e2) {
+          console.error(`[Supabase] leitura alternativa (REST) também falhou para ${listKey}:`, formatarErroSeguro(e2));
+        }
+      }
+      lastDbError = error.message; console.error(`[Supabase] erro ao ler ${listKey}:`, error.message); return [];
+    }
     return sanitizarSupabase(data || []).map(rowToRecord);
-  } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error(`[Supabase] erro de rede ao ler ${listKey}:`, formatarErroSeguro(e)); return []; }
+  } catch (e) {
+    // O mesmo erro também pode chegar aqui, como exceção em vez de
+    // {error}, consoante a forma como o cliente falha internamente.
+    if (e && /DataCloneError/i.test(e.message || String(e))) {
+      try {
+        const dataFallback = await fetchTabelaViaRest(TABLES[listKey], ordenarPor, ascending);
+        return sanitizarSupabase(dataFallback || []).map(rowToRecord);
+      } catch (e2) {
+        console.error(`[Supabase] leitura alternativa (REST) também falhou para ${listKey}:`, formatarErroSeguro(e2));
+      }
+    }
+    lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error(`[Supabase] erro de rede ao ler ${listKey}:`, formatarErroSeguro(e)); return [];
+  }
 }
 async function dbFetchDeleted(listKey) {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível.'; return []; }
   try {
     const { data, error } = await sb.from(TABLES[listKey]).select('*').eq('eliminado', true).order('data_eliminacao', { ascending: false });
-    if (error) { lastDbError = error.message; console.error(`[Supabase] erro ao ler lixo de ${listKey}:`, error.message); return []; }
+    if (error) {
+      if (/DataCloneError/i.test(error.message || '')) {
+        try {
+          const dataFallback = await fetchTabelaViaRest(TABLES[listKey], 'data_eliminacao', false, 'true');
+          return sanitizarSupabase(dataFallback || []).map(rowToRecord);
+        } catch (e2) {
+          console.error(`[Supabase] leitura alternativa (REST) também falhou para o lixo de ${listKey}:`, formatarErroSeguro(e2));
+        }
+      }
+      lastDbError = error.message; console.error(`[Supabase] erro ao ler lixo de ${listKey}:`, error.message); return [];
+    }
     return sanitizarSupabase(data || []).map(rowToRecord);
-  } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error(`[Supabase] erro de rede ao ler lixo de ${listKey}:`, formatarErroSeguro(e)); return []; }
+  } catch (e) {
+    if (e && /DataCloneError/i.test(e.message || String(e))) {
+      try {
+        const dataFallback = await fetchTabelaViaRest(TABLES[listKey], 'data_eliminacao', false, 'true');
+        return sanitizarSupabase(dataFallback || []).map(rowToRecord);
+      } catch (e2) {
+        console.error(`[Supabase] leitura alternativa (REST) também falhou para o lixo de ${listKey}:`, formatarErroSeguro(e2));
+      }
+    }
+    lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error(`[Supabase] erro de rede ao ler lixo de ${listKey}:`, formatarErroSeguro(e)); return [];
+  }
 }
 // Apagamento definitivo e irreversível — nunca disponível fora do Lixo, e
 // restrito ao perfil Administrador (ver isAdministrador()). Esta é a ÚNICA
