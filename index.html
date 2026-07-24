@@ -1398,6 +1398,9 @@ const NAV_SECTIONS = [
   { title: 'Entregas', items: [
     { key: 'entregas', label: 'Entregas', icon: 'truck' },
   ] },
+  { title: 'Registo de Indisponibilidades', items: [
+    { key: 'indisponibilidades', label: 'Registo de Indisponibilidades', icon: 'lockClosed' },
+  ] },
   { title: 'Agendas', items: PRESTADORES_AGENDA.map(p => ({ key: `agenda-${p.key}`, label: p.nome, icon: p.icon })) },
   { title: 'Documentos', items: [
     { key: 'doc-despesas', label: 'Declaração de Despesas Mensal', icon: 'fileDollar' },
@@ -1880,6 +1883,16 @@ const FARMACIAS_ENTREGA = ['Juncal', 'Boa Nova'];
 const BLOCOS_HORARIOS = ['1º (10H - 12H)', '2º (14H - 16H)', '3º (19H - 21H)'];
 const BLOCO_SABADO = 'Sábado (14H - 18H)';
 const METODOS_PAGAMENTO_ENTREGA = ['MB', 'MBWay', 'Dinheiro', 'Transferência', 'A Crédito', 'Pago no Balcão / Reserva'];
+// Registo de Indisponibilidades — bloqueios de agenda dos estafetas, por
+// farmácia + dia + bloco horário definido no sistema (os mesmos blocos já
+// usados nas Entregas — nunca um período livre/genérico).
+const indisponibilidadesSchema = [
+  { name: 'data', label: 'Data', type: 'date', size: 'xs' },
+  { name: 'farmacia', label: 'Farmácia', type: 'select', options: FARMACIAS_ENTREGA, size: 'sm' },
+  { name: 'blocoHorario', label: 'Bloco Horário', type: 'select', options: [...BLOCOS_HORARIOS, BLOCO_SABADO], size: 'sm' },
+  { name: 'estafeta', label: 'Estafeta', type: 'select', options: [], size: 'sm' },
+  { name: 'motivo', label: 'Motivo (opcional)', type: 'text', col: 2, maxLength: 150 },
+];
 const entregasSchema = [
   { name: 'tipoDestinatario', label: 'Tipo de Destinatário', type: 'select', options: ['Particular', 'Empresa Parceira'], size: 'sm' },
   { name: 'empresaParceiraId', label: 'Empresa Parceira', type: 'select', options: [], size: 'sm' },
@@ -2077,12 +2090,19 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   function fecharDiaAgenda() {
     const registo = agendaDiaAbertoRegisto(prestadorKey, dateISO);
     if (!registo) return;
-    if (agendaDiaTemMarcacaoAtiva(prestadorKey, dateISO)) return; // bloqueado — nunca deveria disparar, mas por segurança
-    confirmDialog('Tem a certeza de que quer fechar este dia? Deixa de ficar disponível/ativo no calendário.', async () => {
+    if (agendaDiaTemMarcacaoAtiva(prestadorKey, dateISO)) {
+      confirmDialog(
+        'Impossível fechar o dia: é necessário primeiro concluir, cancelar ou eliminar todas as marcações ativas para esta data.',
+        () => {}, { confirmLabel: 'Entendido' }
+      );
+      return;
+    }
+    const nomeAbriu = registo.responsavel || 'alguém da equipa';
+    confirmDialog(`O dia foi aberto por ${nomeAbriu}. Tem a certeza de que deseja fechar este dia?`, async () => {
       const ok = await dbDelete('agendaDias', registo.id);
       if (ok) { STATE.agendaDias = STATE.agendaDias.filter(d => d.id !== registo.id); renderHeaderAcoes(); if (onSaved) onSaved(); }
       else showDbErrorToast('Não foi possível fechar o dia');
-    }, { confirmLabel: 'Fechar Dia' });
+    }, { confirmLabel: 'Sim, Fechar Dia' });
   }
   function buildAbrirFecharDiaBtn() {
     if (isPast) return null;
@@ -2092,13 +2112,14 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       btn.addEventListener('click', () => requireAuth(abrirDiaAgenda));
       return btn;
     }
-    const bloqueado = agendaDiaTemMarcacaoAtiva(prestadorKey, dateISO);
+    // O botão mantém-se sempre clicável — se houver marcações ativas, o
+    // próprio clique é que mostra o alerta explicativo (em vez de ficar só
+    // visualmente desativado, o que passaria despercebido em ecrãs táteis).
     const btn = h('button', {
       class: 'btn btn-secondary',
-      disabled: bloqueado ? 'disabled' : undefined,
-      title: bloqueado ? 'Cancele ou remova todas as marcações para poder fechar este dia.' : 'Fecha este dia e remove a sua disponibilidade no calendário',
+      title: 'Fecha este dia e remove a sua disponibilidade no calendário',
     }, [Icon('lockClosed', { size: 14, strokeWidth: 2.2 }), ' Fechar Dia']);
-    if (!bloqueado) btn.addEventListener('click', () => requireAuth(fecharDiaAgenda));
+    btn.addEventListener('click', () => requireAuth(fecharDiaAgenda));
     return btn;
   }
   const headerAcoesEl = h('div', { style: 'display:flex;align-items:center;gap:8px;' });
@@ -2943,6 +2964,7 @@ const TABLES = {
   usuarios: 'usuarios_app',
   empresasParceiras: 'empresas_parceiras',
   validades: 'farmacia_validades',
+  indisponibilidades: 'farmacia_indisponibilidades',
 };
 
 function camelToSnake(s) { return s.replace(/[A-Z]/g, m => '_' + m.toLowerCase()); }
@@ -3463,6 +3485,7 @@ const STATE = {
   usuarios: [],
   empresasParceiras: [],
   validades: [],
+  indisponibilidades: [],
   mensagemDia: null,
   mensagensChat: [],
   documentosEmitidos: [],
@@ -4366,6 +4389,7 @@ const PAGINA_PAI = {
   // Entregas — item único, sem hub próprio
   entregas: 'home',
   'gestao-empresas-parceiras': 'entregas', // gerido a partir de Entregas
+  indisponibilidades: 'home',
 
   // Agendas
   'hub-agendas': 'home', 'hub-agendas-nutricao': 'hub-agendas',
@@ -6082,6 +6106,157 @@ function buildValidadesPage(container, goTo) {
 }
 
 /* =================================================================
+   REGISTO DE INDISPONIBILIDADES — bloqueios de agenda dos estafetas por
+   farmácia + dia + bloco horário (Entregas). Acesso exclusivo a
+   Administrador e Estafeta; qualquer outro perfil nem sequer vê o menu
+   (ver buildSidebarContent) nem consegue navegar para aqui (ver a rede de
+   segurança em render()) — este `if` é só uma terceira camada de defesa
+   caso a página seja invocada diretamente por engano.
+================================================================= */
+function buildIndisponibilidadesPage(container, goTo) {
+  if (!isAdministrador() && !isEstafeta()) {
+    clear(container);
+    const wrap = h('div', { class: 'animate-in' });
+    wrap.appendChild(withBackButton(buildPageHeader('lockClosed', 'Acesso Não Autorizado', 'O seu perfil não tem acesso ao Registo de Indisponibilidades.', undefined), goTo));
+    wrap.appendChild(EmptyState('Esta área está disponível apenas para o Administrador e para o Estafeta.'));
+    container.appendChild(wrap);
+    return;
+  }
+
+  let showForm = false, editingId = null, draft = emptyRecord(indisponibilidadesSchema);
+  let formError = '';
+  let saving = false;
+  let selectedIds = new Set();
+
+  function records() { return STATE.indisponibilidades; }
+  function rerender() { clear(container); container.appendChild(build()); }
+  function openNew() {
+    draft = emptyRecord(indisponibilidadesSchema);
+    draft.data = todayISO();
+    // Com um só Estafeta atualmente na equipa, já vem pré-selecionado —
+    // continua totalmente editável se um dia houver mais do que um.
+    const estafetas = estafetasDisponiveis();
+    if (estafetas.length === 1) draft.estafeta = estafetas[0].nomeCompleto || estafetas[0].username;
+    editingId = null; formError = ''; showForm = true; rerender();
+  }
+  function openEditSelected() {
+    if (selectedIds.size !== 1) return;
+    const id = [...selectedIds][0];
+    const r = records().find(x => x.id === id);
+    if (!r) return;
+    draft = Object.assign({}, r); editingId = r.id; formError = ''; showForm = true; rerender();
+  }
+  function cancel() { formError = ''; showForm = false; rerender(); }
+
+  function indisponibilidadesFormSchema() {
+    const nomes = estafetasDisponiveis().map(u => u.nomeCompleto || u.username).filter(Boolean);
+    return indisponibilidadesSchema.map(f => f.name === 'estafeta'
+      ? Object.assign({}, f, { options: nomes.length ? nomes : [draft.estafeta || ''].filter(Boolean) })
+      : f);
+  }
+
+  async function submit() {
+    const missing = [];
+    if (!String(draft.data || '').trim()) missing.push('Data');
+    if (!String(draft.farmacia || '').trim()) missing.push('Farmácia');
+    if (!String(draft.blocoHorario || '').trim()) missing.push('Bloco Horário');
+    if (!String(draft.estafeta || '').trim()) missing.push('Estafeta');
+    if (missing.length) {
+      formError = `Por favor, preencha: ${missing.join(', ')}.`;
+      rerender();
+      return;
+    }
+    formError = '';
+    draft.responsavel = currentUserName();
+    saving = true; rerender();
+    if (editingId) {
+      const updated = await dbUpdate('indisponibilidades', editingId, draft);
+      if (updated) STATE.indisponibilidades = records().map(r => r.id === editingId ? updated : r);
+      else formError = `Não foi possível guardar as alterações. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
+    } else {
+      const created = await dbInsert('indisponibilidades', draft);
+      if (created) STATE.indisponibilidades = [created, ...records()];
+      else formError = `Não foi possível adicionar o registo. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
+    }
+    saving = false;
+    if (!formError) { showForm = false; selectedIds = new Set(); }
+    rerender();
+  }
+
+  function removeSelecionadas() {
+    if (selectedIds.size === 0) return;
+    const ids = [...selectedIds];
+    const plural = ids.length > 1;
+    confirmDialog(`Eliminar ${ids.length} indisponibilidade${plural ? 's' : ''} selecionada${plural ? 's' : ''}?`, async () => {
+      const apagados = await bulkSoftDelete('indisponibilidades', ids);
+      STATE.indisponibilidades = records().filter(r => !apagados.has(r.id));
+      selectedIds = new Set([...selectedIds].filter(id => !apagados.has(id)));
+      showForm = false; rerender();
+    }, { danger: true, confirmLabel: 'Eliminar' });
+  }
+
+  function build() {
+    const wrap = h('div', { class: 'animate-in' });
+    wrap.appendChild(withBackButton(buildPageHeader('lockClosed', 'Registo de Indisponibilidades', 'Bloqueios de agenda dos estafetas, por farmácia, dia e bloco horário — impede marcar entregas nesses períodos.', records().length), goTo));
+
+    if (showForm) {
+      wrap.appendChild(buildRecordForm(indisponibilidadesFormSchema(), draft, {
+        editing: !!editingId, onSubmit: submit, onCancel: cancel, errorMessage: formError, saving,
+      }));
+      return wrap;
+    }
+
+    const lista = records().slice().sort((a, b) => (a.data || '').localeCompare(b.data || ''));
+    if (!lista.length) {
+      wrap.appendChild(h('p', { class: 'cell-muted', style: 'margin-top:16px;' }, 'Ainda não há indisponibilidades registadas.'));
+    } else {
+      const thead = h('thead', {}, h('tr', {}, ['', 'Data', 'Farmácia', 'Bloco Horário', 'Estafeta', 'Motivo'].map(t => h('th', {}, t))));
+      const tbody = h('tbody', {}, lista.map(r => {
+        const selected = selectedIds.has(r.id);
+        const cb = h('input', { type: 'checkbox', checked: selected });
+        cb.addEventListener('click', (e) => e.stopPropagation());
+        cb.addEventListener('change', () => { if (selectedIds.has(r.id)) selectedIds.delete(r.id); else selectedIds.add(r.id); rerender(); });
+        const row = h('tr', { class: 'selectable-row' + (selected ? ' row-selected' : '') }, [
+          h('td', {}, cb),
+          h('td', { class: 'cell-strong' }, formatDate(r.data)),
+          h('td', {}, r.farmacia || '—'),
+          h('td', {}, h('span', { class: 'badge-bloco' }, r.blocoHorario || '—')),
+          h('td', {}, r.estafeta || '—'),
+          h('td', { class: 'cell-muted' }, r.motivo || '—'),
+        ]);
+        row.addEventListener('click', () => { if (selectedIds.has(r.id)) selectedIds.delete(r.id); else selectedIds.add(r.id); rerender(); });
+        return row;
+      }));
+      wrap.appendChild(h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', {}, [thead, tbody]))));
+    }
+
+    if (!showForm) {
+      wrap.appendChild(buildBottomActionBar({
+        selectedCount: selectedIds.size,
+        addLabel: 'Nova Indisponibilidade',
+        onAdd: openNew,
+        onEdit: openEditSelected,
+        onDelete: removeSelecionadas,
+      }));
+    }
+    return wrap;
+  }
+
+  rerender();
+}
+// Verifica se há uma indisponibilidade registada para a farmácia + data +
+// bloco horário de uma entrega — e, se a entrega já tiver um estafeta
+// escolhido, cruza também com esse nome (uma indisponibilidade sem
+// estafeta específico aplica-se a qualquer um). Usada ao gravar uma
+// Entrega, para nunca marcar em cima de um bloqueio já conhecido.
+function indisponibilidadeCorrespondente(farmacia, dataEntrega, blocoHorario, estafetaNome) {
+  return (STATE.indisponibilidades || []).find(x =>
+    x.farmacia === farmacia && x.data === dataEntrega && x.blocoHorario === blocoHorario &&
+    (!estafetaNome || !x.estafeta || x.estafeta === estafetaNome)
+  );
+}
+
+/* =================================================================
    PESQUISA DE PEDIDOS
 ================================================================= */
 // Módulo "Pedidos" — hub reestruturado: os botões de criação rápida por
@@ -7403,12 +7578,19 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     return marcacoes.some(m => m.tipoLinha !== 'bloqueado' && !vagaVazia(m) && m.estado !== 'cancelada');
   }
   function eliminarDia() {
-    if (eventoTemMarcacaoAtiva()) return; // bloqueado — nunca deveria disparar, mas por segurança
-    confirmDialog('Tem a certeza de que quer fechar este dia? O dia e todas as suas vagas livres deixam de ficar disponíveis no calendário.', async () => {
+    if (eventoTemMarcacaoAtiva()) {
+      confirmDialog(
+        'Impossível fechar o dia: é necessário primeiro concluir, cancelar ou eliminar todas as marcações ativas para esta data.',
+        () => {}, { confirmLabel: 'Entendido' }
+      );
+      return;
+    }
+    const nomeAbriu = currentEvento.responsavel || 'alguém da equipa';
+    confirmDialog(`O dia foi aberto por ${nomeAbriu}. Tem a certeza de que deseja fechar este dia?`, async () => {
       const ok = await dbDelete('eventos', currentEvento.id);
       if (ok) { STATE.eventos = STATE.eventos.filter(e => e.id !== currentEvento.id); if (onSaved) onSaved(); close(); }
       else showDbErrorToast('Não foi possível fechar o dia');
-    }, { danger: true, confirmLabel: 'Fechar Dia' });
+    }, { danger: true, confirmLabel: 'Sim, Fechar Dia' });
   }
   function buildAbrirFecharDiaEventoBtn() {
     if (isPast) return null;
@@ -7418,13 +7600,14 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       return btn;
     }
     if (editingEvento) return null; // o próprio formulário de edição já trata de guardar
-    const bloqueado = eventoTemMarcacaoAtiva();
+    // O botão mantém-se sempre clicável — se houver marcações ativas, o
+    // próprio clique é que mostra o alerta explicativo (em vez de ficar só
+    // visualmente desativado, o que passaria despercebido em ecrãs táteis).
     const btn = h('button', {
       class: 'btn btn-secondary',
-      disabled: bloqueado ? 'disabled' : undefined,
-      title: bloqueado ? 'Cancele ou remova todas as marcações para poder fechar este dia.' : 'Fecha este dia e remove a sua disponibilidade no calendário',
+      title: 'Fecha este dia e remove a sua disponibilidade no calendário',
     }, [Icon('lockClosed', { size: 14, strokeWidth: 2.2 }), ' Fechar Dia']);
-    if (!bloqueado) btn.addEventListener('click', () => requireAuth(eliminarDia));
+    btn.addEventListener('click', () => requireAuth(eliminarDia));
     return btn;
   }
   const headerAcoesEl = h('div', { style: 'display:flex;align-items:center;gap:8px;' });
@@ -10576,6 +10759,15 @@ function buildEntregasPage(container, goTo) {
       alert('Este bloco horário já expirou para o dia de hoje. Para realizar uma entrega fora de prazo/imediata, deve assinalar a opção "URGENTE — Entrega Imediata".');
       return;
     }
+    // Bloqueio de agenda do estafeta (Registo de Indisponibilidades): nunca
+    // deixa gravar uma entrega em cima de um período já marcado como
+    // indisponível para esta farmácia/data/bloco.
+    const conflitoIndisponibilidade = indisponibilidadeCorrespondente(draft.farmacia || farmaciaAtiva, draft.dataEntrega, draft.blocoHorario, draft.entreguePor);
+    if (conflitoIndisponibilidade) {
+      formError = 'O estafeta selecionado definiu indisponibilidade para este bloco horário.';
+      rerender();
+      return;
+    }
     formError = '';
     draft.responsavel = currentUserName();
     normalizeNameFields(draft);
@@ -11460,6 +11652,7 @@ const LIXO_SOURCES = [
   { key: 'formacoes', schema: formacoesSchema, categoria: 'Formações', icon: 'graduation', itemField: 'gamaTema' },
   { key: 'desafios', schema: desafiosSchema, categoria: 'Prémios', icon: 'award', itemField: 'tituloDesafio' },
   { key: 'objetivos', schema: objetivosSchema, categoria: 'Objetivos', icon: 'target', itemField: 'titulo' },
+  { key: 'indisponibilidades', schema: indisponibilidadesSchema, categoria: 'Indisponibilidades', icon: 'lockClosed', itemField: 'estafeta' },
 ];
 
 const LIXO_RETENCAO_DIAS = 180; // 6 meses
@@ -11781,8 +11974,13 @@ function buildSidebarContent(onClose, goTo) {
       // de Serviço e o perfil Farmácia Boa Nova — nem sequer aparece
       // cinzento, desaparece da sidebar.
       if (item.key === 'chat' && (estafeta || prestadorServico || boaNovaOperador)) return;
+      // "Registo de Indisponibilidades" é o inverso: só existe mesmo para
+      // Administrador e Estafeta — para todos os restantes perfis (Básico,
+      // Prestador de Serviço, Farmácia Boa Nova) fica completamente
+      // invisível, nem sequer aparece cinzento/desativado.
+      if (item.key === 'indisponibilidades' && !estafeta && !isAdministrador()) return;
       let allowed = true;
-      if (estafeta) allowed = item.key === 'entregas';
+      if (estafeta) allowed = item.key === 'entregas' || item.key === 'indisponibilidades';
       else if (prestadorServico) allowed = false; // só a própria Agenda, tratada no ramo "else" abaixo
       else if (boaNovaOperador) allowed = item.key === 'entregas';
       const active = allowed && STATE.page === item.key;
@@ -11865,9 +12063,10 @@ function render() {
   }
 
   // Rede de segurança: um Estafeta só pode estar na Página Inicial (restrita,
-  // com apenas o botão de Entregas) ou no próprio ecrã de Entregas — qualquer
-  // outra página é bloqueada e devolve-o imediatamente a Entregas.
-  if (isEstafeta() && STATE.page !== 'entregas' && STATE.page !== 'home') {
+  // com apenas o botão de Entregas), no próprio ecrã de Entregas, ou no
+  // Registo de Indisponibilidades (exclusivo a Administrador + Estafeta) —
+  // qualquer outra página é bloqueada e devolve-o imediatamente a Entregas.
+  if (isEstafeta() && STATE.page !== 'entregas' && STATE.page !== 'home' && STATE.page !== 'indisponibilidades') {
     STATE.page = 'entregas';
   }
   // Mesma lógica para o Prestador de Serviço: só a Página Inicial (restrita)
@@ -11945,6 +12144,7 @@ function render() {
       case 'objetivos': buildObjetivosPage(pageContainer, goTo); break;
       case 'historico-mensagens': buildHistoricoMensagensPage(pageContainer, goTo); break;
       case 'validades': buildValidadesPage(pageContainer, goTo); break;
+      case 'indisponibilidades': buildIndisponibilidadesPage(pageContainer, goTo); break;
       case 'doc-despesas': buildDeclaracaoDespesasPage(pageContainer, goTo); break;
       case 'doc-presenca': buildDeclaracaoPresencaPage(pageContainer, goTo); break;
       case 'doc-avaliacao-fisica': buildDeclaracaoAvaliacaoFisicaPage(pageContainer, goTo); break;
