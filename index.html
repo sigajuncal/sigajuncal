@@ -12370,36 +12370,55 @@ function buildLoadingScreen() {
 }
 
 async function loadAllData() {
-  const keys = Object.keys(TABLES);
-  const results = await Promise.all(keys.map(k => dbFetchAll(k)));
-  // dbFetchAll() já devolve dados sanitizados (ver rowToRecord), mas volta a
-  // passar por sanitizarSupabase() mesmo aqui, no exato ponto em que entra
-  // no STATE — garante blindagem total, mesmo que algum dia uma função de
-  // leitura nova seja adicionada sem essa sanitização embutida.
-  keys.forEach((k, i) => { STATE[k] = sanitizarSupabase(results[i]); });
-  STATE.mensagemDia = sanitizarSupabase(await dbFetchMensagemDia());
-  await dbCleanupOldChatMessages();
-  STATE.mensagensChat = sanitizarSupabase(await dbFetchChat());
-  STATE.documentosEmitidos = sanitizarSupabase(await dbFetchDocumentosEmitidos());
+  // Rede de segurança final do arranque: mesmo que uma falha inesperada
+  // (ex: uma exceção nunca prevista escapar a alguma função individual)
+  // aconteça algures aqui dentro, o carregamento da app NUNCA fica
+  // bloqueado — os dados que já tiverem chegado ficam gravados no STATE, o
+  // resto simplesmente fica vazio até à próxima sincronização em tempo
+  // real ou próximo arranque. Cada função de leitura já tem o seu próprio
+  // try/catch (nunca rejeita a Promise), mas este nível extra garante que
+  // a app continua a arrancar e a responder mesmo perante um erro
+  // completamente imprevisto.
+  try {
+    const keys = Object.keys(TABLES);
+    const results = await Promise.all(keys.map(k => dbFetchAll(k)));
+    // dbFetchAll() já devolve dados sanitizados (ver rowToRecord), mas volta a
+    // passar por sanitizarSupabase() mesmo aqui, no exato ponto em que entra
+    // no STATE — garante blindagem total, mesmo que algum dia uma função de
+    // leitura nova seja adicionada sem essa sanitização embutida.
+    keys.forEach((k, i) => { STATE[k] = sanitizarSupabase(results[i]); });
+    STATE.mensagemDia = sanitizarSupabase(await dbFetchMensagemDia());
+    await dbCleanupOldChatMessages();
+    STATE.mensagensChat = sanitizarSupabase(await dbFetchChat());
+    STATE.documentosEmitidos = sanitizarSupabase(await dbFetchDocumentosEmitidos());
+  } catch (e) {
+    console.error('[Arranque] falha inesperada ao carregar dados iniciais:', formatarErroSeguro(e));
+  }
 }
 
 // Cancela automaticamente pedidos ativos há mais de 6 meses (exceto Resolvido/Cancelado)
 const PEDIDO_LIST_KEYS = ['manipulados', 'ortopedia', 'ervanaria', 'veterinaria', 'outros'];
 async function autoCancelOldOrders() {
-  const cutoff = new Date();
-  cutoff.setMonth(cutoff.getMonth() - 6);
-  const cutoffISO = dateToISO(cutoff);
+  try {
+    const cutoff = new Date();
+    cutoff.setMonth(cutoff.getMonth() - 6);
+    const cutoffISO = dateToISO(cutoff);
 
-  for (const listKey of PEDIDO_LIST_KEYS) {
-    const toCancel = (STATE[listKey] || []).filter(r =>
-      r.data && r.data < cutoffISO && r.estado !== 'Resolvido' && r.estado !== 'Cancelado'
-    );
-    if (toCancel.length === 0) continue;
-    const updates = await Promise.all(toCancel.map(r => dbUpdate(listKey, r.id, { estado: 'Cancelado' })));
-    STATE[listKey] = STATE[listKey].map(r => {
-      const idx = toCancel.findIndex(t => t.id === r.id);
-      return (idx >= 0 && updates[idx]) ? updates[idx] : r;
-    });
+    for (const listKey of PEDIDO_LIST_KEYS) {
+      const toCancel = (STATE[listKey] || []).filter(r =>
+        r.data && r.data < cutoffISO && r.estado !== 'Resolvido' && r.estado !== 'Cancelado'
+      );
+      if (toCancel.length === 0) continue;
+      const updates = await Promise.all(toCancel.map(r => dbUpdate(listKey, r.id, { estado: 'Cancelado' })));
+      STATE[listKey] = STATE[listKey].map(r => {
+        const idx = toCancel.findIndex(t => t.id === r.id);
+        return (idx >= 0 && updates[idx]) ? updates[idx] : r;
+      });
+    }
+  } catch (e) {
+    // Nunca deve impedir o arranque da app — na pior das hipóteses, os
+    // pedidos antigos ficam por cancelar automaticamente até ao próximo arranque.
+    console.error('[Arranque] falha ao cancelar pedidos antigos automaticamente:', formatarErroSeguro(e));
   }
 }
 
@@ -12759,8 +12778,17 @@ function setupInactivityWatcher() {
 async function startApp() {
   const loadingEl = buildLoadingScreen();
   document.body.appendChild(loadingEl);
-  await loadAllData();
-  await autoCancelOldOrders();
+  // Rede de segurança de topo: loadAllData() e autoCancelOldOrders() já têm
+  // o seu próprio tratamento de erro (nunca deviam rejeitar), mas este
+  // último nível garante, sem exceção nenhuma, que o ecrã de carregamento
+  // é sempre removido e a app chega sempre a mostrar o ecrã principal —
+  // mesmo perante uma falha completamente imprevista durante o arranque.
+  try {
+    await loadAllData();
+    await autoCancelOldOrders();
+  } catch (e) {
+    console.error('[Arranque] erro inesperado durante a inicialização:', formatarErroSeguro(e));
+  }
   loadingEl.remove();
   // Limpeza automática do Lixo (>6 meses) — corre em segundo plano, nunca
   // bloqueia o arranque nem o primeiro ecrã.
