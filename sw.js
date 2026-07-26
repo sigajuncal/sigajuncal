@@ -20,6 +20,20 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
 });
 
+/* Badge do ícone da app (Dock do macOS / barra de tarefas do Windows /
+   ícone Android): a página envia a contagem de não lidas por postMessage
+   sempre que muda — aplicar o badge também a partir do contexto do SW
+   torna-o mais fiável em PWAs instaladas. */
+self.addEventListener('message', (event) => {
+  const dados = event.data || {};
+  if (dados.tipo !== 'badge') return;
+  if (!('setAppBadge' in self.navigator)) return;
+  try {
+    if (typeof dados.contagem === 'number' && dados.contagem > 0) self.navigator.setAppBadge(dados.contagem).catch(() => {});
+    else self.navigator.clearAppBadge().catch(() => {});
+  } catch (e) { /* Badging API indisponível — ignora */ }
+});
+
 /* Web Push — payload esperado (JSON):
    { "titulo": "...", "corpo": "...", "tipo": "chat" | "entrega" | "geral", "badge": 3 } */
 self.addEventListener('push', (event) => {

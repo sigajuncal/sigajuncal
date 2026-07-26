@@ -3526,22 +3526,75 @@ function chatLastRead() {
 function chatMarkAllRead() {
   const k = chatLastReadKey();
   try { localStorage.setItem(k, new Date().toISOString()); } catch (e) { /* localStorage indisponível — ignora silenciosamente */ }
+  atualizarIndicadoresChat();
+}
+// Momento em que a app arrancou nesta aba/janela — serve de baseline para a
+// contagem de não lidas quando ainda não há registo de "última leitura"
+// (utilizador que nunca abriu o Chat neste dispositivo, ou Modo Sem Sessão).
+// Sem isto, a contagem ficava eternamente a 0 e nenhum badge aparecia.
+let chatBaselineArranqueISO = new Date().toISOString();
+// Copia o marcador de leitura mais RECENTE entre duas chaves (utilizador ↔
+// convidado) — garante que a contagem de não lidas sobrevive à expiração da
+// sessão (ecrã "Retomar Sessão") e ao login seguinte, sem recontar
+// mensagens que a pessoa já tinha visto.
+function sincronizarChatLastRead(chaveOrigem, chaveDestino) {
+  try {
+    const origem = localStorage.getItem(chaveOrigem);
+    if (!origem) return;
+    const destino = localStorage.getItem(chaveDestino);
+    if (!destino || origem > destino) localStorage.setItem(chaveDestino, origem);
+  } catch (e) { /* localStorage indisponível — ignora */ }
 }
 function chatUnreadCount() {
-  const lastRead = chatLastRead();
-  if (!lastRead) return 0; // primeira vez a ver o chat (com ou sem sessão) — não bombardeia com histórico antigo
+  // Sem registo de última leitura, conta-se tudo o que chegou DEPOIS do
+  // arranque da app — novas mensagens geram badge, o histórico antigo não.
+  const lastRead = chatLastRead() || chatBaselineArranqueISO;
   const meuUserId = activeUser ? String(activeUser.id) : null;
   return (STATE.mensagensChat || []).filter(m => (!meuUserId || String(m.userId) !== meuUserId) && m.createdAt > lastRead).length;
 }
 /* ---- Badging API + Notificações nativas do sistema, para o Chat avisar
    mesmo com a app em segundo plano ou fechada no ecrã principal. ---- */
 function atualizarBadgeApp() {
-  if (!('setAppBadge' in navigator)) return;
   const n = chatUnreadCount();
+  // Página: navigator.setAppBadge (funciona com a app/aba aberta).
+  if ('setAppBadge' in navigator) {
+    try {
+      if (n > 0) navigator.setAppBadge(n).catch(() => {});
+      else navigator.clearAppBadge().catch(() => {});
+    } catch (e) { /* Badging API indisponível neste browser — ignora silenciosamente */ }
+  }
+  // Reforço via Service Worker: em alguns SOs (Windows/macOS com PWA
+  // instalada) o badge do ícone é mais fiável quando pedido também a partir
+  // do contexto do SW — envia-se a contagem por mensagem.
   try {
-    if (n > 0) navigator.setAppBadge(n).catch(() => {});
-    else navigator.clearAppBadge().catch(() => {});
-  } catch (e) { /* Badging API indisponível neste browser — ignora silenciosamente */ }
+    if (swRegistration && swRegistration.active) swRegistration.active.postMessage({ tipo: 'badge', contagem: n });
+  } catch (e) { /* SW indisponível — o setAppBadge da página já tratou do possível */ }
+}
+// Atualiza, DIRETAMENTE no DOM, o badge de contagem do botão "Chat" na
+// sidebar (desktop e painel mobile, se aberto) — sem exigir um render()
+// completo. Assim o contador aparece/atualiza mesmo quando a mensagem chega
+// com o ecrã de "Retomar Sessão" aberto ou um formulário a meio.
+function atualizarNavChatBadge() {
+  const n = chatUnreadCount();
+  document.querySelectorAll('.nav-item-chat').forEach(btn => {
+    let badge = btn.querySelector('.nav-badge');
+    if (n > 0) {
+      const texto = n > 99 ? '99+' : String(n);
+      if (!badge) { badge = h('span', { class: 'nav-badge' }, texto); btn.appendChild(badge); }
+      else badge.textContent = texto;
+    } else if (badge) {
+      badge.remove();
+    }
+  });
+}
+// Ponto único de atualização de TODOS os indicadores de chat: badge nativo
+// do ícone da app, título da aba, badge do botão Chat na sidebar e cartão
+// "Retomar Sessão" (ponto de chat pendente).
+function atualizarIndicadoresChat() {
+  atualizarBadgeApp();
+  atualizarTituloAba();
+  atualizarNavChatBadge();
+  refreshSidebarBadges();
 }
 function limparBadgeApp() {
   if (!('clearAppBadge' in navigator)) return;
@@ -3647,12 +3700,11 @@ function handleNovaMensagemChat(msg) {
   // qualquer notificação.
   if (isEstafeta() || isPrestadorServico()) return;
   // Modo Sem Sessão Iniciada: não dispara notificação do sistema, mas
-  // atualiza o badge do ícone e o título da aba — o indicador discreto na
-  // sidebar avisa que há chat pendente.
-  if (!activeUser) { atualizarBadgeApp(); atualizarTituloAba(); refreshSidebarBadges(); return; }
+  // atualiza TODOS os indicadores — badge do ícone, título da aba, contador
+  // no botão Chat da sidebar e ponto no cartão "Retomar Sessão".
+  if (!activeUser) { atualizarIndicadoresChat(); return; }
   if (String(msg.userId) === String(activeUser.id)) return; // nunca notifica a própria mensagem
-  atualizarBadgeApp();
-  atualizarTituloAba();
+  atualizarIndicadoresChat();
   if (STATE.page !== 'chat') {
     dispararNotificacaoNativa(`Nova mensagem de ${msg.primeiroNome || 'colega'}`, msg.texto || '');
   }
@@ -12909,6 +12961,9 @@ function showUserLoginScreen(onSuccess) {
     const u = findUsuario(credenciais.usernameReal, credenciais.pinReal);
     if (u) {
       activeUser = { id: u.id, username: u.username, nomeCompleto: u.nomeCompleto || u.username, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', prestadorKey: u.prestadorKey || '' };
+      // Herdar do modo convidado o que já tinha sido lido antes do login —
+      // evita que o badge reconte mensagens já vistas no ecrã anterior.
+      sincronizarChatLastRead('sigaJuncalChatLastRead_convidado', `sigaJuncalChatLastRead_${activeUser.username}`);
       guardarUltimoUtilizador(activeUser);
       guardarSessaoPersistente(activeUser);
       pedirPermissaoNotificacoes();
@@ -12916,6 +12971,7 @@ function showUserLoginScreen(onSuccess) {
       document.removeEventListener('keydown', onKeydown);
       overlay.remove();
       onSuccess();
+      atualizarIndicadoresChat();
     } else {
       errorMsg.textContent = 'Username ou PIN incorretos.';
       credenciais.pinReal = '';
@@ -13088,10 +13144,15 @@ function resetInactivityTimer() {
 }
 function clearSessionSilently() {
   if (!activeUser) return;
+  // Antes de limpar a sessão, propaga o marcador de "última leitura" do
+  // chat para a chave de convidado — a contagem de não lidas continua
+  // correta no ecrã de "Retomar Sessão", sem recontar o que já foi visto.
+  sincronizarChatLastRead(`sigaJuncalChatLastRead_${activeUser.username}`, 'sigaJuncalChatLastRead_convidado');
   activeUser = null;
   pararPresenca();
   // Fim de sessão: o slider da Calculadora de Posologia volta ao valor inicial.
   if (resetPosologiaCalc) resetPosologiaCalc();
+  atualizarIndicadoresChat();
   // Importante: NÃO chama render() aqui — isso faria a app saltar para a
   // Página Inicial, perdendo o ecrã onde a pessoa estava a trabalhar. Só se
   // atualiza o badge, e mostra-se logo o pop-up a pedir novamente as
@@ -13101,6 +13162,7 @@ function clearSessionSilently() {
 }
 function manualLogout() {
   confirmDialog('Deseja terminar a sessão atual?', () => {
+    if (activeUser) sincronizarChatLastRead(`sigaJuncalChatLastRead_${activeUser.username}`, 'sigaJuncalChatLastRead_convidado');
     activeUser = null;
     limparSessaoPersistente();
     pararPresenca();
@@ -13139,6 +13201,10 @@ async function startApp() {
     console.error('[Arranque] erro inesperado durante a inicialização:', formatarErroSeguro(e));
   }
   loadingEl.remove();
+  // Baseline da contagem de não lidas: fixada AGORA, depois do histórico de
+  // chat já carregado — só mensagens que cheguem a partir deste momento
+  // contam para o badge de quem nunca abriu o Chat neste dispositivo.
+  chatBaselineArranqueISO = new Date().toISOString();
   // Limpeza automática do Lixo (>6 meses) — corre em segundo plano, nunca
   // bloqueia o arranque nem o primeiro ecrã.
   purgarLixoAntigo();
@@ -13152,6 +13218,11 @@ async function startApp() {
   document.body.appendChild(buildClock());
   setupRealtime();
   setupInactivityWatcher();
+  // Sincroniza todos os indicadores de chat logo no arranque (badge do
+  // ícone, título da aba, botão Chat) e sempre que a aba/janela volta a
+  // ficar visível — cobre o caso de mensagens recebidas em segundo plano.
+  atualizarIndicadoresChat();
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') atualizarIndicadoresChat(); });
   // Temporizadores de Hora Limite das Entregas — só existem badges quando a
   // vista de Pendentes está visível; o querySelectorAll é barato quando não há nenhum.
   setInterval(atualizarTodosEntregaTimerBadges, 20000);
