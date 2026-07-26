@@ -3554,18 +3554,45 @@ function chatUnreadCount() {
 }
 /* ---- Badging API + Notificações nativas do sistema, para o Chat avisar
    mesmo com a app em segundo plano ou fechada no ecrã principal. ---- */
+/* ---- App Badge API — função CENTRALIZADA de badge no ícone da app ----
+   Compatibilidade por plataforma:
+   · Windows (Chrome/Edge, PWA na barra de tarefas): suportado; não exige
+     permissão de notificações.
+   · macOS (Chrome/Edge na Dock; Safari 17+ / PWA na Dock): suportado; no
+     Safari/PWA EXIGE Notification.permission === 'granted'.
+   · iOS/iPadOS 16.4+ (PWA no Ecrã Principal): suportado APENAS com a
+     permissão de notificações concedida via gesto do utilizador.
+   · Android (Chrome PWA): a Badging API NÃO é suportada pelo Chrome
+     Android — o "ponto"/contador no launcher vem das próprias notificações
+     do sistema (showNotification via SW). O fallback é gracioso: a chamada
+     simplesmente não existe e nada rebenta.
+   A chamada é sempre tentada quando a API existe (Windows/Android não
+   exigem permissão; no iOS/macOS sem permissão o SO ignora sem erro) — a
+   obtenção da permissão é tratada à parte, sempre por gesto do utilizador
+   (ver pedirPermissaoNotificacoes e o botão "Ativar notificações"). */
+function atualizarBadgeIconeApp(count) {
+  try {
+    if (typeof count !== 'number' || Number.isNaN(count)) count = 0;
+    if (count > 0 && 'setAppBadge' in navigator) {
+      navigator.setAppBadge(count).catch(() => {});
+      return true;
+    }
+    if (count === 0 && 'clearAppBadge' in navigator) {
+      navigator.clearAppBadge().catch(() => {});
+      return true;
+    }
+    return false; // API indisponível nesta plataforma (ex: Android Chrome) — fallback gracioso
+  } catch (e) {
+    return false; // browser sem suporte ou contexto bloqueado — nunca propaga erro
+  }
+}
 function atualizarBadgeApp() {
   const n = chatUnreadCount();
-  // Página: navigator.setAppBadge (funciona com a app/aba aberta).
-  if ('setAppBadge' in navigator) {
-    try {
-      if (n > 0) navigator.setAppBadge(n).catch(() => {});
-      else navigator.clearAppBadge().catch(() => {});
-    } catch (e) { /* Badging API indisponível neste browser — ignora silenciosamente */ }
-  }
+  // Página: chamada direta à App Badge API (funciona com a app/aba aberta).
+  atualizarBadgeIconeApp(n);
   // Reforço via Service Worker: em alguns SOs (Windows/macOS com PWA
   // instalada) o badge do ícone é mais fiável quando pedido também a partir
-  // do contexto do SW — envia-se a contagem por mensagem.
+  // do contexto do SW — envia-se a contagem por postMessage.
   try {
     if (swRegistration && swRegistration.active) swRegistration.active.postMessage({ tipo: 'badge', contagem: n });
   } catch (e) { /* SW indisponível — o setAppBadge da página já tratou do possível */ }
@@ -3611,10 +3638,22 @@ function atualizarTituloAba() {
 function pedirPermissaoNotificacoes() {
   // Prestadores de Serviços NUNCA recebem qualquer tipo de notificação —
   // nem sequer se pede permissão para as mostrar.
-  if (isPrestadorServico()) return;
-  if ('Notification' in window && Notification.permission === 'default') {
-    Notification.requestPermission().catch(() => {});
-  }
+  if (isPrestadorServico()) return Promise.resolve('ignorado');
+  if (!('Notification' in window)) return Promise.resolve('sem-suporte');
+  if (Notification.permission !== 'default') return Promise.resolve(Notification.permission);
+  // IMPORTANTE (iOS 16.4+ e Safari/macOS): este pedido só é aceite pelo SO
+  // quando disparado por um gesto do utilizador — por isso é sempre chamado
+  // a partir de cliques (login, "Retomar Sessão", botão "Ativar
+  // notificações"), nunca automaticamente no arranque.
+  return Notification.requestPermission().then((resultado) => {
+    if (resultado === 'granted') {
+      // Permissão acabada de conceder: no iOS/macOS o setAppBadge só passa
+      // a funcionar a partir daqui — repinta já todos os indicadores.
+      atualizarIndicadoresChat();
+    }
+    refreshSidebarBadges(); // esconde o botão "Ativar notificações", se visível
+    return resultado;
+  }).catch(() => 'erro');
 }
 function dispararNotificacaoNativa(titulo, corpo) {
   // Regra global por perfil: Prestador de Serviço nunca é notificado.
@@ -12883,7 +12922,7 @@ function buildUserBadgeElement() {
   ];
   const temChatPendente = chatUnreadCount() > 0;
   if (temChatPendente) kidsInativo.push(h('p', { class: 'active-user-perfil', style: 'color:var(--red);display:flex;align-items:center;gap:5px;' }, [h('span', { style: 'width:7px;height:7px;border-radius:50%;background:var(--red);display:inline-block;' }), 'Chat pendente']));
-  return h('button', { class: 'active-user-badge inactive', onclick: () => requireAuth(() => { if (STATE.page === 'home') render(); }), title: 'Iniciar sessão', 'aria-label': 'Iniciar sessão' }, [
+  return h('button', { class: 'active-user-badge inactive', onclick: () => { pedirPermissaoNotificacoes(); requireAuth(() => { if (STATE.page === 'home') render(); }); }, title: 'Iniciar sessão', 'aria-label': 'Iniciar sessão' }, [
     h('span', { class: 'active-user-icon' }, Icon('lockClosed', { size: 26, strokeWidth: 2 })),
     h('div', {}, kidsInativo),
   ]);
@@ -13106,11 +13145,31 @@ function buildModoTesteButton() {
 // Junta o cartão do utilizador + (se Administrador) o botão de Modo de
 // Teste — usado tanto na construção inicial da sidebar como em cada
 // atualização feita por refreshSidebarBadges().
+// Botão discreto "Ativar notificações" — aparece na sidebar APENAS enquanto
+// a permissão de notificações estiver por decidir ('default'). É o gesto de
+// utilizador que o iOS 16.4+ e o Safari/macOS exigem para conceder a
+// permissão (sem ela, nem as notificações nem o badge do ícone funcionam
+// nessas plataformas). Desaparece sozinho depois de concedida ou negada.
+function buildAtivarNotificacoesBtn() {
+  if (!('Notification' in window) || Notification.permission !== 'default') return null;
+  if (isPrestadorServico()) return null; // este perfil nunca é notificado
+  const btn = h('button', {
+    class: 'btn btn-secondary',
+    style: 'width:100%;justify-content:center;margin-top:8px;font-size:12px;padding:8px 10px;',
+    title: 'Necessário para receber alertas de chat/entregas e o contador no ícone da app (obrigatório no iPhone e no Safari/macOS)',
+  }, [Icon('bell', { size: 14, strokeWidth: 2.2 }), ' Ativar notificações']);
+  btn.addEventListener('click', () => { pedirPermissaoNotificacoes(); });
+  return btn;
+}
 function buildSidebarBadgeSlotContent() {
   const badge = buildUserBadgeElement();
   const modoTesteBtn = buildModoTesteButton();
-  if (!modoTesteBtn) return [badge];
-  return [h('div', { class: 'active-user-card' }, [badge, modoTesteBtn])];
+  const notifBtn = buildAtivarNotificacoesBtn();
+  const filhos = [badge];
+  if (modoTesteBtn) filhos.push(modoTesteBtn);
+  if (notifBtn) filhos.push(notifBtn);
+  if (filhos.length === 1) return [badge];
+  return [h('div', { class: 'active-user-card' }, filhos)];
 }
 
 /* ---- Expiração de sessão por inatividade (bloqueia a app) ----
