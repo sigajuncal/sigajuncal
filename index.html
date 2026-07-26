@@ -3552,6 +3552,20 @@ function chatUnreadCount() {
   const meuUserId = activeUser ? String(activeUser.id) : null;
   return (STATE.mensagensChat || []).filter(m => (!meuUserId || String(m.userId) !== meuUserId) && m.createdAt > lastRead).length;
 }
+// Perfis SEM acesso ao módulo de Chat (Estafeta, Prestador de Serviço e
+// Farmácia Boa Nova): para eles, todos os indicadores de chat ficam a zero.
+// O Modo Sem Sessão (convidado) NÃO conta como excluído — o badge aparece
+// como AVISO de que há novidades, mas ler o conteúdo continua a exigir
+// login com um perfil autorizado da Farmácia Juncal.
+function perfilSemAcessoAoChat() {
+  return !!activeUser && (isEstafeta() || isPrestadorServico() || isBoaNovaOperador());
+}
+// Contagem usada por TODOS os indicadores (badge do ícone, título da aba,
+// botão Chat, cartão "Retomar Sessão"): zero para perfis excluídos, contagem
+// real para os restantes — incluindo o modo de consulta sem sessão.
+function contagemChatParaIndicadores() {
+  return perfilSemAcessoAoChat() ? 0 : chatUnreadCount();
+}
 /* ---- Badging API + Notificações nativas do sistema, para o Chat avisar
    mesmo com a app em segundo plano ou fechada no ecrã principal. ---- */
 /* ---- App Badge API — função CENTRALIZADA de badge no ícone da app ----
@@ -3587,7 +3601,7 @@ function atualizarBadgeIconeApp(count) {
   }
 }
 function atualizarBadgeApp() {
-  const n = chatUnreadCount();
+  const n = contagemChatParaIndicadores();
   // Página: chamada direta à App Badge API (funciona com a app/aba aberta).
   atualizarBadgeIconeApp(n);
   // Reforço via Service Worker: em alguns SOs (Windows/macOS com PWA
@@ -3602,7 +3616,7 @@ function atualizarBadgeApp() {
 // completo. Assim o contador aparece/atualiza mesmo quando a mensagem chega
 // com o ecrã de "Retomar Sessão" aberto ou um formulário a meio.
 function atualizarNavChatBadge() {
-  const n = chatUnreadCount();
+  const n = contagemChatParaIndicadores();
   document.querySelectorAll('.nav-item-chat').forEach(btn => {
     let badge = btn.querySelector('.nav-badge');
     if (n > 0) {
@@ -3632,7 +3646,7 @@ function limparBadgeApp() {
 // aba em segundo plano (ex: atrás do 4DigitalCare ou do Thunderbird).
 const TITULO_ABA_BASE = 'SigaJuncal';
 function atualizarTituloAba() {
-  const n = chatUnreadCount();
+  const n = contagemChatParaIndicadores();
   document.title = n > 0 ? `(${n > 99 ? '99+' : n}) Nova Mensagem · ${TITULO_ABA_BASE}` : TITULO_ABA_BASE;
 }
 function pedirPermissaoNotificacoes() {
@@ -3737,7 +3751,9 @@ function handleNovaMensagemChat(msg) {
   // Estafeta: só recebe notificações de novas entregas — NUNCA de chat (nem
   // sequer tem acesso a esse módulo). Prestador de Serviço: nunca recebe
   // qualquer notificação.
-  if (isEstafeta() || isPrestadorServico()) return;
+  // Perfis sem acesso ao Chat (Estafeta, Prestador de Serviço, Farmácia
+  // Boa Nova): nunca recebem notificações nem indicadores de chat.
+  if (perfilSemAcessoAoChat()) return;
   // Modo Sem Sessão Iniciada: não dispara notificação do sistema, mas
   // atualiza TODOS os indicadores — badge do ícone, título da aba, contador
   // no botão Chat da sidebar e ponto no cartão "Retomar Sessão".
@@ -12409,14 +12425,29 @@ function buildSidebarContent(onClose, goTo) {
       const iconSize = item.key === 'chat' ? 24 : 17;
       const btnKids = [h('span', { class: 'nav-icon' }, Icon(item.icon, { size: iconSize })), h('span', {}, section.title)];
       if (item.key === 'chat') {
-        const unread = chatUnreadCount();
+        const unread = contagemChatParaIndicadores();
         if (unread > 0) btnKids.push(h('span', { class: 'nav-badge' }, unread > 99 ? '99+' : String(unread)));
         atualizarBadgeApp();
         atualizarTituloAba();
       }
+      // Abrir o Chat exige SEMPRE sessão iniciada com um perfil autorizado
+      // da Farmácia Juncal — no Modo Sem Sessão o badge fica visível como
+      // aviso, mas o clique abre primeiro o login; e se o login for feito
+      // com um perfil sem acesso (Estafeta / Prestador / Boa Nova), o
+      // conteúdo continua vedado (as redes de segurança do requireAuth e
+      // do render() encaminham logo esses perfis para a sua área própria).
+      const aoClicar = item.key === 'chat'
+        ? () => requireAuth(() => {
+            if (perfilSemAcessoAoChat()) {
+              confirmDialog('O seu perfil não tem acesso ao módulo de Chat.', () => {}, { confirmLabel: 'Entendido' });
+              return;
+            }
+            goTo('chat');
+          })
+        : () => requireAuth(() => goTo(item.key));
       navChildren.push(h('button', {
         class: 'nav-item' + (item.key === 'chat' ? ' nav-item-chat' : '') + (active ? ' active' : '') + (allowed ? '' : ' nav-item-disabled'),
-        onclick: allowed ? () => requireAuth(() => goTo(item.key)) : null,
+        onclick: allowed ? aoClicar : null,
         disabled: allowed ? undefined : 'disabled',
         title: allowed ? undefined : 'Sem acesso a esta área',
       }, btnKids));
@@ -12920,7 +12951,7 @@ function buildUserBadgeElement() {
     h('p', { class: 'active-user-name' }, ultimo && ultimo.nome ? `Retomar — ${String(ultimo.nome).split(/\s+/)[0]}` : 'Iniciar Sessão'),
     h('p', { class: 'active-user-role' }, 'Modo Sem Sessão'),
   ];
-  const temChatPendente = chatUnreadCount() > 0;
+  const temChatPendente = contagemChatParaIndicadores() > 0;
   if (temChatPendente) kidsInativo.push(h('p', { class: 'active-user-perfil', style: 'color:var(--red);display:flex;align-items:center;gap:5px;' }, [h('span', { style: 'width:7px;height:7px;border-radius:50%;background:var(--red);display:inline-block;' }), 'Chat pendente']));
   return h('button', { class: 'active-user-badge inactive', onclick: () => { pedirPermissaoNotificacoes(); requireAuth(() => { if (STATE.page === 'home') render(); }); }, title: 'Iniciar sessão', 'aria-label': 'Iniciar sessão' }, [
     h('span', { class: 'active-user-icon' }, Icon('lockClosed', { size: 26, strokeWidth: 2 })),
