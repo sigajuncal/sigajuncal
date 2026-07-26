@@ -46,6 +46,7 @@ self.addEventListener('push', (event) => {
     badge: 'icon-192.png',
     tag: 'sigajuncal-' + (dados.tipo || 'geral'),
     renotify: true,
+    vibrate: [200, 100, 200],
     data: { tipo: dados.tipo || 'geral' },
   };
   const tarefas = [self.registration.showNotification(titulo, opcoes)];
