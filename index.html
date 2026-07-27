@@ -7202,13 +7202,8 @@ function buildErrosPage(container, goTo) {
         .slice()
         .sort((a, b) => (a.data || '').localeCompare(b.data || ''));
       if (!pendentes.length) { showDbErrorToast('Não há erros por corrigir para exportar'); return; }
-      // ---- Tabela HTML nativa e rígida (thead/tbody/tr/th/td). Sem coluna
-      // Responsável. Larguras FIXAS em px nas colunas estreitas (checkbox,
-      // CNP, contagens) — todas as colunas numéricas (QS/NS/QF/NF/DIF) com
-      // exatamente a mesma largura compacta — e o Produto a "auto", que
-      // absorve todo o espaço que sobra da página (incluindo o que as
-      // colunas NS/NF deixaram de gastar), com truncagem estrita de uma
-      // linha (ellipsis) para nomes de produto muito compridos.
+      // ---- Colunas: checkbox/CNP/contagens em px fixos e compactos,
+      // Produto com largura fixa (45%) e truncagem estrita de uma linha.
       const COLS = [
         { th: '☐', w: '25px', align: 'center' },
         { th: 'CNP/CÓD.', w: '75px', align: 'center' },
@@ -7220,24 +7215,18 @@ function buildErrosPage(container, goTo) {
         { th: 'DIF', w: '40px', align: 'center' },
       ];
       const bordaCel = 'border:1px solid #94a3b8;padding:4px 6px;font-size:9.5px;color:#000;';
-      const theadRow = h('tr', {}, COLS.map(c =>
-        h('th', { style: `${bordaCel}width:${c.w};background:#fff;font-weight:800;text-align:${c.align === 'left' ? 'left' : 'center'};` }, c.th)
-      ));
-      // Truncagem estrita do Produto: uma única linha, nunca invade as
-      // colunas vizinhas nem empurra a altura da linha — nome comprido
-      // termina em "..." (text-overflow:ellipsis). table-layout:fixed na
-      // tabela + a largura da coluna (via th) já fixam a largura da
-      // célula, por isso overflow:hidden basta — sem precisar de max-width.
       const celProduto = bordaCel + 'text-align:left;white-space:nowrap !important;overflow:hidden !important;text-overflow:ellipsis !important;';
-      const linhasHtml = pendentes.map((r) => {
+      function buildThead() {
+        return h('thead', {}, h('tr', {}, COLS.map(c =>
+          h('th', { style: `${bordaCel}width:${c.w};background:#fff;font-weight:800;text-align:${c.align === 'left' ? 'left' : 'center'};` }, c.th)
+        )));
+      }
+      function buildLinha(r) {
         const fisV = toIntegerOrNull(r.qtdFisica) || 0;
         const sisV = toIntegerOrNull(r.qtdSistema) || 0;
         const dif = fisV - sisV;
         const difTexto = dif > 0 ? `+${dif}` : String(dif);
-        // page-break-inside:avoid também inline, além da regra global em
-        // @media print — garante que uma linha nunca é cortada ao meio
-        // entre duas páginas.
-        return h('tr', { style: 'page-break-inside:avoid;break-inside:avoid;' }, [
+        return h('tr', { style: 'page-break-inside:avoid !important;break-inside:avoid !important;' }, [
           h('td', { style: bordaCel + 'text-align:center;font-size:12px;' }, '☐'),
           h('td', { style: bordaCel + 'text-align:center;font-family:monospace;' }, r.cnp || '—'),
           h('td', { style: celProduto, title: r.produto || '' }, r.produto || '—'),
@@ -7247,23 +7236,49 @@ function buildErrosPage(container, goTo) {
           h('td', { style: bordaCel }, ''),
           h('td', { style: bordaCel + 'text-align:center;font-weight:800;' }, difTexto),
         ]);
+      }
+      // ---- Paginação MATEMÁTICA por bloco: em vez de confiar apenas no
+      // page-break-inside:avoid (insuficiente sozinho — a última linha de
+      // uma página podia ainda ficar cortada ao meio, como reportado),
+      // divide-se a lista em blocos de tamanho fixo, CADA UM a sua própria
+      // <table> com <thead> repetido, separados por uma quebra de página
+      // EXPLÍCITA. Isto elimina o corte de vez: o browser nunca decide
+      // sozinho onde parte a tabela — nós já decidimos por ele.
+      const PRIMEIRA_PAGINA_LINHAS = 38; // inclui cabeçalho + legenda no topo
+      const RESTANTES_PAGINAS_LINHAS = 46; // só tabela, sem cabeçalho
+      const blocosLinhas = [];
+      let resto = pendentes.slice();
+      blocosLinhas.push(resto.splice(0, PRIMEIRA_PAGINA_LINHAS));
+      while (resto.length) blocosLinhas.push(resto.splice(0, RESTANTES_PAGINAS_LINHAS));
+
+      const filhosFolha = [];
+      blocosLinhas.forEach((bloco, i) => {
+        if (i === 0) {
+          filhosFolha.push(
+            h('h2', { style: 'margin:0 0 2px;font-size:15px;color:#000;font-weight:800;' }, 'SigaJuncal · Erros de Stock — Erros por Corrigir'),
+            h('p', { style: 'margin:0 0 5px;font-size:9.5px;color:#000;' },
+              `Exportado em ${formatDate(todayISO())} · ${pendentes.length} registo${pendentes.length > 1 ? 's' : ''} · Assinalar ☐ após verificação na farmácia e preencher as Novas Contagens à mão.`),
+            h('p', { style: 'margin:0 0 8px;font-size:8px;color:#333;font-style:italic;' },
+              'Legenda: QS = Qtd. Sistema Inicial | NS = Nova Contagem Sistema (preencher à mão) | QF = Qtd. Física Inicial | NF = Nova Contagem Física (preencher à mão) | DIF = Diferença (Q. Física − Q. Sistema)'),
+          );
+        } else {
+          // Quebra de página EXPLÍCITA antes de cada bloco a partir do 2º —
+          // garante que o bloco seguinte começa sempre numa folha nova, com
+          // o seu próprio cabeçalho de colunas (CNP, PRODUTO, QS...DIF).
+          filhosFolha.push(h('div', { style: 'page-break-after:always;break-after:page;' }));
+        }
+        filhosFolha.push(
+          h('table', { style: 'width:100%;max-width:100%;margin:0 auto;border-collapse:collapse;table-layout:fixed;page-break-inside:auto;' }, [
+            buildThead(),
+            h('tbody', {}, bloco.map(buildLinha)),
+          ])
+        );
       });
-      const folha = h('div', { style: 'font-family:Arial,Helvetica,sans-serif;background:#fff;color:#000;' }, [
-        h('h2', { style: 'margin:0 0 2px;font-size:15px;color:#000;font-weight:800;' }, 'SigaJuncal · Erros de Stock — Erros por Corrigir'),
-        h('p', { style: 'margin:0 0 5px;font-size:9.5px;color:#000;' },
-          `Exportado em ${formatDate(todayISO())} · ${pendentes.length} registo${pendentes.length > 1 ? 's' : ''} · Assinalar ☐ após verificação na farmácia e preencher as Novas Contagens à mão.`),
-        h('p', { style: 'margin:0 0 8px;font-size:8px;color:#333;font-style:italic;' },
-          'Legenda: QS = Qtd. Sistema Inicial | NS = Nova Contagem Sistema (preencher à mão) | QF = Qtd. Física Inicial | NF = Nova Contagem Física (preencher à mão) | DIF = Diferença (Q. Física − Q. Sistema)'),
-        h('table', { style: 'width:100%;border-collapse:collapse;table-layout:fixed;' }, [
-          h('thead', {}, theadRow),
-          h('tbody', {}, linhasHtml),
-        ]),
-      ]);
+      const folha = h('div', { style: 'font-family:Arial,Helvetica,sans-serif;background:#fff;color:#000;' }, filhosFolha);
       // Título do documento (nome sugerido ao "Guardar como PDF"):
       // acerto_de_erros_de_stock_AAAA-MM-DD — reposto automaticamente pelo
       // motor global assim que o diálogo do sistema fecha. Folha em A4
-      // RETRATO com margem de 10mm — suficiente para nenhuma informação
-      // ficar cortada nem colada aos bordos em impressoras de balcão.
+      // RETRATO com margem de 10mm.
       imprimirDocumento(folha, { orientacao: 'portrait', margemMm: 10, titulo: `acerto_de_erros_de_stock_${todayISO()}` });
     }
     const exportBtn = h('button', { class: 'btn btn-secondary', style: 'margin-left:auto;', title: 'Abre o diálogo de impressão do sistema com a lista de Erros por Corrigir — imprima de imediato ou escolha "Guardar como PDF"' },
