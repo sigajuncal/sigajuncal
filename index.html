@@ -1047,19 +1047,35 @@
   .pedidos-hub-3plano .pedido-categoria-card{width:170px;padding:16px 14px;}
   /* ---- Dashboard Resumo por Setor ---- */
   .resumo-setores-tabela{width:100%;}
+  /* Alinhamento: tudo centrado exceto a 1ª coluna (Setor), que fica à esquerda */
+  .resumo-setores-tabela th,.resumo-setores-tabela td{text-align:center;vertical-align:middle;}
+  .resumo-setores-tabela th:first-child,.resumo-setores-tabela td:first-child{text-align:left;}
+  /* Cabeçalhos com fundo suave na cor da respetiva métrica */
+  .resumo-setores-tabela th.th-tone-orange{background:#fff7ed;color:#c2410c;}
+  .resumo-setores-tabela th.th-tone-yellow{background:#fefce8;color:#a16207;}
+  .resumo-setores-tabela th.th-tone-blue{background:#eff6ff;color:#0369a1;}
+  .resumo-setores-tabela th.th-tone-green{background:#f0fdf4;color:#15803d;}
+  .resumo-setores-tabela th.th-tone-total{background:#f8fafc;color:#475569;}
   .resumo-setor-nome-btn{display:flex;align-items:center;gap:8px;background:none;border:none;
     font-family:inherit;font-size:13.5px;font-weight:700;color:var(--pharm-800);cursor:pointer;padding:0;}
   .resumo-setor-nome-btn:hover{color:var(--pharm-600);text-decoration:underline;}
-  .resumo-setor-valor-btn{background:none;border:none;font-family:inherit;font-size:13.5px;font-weight:800;
-    cursor:pointer;padding:2px 8px;border-radius:7px;}
-  .resumo-setor-valor-btn.tone-orange{color:#c2410c;}
-  .resumo-setor-valor-btn.tone-orange:hover{background:#ffedd5;}
-  .resumo-setor-valor-btn.tone-yellow{color:#a16207;}
-  .resumo-setor-valor-btn.tone-yellow:hover{background:#fef9c3;}
-  .resumo-setor-valor-btn.tone-blue{color:#1d4ed8;}
-  .resumo-setor-valor-btn.tone-blue:hover{background:#dbeafe;}
-  .resumo-setor-valor-btn.tone-green{color:#15803d;}
-  .resumo-setor-valor-btn.tone-green:hover{background:#dcfce7;}
+  /* Números em destaque: pill arredondado com fundo pastel na cor do estado
+     — a mesma linguagem visual dos badges do topo da página. */
+  .resumo-setor-valor-pill{display:inline-flex;align-items:center;justify-content:center;min-width:32px;
+    font-family:inherit;font-size:13px;font-weight:800;cursor:pointer;border:none;
+    padding:4px 11px;border-radius:999px;transition:background-color .12s ease,transform .12s ease;}
+  .resumo-setor-valor-pill:hover{transform:translateY(-1px);}
+  .resumo-setor-valor-pill.tone-orange{color:#c2410c;background:#ffedd5;}
+  .resumo-setor-valor-pill.tone-orange:hover{background:#fed7aa;}
+  .resumo-setor-valor-pill.tone-yellow{color:#a16207;background:#fef3c7;}
+  .resumo-setor-valor-pill.tone-yellow:hover{background:#fde68a;}
+  .resumo-setor-valor-pill.tone-blue{color:#0284c7;background:#e0f2fe;}
+  .resumo-setor-valor-pill.tone-blue:hover{background:#bae6fd;}
+  .resumo-setor-valor-pill.tone-green{color:#16a34a;background:#dcfce7;}
+  .resumo-setor-valor-pill.tone-green:hover{background:#bbf7d0;}
+  /* Zeros ficam esbatidos — só os setores com trabalho ativo saltam à vista */
+  .resumo-setor-valor-zero{color:#94a3b8;font-weight:600;font-size:13px;}
+  .resumo-setor-total{font-weight:800;color:#475569;font-size:13.5px;}
   .pedido-categoria-card:hover{transform:translateY(-3px);border-color:var(--pharm-400);
     box-shadow:0 10px 24px rgba(15,53,74,.16);}
   .pedido-categoria-card:active,
@@ -7154,16 +7170,33 @@ function buildHomepage(container, goTo) {
     temEntregasPendentes ? h('span', { class: 'entregas-led-pulse', 'aria-hidden': 'true' }) : null,
   ]);
 
-  const agendaLista = proximasAgendaMarcacoes(5);
+  // Um item por SERVIÇO/PRESTADOR distinto (nunca por consulta individual)
+  // — a marcação mais próxima de cada prestador representa esse serviço.
+  const agendaBruta = proximasAgendaMarcacoes(30);
+  const prestadoresVistos = new Set();
+  const servicosDistintos = [];
+  agendaBruta.forEach(m => {
+    if (prestadoresVistos.has(m.prestadorKey)) return;
+    prestadoresVistos.add(m.prestadorKey);
+    servicosDistintos.push(m);
+  });
+  const servicosADecorrerAgora = servicosDistintos.filter(m => servicoAgendaADecorrerAgora(m.prestadorKey));
+  // O carrossel só entra em ação quando há mesmo 2+ SERVIÇOS DIFERENTES a
+  // decorrer ao mesmo tempo hoje; fora isso, mostra-se sempre um único
+  // item estático — de preferência o que estiver a decorrer agora, senão
+  // simplesmente o próximo agendado.
+  const itensAgendaFinal = servicosADecorrerAgora.length >= 2 ? servicosADecorrerAgora
+    : (servicosADecorrerAgora.length === 1 ? servicosADecorrerAgora : servicosDistintos.slice(0, 1));
   const proximaAgendaCard = buildProximoServicoRotativoCard({
     labelTitulo: 'Próximo Serviço de Agenda', labelVazio: 'Sem consultas/serviços agendados', tone: 'tone-blue-soft',
-    itens: agendaLista.map(m => {
+    itens: itensAgendaFinal.map(m => {
       const prestador = PRESTADORES_AGENDA.find(p => p.key === m.prestadorKey);
+      const aDecorrer = servicoAgendaADecorrerAgora(m.prestadorKey);
       return {
         icon: prestador ? prestador.icon : 'calendar',
         titulo: prestador ? `${prestador.especialidade} · ${prestador.nome}` : 'Agenda',
-        subtitulo: buildDataDinamicaNode(m.data, normalizarHora(m.hora)),
-        aDecorrer: servicoEstaADecorrer(m.data, m.hora),
+        subtitulo: buildBadgeServicoAgenda(m.prestadorKey, aDecorrer, m.data, normalizarHora(m.hora)),
+        aDecorrer,
         onClick: () => goTo(`agenda-${m.prestadorKey}`),
       };
     }),
@@ -7703,12 +7736,15 @@ function buildErrosPage(container, goTo) {
     break-after: page;
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
+    justify-content: flex-start;
     overflow: hidden;
   }
   .pagina-a4:last-child {
     page-break-after: avoid;
     break-after: avoid;
+  }
+  .cabecalho {
+    margin-bottom: 12px;
   }
   .pagina-a4 table {
     width: 100%;
@@ -8168,25 +8204,30 @@ function buildPedidosHubPage(container, preset, goTo) {
   // clicável e leva à página desse setor, já com o filtro de estado
   // correspondente aplicado (via STATE.consultaPreset). ----
   wrap.appendChild(h('h3', { class: 'home-section-title', style: 'margin-top:8px;' }, 'Dashboard Resumo por Setor'));
-  const theadResumo = h('thead', {}, h('tr', {}, ['Setor', 'Pendentes', 'Em Orçamento', 'Por Levantar', `Resolvidos (${new Date().getFullYear()})`, 'Total'].map(t => h('th', {}, t))));
+  const HEADERS_RESUMO = [
+    { label: 'Setor', tone: '' },
+    { label: 'Pendentes', tone: 'th-tone-orange' },
+    { label: 'Em Orçamento', tone: 'th-tone-yellow' },
+    { label: 'Por Levantar', tone: 'th-tone-blue' },
+    { label: `Resolvidos (${new Date().getFullYear()})`, tone: 'th-tone-green' },
+    { label: 'Total', tone: 'th-tone-total' },
+  ];
+  const theadResumo = h('thead', {}, h('tr', {}, HEADERS_RESUMO.map(hcfg => h('th', { class: hcfg.tone }, hcfg.label))));
   const linhasResumo = Object.values(SETORES_INFO).map(info => {
     const c = contarEstadosPedido(STATE[info.listKey] || []);
     function irParaSetorComFiltro(sf) {
       goTo(info.key, { statusFilter: sf });
     }
-    const celFiltravel = (valor, sf, tonalidade) => {
-      const td = h('td', {}, valor > 0
-        ? h('button', { class: 'resumo-setor-valor-btn tone-' + tonalidade, onclick: () => irParaSetorComFiltro(sf) }, String(valor))
-        : h('span', { class: 'cell-muted' }, '0'));
-      return td;
-    };
+    const celFiltravel = (valor, sf, tonalidade) => h('td', {}, valor > 0
+      ? h('button', { class: 'resumo-setor-valor-pill tone-' + tonalidade, onclick: () => irParaSetorComFiltro(sf) }, String(valor))
+      : h('span', { class: 'resumo-setor-valor-zero' }, '0'));
     return h('tr', {}, [
       h('td', {}, h('button', { class: 'resumo-setor-nome-btn', onclick: () => goTo(info.key) }, [Icon(info.icon, { size: 14, style: 'color:var(--pharm-500);' }), h('span', {}, info.label)])),
       celFiltravel(c.pendentes, 'pendentes', 'orange'),
       celFiltravel(c.emOrcamento, 'em-orcamento', 'yellow'),
       celFiltravel(c.porLevantar, 'satisfeito', 'blue'),
       celFiltravel(c.resolvidosAno, 'resolvido-ano', 'green'),
-      h('td', { class: 'cell-strong' }, String(c.total)),
+      h('td', {}, h('span', { class: 'resumo-setor-total' }, String(c.total))),
     ]);
   });
   wrap.appendChild(h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', { class: 'resumo-setores-tabela' }, [theadResumo, h('tbody', {}, linhasResumo)]))));
@@ -8862,6 +8903,59 @@ function servicoEstaADecorrer(dataISO, horaStr) {
 // .validades-ticker-dots) e o carrossel "liga-se sozinho", sem precisar de
 // nenhum novo setInterval. Um ponto amarelo pulsante aparece quando pelo
 // menos um dos itens já está a decorrer hoje.
+// Par (fundo pastel / texto escuro) para o badge de cada serviço de Agenda
+// no card do Dashboard — mesma família cromática do SERVICOS_CALENDARIO,
+// mas em tom suave para nunca comprometer a legibilidade do texto por
+// cima (ex: Massagem Marco Gomes é azul — usa-se aqui um azul-pastel com
+// texto escuro, em vez do azul saturado original, que teria mau contraste
+// com texto escuro por cima).
+const SERVICO_BADGE_CORES = {
+  nutricao_tatiana: { bg: '#fef9c3', text: '#a16207' },
+  nutricao_joana: { bg: '#ffedd5', text: '#c2410c' },
+  podologia_patricia: { bg: '#dcfce7', text: '#15803d' },
+  massagem_marco: { bg: '#e0f2fe', text: '#0369a1' },
+  depilacao_laser: { bg: '#fce7f3', text: '#be185d' },
+  prima_corpus: { bg: '#f3e8ff', text: '#7e22ce' },
+};
+// Janela do SERVIÇO (prestador) no dia de hoje — do início da 1ª marcação
+// ao fim da última (hora + duração, 20min por defeito quando a marcação
+// não tem duração própria) — nunca da consulta individual isolada. É esta
+// janela, e não uma marcação específica, que define se o card deve dizer
+// "A decorrer".
+function janelaServicoHoje(prestadorKey) {
+  const hoje = todayISO();
+  const marcacoesHoje = (STATE.agendaMarcacoes || []).filter(m =>
+    m.prestadorKey === prestadorKey && m.data === hoje && m.tipoLinha !== 'bloqueado' && String(m.nomeCliente || '').trim());
+  if (!marcacoesHoje.length) return null;
+  const ordenadas = marcacoesHoje.slice().sort((a, b) => normalizarHora(a.hora).localeCompare(normalizarHora(b.hora)));
+  const primeira = ordenadas[0];
+  const ultima = ordenadas[ordenadas.length - 1];
+  const [ih, im] = normalizarHora(primeira.hora).split(':').map(Number);
+  const inicio = new Date(); inicio.setHours(isNaN(ih) ? 0 : ih, isNaN(im) ? 0 : im, 0, 0);
+  const [fh, fm] = normalizarHora(ultima.hora).split(':').map(Number);
+  const fim = new Date(); fim.setHours(isNaN(fh) ? 23 : fh, (isNaN(fm) ? 0 : fm) + (ultima.duracaoMin || 20), 0, 0);
+  return { inicio, fim };
+}
+function servicoAgendaADecorrerAgora(prestadorKey) {
+  const janela = janelaServicoHoje(prestadorKey);
+  if (!janela) return false;
+  const agora = new Date();
+  return agora >= janela.inicio && agora <= janela.fim;
+}
+// Badge de horário/estado de um serviço de Agenda no card do Dashboard —
+// cor sempre da família do próprio serviço; texto muda para "A decorrer"
+// enquanto a janela do serviço estiver ativa.
+function buildBadgeServicoAgenda(prestadorKey, aDecorrer, dataISO, horaStr) {
+  const cores = SERVICO_BADGE_CORES[prestadorKey] || { bg: '#fde047', text: '#1c1206' };
+  const texto = aDecorrer ? 'A decorrer' : (() => {
+    const hojeISO = todayISO();
+    const amanhaDate = new Date(hojeISO + 'T12:00:00'); amanhaDate.setDate(amanhaDate.getDate() + 1);
+    if (dataISO === hojeISO) return `Hoje, às ${horaStr}`;
+    if (dataISO === dateToISO(amanhaDate)) return `Amanhã, às ${horaStr}`;
+    return `${formatDate(dataISO)} às ${horaStr}`;
+  })();
+  return h('span', { style: `font-weight:800;color:${cores.text};background:${cores.bg};border-radius:6px;padding:1px 7px;display:inline-block;` }, texto);
+}
 function buildProximoServicoRotativoCard({ labelTitulo, labelVazio, tone, itens }) {
   if (!itens.length) {
     return h('div', { class: `stat-card tone-card ${tone} next-evento-card` }, [
