@@ -25,6 +25,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   :root{
     --pharm-50:#f0f7fb; --pharm-100:#dcedf5; --pharm-200:#b9dbeb; --pharm-300:#8cc3dc;
@@ -3420,8 +3421,8 @@ function apenasCamposAlterados(atual, patch) {
 // Guarda uma atualização que falhou por falta de rede, para tentar de novo
 // automaticamente assim que a ligação voltar (evento "online" do browser,
 // ou a próxima chamada ao Supabase que tenha sucesso).
-function enfileirarOperacaoOffline(listKey, id, patch) {
-  filaOperacoesPendentes.push({ listKey, id, patch, tentativas: 0, criadoEm: new Date().toISOString() });
+function enfileirarOperacaoOffline(listKey, id, patch, updatedAtEsperado) {
+  filaOperacoesPendentes.push({ listKey, id, patch, updatedAtEsperado: updatedAtEsperado || null, tentativas: 0, criadoEm: new Date().toISOString() });
   gravarFilaOffline();
   atualizarIndicadorLigacao();
 }
@@ -3430,14 +3431,33 @@ async function sincronizarFilaOffline() {
   sincronizandoFila = true;
   const pendentes = filaOperacoesPendentes.slice();
   const restantes = [];
+  let houveConflito = false;
   for (const op of pendentes) {
     try {
-      const { error } = await sb.from(TABLES[op.listKey]).update(recordToRow(op.patch)).eq('id', op.id);
+      // Mesma proteção de edição concorrente do dbUpdate: se esta operação
+      // foi enfileirada com um updated_at conhecido, só se aplica se o
+      // registo no servidor ainda não tiver mudado entretanto — nunca
+      // sobrepõe cegamente uma alteração feita por outro posto enquanto
+      // este estava offline.
+      let query = sb.from(TABLES[op.listKey]).update(recordToRow(op.patch)).eq('id', op.id);
+      if (op.updatedAtEsperado) query = query.eq('updated_at', op.updatedAtEsperado);
+      const { data, error } = op.updatedAtEsperado ? await query.select().single() : await query;
       if (error) {
         if (erroDeRede(error)) { restantes.push(op); marcarConexao(false); break; } // voltou a cair — para e tenta mais tarde
+        if (op.updatedAtEsperado && error.code === 'PGRST116') {
+          // Conflito real: outro posto alterou este registo enquanto
+          // estávamos offline. Descarta-se a operação enfileirada (nunca se
+          // sobrepõe) e recarrega-se a versão real para o STATE.
+          houveConflito = true;
+          const fresco = await dbFetchOne(op.listKey, op.id);
+          if (fresco) STATE[op.listKey] = (STATE[op.listKey] || []).map(r => (r.id === op.id ? fresco : r));
+          continue;
+        }
         // Erro que não é de rede (ex: registo entretanto eliminado) — descarta-se, não faz sentido insistir.
         console.error(`[Offline] não foi possível sincronizar ${op.listKey}#${op.id}:`, error.message);
+        continue;
       }
+      if (data) STATE[op.listKey] = (STATE[op.listKey] || []).map(r => (r.id === op.id ? rowToRecord(data) : r));
     } catch (e) {
       if (erroDeRede(e)) { restantes.push(op); marcarConexao(false); break; }
       console.error(`[Offline] não foi possível sincronizar ${op.listKey}#${op.id}:`, formatarErroSeguro(e));
@@ -3447,7 +3467,12 @@ async function sincronizarFilaOffline() {
   gravarFilaOffline();
   sincronizandoFila = false;
   atualizarIndicadorLigacao();
-  if (restantes.length === 0 && pendentes.length > 0) showToast('Alterações sincronizadas com sucesso.', 'success');
+  if (houveConflito) {
+    showToast('Uma ou mais alterações feitas offline não puderam ser aplicadas porque outro posto já tinha atualizado esses registos entretanto. Os dados foram recarregados com a versão mais recente.', 'error');
+    render();
+  } else if (restantes.length === 0 && pendentes.length > 0) {
+    showToast('Alterações sincronizadas com sucesso.', 'success');
+  }
 }
 
 // Nome da tabela Supabase correspondente a cada módulo da app
@@ -3742,7 +3767,7 @@ async function dbUpdate(listKey, id, patch) {
     if (error) {
       if (erroDeRede(error)) {
         marcarConexao(false);
-        enfileirarOperacaoOffline(listKey, id, patchFinal);
+        enfileirarOperacaoOffline(listKey, id, patchFinal, usaLockOtimista ? atual.updatedAt : null);
         // Devolve uma versão otimista do registo (aplica o patch já
         // localmente), para a interface continuar fluida mesmo sem
         // ligação — sincroniza-se sozinho assim que a rede voltar.
@@ -3770,7 +3795,7 @@ async function dbUpdate(listKey, id, patch) {
   } catch (e) {
     if (erroDeRede(e)) {
       marcarConexao(false);
-      enfileirarOperacaoOffline(listKey, id, patchFinal);
+      enfileirarOperacaoOffline(listKey, id, patchFinal, usaLockOtimista ? atual.updatedAt : null);
       return atual ? Object.assign({}, atual, patchFinal) : null;
     }
     lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error(`[Supabase] erro de rede ao atualizar ${listKey}#${id}:`, formatarErroSeguro(e)); return null;
@@ -10996,6 +11021,9 @@ async function gerarBackupCompleto() {
   const pedidosExtra = [
     ['mensagemDia', 'mensagem_dia'],
     ['eventosMarcacoes', 'eventos_marcacoes'],
+    ['gavetaRecados', 'gaveta_recados'],
+    ['mensagensChat', 'mensagens_chat'],
+    ['documentosEmitidos', 'documentos_emitidos'],
   ];
   const todosPedidos = [
     ...chaves.map(key => [key, TABLES[key]]),
@@ -11018,25 +11046,81 @@ async function gerarBackupCompleto() {
     tabelas,
   };
 }
+// Nomes de aba amigáveis para o Excel — mapeados a partir das chaves
+// internas da app; qualquer chave nova (ex: um módulo futuro) cai no
+// fallback e ainda assim aparece, só que com o nome técnico.
+const NOMES_ABAS_BACKUP = {
+  manipulados: 'Pedidos_Manipulados', ortopedia: 'Pedidos_Ortopedia', ervanaria: 'Pedidos_Ervanaria',
+  outros: 'Pedidos_Outros_Fornec', veterinaria: 'Pedidos_Veterinaria', erros: 'Erros_Stock',
+  lembretes: 'Lembretes', reclamacoes: 'Reclamacoes', eventos: 'Eventos_Config',
+  orcamentos: 'Orcamentos_Manipulados', desafios: 'Premios_Desafios', mapa48h: 'Mapa_48H',
+  entregas: 'Entregas', recolhas: 'Recolhas', tarefas: 'Tarefas', mapaTarefas: 'Mapa_Tarefas',
+  formacoes: 'Formacoes', agendaMarcacoes: 'Agendas', agendaDias: 'Agendas_Dias_Abertos',
+  objetivos: 'Objetivos_Equipa', usuarios: 'Utilizadores', empresasParceiras: 'Empresas_Parceiras',
+  validades: 'Validades', mensagemDia: 'Mensagem_Do_Dia', eventosMarcacoes: 'Eventos_Marcacoes',
+  gavetaRecados: 'Gaveta_Recados', mensagensChat: 'Chat_Equipa', documentosEmitidos: 'Documentos_Emitidos',
+};
+// Nomes de folha do Excel têm um limite rígido de 31 caracteres e não podem
+// conter : \ / ? * [ ] — sanitiza e corta sempre, para nunca partir a
+// geração do ficheiro por causa de um nome de aba inválido.
+function nomeAbaValido(nome) {
+  return String(nome || 'Dados').replace(/[:\\/?*\[\]]/g, '_').slice(0, 31) || 'Dados';
+}
+function gerarBackupExcel(backup) {
+  const wb = XLSX.utils.book_new();
+  // Aba de rosto com metadados do backup — adicionada PRIMEIRO para ficar
+  // como a primeira aba visível ao abrir o ficheiro no Excel/OneDrive.
+  const capa = XLSX.utils.json_to_sheet([
+    { Aplicacao: backup.aplicacao, Gerado_Em: backup.geradoEm, Total_Tabelas: Object.keys(backup.tabelas).length },
+  ]);
+  XLSX.utils.book_append_sheet(wb, capa, 'Info_Backup');
+  Object.entries(backup.tabelas).forEach(([key, dados]) => {
+    const nomeAba = nomeAbaValido(NOMES_ABAS_BACKUP[key] || key);
+    // Uma tabela que falhou a ler fica registada como aba própria com o
+    // erro à vista, em vez de desaparecer silenciosamente do backup.
+    const linhas = Array.isArray(dados) ? dados : [{ erro: (dados && dados.erro) || 'Sem dados' }];
+    const ws = XLSX.utils.json_to_sheet(linhas.length ? linhas : [{ aviso: 'Tabela vazia' }]);
+    XLSX.utils.book_append_sheet(wb, ws, nomeAba);
+  });
+  return wb;
+}
+function dispararDownloadBlob(blob, nomeFicheiro) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = nomeFicheiro;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+// Backup DUPLO: dispara os downloads do Excel (leitura/consulta humana) e do
+// JSON (restauro técnico) em simultâneo, a partir dos MESMOS dados já
+// recolhidos do Supabase — nunca faz duas leituras separadas à base de dados.
 async function descarregarBackup(onStatus) {
-  if (onStatus) onStatus('A recolher dados de todas as tabelas…');
+  if (onStatus) onStatus('A gerar cópia de segurança...');
+  if (!window.XLSX) {
+    if (onStatus) onStatus('Não foi possível gerar o backup: a biblioteca de Excel não carregou (verifique a ligação à internet).', true);
+    return;
+  }
   const backup = await gerarBackupCompleto();
   if (!backup) {
     if (onStatus) onStatus(`Não foi possível gerar a cópia de segurança. ${lastDbError || 'Verifique a ligação e tente novamente.'}`, true);
     return;
   }
-  const json = JSON.stringify(backup, null, 2);
-  const blob = new Blob([json], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const hoje = todayISO().replace(/-/g, '_');
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `sigajuncal_backup_${hoje}.json`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-  if (onStatus) onStatus('Cópia de segurança descarregada com sucesso.');
+  const nomeBase = `backup_farmacia_juncal_${todayISO()}`;
+  try {
+    // 1) Excel — múltiplas abas, uma por tabela, pronto a abrir no OneDrive.
+    const wb = gerarBackupExcel(backup);
+    XLSX.writeFile(wb, `${nomeBase}.xlsx`);
+    // 2) JSON — dump completo e fiel do STATE/base de dados, para restauro técnico.
+    const json = JSON.stringify(backup, null, 2);
+    dispararDownloadBlob(new Blob([json], { type: 'application/json' }), `${nomeBase}.json`);
+  } catch (e) {
+    console.error('[Backup] erro ao gerar os ficheiros:', formatarErroSeguro(e));
+    if (onStatus) onStatus('Os dados foram recolhidos, mas houve um erro ao gerar os ficheiros de download. Tente novamente.', true);
+    return;
+  }
+  if (onStatus) onStatus(`Cópia de segurança gerada: ${nomeBase}.xlsx e ${nomeBase}.json descarregados com sucesso.`);
 }
 
 /* =================================================================
@@ -11339,18 +11423,27 @@ function buildSegurancaPage(container, goTo) {
   }
 
   const statusMsg = h('p', { class: 'backup-status', style: 'display:none;' }, '');
-  const backupBtn = h('button', { class: 'btn btn-secondary', onclick: () => requireAuth(async () => {
-    backupBtn.disabled = true; backupBtn.textContent = 'A preparar cópia…';
+  const backupBtn = h('button', { class: 'btn btn-primary', onclick: () => requireAuth(async () => {
+    backupBtn.disabled = true; backupBtn.textContent = 'A gerar cópia de segurança...';
+    statusMsg.style.display = '';
+    statusMsg.style.color = 'var(--pharm-600)';
+    statusMsg.textContent = 'A gerar cópia de segurança...';
     await descarregarBackup((msg, isError) => {
       statusMsg.textContent = msg;
       statusMsg.style.display = '';
       statusMsg.style.color = isError ? 'var(--red)' : '#059669';
     });
-    backupBtn.disabled = false; backupBtn.textContent = 'Descarregar Cópia de Segurança (.json)';
-  }) }, 'Descarregar Cópia de Segurança (.json)');
+    backupBtn.disabled = false; backupBtn.textContent = 'Gerar Backup (Excel + JSON)';
+  }) }, [Icon('download', { size: 15, strokeWidth: 2.2 }), ' Gerar Backup (Excel + JSON)']);
   wrap.appendChild(h('div', { class: 'card card-pad' }, [
     h('h3', { class: 'dash-card-title' }, 'Cópias de Segurança'),
-    h('p', { class: 'login-sub', style: 'text-align:left;margin-bottom:16px;' }, 'Gera um ficheiro .json com todos os dados atuais de todas as tabelas da aplicação — pedidos, erros de stock, reclamações, utilizadores, objetivos, Mapa 48H e restantes módulos.'),
+    h('p', { class: 'login-sub', style: 'text-align:left;margin-bottom:10px;' },
+      'O backup descarrega simultaneamente o ficheiro Excel (para leitura e consulta na farmácia) e o ficheiro JSON (para restauro técnico). Guarde ambos na pasta sincronizada do OneDrive.'),
+    h('ul', { style: 'text-align:left;margin:0 0 16px;padding-left:20px;font-size:12.5px;line-height:1.8;color:var(--pharm-600);' }, [
+      h('li', {}, [h('strong', {}, 'Ficheiro Excel (.xlsx)'), ' — uma folha por tabela (Agendas, Erros_Stock, Pedidos, Gaveta_Recados, Formações, etc.), pronto a abrir e consultar.']),
+      h('li', {}, [h('strong', {}, 'Ficheiro JSON (.json)'), ' — cópia técnica completa dos dados, usada apenas para um eventual restauro futuro.']),
+    ]),
+    h('p', { class: 'field-helper-text', style: 'margin:0 0 16px;' }, 'Cada tabela da aplicação fica na sua própria folha do Excel, com o nome do módulo correspondente.'),
     backupBtn,
     statusMsg,
   ]));
