@@ -7202,37 +7202,32 @@ function buildErrosPage(container, goTo) {
         .slice()
         .sort((a, b) => (a.data || '').localeCompare(b.data || ''));
       if (!pendentes.length) { showDbErrorToast('Não há erros por corrigir para exportar'); return; }
-      // Responsável reduzido ao mínimo (só primeiro + último nome).
-      const nomeCurto = (nome) => {
-        const partes = String(nome || '').trim().split(/\s+/).filter(Boolean);
-        if (partes.length <= 1) return partes[0] || '—';
-        return `${partes[0]} ${partes[partes.length - 1]}`;
-      };
-      // ---- Tabela HTML nativa e rígida (thead/tbody/tr/th/td) — sem
-      // flexbox nem grid, que causam desalinhamento/sobreposição no motor
-      // de impressão do browser. Cada th define a largura da sua coluna
-      // via style="width:X%" (table-layout:fixed lê a largura da 1ª linha
-      // — o cabeçalho — e aplica-a a toda a coluna). Bordas em TODAS as
-      // células para uma grelha bem definida, fácil de preencher a lápis.
-      // Nota: a coluna ☐ (5%) foi acrescentada às 8 pedidas — sem ela a
-      // colega perde a forma de assinalar visualmente cada item já
-      // verificado — retirando a largura apenas ao Produto (38% → 33%)
-      // para manter as restantes 7 colunas exatamente como especificado.
+      // ---- Tabela HTML nativa e rígida (thead/tbody/tr/th/td), esticada a
+      // 100% da largura útil da página. Sem coluna Responsável — o espaço
+      // liberto reverte para o Produto, que passa a ter truncagem estrita
+      // de uma linha (ellipsis) em vez de quebrar/empurrar a altura da
+      // célula, para a grelha ficar sempre perfeitamente alinhada mesmo com
+      // nomes de produto muito compridos.
       const COLS = [
         { th: '☐', w: '5%', align: 'center' },
-        { th: 'CNP/CÓD.', w: '10%', align: 'center' },
-        { th: 'PRODUTO', w: '33%', align: 'left' },
-        { th: 'QTD. SIST.', w: '7%', align: 'center' },
-        { th: 'NOV. SIST.', w: '9%', align: 'center' },
-        { th: 'QTD. FIS.', w: '7%', align: 'center' },
-        { th: 'NOV. FIS.', w: '9%', align: 'center' },
-        { th: 'DIF.', w: '6%', align: 'center' },
-        { th: 'RESPONSÁVEL', w: '14%', align: 'left' },
+        { th: 'CNP/CÓD.', w: '11%', align: 'center' },
+        { th: 'PRODUTO', w: '45%', align: 'left' },
+        { th: 'QS', w: '8%', align: 'center' },
+        { th: 'NS', w: '10%', align: 'center' },
+        { th: 'QF', w: '8%', align: 'center' },
+        { th: 'NF', w: '10%', align: 'center' },
+        { th: 'DIF', w: '3%', align: 'center' },
       ];
-      const bordaCel = 'border:1px solid #cbd5e1;padding:4px 6px;font-size:9.5px;color:#000;';
+      const bordaCel = 'border:1px solid #94a3b8;padding:4px 6px;font-size:9.5px;color:#000;';
       const theadRow = h('tr', {}, COLS.map(c =>
         h('th', { style: `${bordaCel}width:${c.w};background:#fff;font-weight:800;text-align:${c.align === 'left' ? 'left' : 'center'};` }, c.th)
       ));
+      // Truncagem estrita do Produto: uma única linha, nunca invade as
+      // colunas vizinhas nem empurra a altura da linha — nome comprido
+      // termina em "..." (text-overflow:ellipsis). table-layout:fixed na
+      // tabela + a largura da coluna (via th) já fixam a largura da
+      // célula, por isso overflow:hidden basta — sem precisar de max-width.
+      const celProduto = bordaCel + 'text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0;';
       const linhasHtml = pendentes.map((r) => {
         const fisV = toIntegerOrNull(r.qtdFisica) || 0;
         const sisV = toIntegerOrNull(r.qtdSistema) || 0;
@@ -7240,18 +7235,16 @@ function buildErrosPage(container, goTo) {
         const difTexto = dif > 0 ? `+${dif}` : String(dif);
         // page-break-inside:avoid também inline, além da regra global em
         // @media print — garante que uma linha nunca é cortada ao meio
-        // entre duas páginas (a causa mais provável do desalinhamento
-        // reportado: dados de uma linha a "misturarem-se" com a seguinte).
+        // entre duas páginas.
         return h('tr', { style: 'page-break-inside:avoid;break-inside:avoid;' }, [
           h('td', { style: bordaCel + 'text-align:center;font-size:12px;' }, '☐'),
           h('td', { style: bordaCel + 'text-align:center;font-family:monospace;' }, r.cnp || '—'),
-          h('td', { style: bordaCel + 'text-align:left;word-break:break-word;overflow-wrap:anywhere;' }, r.produto || '—'),
+          h('td', { style: celProduto, title: r.produto || '' }, r.produto || '—'),
           h('td', { style: bordaCel + 'text-align:center;font-weight:700;' }, String(sisV)),
           h('td', { style: bordaCel }, ''),
           h('td', { style: bordaCel + 'text-align:center;font-weight:700;' }, String(fisV)),
           h('td', { style: bordaCel }, ''),
           h('td', { style: bordaCel + 'text-align:center;font-weight:800;' }, difTexto),
-          h('td', { style: bordaCel + 'text-align:left;white-space:nowrap;' }, nomeCurto(r.responsavel)),
         ]);
       });
       const folha = h('div', { style: 'font-family:Arial,Helvetica,sans-serif;background:#fff;color:#000;' }, [
@@ -7259,7 +7252,7 @@ function buildErrosPage(container, goTo) {
         h('p', { style: 'margin:0 0 5px;font-size:9.5px;color:#000;' },
           `Exportado em ${formatDate(todayISO())} · ${pendentes.length} registo${pendentes.length > 1 ? 's' : ''} · Assinalar ☐ após verificação na farmácia e preencher as Novas Contagens à mão.`),
         h('p', { style: 'margin:0 0 8px;font-size:8px;color:#333;font-style:italic;' },
-          'Legenda: QTD. SIST. = Quantidade Sistema Inicial | NOV. SIST. = Nova Contagem Sistema | QTD. FIS. = Quantidade Física Inicial | NOV. FIS. = Nova Contagem Física | DIF. = Diferença (Física − Sistema)'),
+          'Legenda: QS = Qtd. Sistema Inicial | NS = Nova Contagem Sistema (preencher à mão) | QF = Qtd. Física Inicial | NF = Nova Contagem Física (preencher à mão) | DIF = Diferença (Q. Física − Q. Sistema)'),
         h('table', { style: 'width:100%;border-collapse:collapse;table-layout:fixed;' }, [
           h('thead', {}, theadRow),
           h('tbody', {}, linhasHtml),
@@ -7268,7 +7261,8 @@ function buildErrosPage(container, goTo) {
       // Título do documento (nome sugerido ao "Guardar como PDF"):
       // acerto_de_erros_de_stock_AAAA-MM-DD — reposto automaticamente pelo
       // motor global assim que o diálogo do sistema fecha. Folha em A4
-      // RETRATO com margem de 10mm, conforme especificado.
+      // RETRATO com margem de 10mm — suficiente para nenhuma informação
+      // ficar cortada nem colada aos bordos em impressoras de balcão.
       imprimirDocumento(folha, { orientacao: 'portrait', margemMm: 10, titulo: `acerto_de_erros_de_stock_${todayISO()}` });
     }
     const exportBtn = h('button', { class: 'btn btn-secondary', style: 'margin-left:auto;', title: 'Abre o diálogo de impressão do sistema com a lista de Erros por Corrigir — imprima de imediato ou escolha "Guardar como PDF"' },
