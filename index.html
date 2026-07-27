@@ -1147,6 +1147,13 @@
   /* Badge do botão "Gaveta" (Correio Interno) — vermelho, sem animação de
      piscar (essa linguagem visual fica reservada aos Lembretes urgentes). */
   .gaveta-bell-badge{background:var(--red) !important;}
+  /* Lista de seleção múltipla de destinatários (Novo Recado) */
+  .gaveta-dest-lista{max-height:190px;overflow-y:auto;border:1px solid var(--pharm-200);
+    border-radius:10px;padding:4px;margin-top:6px;display:flex;flex-direction:column;gap:1px;}
+  .gaveta-dest-item{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:7px;
+    font-size:13px;color:var(--pharm-800);cursor:pointer;}
+  .gaveta-dest-item:hover{background:var(--pharm-50);}
+  .gaveta-dest-item-marcado{background:var(--pharm-100);font-weight:700;}
   @keyframes lembretesBellPulse{
     0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.55);}
     50%{box-shadow:0 0 0 7px rgba(220,38,38,0);}
@@ -6421,7 +6428,7 @@ function abrirModalGaveta() {
 
   let activeTab = 'pendentes'; // 'pendentes' | 'tratados'
   let showForm = false;
-  let novoDestinatarioId = '';
+  let novosDestinatarioIds = new Set();
   let novaMensagem = '';
   let formError = '';
   let saving = false;
@@ -6477,18 +6484,42 @@ function abrirModalGaveta() {
 
   function buildFormNovoRecado() {
     const colegas = membrosElegiveisMapaTarefas().filter(u => String(u.id) !== String(activeUser.id));
-    const destSelect = h('select', { class: 'select' }, [
-      h('option', { value: '', selected: !novoDestinatarioId ? 'selected' : undefined }, '-- Selecionar Colega --'),
-      ...colegas.map(u => h('option', { value: u.id, selected: String(novoDestinatarioId) === String(u.id) ? 'selected' : undefined }, u.nomeCompleto || u.username)),
-    ]);
-    destSelect.addEventListener('change', () => { novoDestinatarioId = destSelect.value; });
+    const todosSelecionados = colegas.length > 0 && colegas.every(u => novosDestinatarioIds.has(String(u.id)));
+    const selecionarTodosBtn = h('button', { class: 'btn-link', type: 'button', style: 'font-size:12px;font-weight:700;' },
+      todosSelecionados ? 'Desmarcar Todos' : 'Selecionar Todos');
+    selecionarTodosBtn.addEventListener('click', () => {
+      if (todosSelecionados) novosDestinatarioIds.clear();
+      else colegas.forEach(u => novosDestinatarioIds.add(String(u.id)));
+      render();
+    });
+    const linhasColegas = colegas.map(u => {
+      const idStr = String(u.id);
+      const marcado = novosDestinatarioIds.has(idStr);
+      const cb = h('input', { type: 'checkbox', class: 'row-checkbox' });
+      cb.checked = marcado;
+      const linha = h('label', { class: 'gaveta-dest-item' + (marcado ? ' gaveta-dest-item-marcado' : '') }, [
+        cb, h('span', {}, u.nomeCompleto || u.username),
+      ]);
+      cb.addEventListener('change', () => {
+        if (cb.checked) novosDestinatarioIds.add(idStr); else novosDestinatarioIds.delete(idStr);
+        render();
+      });
+      return linha;
+    });
     const msgInput = h('textarea', { class: 'textarea', placeholder: 'Escrever o recado...', maxlength: '500' });
     msgInput.value = novaMensagem;
     msgInput.addEventListener('input', () => { novaMensagem = msgInput.value; });
-    const enviarBtn = h('button', { class: 'btn btn-primary', onclick: saving ? null : enviarRecado, disabled: saving ? 'disabled' : undefined }, saving ? 'A enviar…' : 'Enviar Recado');
-    const cancelarBtn = h('button', { class: 'btn btn-secondary', onclick: () => { showForm = false; formError = ''; render(); } }, 'Cancelar');
+    const enviarBtn = h('button', { class: 'btn btn-primary', onclick: saving ? null : enviarRecado, disabled: saving ? 'disabled' : undefined },
+      saving ? 'A enviar…' : (novosDestinatarioIds.size > 1 ? `Enviar a ${novosDestinatarioIds.size} Colegas` : 'Enviar Recado'));
+    const cancelarBtn = h('button', { class: 'btn btn-secondary', onclick: () => { showForm = false; formError = ''; novosDestinatarioIds.clear(); render(); } }, 'Cancelar');
     const kids = [
-      h('div', { class: 'field' }, [h('label', {}, 'Para'), destSelect]),
+      h('div', { class: 'field' }, [
+        h('div', { style: 'display:flex;align-items:center;justify-content:space-between;' }, [
+          h('label', {}, `Para ${novosDestinatarioIds.size > 0 ? `(${novosDestinatarioIds.size} selecionado${novosDestinatarioIds.size > 1 ? 's' : ''})` : ''}`),
+          colegas.length ? selecionarTodosBtn : null,
+        ]),
+        h('div', { class: 'gaveta-dest-lista' }, linhasColegas.length ? linhasColegas : [h('p', { class: 'cell-muted', style: 'padding:8px;' }, 'Sem colegas elegíveis disponíveis.')]),
+      ]),
       h('div', { class: 'field' }, [h('label', {}, 'Mensagem'), msgInput]),
     ];
     if (formError) kids.push(h('p', { class: 'form-error' }, formError));
@@ -6496,7 +6527,8 @@ function abrirModalGaveta() {
     return h('div', { class: 'card card-pad', style: 'margin-bottom:14px;' }, kids);
   }
   async function enviarRecado() {
-    if (!novoDestinatarioId) { formError = 'Por favor, selecione o colega destinatário.'; render(); return; }
+    const destinatarios = [...novosDestinatarioIds];
+    if (!destinatarios.length) { formError = 'Por favor, selecione pelo menos um colega destinatário.'; render(); return; }
     if (!String(novaMensagem || '').trim()) { formError = 'Por favor, escreva a mensagem do recado.'; render(); return; }
     // Rede de segurança: a conta sintética do Administrador fundador (só
     // usada quando o registo real está inacessível na base de dados) não
@@ -6509,14 +6541,20 @@ function abrirModalGaveta() {
     }
     formError = '';
     saving = true; render();
-    const created = await dbInsertRecado({
-      remetenteId: activeUser.id, destinatarioId: novoDestinatarioId,
-      mensagem: novaMensagem.trim(), tratado: false,
-    });
+    // Envio em lote: um registo INDEPENDENTE por destinatário — cada colega
+    // recebe a sua própria cópia na gaveta, que marca/elimina sem afetar as
+    // cópias dos restantes.
+    const mensagemTexto = novaMensagem.trim();
+    const resultados = await Promise.all(destinatarios.map(destId =>
+      dbInsertRecado({ remetenteId: activeUser.id, destinatarioId: destId, mensagem: mensagemTexto, tratado: false })
+    ));
     saving = false;
-    if (created) {
-      STATE.gavetaRecados = [created, ...STATE.gavetaRecados];
-      showForm = false; novoDestinatarioId = ''; novaMensagem = '';
+    const criados = resultados.filter(Boolean);
+    if (criados.length) STATE.gavetaRecados = [...criados, ...STATE.gavetaRecados];
+    if (criados.length === destinatarios.length) {
+      showForm = false; novosDestinatarioIds = new Set(); novaMensagem = '';
+    } else if (criados.length > 0) {
+      formError = `Enviado a ${criados.length} de ${destinatarios.length} colegas — alguns falharam. ${lastDbError || 'Tente novamente para os restantes.'}`;
     } else {
       formError = `Não foi possível enviar o recado. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
     }
@@ -7140,10 +7178,20 @@ function buildErrosPage(container, goTo) {
       if (!pendentes.length) { showDbErrorToast('Não há erros por corrigir para exportar'); return; }
       const celTh = 'border:1px solid #000;padding:5px 6px;background:#fff;color:#000;font-size:9.5px;font-weight:800;text-align:center;';
       const celTd = 'border:1px solid #555;padding:5px 6px;font-size:9.5px;color:#000;';
-      const larguras = ['5%', '9%', '37%', '7%', '8%', '7%', '8%', '10%', '9%'];
+      // Responsável reduzido ao mínimo (só primeiro + último nome) — o
+      // espaço libertado, mais o da coluna Observações (removida), reverte
+      // quase todo para o Produto.
+      const nomeCurto = (nome) => {
+        const partes = String(nome || '').trim().split(/\s+/).filter(Boolean);
+        if (partes.length <= 1) return partes[0] || '—';
+        return `${partes[0]} ${partes[partes.length - 1]}`;
+      };
+      const larguras = ['5%', '8%', '42%', '7%', '8%', '7%', '8%', '6%', '9%'];
       const linhasHtml = pendentes.map((r) => {
         const fisV = toIntegerOrNull(r.qtdFisica) || 0;
         const sisV = toIntegerOrNull(r.qtdSistema) || 0;
+        const dif = fisV - sisV;
+        const difTexto = dif > 0 ? `+${dif}` : String(dif);
         return h('tr', {}, [
           h('td', { style: celTd + 'text-align:center;font-size:12px;' }, '☐'),
           h('td', { style: celTd + 'text-align:center;' }, r.cnp || '—'),
@@ -7152,8 +7200,8 @@ function buildErrosPage(container, goTo) {
           h('td', { style: celTd }, ''),
           h('td', { style: celTd + 'text-align:center;font-weight:700;' }, String(fisV)),
           h('td', { style: celTd }, ''),
-          h('td', { style: celTd + 'text-align:center;' }, r.responsavel || '—'),
-          h('td', { style: celTd }, r.obs || ''),
+          h('td', { style: celTd + 'text-align:center;font-weight:800;' }, difTexto),
+          h('td', { style: celTd + 'text-align:center;white-space:nowrap;' }, nomeCurto(r.responsavel)),
         ]);
       });
       const folha = h('div', { style: 'font-family:Arial,Helvetica,sans-serif;background:#fff;color:#000;' }, [
@@ -7161,14 +7209,14 @@ function buildErrosPage(container, goTo) {
         h('p', { style: 'margin:0 0 5px;font-size:9.5px;color:#000;' },
           `Exportado em ${formatDate(todayISO())} · ${pendentes.length} registo${pendentes.length > 1 ? 's' : ''} · Assinalar ☐ após verificação na farmácia e preencher as Novas Contagens à mão.`),
         h('p', { style: 'margin:0 0 8px;font-size:8px;color:#333;font-style:italic;' },
-          'Legenda: Qtd. Sist. Ini. = Quantidade Sistema Inicial | Nov. Sist. = Nova Contagem Sistema | Qtd. Fís. Ini. = Quantidade Física Inicial | Nov. Fís. = Nova Contagem Física'),
+          'Legenda: Qtd. Sist. Ini. = Quantidade Sistema Inicial | Nov. Sist. = Nova Contagem Sistema | Qtd. Fís. Ini. = Quantidade Física Inicial | Nov. Fís. = Nova Contagem Física | Dif. = Diferença (Física Inicial − Sistema Inicial)'),
         h('table', { style: 'width:100%;border-collapse:collapse;table-layout:fixed;' }, [
           h('colgroup', {}, larguras.map(w => h('col', { style: `width:${w};` }))),
           h('thead', {}, h('tr', {}, [
             '☐', 'CNP/Cód.', 'Produto',
             'Qtd. Sist. Ini.', 'Nov. Sist.',
             'Qtd. Fís. Ini.', 'Nov. Fís.',
-            'Responsável', 'Observações',
+            'Dif.', 'Responsável',
           ].map(t => h('th', { style: celTh }, t)))),
           h('tbody', {}, linhasHtml),
         ]),
