@@ -5418,6 +5418,16 @@ function openViewOnlyModal(schema, record, title) {
   document.body.appendChild(overlay);
 }
 
+// Campos de "Medida" da Ortopedia (Meias de Compressão) — usados tanto no
+// formulário como para os dobrar dentro da coluna Observações da tabela
+// (buildDetalhesTexto), em vez de aparecerem como colunas próprias sempre
+// quase vazias para as restantes categorias de pedidos.
+const MEDIDA_FIELDS_ORTOPEDIA = [
+  { name: 'medidaTornozelo', label: 'Tornozelo (cm)' },
+  { name: 'medidaBarrigaPerna', label: 'Barriga da Perna (cm)' },
+  { name: 'medidaCoxa', label: 'Coxa (cm)' },
+  { name: 'medidaAlturaPerna', label: 'Altura da Perna (cm)' },
+];
 function buildDetalhesTexto(schema, r) {
   const temMedidas = schema.some(f => f.name === 'medidaTornozelo');
   const partes = [];
@@ -5501,6 +5511,11 @@ function buildBarraPesquisaEstadoSetor(records, schema, searchQuery, statusFilte
   ]);
   return { statGrid, searchCard, searchInput };
 }
+// Campos que NUNCA aparecem como coluna própria na tabela geral de um
+// setor — apenas as 4 medidas da Ortopedia, que já são dobradas dentro da
+// coluna Observações (buildDetalhesTexto) em vez de ficarem como colunas
+// quase sempre vazias para as restantes categorias de pedidos.
+const TABLE_HIDE = new Set(['medidaTornozelo', 'medidaBarrigaPerna', 'medidaCoxa', 'medidaAlturaPerna']);
 function buildRecordTable(schema, records, selectedIds, onToggleSelect, listKey, tableOpts) {
   if (records.length === 0) {
     return EmptyState('Sem registos para mostrar. Adiciona o primeiro pedido pela barra de ações abaixo.');
@@ -7543,7 +7558,7 @@ function buildErrosPage(container, goTo) {
       // matematicamente que um bloco de N linhas cabe sempre dentro de uma
       // folha física. Sem isto, mesmo um bloco "isolado" podia continuar a
       // transbordar de forma imprevisível (a causa do corte reportado).
-      const bordaCel = 'border:1px solid #94a3b8;padding:2px 4px;font-size:9.5px;color:#000;height:24px;';
+      const bordaCel = 'border:1px solid #94a3b8;padding:2px 4px;font-size:9.5px;color:#000;height:26px;';
       const celProduto = bordaCel + 'text-align:left;white-space:nowrap !important;overflow:hidden !important;text-overflow:ellipsis !important;';
       function buildThead() {
         return h('thead', {}, h('tr', {}, COLS.map(c =>
@@ -7555,7 +7570,7 @@ function buildErrosPage(container, goTo) {
         const sisV = toIntegerOrNull(r.qtdSistema) || 0;
         const dif = fisV - sisV;
         const difTexto = dif > 0 ? `+${dif}` : String(dif);
-        return h('tr', { style: 'height:24px;page-break-inside:avoid !important;break-inside:avoid !important;' }, [
+        return h('tr', { style: 'height:26px;page-break-inside:avoid !important;break-inside:avoid !important;' }, [
           h('td', { style: bordaCel + 'text-align:center;font-size:12px;' }, '☐'),
           h('td', { style: bordaCel + 'text-align:center;font-family:monospace;' }, r.cnp || '—'),
           h('td', { style: celProduto, title: r.produto || '' }, r.produto || '—'),
@@ -7566,12 +7581,14 @@ function buildErrosPage(container, goTo) {
           h('td', { style: bordaCel + 'text-align:center;font-weight:800;' }, difTexto),
         ]);
       }
-      // ---- PAGINAÇÃO FÍSICA NO HTML: cada página é um <div class="print-page">
-      // TOTALMENTE isolado e pré-calculado — altura própria (100vh),
-      // padding próprio (12mm) e a sua própria <table> fechada, só com os
-      // registos dessa página. O browser nunca decide onde corta: já está
-      // tudo decidido antes da impressão sequer começar. Isto elimina por
-      // completo o corte de linhas ao meio, tanto no Safari como no Chrome.
+      // ---- PAGINAÇÃO FÍSICA NO HTML: cada página é um <div class="pagina-a4">
+      // TOTALMENTE isolado e pré-calculado, com a SUA PRÓPRIA <table>
+      // fechada. A versão anterior usava height:100vh — unidade RELATIVA ao
+      // ecrã, que o motor de impressão do Safari interpreta de forma
+      // inconsistente, fazendo as páginas colapsarem umas nas outras
+      // (cabeçalhos a repetir a meio da folha 1, texto sobreposto). Corrigido
+      // para height:275mm — medida FÍSICA e absoluta, que nunca varia
+      // consoante o motor de renderização.
       const PRIMEIRA_PAGINA_LINHAS = 28; // menos linhas: compensa o espaço do título/legenda
       const RESTANTES_PAGINAS_LINHAS = 35;
       const blocosLinhas = [];
@@ -7580,36 +7597,62 @@ function buildErrosPage(container, goTo) {
       while (resto.length) blocosLinhas.push(resto.splice(0, RESTANTES_PAGINAS_LINHAS));
 
       const paginasHtml = blocosLinhas.map((bloco, i) => {
-        const ultima = i === blocosLinhas.length - 1;
         const filhosPagina = [];
         if (i === 0) {
           filhosPagina.push(
-            h('h2', { style: 'margin:0 0 2px;font-size:15px;color:#000;font-weight:800;' }, 'SigaJuncal · Erros de Stock — Erros por Corrigir'),
-            h('p', { style: 'margin:0 0 5px;font-size:9.5px;color:#000;' },
-              `Exportado em ${formatDate(todayISO())} · ${pendentes.length} registo${pendentes.length > 1 ? 's' : ''} · Assinalar ☐ após verificação na farmácia e preencher as Novas Contagens à mão.`),
-            h('p', { style: 'margin:0 0 8px;font-size:8px;color:#333;font-style:italic;' },
-              'Legenda: QS = Qtd. Sistema Inicial | NS = Nova Contagem Sistema (preencher à mão) | QF = Qtd. Física Inicial | NF = Nova Contagem Física (preencher à mão) | DIF = Diferença (Q. Física − Q. Sistema)'),
+            h('div', { class: 'cabecalho' }, [
+              h('h2', { style: 'margin:0 0 2px;font-size:15px;color:#000;font-weight:800;' }, 'SigaJuncal · Erros de Stock — Erros por Corrigir'),
+              h('p', { style: 'margin:0 0 5px;font-size:9.5px;color:#000;' },
+                `Exportado em ${formatDate(todayISO())} · ${pendentes.length} registo${pendentes.length > 1 ? 's' : ''} · Assinalar ☐ após verificação na farmácia e preencher as Novas Contagens à mão.`),
+              h('p', { style: 'margin:0 0 8px;font-size:8px;color:#333;font-style:italic;' },
+                'Legenda: QS = Qtd. Sistema Inicial | NS = Nova Contagem Sistema (preencher à mão) | QF = Qtd. Física Inicial | NF = Nova Contagem Física (preencher à mão) | DIF = Diferença (Q. Física − Q. Sistema)'),
+            ])
           );
         }
         filhosPagina.push(
-          h('table', { style: 'width:100%;table-layout:fixed;border-collapse:collapse;page-break-inside:auto;' }, [
+          h('table', {}, [
             buildThead(),
             h('tbody', {}, bloco.map(buildLinha)),
           ])
         );
-        // A ÚLTIMA página nunca leva quebra a seguir — senão o diálogo de
-        // impressão mostraria uma folha extra em branco no final.
-        const quebra = ultima ? '' : 'page-break-after:always;break-after:page;';
-        return h('div', { class: 'print-page', style: `${quebra}height:100vh;box-sizing:border-box;padding:12mm;` }, filhosPagina);
+        return h('div', { class: 'pagina-a4' }, filhosPagina);
       });
       const folha = h('div', { style: 'font-family:Arial,Helvetica,sans-serif;background:#fff;color:#000;' }, paginasHtml);
+      // CSS literal e exato da janela de impressão: @page a 10mm (com
+      // !important — necessário para vencer a regra base do motor global,
+      // que por defeito usa margin:0 para os Documentos .doc-a4), cada
+      // .pagina-a4 com altura física fixa de 275mm (nunca 100vh) e
+      // overflow:hidden — nenhuma tabela consegue alguma vez ultrapassar os
+      // limites da sua própria página.
+      const cssExtraErros = `
+  @page { size: A4 portrait; margin: 10mm !important; }
+  .app-print-area, body { margin: 0 !important; padding: 0 !important; background: #fff !important; }
+  .pagina-a4 {
+    box-sizing: border-box;
+    height: 275mm;
+    page-break-after: always;
+    break-after: page;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    overflow: hidden;
+  }
+  .pagina-a4:last-child {
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+  .pagina-a4 table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+  .pagina-a4 tr {
+    height: 26px;
+  }`;
       // Título do documento (nome sugerido ao "Guardar como PDF"):
       // acerto_de_erros_de_stock_AAAA-MM-DD — reposto automaticamente pelo
-      // motor global assim que o diálogo do sistema fecha. A margem física
-      // vive agora dentro de CADA página (padding:12mm no print-page), por
-      // isso o motor global não precisa de aplicar margem nenhuma por cima
-      // (evita duplicar o espaçamento).
-      imprimirDocumento(folha, { titulo: `acerto_de_erros_de_stock_${todayISO()}` });
+      // motor global assim que o diálogo do sistema fecha.
+      imprimirDocumento(folha, { cssExtra: cssExtraErros, titulo: `acerto_de_erros_de_stock_${todayISO()}` });
     }
     const exportBtn = h('button', { class: 'btn btn-secondary', style: 'margin-left:auto;', title: 'Abre o diálogo de impressão do sistema com a lista de Erros por Corrigir — imprima de imediato ou escolha "Guardar como PDF"' },
       [Icon('printer', { size: 14, strokeWidth: 2.2 }), ' Imprimir Lista']);
@@ -10443,21 +10486,15 @@ function prepararImpressaoGlobal(conteudoNode, opcoes) {
   area.innerHTML = '';
   area.appendChild(conteudoNode);
   let estiloTemp = null;
-  // Folha de estilo temporária sempre que a impressão precisa de algo
-  // diferente do padrão global (retrato, margem 0, usado pelos Documentos
-  // .doc-a4): paisagem, e/ou uma margem própria em milímetros.
-  //
-  // IMPORTANTE — margem via PADDING, não via @page: o Safari/macOS é
-  // conhecido por ignorar `@page { margin }` de forma inconsistente quando
-  // combinado com um elemento position:absolute a preencher a página (o
-  // caso do .app-print-area) — a tabela acabava colada aos bordos físicos
-  // do papel mesmo com a margem do @page definida. A solução robusta,
-  // portátil entre browsers, é pôr o @page a ZERO e reservar a margem real
-  // como padding FÍSICO dentro do próprio .app-print-area — como o
-  // elemento já ocupa exatamente o tamanho da folha (width/height fixos
-  // abaixo) e usa box-sizing:border-box, o padding fica garantido como
-  // espaço em branco à volta do conteúdo, em qualquer motor de impressão.
-  if (opcoes.orientacao === 'landscape' || opcoes.margemMm != null || opcoes.paddingCss) {
+  if (opcoes.cssExtra) {
+    // CSS literal completo, fornecido tal e qual pelo chamador — usado
+    // quando a impressão precisa de controlo total e exato sobre o
+    // @page/body/páginas (ex: Erros de Stock), sem passar pela lógica de
+    // padding computado abaixo.
+    estiloTemp = document.createElement('style');
+    estiloTemp.textContent = `@media print {\n${opcoes.cssExtra}\n}`;
+    document.head.appendChild(estiloTemp);
+  } else if (opcoes.orientacao === 'landscape' || opcoes.margemMm != null || opcoes.paddingCss) {
     const paisagem = opcoes.orientacao === 'landscape';
     const margem = opcoes.margemMm != null ? opcoes.margemMm : (paisagem ? 12 : 0);
     // paddingCss permite margens assimétricas (ex: "12mm 10mm" — vertical/
