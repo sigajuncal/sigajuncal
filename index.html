@@ -245,6 +245,20 @@
   .validades-ticker-dots{display:flex;gap:5px;justify-content:center;margin-top:8px;}
   .validades-ticker-progress-dot{width:6px;height:6px;border-radius:50%;background:#fecaca;transition:background .3s;}
   .validades-ticker-progress-dot.ativo{background:var(--red);}
+  /* Carrossel de "Próximo Serviço" (Agenda/Evento) — reaproveita o mesmo
+     mecanismo do ticker de Validades (mesmas classes funcionais), só com
+     mais altura (título + subtítulo em duas linhas, em coluna). */
+  .servico-ticker-viewport{height:40px;}
+  .servico-ticker-item{flex-direction:column;align-items:flex-start;justify-content:center;gap:1px;}
+  .servico-rotativo-card{position:relative;}
+  /* Ponto amarelo pulsante — serviço de hoje já a decorrer */
+  .servico-hoje-pulse{position:absolute;top:12px;right:12px;width:11px;height:11px;border-radius:50%;
+    background:#eab308;box-shadow:0 0 0 rgba(234,179,8,.6);animation:servicoHojePulse 1.5s infinite;}
+  @keyframes servicoHojePulse{
+    0%{box-shadow:0 0 0 0 rgba(234,179,8,.65);opacity:1;}
+    70%{box-shadow:0 0 0 8px rgba(234,179,8,0);opacity:.85;}
+    100%{box-shadow:0 0 0 0 rgba(234,179,8,0);opacity:1;}
+  }
 
   /* Documentos — linha de produto discriminado */
   .doc-item-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;}
@@ -324,7 +338,7 @@
   .doc-pagamento-symbol{font-size:16pt;line-height:1;flex-shrink:0;}
   .doc-pagamento-box.doc-pagamento-ok{border-width:2px;}
   .doc-pagamento-box.doc-pagamento-alerta{border:3px dashed #000;font-size:16pt;padding:14px 18px;}
-  .doc-rodape{flex:0 0 auto;}
+  .doc-rodape{flex:0 0 auto;display:flex;flex-direction:column;align-items:flex-end;text-align:right;margin-left:auto;}
   .doc-date-line{margin:0 0 42px;font-size:13px;color:#0f172a;}
   .doc-signature-block{margin-top:8px;}
   .doc-signature-line{border-top:1px solid #0f172a;width:280px;margin:48px 0 6px;}
@@ -1452,6 +1466,31 @@
     /* Cartões/linhas de tabela com ações à direita — nunca sobrepor texto */
     .row-actions{gap:6px;}
     table td, table th{padding:8px 6px;}
+
+    /* Modal de gestão do dia (Agenda/Eventos): o botão de fechar fixo (✕)
+       nunca deve colidir com a barra de ações (Bloquear Intervalo/Fechar
+       Dia) — a linha do cabeçalho passa a fazer wrap (bloco do título
+       numa linha, ações na linha seguinte) e os botões ficam mais
+       compactos, deixando o ✕ sempre isolado no canto. */
+    .modal-title-row-com-fecho{flex-wrap:wrap;padding-right:40px;row-gap:8px;}
+    .modal-title-row-com-fecho > div:last-child{flex-wrap:wrap;gap:6px;width:100%;}
+    .modal-title-row-com-fecho .btn{font-size:11.5px;padding:7px 10px;}
+    .close-btn-modal-fixo{top:14px;right:14px;}
+
+    /* Calculadora de Posologia Infantil: em telemóvel, os dois blocos
+       (Ben-u-ron e Brufen) ficam mais compactos — menos padding, fontes
+       ligeiramente menores e menor espaçamento entre eles — para caberem
+       confortavelmente no ecrã ao calcular, sem cortes nem scroll extra. */
+    .posologia-card{padding:14px !important;}
+    .posologia-header{margin-bottom:8px;}
+    .posologia-grid{gap:8px;}
+    .posologia-farmaco{padding:11px 13px;}
+    .posologia-farmaco-nome{font-size:13.5px;margin-bottom:1px;}
+    .posologia-farmaco-sub{font-size:11px;margin-bottom:5px;}
+    .posologia-dose{font-size:16px;}
+    .posologia-dose-duo{gap:14px;}
+    .posologia-farmaco-freq{font-size:10.5px;margin-top:6px;}
+    .posologia-disclaimer{font-size:11px;padding:8px 10px !important;margin-top:8px !important;}
   }
 </style>
 </head>
@@ -5516,14 +5555,39 @@ function buildBarraPesquisaEstadoSetor(records, schema, searchQuery, statusFilte
 // coluna Observações (buildDetalhesTexto) em vez de ficarem como colunas
 // quase sempre vazias para as restantes categorias de pedidos.
 const TABLE_HIDE = new Set(['medidaTornozelo', 'medidaBarrigaPerna', 'medidaCoxa', 'medidaAlturaPerna']);
+// Características da Ortopedia (Tipo, Cor, Biqueira, Fornecedor) — em vez
+// de 4 colunas próprias, quase sempre vazias para artigos que não são
+// Meias de Compressão, ficam reunidas num único ícone popover na tabela,
+// tal como já acontece com as Observações.
+const CARACTERISTICAS_ORTOPEDIA_FIELDS = [
+  { name: 'tipo', label: 'Tipo' },
+  { name: 'cor', label: 'Cor' },
+  { name: 'biqueira', label: 'Biqueira' },
+  { name: 'fornecedor', label: 'Fornecedor' },
+];
+function buildCaracteristicasTexto(r) {
+  return CARACTERISTICAS_ORTOPEDIA_FIELDS
+    .filter(c => r[c.name] && String(r[c.name]).trim())
+    .map(c => `${c.label}: ${r[c.name]}`)
+    .join('\n');
+}
 function buildRecordTable(schema, records, selectedIds, onToggleSelect, listKey, tableOpts) {
   if (records.length === 0) {
     return EmptyState('Sem registos para mostrar. Adiciona o primeiro pedido pela barra de ações abaixo.');
   }
   const cols = schema.filter(f => !TABLE_HIDE.has(f.name));
+  // Só a Ortopedia tem Tipo/Cor/Biqueira/Fornecedor a dobrar numa coluna
+  // "Características" — "fornecedor" existe também noutras categorias
+  // (ex: "Farmácia" em Manipulados) com um papel central, por isso esta
+  // filtragem é sempre condicionada ao setor, nunca ao nome do campo
+  // sozinho, para não esconder essa coluna nos restantes setores.
+  const isOrtopedia = listKey === 'ortopedia';
+  const nomesCaracteristicas = new Set(CARACTERISTICAS_ORTOPEDIA_FIELDS.map(c => c.name));
+  const colsVisiveis = isOrtopedia ? cols.filter(f => !nomesCaracteristicas.has(f.name)) : cols;
   const temOrcamentos = listKey && categoriaTemOrcamentos(listKey);
   const opts = tableOpts || {};
-  const headers = ['', ...cols.map(c => c.name === 'obs' ? 'Obs.' : c.label)];
+  const headers = ['', ...colsVisiveis.map(c => c.name === 'obs' ? 'Obs.' : c.label)];
+  if (isOrtopedia) headers.push('Características');
   if (temOrcamentos) headers.push('Cotações');
   const thead = h('thead', {}, h('tr', {}, headers.map(t => h('th', {}, t))));
 
@@ -5565,7 +5629,7 @@ function buildRecordTable(schema, records, selectedIds, onToggleSelect, listKey,
 
   const tbody = h('tbody', {}, records.map(r => {
     const cells = [buildSelectionCheckbox(r.id, selectedIds, onToggleSelect)];
-    cells.push(...cols.map(c => {
+    cells.push(...colsVisiveis.map(c => {
       // Edição inline permitida SEMPRE (sem modo de edição à parte) só em
       // Estado (dropdown), Aviso (sino) e Rota (carro) — grava-se de imediato
       // ao alterar. Todos os restantes campos ficam estáticos na linha; a
@@ -5597,6 +5661,10 @@ function buildRecordTable(schema, records, selectedIds, onToggleSelect, listKey,
       return h('td', {}, content);
     }));
 
+    if (isOrtopedia) {
+      const textoCaracteristicas = buildCaracteristicasTexto(r);
+      cells.push(h('td', {}, textoCaracteristicas ? ObsIndicator(textoCaracteristicas) : h('span', { class: 'cell-muted' }, '—')));
+    }
     if (temOrcamentos) {
       const tone = orcamentoStatusTone(r, listKey);
       cells.push(h('td', {}, h('span', { class: `badge-cotacao tone-${tone}` }, orcamentoStatusLabel(r, listKey))));
@@ -7048,27 +7116,30 @@ function buildHomepage(container, goTo) {
   }
   wrap.appendChild(linhaSuperiorHome);
 
-  const nextEv = proximoEvento();
-  const vagasSpan = h('span', {}, '');
-  const proximoEventoCard = nextEv ? (() => {
-    const nextEvTipoInfo = EVENTO_TIPOS.find(t => t.key === nextEv.tipoEvento);
-    const card = h('button', { class: 'stat-card tone-card tone-blue-soft clickable next-evento-card', onclick: () => goTo(nextEvTipoInfo ? nextEvTipoInfo.pageKey : 'eventos') }, [
-      h('div', { class: 'stat-icon' }, Icon(eventoIconName(nextEv), { size: 19 })),
-      h('div', { style: 'min-width:0;' }, [
-        h('p', { class: 'stat-label' }, 'Próximo Evento'),
-        h('p', { class: 'next-evento-card-title' }, eventoLabel(nextEv)),
-        h('p', { class: 'next-evento-card-sub' }, [buildDataDinamicaNode(nextEv.dataEvento), vagasSpan]),
-      ]),
-    ]);
+  const eventosLista = proximosEventosLista(5);
+  const vagasSpans = {};
+  const proximoEventoCard = buildProximoServicoRotativoCard({
+    labelTitulo: 'Próximo Evento', labelVazio: 'Sem eventos agendados', tone: 'tone-blue-soft',
+    itens: eventosLista.map(ev => {
+      const tipoInfo = EVENTO_TIPOS.find(t => t.key === ev.tipoEvento);
+      const vagasSpan = h('span', {}, '');
+      vagasSpans[ev.id] = vagasSpan;
+      return {
+        icon: eventoIconName(ev),
+        titulo: eventoLabel(ev),
+        subtitulo: h('span', {}, [buildDataDinamicaNode(ev.dataEvento), vagasSpan]),
+        aDecorrer: servicoEstaADecorrer(ev.dataEvento, null),
+        onClick: () => goTo(tipoInfo ? tipoInfo.pageKey : 'eventos'),
+      };
+    }),
+  });
+  eventosLista.forEach(ev => {
     dbFetchMarcacaoCounts().then(counts => {
-      const c = counts[nextEv.id];
-      if (c && c.total > 0) vagasSpan.textContent = ` · (${c.preenchidas}/${c.total} vagas)`;
+      const c = counts[ev.id];
+      const span = vagasSpans[ev.id];
+      if (c && c.total > 0 && span) span.textContent = ` · (${c.preenchidas}/${c.total} vagas)`;
     });
-    return card;
-  })() : h('div', { class: 'stat-card tone-card tone-blue-soft next-evento-card' }, [
-    h('div', { class: 'stat-icon' }, Icon('calendar', { size: 19 })),
-    h('p', { class: 'stat-label' }, 'Sem eventos agendados'),
-  ]);
+  });
 
   const entregasCounts = entregasPendentesPorFarmacia();
   const temEntregasPendentes = entregasCounts.juncal > 0;
@@ -7083,22 +7154,20 @@ function buildHomepage(container, goTo) {
     temEntregasPendentes ? h('span', { class: 'entregas-led-pulse', 'aria-hidden': 'true' }) : null,
   ]);
 
-  const proximaAgenda = proximaAgendaMarcacao();
-  const proximaAgendaCard = proximaAgenda ? (() => {
-    const prestador = PRESTADORES_AGENDA.find(p => p.key === proximaAgenda.prestadorKey);
-    const card = h('button', { class: 'stat-card tone-card tone-blue-soft clickable next-evento-card', onclick: () => goTo(`agenda-${proximaAgenda.prestadorKey}`) }, [
-      h('div', { class: 'stat-icon' }, Icon(prestador ? prestador.icon : 'calendar', { size: 19 })),
-      h('div', { style: 'min-width:0;' }, [
-        h('p', { class: 'stat-label' }, 'Próximo Serviço de Agenda'),
-        h('p', { class: 'next-evento-card-title' }, prestador ? `${prestador.especialidade} · ${prestador.nome}` : 'Agenda'),
-        h('p', { class: 'next-evento-card-sub' }, buildDataDinamicaNode(proximaAgenda.data, normalizarHora(proximaAgenda.hora))),
-      ]),
-    ]);
-    return card;
-  })() : h('div', { class: 'stat-card tone-card tone-blue-soft next-evento-card' }, [
-    h('div', { class: 'stat-icon' }, Icon('calendar', { size: 19 })),
-    h('p', { class: 'stat-label' }, 'Sem consultas/serviços agendados'),
-  ]);
+  const agendaLista = proximasAgendaMarcacoes(5);
+  const proximaAgendaCard = buildProximoServicoRotativoCard({
+    labelTitulo: 'Próximo Serviço de Agenda', labelVazio: 'Sem consultas/serviços agendados', tone: 'tone-blue-soft',
+    itens: agendaLista.map(m => {
+      const prestador = PRESTADORES_AGENDA.find(p => p.key === m.prestadorKey);
+      return {
+        icon: prestador ? prestador.icon : 'calendar',
+        titulo: prestador ? `${prestador.especialidade} · ${prestador.nome}` : 'Agenda',
+        subtitulo: buildDataDinamicaNode(m.data, normalizarHora(m.hora)),
+        aDecorrer: servicoEstaADecorrer(m.data, m.hora),
+        onClick: () => goTo(`agenda-${m.prestadorKey}`),
+      };
+    }),
+  });
 
   const premiosColetivos = STATE.desafios.filter(d => desafioAtivo(d) && d.tipoPremio !== 'Individual').length;
   const premiosIndividuais = STATE.desafios.filter(d => desafioAtivo(d) && d.tipoPremio === 'Individual').length;
@@ -8764,21 +8833,68 @@ function eventoViewSchema(ev) {
   schema.push({ name: 'notas', label: 'Notas', type: 'textarea', col: 2 });
   return schema;
 }
-function proximoEvento() {
-  const hoje = todayISO();
-  const futuros = (STATE.eventos || []).filter(ev => ev.dataEvento && ev.dataEvento >= hoje);
-  if (futuros.length === 0) return null;
-  return futuros.slice().sort((a, b) => a.dataEvento.localeCompare(b.dataEvento))[0];
-}
-// Próxima consulta/serviço de Agenda (Nutrição, Podologia, Prima Corpus,
-// etc.) agendada — em qualquer prestador, não só o que o utilizador está a
-// ver de momento.
-function proximaAgendaMarcacao() {
+// Lista (não só o primeiro) dos próximos serviços de Agenda/Eventos — usada
+// pelo carrossel do Dashboard quando há mais do que um em simultâneo.
+function proximasAgendaMarcacoes(limite) {
   const hoje = todayISO();
   const futuras = (STATE.agendaMarcacoes || []).filter(m => m.tipoLinha !== 'bloqueado' && m.data && m.data >= hoje && String(m.nomeCliente || '').trim());
-  if (!futuras.length) return null;
-  return futuras.slice().sort((a, b) => (a.data + normalizarHora(a.hora)).localeCompare(b.data + normalizarHora(b.hora)))[0];
+  return futuras.slice().sort((a, b) => (a.data + normalizarHora(a.hora)).localeCompare(b.data + normalizarHora(b.hora))).slice(0, limite || 5);
 }
+function proximosEventosLista(limite) {
+  const hoje = todayISO();
+  const futuros = (STATE.eventos || []).filter(ev => ev.dataEvento && ev.dataEvento >= hoje);
+  return futuros.slice().sort((a, b) => a.dataEvento.localeCompare(b.dataEvento)).slice(0, limite || 5);
+}
+// Um serviço está "a decorrer" quando é hoje e a hora de início já passou
+// (ou não tem hora própria — nesse caso considera-se o dia inteiro).
+function servicoEstaADecorrer(dataISO, horaStr) {
+  if (dataISO !== todayISO()) return false;
+  if (!horaStr) return true;
+  const [hh, mm] = normalizarHora(horaStr).split(':').map(Number);
+  const agora = new Date();
+  const inicio = new Date(); inicio.setHours(isNaN(hh) ? 0 : hh, isNaN(mm) ? 0 : mm, 0, 0);
+  return agora >= inicio;
+}
+// Card rotativo de "Próximo Serviço" (Agenda/Evento) — reaproveita o MESMO
+// mecanismo já usado no ticker de Validades (avancarTodosValidadesTickers,
+// já ligado a um único intervalo global de 4s): basta usar as mesmas
+// classes funcionais (.validades-ticker-viewport/.validades-ticker-item/
+// .validades-ticker-dots) e o carrossel "liga-se sozinho", sem precisar de
+// nenhum novo setInterval. Um ponto amarelo pulsante aparece quando pelo
+// menos um dos itens já está a decorrer hoje.
+function buildProximoServicoRotativoCard({ labelTitulo, labelVazio, tone, itens }) {
+  if (!itens.length) {
+    return h('div', { class: `stat-card tone-card ${tone} next-evento-card` }, [
+      h('div', { class: 'stat-icon' }, Icon('calendar', { size: 19 })),
+      h('p', { class: 'stat-label' }, labelVazio),
+    ]);
+  }
+  const viewportItens = itens.map((it, i) => h('div', { class: 'validades-ticker-item servico-ticker-item' + (i === 0 ? ' ativo' : '') }, [
+    h('p', { class: 'next-evento-card-title', style: 'margin:0;' }, it.titulo),
+    h('p', { class: 'next-evento-card-sub', style: 'margin:0;' }, it.subtitulo),
+  ]));
+  const viewport = h('div', { class: 'validades-ticker-viewport servico-ticker-viewport' }, viewportItens);
+  viewport.dataset.atual = '0';
+  const contentWrap = h('div', { style: 'min-width:0;flex:1;' }, [
+    h('p', { class: 'stat-label' }, labelTitulo),
+    viewport,
+    itens.length > 1 ? h('div', { class: 'validades-ticker-dots' },
+      itens.map((_, i) => h('span', { class: 'validades-ticker-progress-dot' + (i === 0 ? ' ativo' : '') }))) : null,
+  ]);
+  const card = h('button', { class: `stat-card tone-card ${tone} clickable next-evento-card servico-rotativo-card` }, [
+    h('div', { class: 'stat-icon' }, Icon(itens[0].icon, { size: 19 })),
+    contentWrap,
+    itens.some(it => it.aDecorrer) ? h('span', { class: 'servico-hoje-pulse', 'aria-hidden': 'true' }) : null,
+  ]);
+  card.addEventListener('click', () => {
+    const atual = parseInt(viewport.dataset.atual || '0', 10);
+    (itens[atual] || itens[0]).onClick();
+  });
+  return card;
+}
+// Próxima consulta/serviço de Agenda (Nutrição, Podologia, Prima Corpus,
+// etc.) — usa-se proximasAgendaMarcacoes(1)[0] quando só se precisa da
+// primeira; ver essa função para a lista completa usada no carrossel.
 
 // Gera a grelha de horários "HH:MM" entre horaInicio e horaFim (exclusive),
 // espaçados de intervaloMin em intervaloMin minutos — equivalente ao
