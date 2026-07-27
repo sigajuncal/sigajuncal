@@ -2334,7 +2334,34 @@ const SERVICOS_CALENDARIO = [
 const AGENDA_HORA_INICIO = '08:00';
 const AGENDA_HORA_FIM = '21:00';
 const AGENDA_SLOT_MIN = 15;
-const TIPOS_CONSULTA_NUTRICAO = ['Nutrição — 1ª Consulta', 'Nutrição — Seguimento', 'Nutrição Clínica — 1ª Consulta', 'Nutrição Clínica — Seguimento'];
+// Tipos de Consulta de Nutrição (Dra. Tatiana Prata e Dra. Joana) — cada
+// tipo tem a sua própria duração, aplicada automaticamente ao selecionar
+// (ver agendaDuracaoPorTipo). TIPOS_CONSULTA_NUTRICAO mantém-se como a lista
+// simples de nomes usada no dropdown, pela ordem aqui definida.
+const NUTRICAO_TIPOS = [
+  { nome: 'Nutrição — 1ª Consulta', duracaoMin: 30 },
+  { nome: 'Nutrição — Seguimento', duracaoMin: 15 },
+  { nome: 'Nutrição Clínica — 1ª Consulta', duracaoMin: 30 },
+  { nome: 'Nutrição Clínica — Seguimento', duracaoMin: 15 },
+  { nome: 'Nutrição — Menopausa 1ª Consulta', duracaoMin: 45 },
+  { nome: 'Nutrição — Menopausa Seguimento', duracaoMin: 30 },
+  { nome: 'Nutrição — Rastreio', duracaoMin: 15 },
+];
+const TIPOS_CONSULTA_NUTRICAO = NUTRICAO_TIPOS.map(t => t.nome);
+function nutricaoDuracao(tipoConsulta) {
+  const t = NUTRICAO_TIPOS.find(x => x.nome === tipoConsulta);
+  return t ? t.duracaoMin : 15;
+}
+// Tipos de Consulta de Podologia (Dra. Patrícia Araújo) — ambos com 20 min,
+// a mesma duração que já era a regra da grelha de vagas deste prestador.
+const PODOLOGIA_TIPOS = [
+  { nome: 'Podologia — Primeira Consulta', duracaoMin: 20 },
+  { nome: 'Podologia — Consulta de Seguimento', duracaoMin: 20 },
+];
+// Serviços de Marco Gomes (Massagem) — sem duração fixa por serviço: serve
+// apenas para categorizar o tipo de massagem; a duração é sempre a caixa
+// manual (60 min por omissão, ajustável — ver agendaDuracaoPorTipo).
+const MASSAGEM_MARCO_SERVICOS = ['Massagem — Recuperação/Reabilitação', 'Massagem — Tratamento Localizado'];
 
 function agendaGerarSlots(passoMin) {
   const slots = [];
@@ -2360,6 +2387,18 @@ function agendaSlotsPara(prestadorKey) { return prestadorKey === 'podologia_patr
 function agendaEhNutricao(prestadorKey) { return prestadorKey === 'nutricao_tatiana' || prestadorKey === 'nutricao_joana'; }
 function agendaEhDepilacao(prestadorKey) { return prestadorKey === 'depilacao_laser'; }
 function agendaEhPrimaCorpus(prestadorKey) { return prestadorKey === 'prima_corpus'; }
+function agendaEhPodologia(prestadorKey) { return prestadorKey === 'podologia_patricia'; }
+function agendaEhMassagemMarco(prestadorKey) { return prestadorKey === 'massagem_marco'; }
+// Duração manual por omissão ao abrir um novo formulário — só a Massagem do
+// Marco tem uma omissão diferente de 15 min (60 min = 1h, ajustável na caixa).
+function agendaDuracaoManualDefault(prestadorKey) { return agendaEhMassagemMarco(prestadorKey) ? 60 : 15; }
+// Prestadores cujo dropdown de Tipo de Consulta/Serviço nunca vem
+// pré-selecionado — a escolha tem de ser sempre consciente antes de
+// confirmar a marcação (regra de uniformização pedida para Nutrição, Prima
+// Corpus, Podologia e Massagem do Marco).
+function agendaTipoConsultaObrigatorio(prestadorKey) {
+  return agendaEhNutricao(prestadorKey) || agendaEhPrimaCorpus(prestadorKey) || agendaEhPodologia(prestadorKey) || agendaEhMassagemMarco(prestadorKey);
+}
 const DEPILACAO_DURACOES_MIN = [15, 30, 45, 60, 90, 120];
 // Serviços Prima Corpus (Dra. Andreia Leite) e respetivas durações em
 // minutos — a duração é aplicada automaticamente no calendário ao escolher
@@ -2379,16 +2418,19 @@ function primaCorpusDuracao(nomeServico) {
   const s = PRIMA_CORPUS_SERVICOS.find(x => x.nome === nomeServico);
   return s ? s.duracaoMin : 40;
 }
-// Duração automática: Nutrição 1ª Consulta = 30 min (2 slots), Seguimento =
-// 15 min (1 slot); Massagem = sempre 60 min (4 slots); Depilação a Laser /
-// HIFU = escolhida à mão pela equipa (duracaoManual, 15 a 120 min, conforme
-// o serviço/zonas); Prima Corpus = duração do serviço escolhido (40 a 75
-// min, tabela acima); restantes = 15 min.
+// Duração automática: Nutrição — cada tipo tem a sua própria duração (ver
+// NUTRICAO_TIPOS/nutricaoDuracao: 15 a 45 min, conforme o tipo escolhido);
+// Massagem do Marco = 60 min por omissão, mas ajustável na caixa de duração
+// manual; Depilação a Laser / HIFU = escolhida à mão pela equipa
+// (duracaoManual, 15 a 120 min, conforme o serviço/zonas); Prima Corpus =
+// duração do serviço escolhido (40 a 75 min, tabela acima); Podologia =
+// sempre 20 min (ambos os tipos); restantes = 15 min.
 function agendaDuracaoPorTipo(prestadorKey, tipoConsulta, duracaoManual) {
-  if (prestadorKey === 'massagem_marco') return 60;
-  if (agendaEhNutricao(prestadorKey)) return (tipoConsulta || '').includes('1ª Consulta') ? 30 : 15;
+  if (agendaEhMassagemMarco(prestadorKey)) return duracaoManual || 60;
+  if (agendaEhNutricao(prestadorKey)) return nutricaoDuracao(tipoConsulta);
   if (agendaEhDepilacao(prestadorKey)) return duracaoManual || 15;
   if (agendaEhPrimaCorpus(prestadorKey)) return primaCorpusDuracao(tipoConsulta);
+  if (agendaEhPodologia(prestadorKey)) return 20;
   return 15;
 }
 // Math.ceil (e não round): uma duração que não seja múltiplo do passo da
@@ -2560,11 +2602,11 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   }
 
   function openNovaMarcacao(horaPreenchida, forcarEncaixe) {
-    formDraft = { hora: horaPreenchida || agendaSlotsPara(prestadorKey)[0], tipoConsulta: agendaEhPrimaCorpus(prestadorKey) ? PRIMA_CORPUS_SERVICOS[0].nome : '', duracaoManual: 15, nomeCliente: '', contacto: '', aviso: false, observacoes: '', forcarEncaixe: !!forcarEncaixe };
+    formDraft = { hora: horaPreenchida || agendaSlotsPara(prestadorKey)[0], tipoConsulta: '', duracaoManual: agendaDuracaoManualDefault(prestadorKey), nomeCliente: '', contacto: '', aviso: false, observacoes: '', forcarEncaixe: !!forcarEncaixe };
     formError = ''; showForm = 'nova'; render();
   }
   function openEncaixe() {
-    formDraft = { hora: '', tipoConsulta: agendaEhPrimaCorpus(prestadorKey) ? PRIMA_CORPUS_SERVICOS[0].nome : '', duracaoManual: 15, nomeCliente: '', contacto: '', aviso: false, observacoes: '' };
+    formDraft = { hora: '', tipoConsulta: '', duracaoManual: agendaDuracaoManualDefault(prestadorKey), nomeCliente: '', contacto: '', aviso: false, observacoes: '' };
     formError = ''; showForm = 'encaixe'; render();
   }
   // Edição de uma marcação existente (grelha padrão ou encaixe): reabre o
@@ -2573,8 +2615,8 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   function openEditarMarcacao(m) {
     const ehEncaixe = !agendaSlotsPara(prestadorKey).includes(m.hora);
     formDraft = {
-      editId: m.id, hora: m.hora, tipoConsulta: m.tipoConsulta || (agendaEhPrimaCorpus(prestadorKey) ? PRIMA_CORPUS_SERVICOS[0].nome : ''),
-      duracaoManual: m.duracaoMin || 15, nomeCliente: m.nomeCliente || '', contacto: m.contacto || '',
+      editId: m.id, hora: m.hora, tipoConsulta: m.tipoConsulta || '',
+      duracaoManual: m.duracaoMin || agendaDuracaoManualDefault(prestadorKey), nomeCliente: m.nomeCliente || '', contacto: m.contacto || '',
       aviso: !!m.aviso, observacoes: m.observacoes || '', forcarEncaixe: false,
     };
     formError = ''; showForm = ehEncaixe ? 'encaixe' : 'nova'; render();
@@ -2648,9 +2690,10 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     if (!String(formDraft.nomeCliente || '').trim()) { formError = 'Por favor, preencha o Nome do Cliente.'; render(); return; }
     if (!String(formDraft.contacto || '').trim()) { formError = 'Por favor, preencha o Contacto.'; render(); return; }
     if (!/^[0-9]{9}$/.test(String(formDraft.contacto || '').trim())) { formError = 'O Contacto deve ter exatamente 9 dígitos numéricos.'; render(); return; }
-    // Nutrição: sem opção predefinida no dropdown — a colega tem sempre de
-    // escolher explicitamente o Tipo de Consulta antes de poder confirmar.
-    if (agendaEhNutricao(prestadorKey) && !String(formDraft.tipoConsulta || '').trim()) {
+    // Nutrição, Prima Corpus, Podologia e Massagem do Marco: sem opção
+    // predefinida no dropdown — a colega tem sempre de escolher
+    // explicitamente o Tipo de Consulta/Serviço antes de poder confirmar.
+    if (agendaTipoConsultaObrigatorio(prestadorKey) && !String(formDraft.tipoConsulta || '').trim()) {
       formError = 'Por favor, selecione o Tipo de Consulta.'; render(); return;
     }
     if (showForm === 'encaixe') {
@@ -2887,6 +2930,8 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     const isNutricao = agendaEhNutricao(prestadorKey);
     const isDepilacao = agendaEhDepilacao(prestadorKey);
     const isPrimaCorpus = agendaEhPrimaCorpus(prestadorKey);
+    const isPodologia = agendaEhPodologia(prestadorKey);
+    const isMassagemMarco = agendaEhMassagemMarco(prestadorKey);
     const nomeInput = h('input', { class: 'input', placeholder: 'Nome do Cliente', maxlength: '100' });
     nomeInput.value = formDraft.nomeCliente || '';
     nomeInput.addEventListener('input', () => { formDraft.nomeCliente = nomeInput.value; });
@@ -2943,13 +2988,46 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       // Serviços Prima Corpus: a escolha do serviço determina AUTOMATICAMENTE
       // a duração no calendário (40 / 50 / 75 min) — sem campo de duração
       // manual, para a grelha refletir sempre o tempo real do serviço.
-      const servicoSelect = h('select', { class: 'select' }, PRIMA_CORPUS_SERVICOS.map(sv =>
-        h('option', { value: sv.nome, selected: formDraft.tipoConsulta === sv.nome ? 'selected' : undefined }, `${sv.nome} (${sv.duracaoMin} min)`)));
-      servicoSelect.value = formDraft.tipoConsulta || PRIMA_CORPUS_SERVICOS[0].nome;
+      // Sem opção predefinida: força a escolha consciente do serviço.
+      const servicoSelect = h('select', { class: 'select' }, [
+        h('option', { value: '', selected: !formDraft.tipoConsulta ? 'selected' : undefined }, '-- Selecionar Tipo de Consulta --'),
+        ...PRIMA_CORPUS_SERVICOS.map(sv => h('option', { value: sv.nome, selected: formDraft.tipoConsulta === sv.nome ? 'selected' : undefined }, `${sv.nome} (${sv.duracaoMin} min)`)),
+      ]);
+      servicoSelect.value = formDraft.tipoConsulta || '';
       servicoSelect.addEventListener('change', () => { formDraft.tipoConsulta = servicoSelect.value; render(); });
       campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Serviço Prima Corpus'), servicoSelect]));
       campos.push(h('p', { class: 'field-helper-text', style: 'grid-column:1/-1;margin:0;' },
-        'Regras Prima Corpus: último serviço com início até às 19h · máximo 2 serviços em simultâneo (o 2.º carece de validação com a Andreia).'));
+        'Regras Prima Corpus: último serviço com início até às 19h (máximo 75 min, termina até às 20h15) · máximo 2 serviços em simultâneo (o 2.º carece de validação com a Andreia).'));
+    }
+    if (isPodologia) {
+      // Sem opção predefinida: força a escolha consciente do tipo de
+      // consulta. Ambos os tipos usam sempre 20 min (grelha da Podologia).
+      const tipoSelect = h('select', { class: 'select' }, [
+        h('option', { value: '', selected: !formDraft.tipoConsulta ? 'selected' : undefined }, '-- Selecionar Tipo de Consulta --'),
+        ...PODOLOGIA_TIPOS.map(t => h('option', { value: t.nome, selected: formDraft.tipoConsulta === t.nome ? 'selected' : undefined }, t.nome)),
+      ]);
+      tipoSelect.value = formDraft.tipoConsulta || '';
+      tipoSelect.addEventListener('change', () => { formDraft.tipoConsulta = tipoSelect.value; render(); });
+      campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Tipo de Consulta'), tipoSelect]));
+    }
+    if (isMassagemMarco) {
+      // Sem opção predefinida: força a escolha consciente do tipo de
+      // massagem. Duração pré-definida em 60 min, mas ajustável na caixa.
+      const servicoSelect = h('select', { class: 'select' }, [
+        h('option', { value: '', selected: !formDraft.tipoConsulta ? 'selected' : undefined }, '-- Selecionar Tipo de Consulta --'),
+        ...MASSAGEM_MARCO_SERVICOS.map(nome => h('option', { value: nome, selected: formDraft.tipoConsulta === nome ? 'selected' : undefined }, nome)),
+      ]);
+      servicoSelect.value = formDraft.tipoConsulta || '';
+      servicoSelect.addEventListener('change', () => { formDraft.tipoConsulta = servicoSelect.value; render(); });
+      campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Tipo de Massagem'), servicoSelect]));
+
+      const duracaoInput = h('input', { class: 'input', type: 'number', min: '5', max: '240', step: '5' });
+      duracaoInput.value = String(formDraft.duracaoManual || 60);
+      duracaoInput.addEventListener('input', () => {
+        const v = parseInt(duracaoInput.value, 10);
+        formDraft.duracaoManual = (v > 0) ? v : 60;
+      });
+      campos.push(h('div', { class: 'field field-sm' }, [h('label', {}, 'Duração (minutos)'), duracaoInput]));
     }
     const avisoCb = h('input', { type: 'checkbox', checked: !!formDraft.aviso });
     avisoCb.addEventListener('change', () => { formDraft.aviso = avisoCb.checked; });
@@ -2961,8 +3039,8 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Observações'), obsInput]));
 
     const duracaoInfo = h('p', { class: 'field-helper-text' }, `Duração desta marcação: ${agendaDuracaoPorTipo(prestadorKey, formDraft.tipoConsulta, formDraft.duracaoManual)} minutos.`);
-    const nutricaoSemTipo = agendaEhNutricao(prestadorKey) && !String(formDraft.tipoConsulta || '').trim();
-    const saveBtn = h('button', { class: 'btn btn-primary', onclick: (saving || nutricaoSemTipo) ? null : () => requireAuth(submitForm), disabled: (saving || nutricaoSemTipo) ? 'disabled' : undefined, title: nutricaoSemTipo ? 'Selecione o Tipo de Consulta para poder confirmar' : undefined }, saving ? 'A guardar…' : (formDraft.editId ? 'Guardar Alterações' : 'Confirmar Marcação'));
+    const tipoConsultaEmFalta = agendaTipoConsultaObrigatorio(prestadorKey) && !String(formDraft.tipoConsulta || '').trim();
+    const saveBtn = h('button', { class: 'btn btn-primary', onclick: (saving || tipoConsultaEmFalta) ? null : () => requireAuth(submitForm), disabled: (saving || tipoConsultaEmFalta) ? 'disabled' : undefined, title: tipoConsultaEmFalta ? 'Selecione o Tipo de Consulta para poder confirmar' : undefined }, saving ? 'A guardar…' : (formDraft.editId ? 'Guardar Alterações' : 'Confirmar Marcação'));
     const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: cancelForm }, 'Cancelar');
 
     const camposGrid = h('div', { class: 'form-grid' }, campos);
@@ -3564,8 +3642,8 @@ function buildAgendaPage(container, goTo, prestadorKey) {
 
 // Recolhas — devoluções de produtos (sub-separador de Stocks)
 const recolhasSchema = [
-  { name: 'nomeProduto', label: 'Nome do Produto', type: 'text', col: 2 },
   { name: 'codigoProduto', label: 'Código do Produto / CNP (opcional)', type: 'text', size: 'sm', inputmode: 'numeric', pattern: '[0-9]*', digitsOnly: true },
+  { name: 'nomeProduto', label: 'Nome do Produto', type: 'text', col: 2 },
   { name: 'dataCriacao', label: 'Data de Criação do Pedido', type: 'date', size: 'xs' },
   { name: 'dataConfirmacao', label: 'Data de Confirmação de Recolha', type: 'date', size: 'xs' },
 ];
@@ -8966,9 +9044,26 @@ function eventoViewSchema(ev) {
 }
 // Lista (não só o primeiro) dos próximos serviços de Agenda/Eventos — usada
 // pelo carrossel do Dashboard quando há mais do que um em simultâneo.
+// Marcações "ainda relevantes" a partir de agora — dias futuros entram
+// sempre; marcações de HOJE só contam enquanto a sua janela (hora de início
+// + duração, 20min por defeito) ainda não tiver terminado face ao relógio
+// atual. Antes disto, o filtro só comparava a DATA (m.data >= hoje), por
+// isso uma consulta de hoje às 14:00 continuava a aparecer como "próximo
+// serviço" às 21:29 — a data ainda era "hoje", mas a hora já tinha passado
+// há muito. Corre em tempo real, sempre que a página é (re)desenhada.
 function proximasAgendaMarcacoes(limite) {
   const hoje = todayISO();
-  const futuras = (STATE.agendaMarcacoes || []).filter(m => m.tipoLinha !== 'bloqueado' && m.data && m.data >= hoje && String(m.nomeCliente || '').trim());
+  const agora = new Date();
+  const futuras = (STATE.agendaMarcacoes || []).filter(m => {
+    if (m.tipoLinha === 'bloqueado' || !m.data || !String(m.nomeCliente || '').trim()) return false;
+    if (m.data > hoje) return true;
+    if (m.data < hoje) return false;
+    // m.data === hoje: só entra se a janela desta marcação ainda não acabou.
+    const [hh, mm] = normalizarHora(m.hora).split(':').map(Number);
+    const fim = new Date();
+    fim.setHours(isNaN(hh) ? 23 : hh, (isNaN(mm) ? 0 : mm) + (m.duracaoMin || 20), 0, 0);
+    return fim.getTime() >= agora.getTime();
+  });
   return futuras.slice().sort((a, b) => (a.data + normalizarHora(a.hora)).localeCompare(b.data + normalizarHora(b.hora))).slice(0, limite || 5);
 }
 function proximosEventosLista(limite) {
@@ -12597,15 +12692,45 @@ function entregasPendentesPorFarmacia() {
 // atualmente selecionada — mas o alerta de urgência varre TODAS as entregas
 // dessa farmácia, seja qual for o estafeta atribuído, para que o balcão saiba
 // sempre se algo precisa de sair imediatamente.
-function entregaMaisUrgente(lista) {
-  let melhor = null;
-  lista.forEach(r => {
-    const limite = entregaLimiteTimestamp(r);
-    if (!limite) return;
-    const restante = limite.getTime() - Date.now();
-    if (!melhor || restante < melhor.restante) melhor = { r, restante };
-  });
-  return melhor;
+// Todas as entregas pendentes com hora limite já ultrapassada OU a menos de
+// 60 min de vencer — ordenadas da mais urgente para a menos urgente. Ao
+// contrário da versão anterior (que só olhava para a mais urgente de todas),
+// esta lista é usada para identificar TODAS as entregas em risco, uma a uma.
+function entregasUrgentesOuAtrasadas(lista) {
+  const agora = Date.now();
+  return lista
+    .map(r => {
+      const limite = entregaLimiteTimestamp(r);
+      if (!limite) return null;
+      return { r, restante: limite.getTime() - agora };
+    })
+    .filter(x => x && x.restante <= 60 * 60 * 1000)
+    .sort((a, b) => a.restante - b.restante);
+}
+// Concordância singular/plural simples ("1 entrega pendente" vs "3 entregas
+// pendentes") — evita frases como "1 entregas".
+function pluralPT(n, singular, plural) { return n === 1 ? singular : (plural || singular + 's'); }
+// Primeiro nome do utente de uma entrega, para identificação rápida e
+// amigável no alerta (em vez do nome completo).
+function entregaPrimeiroNome(r) {
+  return String((r && r.nomeCliente) || '').trim().split(/\s+/)[0] || 'utente';
+}
+// Heurística de género gramatical (artigo "a"/"o") pelo primeiro nome —
+// baseada na terminação mais comum em nomes portugueses, com uma pequena
+// lista de exceções conhecidas. Não é perfeita, mas cobre a esmagadora
+// maioria dos casos reais da farmácia sem exigir manter um dicionário completo.
+const NOMES_MASCULINOS_TERMINADOS_EM_A = ['Luca', 'Nicola', 'Costa'];
+function artigoDefinidoPorNome(primeiroNome) {
+  const n = String(primeiroNome || '').trim();
+  if (NOMES_MASCULINOS_TERMINADOS_EM_A.some(x => x.toLowerCase() === n.toLowerCase())) return 'o';
+  return /a$/i.test(n) ? 'a' : 'o';
+}
+// Junta a lista de primeiros nomes com artigo definido, ex: "a Vanina, o
+// João e a Maria" — sem truncar, por mais entregas que existam.
+function listaNomesComArtigo(primeirosNomes) {
+  const partes = primeirosNomes.map(n => `${artigoDefinidoPorNome(n)} ${n}`);
+  if (partes.length === 1) return partes[0];
+  return partes.slice(0, -1).join(', ') + ' e ' + partes[partes.length - 1];
 }
 function buildAssistenteRotaCard(farmaciaAtiva) {
   if (!activeUser) return null;
@@ -12620,27 +12745,41 @@ function buildAssistenteRotaCard(farmaciaAtiva) {
     escopo = [...pendJuncal, ...pendBoaNova];
     mensagemBase = escopo.length === 0
       ? `Olá, ${nome}! Não tens nenhuma entrega pendente de momento, tanto na Juncal como na Boa Nova. Bom trabalho!`
-      : `Olá, ${nome}! Tens ${pendJuncal.length} entrega${pendJuncal.length === 1 ? '' : 's'} pendente${pendJuncal.length === 1 ? '' : 's'} na Juncal e ${pendBoaNova.length} na Boa Nova.`;
+      : `Olá, ${nome}! Tens ${pendJuncal.length} ${pluralPT(pendJuncal.length, 'entrega pendente', 'entregas pendentes')} na Juncal e ${pendBoaNova.length} ${pluralPT(pendBoaNova.length, 'entrega pendente', 'entregas pendentes')} na Boa Nova.`;
   } else {
     const farm = farmaciaAtiva || 'Juncal';
     escopo = pend(farm);
     mensagemBase = escopo.length === 0
       ? `Olá, ${nome}! Não há entregas pendentes de momento na Farmácia ${farm}. Bom trabalho!`
-      : `Olá, ${nome}! Existem ${escopo.length} entrega${escopo.length === 1 ? '' : 's'} pendente${escopo.length === 1 ? '' : 's'} na ${farm}.`;
+      : `Olá, ${nome}! Existem ${escopo.length} ${pluralPT(escopo.length, 'entrega pendente', 'entregas pendentes')} na ${farm}.`;
   }
 
-  const urgente = entregaMaisUrgente(escopo);
+  const urgentes = entregasUrgentesOuAtrasadas(escopo);
   let mensagemAlerta = '';
   let temAlerta = false;
-  if (urgente && urgente.restante <= 60 * 60 * 1000) {
+  if (urgentes.length > 0) {
     temAlerta = true;
-    const min = Math.round(urgente.restante / 60000);
-    const horaLabel = entregaHoraLimiteEfetiva(urgente.r);
-    const cliente = urgente.r.nomeCliente || 'sem nome';
-    const restanteTexto = min > 0 ? `restam ${min} min` : 'já expirou';
+    const nomes = urgentes.map(x => entregaPrimeiroNome(x.r));
+    const nomesTexto = listaNomesComArtigo(nomes);
+    const artigoEntregas = pluralPT(urgentes.length, 'A entrega', 'As entregas');
+    const verboTer = pluralPT(urgentes.length, 'tem', 'têm');
+    const todasPassadas = urgentes.every(x => x.restante <= 0);
+    const algumasPassadas = urgentes.some(x => x.restante <= 0);
+    let contexto;
+    if (todasPassadas) {
+      // Contexto amigável: hora já passou, mas isso não significa
+      // necessariamente atraso grave — o estafeta pode já estar a caminho.
+      contexto = urgentes.length === 1
+        ? ' já passou a hora limite — o estafeta pode estar a caminho ou com um ligeiro atraso.'
+        : ' já passaram a hora limite — o estafeta pode estar a caminho ou com um ligeiro atraso.';
+    } else if (algumasPassadas) {
+      contexto = ' — algumas já passaram a hora limite (o estafeta pode estar a caminho ou com um ligeiro atraso) e outras estão prestes a vencer.';
+    } else {
+      contexto = urgentes.length === 1 ? ' está prestes a vencer.' : ' estão prestes a vencer.';
+    }
     mensagemAlerta = estafeta
-      ? ` ATENÇÃO: A entrega de ${cliente} tem hora limite para as ${horaLabel} (${restanteTexto}).`
-      : ` ⚠️ ATENÇÃO: A entrega de ${cliente} vence às ${horaLabel} (${restanteTexto}) e necessita de envio imediato!`;
+      ? ` ATENÇÃO: ${artigoEntregas} para ${nomesTexto} ${verboTer} hora limite${contexto}`
+      : ` ⚠️ ATENÇÃO: ${artigoEntregas} para ${nomesTexto} ${verboTer} hora limite${contexto}`;
   } else if (escopo.length > 0) {
     mensagemAlerta = ' Boa rota!';
   }
