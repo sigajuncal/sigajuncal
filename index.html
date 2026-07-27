@@ -740,6 +740,10 @@
   .tab-btn.tone-orange.active .tab-count{background:rgba(255,255,255,.25);color:#fff;}
   .tab-btn.tone-blue{color:#1d4ed8;border-color:#bfdbfe;}
   .tab-btn.tone-blue .tab-count{background:#dbeafe;color:#1d4ed8;}
+  .tab-btn.tone-blue.active{background:#2563eb;border-color:#2563eb;color:#fff;}
+  .tab-btn.tone-blue.active .tab-count{background:rgba(255,255,255,.25);color:#fff;}
+  .tab-btn.tone-blue{color:#1d4ed8;border-color:#bfdbfe;}
+  .tab-btn.tone-blue .tab-count{background:#dbeafe;color:#1d4ed8;}
   .tab-btn.tone-blue.active{background:var(--blue);border-color:var(--blue);color:#fff;}
   .tab-btn.tone-blue.active .tab-count{background:rgba(255,255,255,.25);color:#fff;}
 
@@ -820,6 +824,9 @@
   .stat-card.tone-card .stat-label{color:rgba(255,255,255,.86);}
   .stat-card.tone-card.clickable:hover{box-shadow:0 8px 22px rgba(0,0,0,.16);}
   .stat-card.tone-blue-soft{background:linear-gradient(135deg,#4a9bc4,#2f7699);}
+  /* Destaque "Hoje"/"Amanhã" nas datas dos cards do Dashboard */
+  .data-dinamica-destaque{font-weight:800;color:#1c1206;background:#fde047;
+    border-radius:6px;padding:1px 7px;display:inline-block;}
   .stat-card.tone-orange{background:linear-gradient(135deg,#fb923c,#e8721b);}
   .stat-card.tone-yellow{background:linear-gradient(135deg,#f2b53d,#d99509);}
   .stat-card.tone-purple{background:linear-gradient(135deg,#a78bfa,#7c4fea);}
@@ -923,6 +930,8 @@
      os botões assentam diretamente sobre o fundo geral da app. */
   .home-section{margin-bottom:36px;}
   .home-section-title{font-weight:800;color:var(--pharm-800);font-size:15px;margin-bottom:14px;}
+  .cal-aviso-pendente-icon{font-size:16px;line-height:1;cursor:help;animation:calAvisoPulse 1.6s ease-in-out infinite;}
+  @keyframes calAvisoPulse{0%,100%{opacity:1;}50%{opacity:.55;}}
   .dash-col{display:flex;flex-direction:column;height:100%;}
   .dash-card-title{font-weight:800;color:var(--pharm-800);font-size:15px;margin-bottom:14px;}
   .recent-list-scroll{flex:1;overflow-y:auto;min-height:0;}
@@ -1189,6 +1198,17 @@
     font-size:13px;color:var(--pharm-800);cursor:pointer;}
   .gaveta-dest-item:hover{background:var(--pharm-50);}
   .gaveta-dest-item-marcado{background:var(--pharm-100);font-weight:700;}
+  /* Linha de recado clicável (abre a conversa) */
+  .gaveta-linha-clicavel{cursor:pointer;transition:box-shadow .12s ease,border-color .12s ease;}
+  .gaveta-linha-clicavel:hover{box-shadow:0 4px 14px rgba(0,0,0,.08);border-color:var(--pharm-300);}
+  /* Vista de Conversa (thread) — bolhas de chat, minhas à direita */
+  .gaveta-thread-lista{display:flex;flex-direction:column;gap:8px;max-height:44vh;overflow-y:auto;padding:2px;}
+  .gaveta-bolha-linha{display:flex;justify-content:flex-start;}
+  .gaveta-bolha-linha.gaveta-bolha-minha{justify-content:flex-end;}
+  .gaveta-bolha{max-width:80%;border-radius:14px;padding:9px 12px;}
+  .gaveta-bolha-outro-cor{background:var(--pharm-100);border:1px solid var(--pharm-200);border-bottom-left-radius:4px;}
+  .gaveta-bolha-minha-cor{background:#dbeafe;border:1px solid #bfdbfe;border-bottom-right-radius:4px;}
+  .gaveta-bolha-hora{font-size:10.5px;color:var(--pharm-500);}
   @keyframes lembretesBellPulse{
     0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.55);}
     50%{box-shadow:0 0 0 7px rgba(220,38,38,0);}
@@ -3293,9 +3313,52 @@ function buildNotaRapidaWidget(modulo, titulo, opts) {
 }
 
 
+// Formata a data de um card do Dashboard (Próximo Evento, Próxima Agenda):
+// "Hoje, às HH:mm" / "Amanhã, às HH:mm" com destaque visual, ou a data
+// normal (DD/MM/AAAA às HH:mm) para qualquer outro dia. horaStr é opcional
+// — sem ela, mostra só "Hoje"/"Amanhã"/a data.
+function buildDataDinamicaNode(dataISO, horaStr) {
+  const hojeISO = todayISO();
+  const amanhaDate = new Date(hojeISO + 'T12:00:00');
+  amanhaDate.setDate(amanhaDate.getDate() + 1);
+  const amanhaISO = dateToISO(amanhaDate);
+  let texto, destaque;
+  if (dataISO === hojeISO) { texto = horaStr ? `Hoje, às ${horaStr}` : 'Hoje'; destaque = true; }
+  else if (dataISO === amanhaISO) { texto = horaStr ? `Amanhã, às ${horaStr}` : 'Amanhã'; destaque = true; }
+  else { texto = horaStr ? `${formatDate(dataISO)} às ${horaStr}` : formatDate(dataISO); destaque = false; }
+  return h('span', { class: destaque ? 'data-dinamica-destaque' : '' }, texto);
+}
+// Regra de negócio: os utentes devem ser avisados com 2 dias de
+// antecedência para todas as marcações. Calcula a percentagem de
+// marcações de Agenda nos próximos 2 dias que AINDA não têm o aviso
+// assinalado como feito (campo "aviso" de cada marcação — o mesmo usado no
+// 🔔 de cada linha). Eventos ficam fora deste cálculo: as suas marcações
+// não têm um cache global no STATE (só são carregadas ao abrir cada
+// evento), e ir buscá-las aqui penalizaria a performance do Dashboard.
+function percentagemAvisosPendentesProximosDias() {
+  const hojeISO = todayISO();
+  const limiteDate = new Date(hojeISO + 'T12:00:00');
+  limiteDate.setDate(limiteDate.getDate() + 2);
+  const limiteISO = dateToISO(limiteDate);
+  const proximas = (STATE.agendaMarcacoes || []).filter(m =>
+    m.tipoLinha === 'vaga' && m.estado !== 'cancelada' && String(m.nomeCliente || '').trim()
+    && m.data >= hojeISO && m.data <= limiteISO
+  );
+  if (!proximas.length) return 0;
+  const pendentes = proximas.filter(m => !m.aviso).length;
+  return (pendentes / proximas.length) * 100;
+}
 function buildCalendarioSection(goTo) {
+  const tituloKids = [h('h3', { class: 'home-section-title', style: 'margin:0;' }, 'Calendário de Agendamentos')];
+  // Ícone de aviso: só aparece quando 80% ou mais das marcações dos
+  // próximos dias ainda não foram avisadas — desaparece sozinho assim que
+  // a meta de avisos for cumprida (percentagem desce abaixo dos 80%).
+  const percentPendente = percentagemAvisosPendentesProximosDias();
+  if (percentPendente >= 80) {
+    tituloKids.push(h('span', { class: 'cal-aviso-pendente-icon', title: 'Lembrar Utentes — a maioria das marcações dos próximos 2 dias ainda não foi avisada', 'aria-label': 'Lembrar Utentes' }, '⚠️'));
+  }
   return h('div', { class: 'home-section' }, [
-    h('h3', { class: 'home-section-title' }, 'Calendário de Agendamentos'),
+    h('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:14px;' }, tituloKids),
     buildCalendarioCarrossel(undefined, undefined, goTo),
   ]);
 }
@@ -6552,19 +6615,38 @@ function abrirModalGaveta() {
   function onKeydown(e) { if (e.key === 'Escape') close(); }
   document.addEventListener('keydown', onKeydown);
 
-  let activeTab = 'pendentes'; // 'pendentes' | 'tratados'
+  let activeTab = 'pendentes'; // 'pendentes' | 'tratados' | 'enviados'
   let showForm = false;
   let novosDestinatarioIds = new Set();
   let novaMensagem = '';
   let formError = '';
   let saving = false;
+  // Vista de conversa (thread): quando definida, mostra-se a troca de
+  // recados com esse colega em vez da lista de separadores.
+  let threadComId = null;
+  let respostaTexto = '';
+  let respostaSaving = false;
+  let respostaError = '';
 
   const bodyEl = h('div', {});
 
-  function meusRecados() {
+  function recadosRecebidos() {
     // Privacidade estrita: só os recados cujo DESTINATÁRIO é o próprio
     // utilizador com sessão ativa — nunca se veem recados de outra pessoa.
     return (STATE.gavetaRecados || []).filter(r => String(r.destinatarioId) === String(activeUser.id));
+  }
+  function recadosEnviados() {
+    return (STATE.gavetaRecados || []).filter(r => String(r.remetenteId) === String(activeUser.id));
+  }
+  // Conversa (thread) com um colega: todos os recados trocados nos dois
+  // sentidos entre o utilizador ativo e esse colega — sem precisar de
+  // nenhuma coluna nova na tabela, a "conversa" é simplesmente o par de
+  // participantes, ordenada cronologicamente como um chat normal.
+  function recadosDaThread(outroId) {
+    return (STATE.gavetaRecados || [])
+      .filter(r => (String(r.remetenteId) === String(activeUser.id) && String(r.destinatarioId) === String(outroId))
+        || (String(r.remetenteId) === String(outroId) && String(r.destinatarioId) === String(activeUser.id)))
+      .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
   }
   function nomeUtilizador(id) {
     const u = (STATE.usuarios || []).find(x => String(x.id) === String(id));
@@ -6585,27 +6667,102 @@ function abrirModalGaveta() {
       else showDbErrorToast('Não foi possível eliminar o recado');
     }, { danger: true, confirmLabel: 'Eliminar' });
   }
+  function abrirThread(outroId) {
+    threadComId = outroId; respostaTexto = ''; respostaError = ''; render();
+  }
 
   function buildLinhaRecado(r) {
+    // O outro participante da conversa: se o recado é recebido, é quem
+    // enviou; se é enviado por mim, é o destinatário.
+    const souEuRemetente = String(r.remetenteId) === String(activeUser.id);
+    const outroId = souEuRemetente ? r.destinatarioId : r.remetenteId;
     const acoes = [];
-    if (!r.tratado) {
-      const tratarBtn = h('button', { class: 'btn-fab-sm tone-green', title: 'Marcar como Tratado', 'aria-label': 'Marcar como Tratado' }, Icon('check', { size: 13, strokeWidth: 2.4 }));
-      tratarBtn.addEventListener('click', () => requireAuth(() => marcarTratado(r)));
+    if (!souEuRemetente && !r.tratado) {
+      const tratarBtn = h('button', { class: 'btn-fab-sm tone-green', title: 'Marcar como Concluído/Conferido', 'aria-label': 'Marcar como Concluído/Conferido' }, Icon('check', { size: 13, strokeWidth: 2.4 }));
+      tratarBtn.addEventListener('click', (e) => { e.stopPropagation(); requireAuth(() => marcarTratado(r)); });
       acoes.push(tratarBtn);
     }
     const delBtn = h('button', { class: 'btn-fab-sm tone-red', title: 'Eliminar', 'aria-label': 'Eliminar' }, Icon('trash', { size: 13, strokeWidth: 2.4 }));
-    delBtn.addEventListener('click', () => requireAuth(() => eliminarRecado(r)));
+    delBtn.addEventListener('click', (e) => { e.stopPropagation(); requireAuth(() => eliminarRecado(r)); });
     acoes.push(delBtn);
-    return h('div', { class: 'card card-pad', style: 'margin-bottom:10px;' }, [
+    const linha = h('div', { class: 'card card-pad gaveta-linha-clicavel', style: 'margin-bottom:10px;' }, [
       h('div', { style: 'display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:6px;' }, [
         h('div', { style: 'min-width:0;' }, [
-          h('p', { class: 'cell-strong', style: 'margin:0 0 2px;' }, `De: ${nomeUtilizador(r.remetenteId)}`),
+          h('p', { class: 'cell-strong', style: 'margin:0 0 2px;' }, souEuRemetente ? `Para: ${nomeUtilizador(r.destinatarioId)}` : `De: ${nomeUtilizador(r.remetenteId)}`),
           h('p', { class: 'cell-muted', style: 'margin:0;font-size:11.5px;' }, formatDateTime(r.createdAt)),
         ]),
         h('div', { class: 'row-actions', style: 'flex-shrink:0;' }, acoes),
       ]),
       h('p', { style: 'margin:0;font-size:13.5px;color:var(--pharm-800);white-space:pre-wrap;overflow-wrap:anywhere;' }, r.mensagem || ''),
+      souEuRemetente && r.tratado ? h('p', { style: 'margin:6px 0 0;font-size:11px;font-weight:700;color:#059669;' }, '✅ Conferido pelo destinatário') : null,
     ]);
+    linha.addEventListener('click', () => abrirThread(outroId));
+    return linha;
+  }
+
+  // ---- Vista de Conversa (thread) — histórico completo trocado com um
+  // colega específico, com bolhas de chat e campo de Responder no fim. ----
+  function buildThreadView(outroId) {
+    const mensagens = recadosDaThread(outroId);
+    const voltarBtn = h('button', { class: 'btn-link', type: 'button', style: 'font-size:12.5px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:5px;' },
+      [Icon('arrowleft', { size: 13, strokeWidth: 2.4 }), ' Voltar à lista']);
+    voltarBtn.addEventListener('click', () => { threadComId = null; render(); });
+
+    const bolhas = mensagens.map(r => {
+      const souEuRemetente = String(r.remetenteId) === String(activeUser.id);
+      const acoesMsg = [];
+      if (!souEuRemetente && !r.tratado) {
+        const tratarBtn = h('button', { class: 'btn-fab-sm tone-green', title: 'Marcar como Concluído/Conferido', 'aria-label': 'Marcar como Concluído/Conferido' }, Icon('check', { size: 12, strokeWidth: 2.4 }));
+        tratarBtn.addEventListener('click', () => requireAuth(() => marcarTratado(r)));
+        acoesMsg.push(tratarBtn);
+      }
+      return h('div', { class: 'gaveta-bolha-linha' + (souEuRemetente ? ' gaveta-bolha-minha' : '') }, [
+        h('div', { class: 'gaveta-bolha' + (souEuRemetente ? ' gaveta-bolha-minha-cor' : ' gaveta-bolha-outro-cor') }, [
+          h('p', { style: 'margin:0;font-size:13px;white-space:pre-wrap;overflow-wrap:anywhere;' }, r.mensagem || ''),
+          h('div', { style: 'display:flex;align-items:center;gap:8px;margin-top:5px;' }, [
+            h('span', { class: 'gaveta-bolha-hora' }, formatDateTime(r.createdAt)),
+            !souEuRemetente && r.tratado ? h('span', { class: 'gaveta-bolha-hora', style: 'color:#059669;font-weight:700;' }, '✅ Conferido') : null,
+            ...acoesMsg,
+          ]),
+        ]),
+      ]);
+    });
+
+    const respInput = h('textarea', { class: 'textarea', placeholder: 'Escrever uma resposta...', maxlength: '500', rows: '2' });
+    respInput.value = respostaTexto;
+    respInput.addEventListener('input', () => { respostaTexto = respInput.value; });
+    const respBtn = h('button', { class: 'btn btn-primary', onclick: respostaSaving ? null : () => enviarResposta(outroId), disabled: respostaSaving ? 'disabled' : undefined }, respostaSaving ? 'A enviar…' : 'Responder');
+    const respostaKids = [
+      h('div', { class: 'field', style: 'margin-bottom:0;' }, [respInput]),
+      respostaError ? h('p', { class: 'form-error' }, respostaError) : null,
+      h('div', { class: 'form-actions', style: 'margin-top:8px;' }, [respBtn]),
+    ];
+
+    return h('div', {}, [
+      voltarBtn,
+      h('p', { class: 'modal-tag', style: 'margin-bottom:10px;' }, `Conversa com ${nomeUtilizador(outroId)}`),
+      h('div', { class: 'gaveta-thread-lista' }, bolhas),
+      h('div', { class: 'card card-pad', style: 'margin-top:12px;' }, respostaKids),
+    ]);
+  }
+  async function enviarResposta(outroId) {
+    if (!String(respostaTexto || '').trim()) { respostaError = 'Por favor, escreva a resposta.'; render(); return; }
+    if (activeUser && activeUser.id === ADMIN_FUNDADOR.id) {
+      respostaError = 'Não é possível enviar: a app está a usar a conta de emergência (sem ligação à base de dados de utilizadores).';
+      render();
+      return;
+    }
+    respostaError = '';
+    respostaSaving = true; render();
+    const created = await dbInsertRecado({ remetenteId: activeUser.id, destinatarioId: outroId, mensagem: respostaTexto.trim(), tratado: false });
+    respostaSaving = false;
+    if (created) {
+      STATE.gavetaRecados = [created, ...STATE.gavetaRecados];
+      respostaTexto = '';
+    } else {
+      respostaError = `Não foi possível enviar a resposta. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
+    }
+    render();
   }
 
   function buildFormNovoRecado() {
@@ -6689,11 +6846,18 @@ function abrirModalGaveta() {
 
   function render() {
     clear(bodyEl);
+    if (threadComId) { bodyEl.appendChild(buildThreadView(threadComId)); return; }
     if (showForm) bodyEl.appendChild(buildFormNovoRecado());
-    const lista = meusRecados().filter(r => activeTab === 'pendentes' ? !r.tratado : !!r.tratado)
-      .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-    const pendCount = meusRecados().filter(r => !r.tratado).length;
-    const tratCount = meusRecados().filter(r => r.tratado).length;
+    const recebidos = recadosRecebidos();
+    const enviados = recadosEnviados();
+    let lista;
+    if (activeTab === 'pendentes') lista = recebidos.filter(r => !r.tratado);
+    else if (activeTab === 'tratados') lista = recebidos.filter(r => r.tratado);
+    else lista = enviados;
+    lista = lista.slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+    const pendCount = recebidos.filter(r => !r.tratado).length;
+    const tratCount = recebidos.filter(r => r.tratado).length;
+    const envCount = enviados.length;
     const tabsRow = h('div', { class: 'tabs-row' }, [
       h('button', { class: 'tab-btn tone-red' + (activeTab === 'pendentes' ? ' active' : ''), onclick: () => { activeTab = 'pendentes'; render(); } }, [
         Icon('inbox', { size: 14 }), h('span', {}, 'Pendentes'), h('span', { class: 'tab-count' }, String(pendCount)),
@@ -6701,14 +6865,18 @@ function abrirModalGaveta() {
       h('button', { class: 'tab-btn tone-green' + (activeTab === 'tratados' ? ' active' : ''), onclick: () => { activeTab = 'tratados'; render(); } }, [
         Icon('checkcircle', { size: 14 }), h('span', {}, 'Tratados'), h('span', { class: 'tab-count' }, String(tratCount)),
       ]),
+      h('button', { class: 'tab-btn tone-blue' + (activeTab === 'enviados' ? ' active' : ''), onclick: () => { activeTab = 'enviados'; render(); } }, [
+        Icon('message', { size: 14 }), h('span', {}, 'Enviados'), h('span', { class: 'tab-count' }, String(envCount)),
+      ]),
     ]);
     bodyEl.appendChild(tabsRow);
+    const semDadosTexto = activeTab === 'pendentes' ? 'Sem recados pendentes.' : (activeTab === 'tratados' ? 'Ainda sem recados tratados.' : 'Ainda não enviaste nenhum recado.');
     bodyEl.appendChild(h('div', { style: 'margin-top:12px;' },
-      lista.length ? lista.map(buildLinhaRecado) : [h('p', { class: 'cell-muted' }, activeTab === 'pendentes' ? 'Sem recados pendentes.' : 'Ainda sem recados tratados.')]
+      lista.length ? lista.map(buildLinhaRecado) : [h('p', { class: 'cell-muted' }, semDadosTexto)]
     ));
   }
 
-  const novoBtn = h('button', { class: 'btn btn-primary', onclick: () => { showForm = true; formError = ''; render(); } }, [Icon('plus', { size: 14 }), ' Novo Recado']);
+  const novoBtn = h('button', { class: 'btn btn-primary', onclick: () => { showForm = true; formError = ''; threadComId = null; render(); } }, [Icon('plus', { size: 14 }), ' Novo Recado']);
   const closeBtn = h('button', { class: 'close-btn', onclick: close }, Icon('x', { size: 16 }));
   const panel = h('div', { class: 'modal-panel', style: 'max-width:520px;' }, [
     h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;' }, [
@@ -6831,7 +6999,7 @@ function buildHomepage(container, goTo) {
       h('div', { style: 'min-width:0;' }, [
         h('p', { class: 'stat-label' }, 'Próximo Evento'),
         h('p', { class: 'next-evento-card-title' }, eventoLabel(nextEv)),
-        h('p', { class: 'next-evento-card-sub' }, [formatDate(nextEv.dataEvento), vagasSpan]),
+        h('p', { class: 'next-evento-card-sub' }, [buildDataDinamicaNode(nextEv.dataEvento), vagasSpan]),
       ]),
     ]);
     dbFetchMarcacaoCounts().then(counts => {
@@ -6865,7 +7033,7 @@ function buildHomepage(container, goTo) {
       h('div', { style: 'min-width:0;' }, [
         h('p', { class: 'stat-label' }, 'Próximo Serviço de Agenda'),
         h('p', { class: 'next-evento-card-title' }, prestador ? `${prestador.especialidade} · ${prestador.nome}` : 'Agenda'),
-        h('p', { class: 'next-evento-card-sub' }, `${formatDate(proximaAgenda.data)} às ${normalizarHora(proximaAgenda.hora)}`),
+        h('p', { class: 'next-evento-card-sub' }, buildDataDinamicaNode(proximaAgenda.data, normalizarHora(proximaAgenda.hora))),
       ]),
     ]);
     return card;
@@ -14356,6 +14524,7 @@ function setupRealtime() {
     .subscribe();
   sb.channel('realtime-gaveta_recados')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'gaveta_recados' }, async (payload) => {
+      const anteriores = STATE.gavetaRecados || [];
       STATE.gavetaRecados = sanitizarSupabase(await dbFetchGavetaRecados());
       // Aviso discreto (sem interromper ninguém) quando chega um recado
       // novo dirigido a este utilizador — nunca para quem não tem gaveta.
@@ -14363,6 +14532,24 @@ function setupRealtime() {
         const novo = sanitizarSupabase(rowToRecord(payload.new));
         if (String(novo.destinatarioId) === String(activeUser.id)) {
           dispararNotificacaoNativa('📥 Novo recado na Gaveta', novo.mensagem || '');
+        }
+      }
+      // Notificação ao REMETENTE: quando um recado que EU enviei é marcado
+      // como Tratado/Conferido pelo destinatário, aviso-me com o nome de
+      // quem conferiu e um trecho da mensagem original.
+      if (payload.eventType === 'UPDATE' && payload.new && utilizadorAtualTemGaveta()) {
+        const atualizado = sanitizarSupabase(rowToRecord(payload.new));
+        const anterior = anteriores.find(r => r.id === atualizado.id);
+        const acabaDeSerTratado = atualizado.tratado && anterior && !anterior.tratado;
+        if (acabaDeSerTratado && String(atualizado.remetenteId) === String(activeUser.id)) {
+          const nomeColega = (() => {
+            const u = (STATE.usuarios || []).find(x => String(x.id) === String(atualizado.destinatarioId));
+            return u ? (u.nomeCompleto || u.username) : 'Um colega';
+          })();
+          const trecho = String(atualizado.mensagem || '').slice(0, 60) + (String(atualizado.mensagem || '').length > 60 ? '…' : '');
+          const textoAviso = `${nomeColega} conferiu/concluiu o teu recado: "${trecho}"`;
+          dispararNotificacaoNativa('✅ Recado conferido', textoAviso);
+          showToast(textoAviso, 'success');
         }
       }
       renderOuAdiarSeOcupado();
