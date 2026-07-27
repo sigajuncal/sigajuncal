@@ -343,7 +343,8 @@
     .app-print-area{display:block !important;position:absolute !important;left:0 !important;top:0 !important;
       width:100% !important;margin:0 !important;padding:0 !important;}
     .app-print-area table{page-break-inside:auto;}
-    .app-print-area tr{page-break-inside:avoid;}
+    .app-print-area tr{page-break-inside:avoid;break-inside:avoid;}
+    .app-print-area thead{display:table-header-group;}
     .doc-a4{width:210mm !important;height:297mm !important;max-height:297mm !important;min-height:0 !important;
       box-sizing:border-box !important;box-shadow:none !important;margin:0 !important;
       padding:15mm 18mm !important; /* Margens reais no interior da folha */
@@ -7201,32 +7202,56 @@ function buildErrosPage(container, goTo) {
         .slice()
         .sort((a, b) => (a.data || '').localeCompare(b.data || ''));
       if (!pendentes.length) { showDbErrorToast('Não há erros por corrigir para exportar'); return; }
-      const celTh = 'border:1px solid #000;padding:5px 6px;background:#fff;color:#000;font-size:9.5px;font-weight:800;text-align:center;';
-      const celTd = 'border:1px solid #555;padding:5px 6px;font-size:9.5px;color:#000;';
-      // Responsável reduzido ao mínimo (só primeiro + último nome) — o
-      // espaço libertado, mais o da coluna Observações (removida), reverte
-      // quase todo para o Produto.
+      // Responsável reduzido ao mínimo (só primeiro + último nome).
       const nomeCurto = (nome) => {
         const partes = String(nome || '').trim().split(/\s+/).filter(Boolean);
         if (partes.length <= 1) return partes[0] || '—';
         return `${partes[0]} ${partes[partes.length - 1]}`;
       };
-      const larguras = ['5%', '8%', '42%', '7%', '8%', '7%', '8%', '6%', '9%'];
+      // ---- Tabela HTML nativa e rígida (thead/tbody/tr/th/td) — sem
+      // flexbox nem grid, que causam desalinhamento/sobreposição no motor
+      // de impressão do browser. Cada th define a largura da sua coluna
+      // via style="width:X%" (table-layout:fixed lê a largura da 1ª linha
+      // — o cabeçalho — e aplica-a a toda a coluna). Bordas em TODAS as
+      // células para uma grelha bem definida, fácil de preencher a lápis.
+      // Nota: a coluna ☐ (5%) foi acrescentada às 8 pedidas — sem ela a
+      // colega perde a forma de assinalar visualmente cada item já
+      // verificado — retirando a largura apenas ao Produto (38% → 33%)
+      // para manter as restantes 7 colunas exatamente como especificado.
+      const COLS = [
+        { th: '☐', w: '5%', align: 'center' },
+        { th: 'CNP/CÓD.', w: '10%', align: 'center' },
+        { th: 'PRODUTO', w: '33%', align: 'left' },
+        { th: 'QTD. SIST.', w: '7%', align: 'center' },
+        { th: 'NOV. SIST.', w: '9%', align: 'center' },
+        { th: 'QTD. FIS.', w: '7%', align: 'center' },
+        { th: 'NOV. FIS.', w: '9%', align: 'center' },
+        { th: 'DIF.', w: '6%', align: 'center' },
+        { th: 'RESPONSÁVEL', w: '14%', align: 'left' },
+      ];
+      const bordaCel = 'border:1px solid #cbd5e1;padding:4px 6px;font-size:9.5px;color:#000;';
+      const theadRow = h('tr', {}, COLS.map(c =>
+        h('th', { style: `${bordaCel}width:${c.w};background:#fff;font-weight:800;text-align:${c.align === 'left' ? 'left' : 'center'};` }, c.th)
+      ));
       const linhasHtml = pendentes.map((r) => {
         const fisV = toIntegerOrNull(r.qtdFisica) || 0;
         const sisV = toIntegerOrNull(r.qtdSistema) || 0;
         const dif = fisV - sisV;
         const difTexto = dif > 0 ? `+${dif}` : String(dif);
-        return h('tr', {}, [
-          h('td', { style: celTd + 'text-align:center;font-size:12px;' }, '☐'),
-          h('td', { style: celTd + 'text-align:center;' }, r.cnp || '—'),
-          h('td', { style: celTd }, r.produto || '—'),
-          h('td', { style: celTd + 'text-align:center;font-weight:700;' }, String(sisV)),
-          h('td', { style: celTd }, ''),
-          h('td', { style: celTd + 'text-align:center;font-weight:700;' }, String(fisV)),
-          h('td', { style: celTd }, ''),
-          h('td', { style: celTd + 'text-align:center;font-weight:800;' }, difTexto),
-          h('td', { style: celTd + 'text-align:center;white-space:nowrap;' }, nomeCurto(r.responsavel)),
+        // page-break-inside:avoid também inline, além da regra global em
+        // @media print — garante que uma linha nunca é cortada ao meio
+        // entre duas páginas (a causa mais provável do desalinhamento
+        // reportado: dados de uma linha a "misturarem-se" com a seguinte).
+        return h('tr', { style: 'page-break-inside:avoid;break-inside:avoid;' }, [
+          h('td', { style: bordaCel + 'text-align:center;font-size:12px;' }, '☐'),
+          h('td', { style: bordaCel + 'text-align:center;font-family:monospace;' }, r.cnp || '—'),
+          h('td', { style: bordaCel + 'text-align:left;word-break:break-word;overflow-wrap:anywhere;' }, r.produto || '—'),
+          h('td', { style: bordaCel + 'text-align:center;font-weight:700;' }, String(sisV)),
+          h('td', { style: bordaCel }, ''),
+          h('td', { style: bordaCel + 'text-align:center;font-weight:700;' }, String(fisV)),
+          h('td', { style: bordaCel }, ''),
+          h('td', { style: bordaCel + 'text-align:center;font-weight:800;' }, difTexto),
+          h('td', { style: bordaCel + 'text-align:left;white-space:nowrap;' }, nomeCurto(r.responsavel)),
         ]);
       });
       const folha = h('div', { style: 'font-family:Arial,Helvetica,sans-serif;background:#fff;color:#000;' }, [
@@ -7234,22 +7259,17 @@ function buildErrosPage(container, goTo) {
         h('p', { style: 'margin:0 0 5px;font-size:9.5px;color:#000;' },
           `Exportado em ${formatDate(todayISO())} · ${pendentes.length} registo${pendentes.length > 1 ? 's' : ''} · Assinalar ☐ após verificação na farmácia e preencher as Novas Contagens à mão.`),
         h('p', { style: 'margin:0 0 8px;font-size:8px;color:#333;font-style:italic;' },
-          'Legenda: Qtd. Sist. Ini. = Quantidade Sistema Inicial | Nov. Sist. = Nova Contagem Sistema | Qtd. Fís. Ini. = Quantidade Física Inicial | Nov. Fís. = Nova Contagem Física | Dif. = Diferença (Física Inicial − Sistema Inicial)'),
+          'Legenda: QTD. SIST. = Quantidade Sistema Inicial | NOV. SIST. = Nova Contagem Sistema | QTD. FIS. = Quantidade Física Inicial | NOV. FIS. = Nova Contagem Física | DIF. = Diferença (Física − Sistema)'),
         h('table', { style: 'width:100%;border-collapse:collapse;table-layout:fixed;' }, [
-          h('colgroup', {}, larguras.map(w => h('col', { style: `width:${w};` }))),
-          h('thead', {}, h('tr', {}, [
-            '☐', 'CNP/Cód.', 'Produto',
-            'Qtd. Sist. Ini.', 'Nov. Sist.',
-            'Qtd. Fís. Ini.', 'Nov. Fís.',
-            'Dif.', 'Responsável',
-          ].map(t => h('th', { style: celTh }, t)))),
+          h('thead', {}, theadRow),
           h('tbody', {}, linhasHtml),
         ]),
       ]);
-      // Titulo do documento (nome sugerido ao "Guardar como PDF"):
-      // acerto_de_erros_de_stock_AAAA-MM-DD - reposto automaticamente pelo
-      // motor global assim que o dialogo do sistema fecha.
-      imprimirDocumento(folha, { orientacao: 'landscape', margemMm: 12, titulo: `acerto_de_erros_de_stock_${todayISO()}` });
+      // Título do documento (nome sugerido ao "Guardar como PDF"):
+      // acerto_de_erros_de_stock_AAAA-MM-DD — reposto automaticamente pelo
+      // motor global assim que o diálogo do sistema fecha. Folha em A4
+      // RETRATO com margem de 10mm, conforme especificado.
+      imprimirDocumento(folha, { orientacao: 'portrait', margemMm: 10, titulo: `acerto_de_erros_de_stock_${todayISO()}` });
     }
     const exportBtn = h('button', { class: 'btn btn-secondary', style: 'margin-left:auto;', title: 'Abre o diálogo de impressão do sistema com a lista de Erros por Corrigir — imprima de imediato ou escolha "Guardar como PDF"' },
       [Icon('printer', { size: 14, strokeWidth: 2.2 }), ' Imprimir Lista']);
@@ -10102,10 +10122,16 @@ function prepararImpressaoGlobal(conteudoNode, opcoes) {
   area.innerHTML = '';
   area.appendChild(conteudoNode);
   let estiloTemp = null;
-  if (opcoes.orientacao === 'landscape') {
-    const margem = opcoes.margemMm || 12;
+  // Folha de estilo temporária sempre que a impressão precisa de algo
+  // diferente do padrão global (retrato, margem 0, usado pelos Documentos
+  // .doc-a4): paisagem, e/ou uma margem própria em milímetros.
+  if (opcoes.orientacao === 'landscape' || opcoes.margemMm != null) {
+    const paisagem = opcoes.orientacao === 'landscape';
+    const margem = opcoes.margemMm != null ? opcoes.margemMm : (paisagem ? 12 : 0);
+    const largura = paisagem ? '297mm' : '210mm';
+    const altura = paisagem ? '210mm' : '297mm';
     estiloTemp = document.createElement('style');
-    estiloTemp.textContent = `@media print { @page { size: A4 landscape; margin: ${margem}mm; } html, body { width: 297mm !important; height: 210mm !important; } .app-print-area{padding:0 !important;} }`;
+    estiloTemp.textContent = `@media print { @page { size: A4 ${paisagem ? 'landscape' : 'portrait'}; margin: ${margem}mm; } html, body { width: ${largura} !important; height: ${altura} !important; } .app-print-area{padding:0 !important;} }`;
     document.head.appendChild(estiloTemp);
   }
   const tituloOriginal = document.title;
