@@ -332,6 +332,15 @@
     .doc-print-area,.doc-print-area *{visibility:visible !important;}
     .doc-print-area{display:block !important;position:absolute !important;left:0 !important;top:0 !important;
       width:210mm !important;height:297mm !important;margin:0 !important;padding:0 !important;overflow:hidden !important;}
+    /* Área de impressão dos Erros de Stock — independente da .doc-print-area
+       (não herda as regras de A4 portrait acima; o layout landscape é
+       aplicado à parte, por uma folha de estilo temporária injetada só
+       durante essa impressão — ver imprimirErrosPendentes()). */
+    .erros-print-area,.erros-print-area *{visibility:visible !important;}
+    .erros-print-area{display:block !important;position:absolute !important;left:0 !important;top:0 !important;
+      width:100% !important;margin:0 !important;padding:0 !important;}
+    .erros-print-area table{page-break-inside:auto;}
+    .erros-print-area tr{page-break-inside:avoid;}
     .doc-a4{width:210mm !important;height:297mm !important;max-height:297mm !important;min-height:0 !important;
       box-sizing:border-box !important;box-shadow:none !important;margin:0 !important;
       padding:15mm 18mm !important; /* Margens reais no interior da folha */
@@ -1074,12 +1083,19 @@
   .agenda-slot-hora{font-size:12px;font-weight:800;color:var(--pharm-700);width:96px;flex-shrink:0;
     font-variant-numeric:tabular-nums;}
   .agenda-slot-label{flex:1;font-size:13px;color:var(--pharm-600);min-width:0;}
-  .agenda-slot-contacto{display:inline-block;margin-left:8px;font-size:12px;font-weight:700;color:var(--pharm-700);
+  /* Hierarquia visual da marcação: Nome e Contacto em destaque (o que
+     realmente importa ao balcão), Tipo de Serviço/Consulta como texto
+     secundário discreto — não compete visualmente com o nome do utente. */
+  .agenda-slot-nome{font-weight:800;font-size:14px;color:var(--pharm-900);}
+  .agenda-slot-servico{display:inline-block;margin-left:7px;font-weight:400;font-size:11.5px;color:var(--pharm-400);}
+  .agenda-slot-contacto{display:inline-block;margin-left:8px;font-size:12.5px;font-weight:800;color:var(--pharm-700);
     background:var(--pharm-100);border:1px solid var(--pharm-200);border-radius:8px;padding:1px 7px;white-space:nowrap;}
   .agenda-slot-livre{background:#fff;border:1px dashed var(--pharm-200);}
   .agenda-slot-bloqueado{background:var(--pharm-100);}
   .agenda-slot-bloqueado .agenda-slot-label{color:var(--pharm-500);font-style:italic;}
+  .agenda-slot-bloqueado .agenda-slot-nome,.agenda-slot-bloqueado .agenda-slot-servico{color:var(--pharm-500) !important;}
   .agenda-slot-ocupado{background:#eff6ff;}
+  .agenda-slot-row.linha-selecionada{background:var(--pharm-100) !important;box-shadow:inset 3px 0 0 var(--pharm-500);}
   .agenda-slot-encaixe{background:#fdf4ff;border:1px dashed #d8b4fe;}
   /* Slots "arrastados" por uma marcação mais longa (ex: 60min a partir das
      12:15) — ligados visualmente à marcação principal por uma barra lateral
@@ -1089,8 +1105,10 @@
   .agenda-slot-continuacao .agenda-slot-label{font-style:italic;}
   .agenda-slot-confirmada{background:#dcfce7 !important;}
   .agenda-slot-confirmada .agenda-slot-label{color:#15803d;}
+  .agenda-slot-confirmada .agenda-slot-nome{color:#15803d !important;}
   .agenda-slot-cancelada{background:#fee2e2 !important;}
   .agenda-slot-cancelada .agenda-slot-label{color:#b91c1c;text-decoration:line-through;}
+  .agenda-slot-cancelada .agenda-slot-nome{color:#b91c1c !important;text-decoration:line-through;}
   .agenda-dia-panel .agenda-slots-list{margin-top:4px;}
 
   /* Zonas cromáticas dos cartões principais da Homepage */
@@ -1350,6 +1368,36 @@ function h(tag, attrs, children) {
   return e;
 }
 function clear(el) { closePopover(); while (el.firstChild) el.removeChild(el.firstChild); }
+
+/* ---- Preservação da posição de scroll em re-renders ----
+   Reconstruir o DOM de uma lista/modal colapsa momentaneamente a altura do
+   conteúdo e o browser "salta" o scroll para o topo — muito irritante ao
+   selecionar vários itens seguidos. Estes helpers tiram uma fotografia das
+   posições de scroll (janela + contentores conhecidos, por ordem de
+   ocorrência) antes do re-render e repõem-nas imediatamente a seguir. */
+const SCROLL_PRESERVAR_SELETORES = ['.modal-panel', '.agenda-slots-list', '.recent-list-scroll', '.metas-list-scroll', '.dash-grid > .card', '.nota-topicos-lista'];
+function capturarPosicoesScroll(raiz) {
+  const base = raiz || document;
+  const estado = { janelaX: window.scrollX, janelaY: window.scrollY, porSeletor: {} };
+  SCROLL_PRESERVAR_SELETORES.forEach(sel => {
+    const tops = [...base.querySelectorAll(sel)].map(el => el.scrollTop);
+    if (tops.some(t => t > 0)) estado.porSeletor[sel] = tops;
+  });
+  return estado;
+}
+function restaurarPosicoesScroll(estado, raiz) {
+  if (!estado) return;
+  const base = raiz || document;
+  Object.entries(estado.porSeletor).forEach(([sel, tops]) => {
+    const els = [...base.querySelectorAll(sel)];
+    tops.forEach((top, i) => { if (els[i] && top > 0) els[i].scrollTop = top; });
+  });
+  if (estado.janelaY || estado.janelaX) window.scrollTo(estado.janelaX, estado.janelaY);
+}
+function comScrollPreservado(fn, raiz) {
+  const estado = capturarPosicoesScroll(raiz);
+  try { fn(); } finally { restaurarPosicoesScroll(estado, raiz); }
+}
 
 /* =================================================================
    ÍCONES VETORIAIS (estilo outline uniforme, sem dependência externa)
@@ -2226,7 +2274,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   let barraSelecaoEl = null;
   function toggleSelecaoMarcacao(id) {
     if (selecionadas.has(id)) selecionadas.delete(id); else selecionadas.add(id);
-    render();
+    sincronizarBarraSelecao(); // atualização leve: não reconstrói a grelha inteira
   }
   function marcacoesSelecionadasLista() { return STATE.agendaMarcacoes.filter(x => selecionadas.has(x.id)); }
   function editarSelecionada() {
@@ -2283,11 +2331,11 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   }
 
   function openNovaMarcacao(horaPreenchida, forcarEncaixe) {
-    formDraft = { hora: horaPreenchida || agendaSlotsPara(prestadorKey)[0], tipoConsulta: agendaEhNutricao(prestadorKey) ? TIPOS_CONSULTA_NUTRICAO[0] : (agendaEhPrimaCorpus(prestadorKey) ? PRIMA_CORPUS_SERVICOS[0].nome : ''), duracaoManual: 15, nomeCliente: '', contacto: '', aviso: false, observacoes: '', forcarEncaixe: !!forcarEncaixe };
+    formDraft = { hora: horaPreenchida || agendaSlotsPara(prestadorKey)[0], tipoConsulta: agendaEhPrimaCorpus(prestadorKey) ? PRIMA_CORPUS_SERVICOS[0].nome : '', duracaoManual: 15, nomeCliente: '', contacto: '', aviso: false, observacoes: '', forcarEncaixe: !!forcarEncaixe };
     formError = ''; showForm = 'nova'; render();
   }
   function openEncaixe() {
-    formDraft = { hora: '', tipoConsulta: agendaEhNutricao(prestadorKey) ? TIPOS_CONSULTA_NUTRICAO[0] : (agendaEhPrimaCorpus(prestadorKey) ? PRIMA_CORPUS_SERVICOS[0].nome : ''), duracaoManual: 15, nomeCliente: '', contacto: '', aviso: false, observacoes: '' };
+    formDraft = { hora: '', tipoConsulta: agendaEhPrimaCorpus(prestadorKey) ? PRIMA_CORPUS_SERVICOS[0].nome : '', duracaoManual: 15, nomeCliente: '', contacto: '', aviso: false, observacoes: '' };
     formError = ''; showForm = 'encaixe'; render();
   }
   // Edição de uma marcação existente (grelha padrão ou encaixe): reabre o
@@ -2296,7 +2344,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   function openEditarMarcacao(m) {
     const ehEncaixe = !agendaSlotsPara(prestadorKey).includes(m.hora);
     formDraft = {
-      editId: m.id, hora: m.hora, tipoConsulta: m.tipoConsulta || (agendaEhNutricao(prestadorKey) ? TIPOS_CONSULTA_NUTRICAO[0] : (agendaEhPrimaCorpus(prestadorKey) ? PRIMA_CORPUS_SERVICOS[0].nome : '')),
+      editId: m.id, hora: m.hora, tipoConsulta: m.tipoConsulta || (agendaEhPrimaCorpus(prestadorKey) ? PRIMA_CORPUS_SERVICOS[0].nome : ''),
       duracaoManual: m.duracaoMin || 15, nomeCliente: m.nomeCliente || '', contacto: m.contacto || '',
       aviso: !!m.aviso, observacoes: m.observacoes || '', forcarEncaixe: false,
     };
@@ -2371,6 +2419,11 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     if (!String(formDraft.nomeCliente || '').trim()) { formError = 'Por favor, preencha o Nome do Cliente.'; render(); return; }
     if (!String(formDraft.contacto || '').trim()) { formError = 'Por favor, preencha o Contacto.'; render(); return; }
     if (!/^[0-9]{9}$/.test(String(formDraft.contacto || '').trim())) { formError = 'O Contacto deve ter exatamente 9 dígitos numéricos.'; render(); return; }
+    // Nutrição: sem opção predefinida no dropdown — a colega tem sempre de
+    // escolher explicitamente o Tipo de Consulta antes de poder confirmar.
+    if (agendaEhNutricao(prestadorKey) && !String(formDraft.tipoConsulta || '').trim()) {
+      formError = 'Por favor, selecione o Tipo de Consulta.'; render(); return;
+    }
     if (showForm === 'encaixe') {
       formDraft.hora = normalizarHora(formDraft.hora);
       if (!/^\d{2}:\d{2}$/.test(formDraft.hora)) {
@@ -2638,7 +2691,10 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       campos.push(h('div', { class: 'field field-xs' }, [h('label', {}, 'Hora'), horaSelect]));
     }
     if (isNutricao) {
-      const tipoSelect = h('select', { class: 'select' }, TIPOS_CONSULTA_NUTRICAO.map(t => h('option', { value: t, selected: formDraft.tipoConsulta === t ? 'selected' : undefined }, t)));
+      const tipoSelect = h('select', { class: 'select' }, [
+        h('option', { value: '', selected: !formDraft.tipoConsulta ? 'selected' : undefined }, '-- Selecionar Tipo de Consulta --'),
+        ...TIPOS_CONSULTA_NUTRICAO.map(t => h('option', { value: t, selected: formDraft.tipoConsulta === t ? 'selected' : undefined }, t)),
+      ]);
       tipoSelect.value = formDraft.tipoConsulta;
       tipoSelect.addEventListener('change', () => { formDraft.tipoConsulta = tipoSelect.value; render(); });
       campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Tipo de Consulta'), tipoSelect]));
@@ -2676,7 +2732,8 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Observações'), obsInput]));
 
     const duracaoInfo = h('p', { class: 'field-helper-text' }, `Duração desta marcação: ${agendaDuracaoPorTipo(prestadorKey, formDraft.tipoConsulta, formDraft.duracaoManual)} minutos.`);
-    const saveBtn = h('button', { class: 'btn btn-primary', onclick: saving ? null : () => requireAuth(submitForm), disabled: saving ? 'disabled' : undefined }, saving ? 'A guardar…' : (formDraft.editId ? 'Guardar Alterações' : 'Confirmar Marcação'));
+    const nutricaoSemTipo = agendaEhNutricao(prestadorKey) && !String(formDraft.tipoConsulta || '').trim();
+    const saveBtn = h('button', { class: 'btn btn-primary', onclick: (saving || nutricaoSemTipo) ? null : () => requireAuth(submitForm), disabled: (saving || nutricaoSemTipo) ? 'disabled' : undefined, title: nutricaoSemTipo ? 'Selecione o Tipo de Consulta para poder confirmar' : undefined }, saving ? 'A guardar…' : (formDraft.editId ? 'Guardar Alterações' : 'Confirmar Marcação'));
     const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: cancelForm }, 'Cancelar');
 
     const camposGrid = h('div', { class: 'form-grid' }, campos);
@@ -2689,6 +2746,9 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
 
   const bodyEl = h('div', {});
   function render() {
+    comScrollPreservado(() => renderInternoAgendaDia(), overlay);
+  }
+  function renderInternoAgendaDia() {
     renderHeaderAcoes();
     clear(bodyEl);
     if (showForm) { bodyEl.appendChild(buildForm()); sincronizarBarraSelecao(); return; }
@@ -2763,10 +2823,11 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
         // extremidade — as restantes ações vivem na barra flutuante.
         const acoes = [avisoToggleBtn(m)];
         if (!isPast) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
-        node = h('div', { class: 'agenda-slot-row agenda-slot-ocupado' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') }, [
+        node = h('div', { class: 'agenda-slot-row agenda-slot-ocupado' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : '') }, [
           h('span', { class: 'agenda-slot-hora' }, `${m.hora} (${m.duracaoMin || 15}min)`),
           h('span', { class: 'agenda-slot-label cell-strong' }, [
-            `${m.nomeCliente || '—'}${m.tipoConsulta ? ' · ' + m.tipoConsulta : ''}${estadoSufixoVaga(m)}`,
+            h('span', { class: 'agenda-slot-nome' }, `${m.nomeCliente || '—'}${estadoSufixoVaga(m)}`),
+            m.tipoConsulta ? h('span', { class: 'agenda-slot-servico' }, m.tipoConsulta) : null,
             m.contacto ? h('span', { class: 'agenda-slot-contacto' }, `📞 ${m.contacto}`) : null,
           ]),
           h('div', { class: 'row-actions' }, acoes),
@@ -2779,10 +2840,11 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       // Lembrete 🔔 direto + checkbox de seleção (barra flutuante para o resto).
       const acoes = [avisoToggleBtn(m)];
       if (!isPast) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
-      const node = h('div', { class: 'agenda-slot-row agenda-slot-encaixe' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') }, [
+      const node = h('div', { class: 'agenda-slot-row agenda-slot-encaixe' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : '') }, [
         h('span', { class: 'agenda-slot-hora' }, `${m.hora} · Encaixe`),
         h('span', { class: 'agenda-slot-label cell-strong' }, [
-          `${m.nomeCliente || '—'}${estadoSufixoVaga(m)}`,
+          h('span', { class: 'agenda-slot-nome' }, `${m.nomeCliente || '—'}${estadoSufixoVaga(m)}`),
+          m.tipoConsulta ? h('span', { class: 'agenda-slot-servico' }, m.tipoConsulta) : null,
           m.contacto ? h('span', { class: 'agenda-slot-contacto' }, `📞 ${m.contacto}`) : null,
         ]),
         h('div', { class: 'row-actions' }, acoes),
@@ -3130,7 +3192,7 @@ function buildCalendarioSection() {
 function buildAgendaPage(container, goTo, prestadorKey) {
   const prestador = PRESTADORES_AGENDA.find(p => p.key === prestadorKey);
 
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function onDayClick(dateISO) { document.body.appendChild(buildAgendaDiaModal(prestadorKey, dateISO, rerender)); }
 
   function build() {
@@ -4485,7 +4547,15 @@ function buildCheckboxMarcacao(id, selecionadas, onToggle) {
   const cb = h('input', { type: 'checkbox', class: 'row-checkbox marcacao-checkbox' });
   cb.checked = selecionadas.has(id);
   cb.addEventListener('click', (e) => e.stopPropagation());
-  cb.addEventListener('change', () => onToggle(id));
+  cb.addEventListener('change', () => {
+    // Atualização leve: só a classe visual da linha muda de imediato — o
+    // toggle() do estado e a sincronização da barra flutuante correm sem
+    // reconstruir a lista inteira de marcações, o que evita qualquer salto
+    // da posição do scroll ao selecionar vários itens seguidos.
+    const linha = cb.closest('.agenda-slot-row');
+    if (linha) linha.classList.toggle('linha-selecionada', cb.checked);
+    onToggle(id);
+  });
   return cb;
 }
 function buildBarraSelecaoMarcacoes(count, acoes) {
@@ -5295,7 +5365,7 @@ function buildOrtopediaPage(container, goTo) {
   let fornecedorEditadoManualmente = false;
 
   function records() { return STATE.ortopedia; }
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
   function openNew() { draft = emptyRecord(ortopediaSchema); editingId = null; formError = ''; fornecedorEditadoManualmente = false; showForm = true; rerender(); }
   function openEditSelected() {
@@ -6479,7 +6549,7 @@ function buildErrosPage(container, goTo) {
   let saving = false;
   let selectedIds = new Set();
 
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function openNew() {
     draft = emptyRecord(errosSchema);
     // Data preenchida logo com hoje (continua editável) e foco automático
@@ -6722,7 +6792,25 @@ function buildErrosPage(container, goTo) {
     //   · Qtd. Sistema/Física INICIAIS registadas na app;
     //   · colunas EM BRANCO "Nova Contagem - Sistema" e "Nova Contagem -
     //     Física" para preencher a recontagem à mão.
-    async function exportarErrosPendentesPDF() {
+    // ---- Impressão dos "Erros por Corrigir" (diálogo nativo do sistema) ----
+    // Antes usava html2pdf/html2canvas com a folha posicionada bem fora do
+    // ecrã (left:-10000px) — o html2canvas frequentemente devolve uma
+    // captura em branco nesse cenário, daí o PDF vazio. A solução robusta é
+    // não usar canvas nenhum: reaproveita-se o mecanismo de impressão nativo
+    // já testado na app (área revelada só durante a impressão via CSS
+    // @media print), que abre diretamente o diálogo do sistema — o
+    // utilizador imprime de imediato ou escolhe "Guardar como PDF" ali.
+    function getErrosPrintArea() {
+      let el = document.getElementById('erros-print-area');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'erros-print-area';
+        el.className = 'erros-print-area';
+        document.body.appendChild(el);
+      }
+      return el;
+    }
+    function imprimirErrosPendentes() {
       const pendentes = STATE.erros.filter(r => r.estado !== 'Corrigido')
         .slice()
         .sort((a, b) => (a.data || '').localeCompare(b.data || ''));
@@ -6746,7 +6834,7 @@ function buildErrosPage(container, goTo) {
           h('td', { style: celTd }, r.obs || ''),
         ]);
       });
-      const folha = h('div', { style: 'font-family:Segoe UI,Arial,sans-serif;padding:10mm 8mm;background:#fff;' }, [
+      const folha = h('div', { style: 'font-family:Segoe UI,Arial,sans-serif;padding:8mm 10mm;background:#fff;' }, [
         h('h2', { style: 'margin:0 0 2px;font-size:17px;color:#065f46;' }, 'SigaJuncal · Erros de Stock — Erros por Corrigir'),
         h('p', { style: 'margin:0 0 10px;font-size:11px;color:#475569;' },
           `Exportado em ${formatDate(todayISO())} · ${pendentes.length} registo${pendentes.length > 1 ? 's' : ''} · Assinalar ☐ após verificação na farmácia e preencher as Novas Contagens à mão.`),
@@ -6760,28 +6848,26 @@ function buildErrosPage(container, goTo) {
           h('tbody', {}, linhasHtml),
         ]),
       ]);
-      // A folha tem de estar no DOM (invisível) para o html2canvas a medir.
-      folha.style.position = 'fixed'; folha.style.left = '-10000px'; folha.style.top = '0'; folha.style.width = '277mm';
-      document.body.appendChild(folha);
-      try {
-        if (!window.html2pdf) throw new Error('html2pdf indisponível');
-        await window.html2pdf().set({
-          margin: 5,
-          filename: `erros_por_corrigir_${todayISO()}.pdf`,
-          image: { type: 'jpeg', quality: 0.98 },
-          html2canvas: { scale: 2, useCORS: true },
-          jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' },
-        }).from(folha).save();
-      } catch (e) {
-        console.error('[html2pdf] erro ao gerar PDF dos erros:', formatarErroSeguro(e));
-        showDbErrorToast('Não foi possível gerar o PDF — verifique a ligação (a biblioteca de PDF carrega da internet)');
-      } finally {
-        folha.remove();
+      const area = getErrosPrintArea();
+      clear(area);
+      area.appendChild(folha);
+      // A folha desta impressão é em A4 PAISAGEM (10 colunas), diferente do
+      // A4 retrato usado pelos Documentos — injeta-se uma folha de estilo
+      // temporária que só existe durante esta impressão e é removida assim
+      // que o diálogo do sistema fecha (imprimiu ou cancelou).
+      const estiloLandscape = document.createElement('style');
+      estiloLandscape.textContent = '@media print { @page { size: A4 landscape; margin: 10mm; } html, body { width: 297mm !important; height: 210mm !important; } }';
+      document.head.appendChild(estiloLandscape);
+      function limpar() {
+        estiloLandscape.remove();
+        window.removeEventListener('afterprint', limpar);
       }
+      window.addEventListener('afterprint', limpar);
+      setTimeout(() => window.print(), 60);
     }
-    const exportBtn = h('button', { class: 'btn btn-secondary', style: 'margin-left:auto;', title: 'Descarregar a lista de Erros por Corrigir em PDF (com coluna de verificação e colunas de recontagem para preencher à mão)' },
-      [Icon('download', { size: 14, strokeWidth: 2.2 }), ' Exportar Lista']);
-    exportBtn.addEventListener('click', () => requireAuth(exportarErrosPendentesPDF));
+    const exportBtn = h('button', { class: 'btn btn-secondary', style: 'margin-left:auto;', title: 'Abre o diálogo de impressão do sistema com a lista de Erros por Corrigir — imprima de imediato ou escolha "Guardar como PDF"' },
+      [Icon('printer', { size: 14, strokeWidth: 2.2 }), ' Imprimir Lista']);
+    exportBtn.addEventListener('click', () => requireAuth(imprimirErrosPendentes));
 
     const tabsRow = h('div', { class: 'tabs-row' }, [
       h('button', { class: 'tab-btn tone-red' + (activeTab === 'pending' ? ' active' : ''), onclick: () => { activeTab = 'pending'; selectedIds = new Set(); rerender(); } }, [
@@ -6890,7 +6976,7 @@ function buildValidadesPage(container, goTo) {
   let searchQuery = '';
   let selectedIds = new Set();
 
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
   function openNew() {
     editingId = null;
@@ -7539,7 +7625,7 @@ function buildLembretesPage(container, goTo, embedded) {
   let saving = false;
   let selectedIds = new Set();
 
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function openNew() { draft = emptyRecord(lembretesSchema); editingId = null; formError = ''; showForm = true; rerender(); }
   function openEdit(r) { draft = Object.assign({}, r); editingId = r.id; formError = ''; showForm = true; rerender(); }
   function openEditSelected() {
@@ -7749,7 +7835,7 @@ function buildReclamacoesPage(container, goTo) {
   let saving = false;
   let selectedIds = new Set();
 
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function openNew() { draft = emptyRecord(reclamacoesSchema); editingId = null; formError = ''; showForm = true; rerender(); }
   function openEditSelected() {
     if (selectedIds.size !== 1) return;
@@ -8179,7 +8265,7 @@ function buildDiaEspecialModal(dateISO, evento, onSaved) {
 
 function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
   const overlay = h('div', { class: 'modal-overlay' });
-  function close() { document.removeEventListener('keydown', onKeydown); overlay.remove(); }
+  function close() { document.removeEventListener('keydown', onKeydown); if (barraSelecaoEl) { barraSelecaoEl.remove(); barraSelecaoEl = null; } overlay.remove(); }
   function onKeydown(e) { if (e.key === 'Escape') close(); }
   document.addEventListener('keydown', onKeydown);
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
@@ -8401,6 +8487,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
   /* ---- Ações sobre uma vaga (idênticas às da Agenda) ---- */
   // ---- Seleção de marcações (checkboxes) + Barra Inferior Flutuante ----
   let selecionadas = new Set();
+  let barraSelecaoEl = null;
   // Slots-padrão do grupo a que uma marcação pertence (para a edição via
   // barra saber se é encaixe) — recalculados a partir da configuração do
   // próprio evento.
@@ -8412,7 +8499,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
   }
   function toggleSelecaoMarcacao(id) {
     if (selecionadas.has(id)) selecionadas.delete(id); else selecionadas.add(id);
-    render();
+    sincronizarBarraSelecaoEventos(); // atualização leve: não reconstrói as vagas
   }
   function marcacoesSelecionadasLista() { return marcacoes.filter(x => selecionadas.has(x.id) && x.tipoLinha === 'vaga' && x.nomeCliente); }
   function editarSelecionada() {
@@ -8448,18 +8535,21 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       render();
     }, { danger: true, confirmLabel: 'Eliminar' });
   }
-  // A barra vive DENTRO do corpo da página (position:fixed desenha-a em
-  // baixo na mesma) — assim desaparece sozinha ao navegar para outra página.
-  function anexarBarraSelecao() {
+  // A barra flutuante vive fora do bodyEl (anexada ao overlay do modal),
+  // exatamente como na Agenda — assim pode ser sincronizada isoladamente
+  // (toggle de checkbox) sem nunca reconstruir a lista de vagas.
+  function sincronizarBarraSelecaoEventos() {
     const idsValidos = new Set(marcacoes.map(m => m.id));
     [...selecionadas].forEach(id => { if (!idsValidos.has(id)) selecionadas.delete(id); });
+    if (barraSelecaoEl) { barraSelecaoEl.remove(); barraSelecaoEl = null; }
     if (isPast || showForm || selecionadas.size === 0) return;
-    bodyEl.appendChild(buildBarraSelecaoMarcacoes(selecionadas.size, {
+    barraSelecaoEl = buildBarraSelecaoMarcacoes(selecionadas.size, {
       onEditar: editarSelecionada,
       onConcluir: () => aplicarEstadoSelecionadas('confirmada'),
       onCancelar: () => aplicarEstadoSelecionadas('cancelada'),
       onEliminar: eliminarSelecionadas,
-    }));
+    });
+    overlay.appendChild(barraSelecaoEl);
   }
   function abrirNovaMarcacao(grupo, hora, vagaExistente) {
     formDraft = { nomeCliente: '', nFicha: '', contacto: '', observacoes: '', aviso: false };
@@ -8711,10 +8801,10 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
         // Lembrete 🔔 direto + checkbox de seleção (barra flutuante para o resto).
         const acoes = [avisoToggleBtn(m)];
         if (!isPast) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
-        node = h('div', { class: 'agenda-slot-row agenda-slot-ocupado' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') }, [
+        node = h('div', { class: 'agenda-slot-row agenda-slot-ocupado' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : '') }, [
           h('span', { class: 'agenda-slot-hora' }, hora),
           h('span', { class: 'agenda-slot-label cell-strong' }, [
-            `${m.nomeCliente || '—'}${estadoSufixoVaga(m)}`,
+            h('span', { class: 'agenda-slot-nome' }, `${m.nomeCliente || '—'}${estadoSufixoVaga(m)}`),
             m.contacto ? h('span', { class: 'agenda-slot-contacto' }, `📞 ${m.contacto}`) : null,
           ]),
           h('div', { class: 'row-actions' }, acoes),
@@ -8728,10 +8818,10 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       // Lembrete 🔔 direto + checkbox de seleção (barra flutuante para o resto).
       const acoes = [avisoToggleBtn(m)];
       if (!isPast) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
-      const node = h('div', { class: 'agenda-slot-row agenda-slot-encaixe' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') }, [
+      const node = h('div', { class: 'agenda-slot-row agenda-slot-encaixe' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : '') }, [
         h('span', { class: 'agenda-slot-hora' }, `${m.hora} · Encaixe`),
         h('span', { class: 'agenda-slot-label cell-strong' }, [
-          `${m.nomeCliente || '—'}${estadoSufixoVaga(m)}`,
+          h('span', { class: 'agenda-slot-nome' }, `${m.nomeCliente || '—'}${estadoSufixoVaga(m)}`),
           m.contacto ? h('span', { class: 'agenda-slot-contacto' }, `📞 ${m.contacto}`) : null,
         ]),
         h('div', { class: 'row-actions' }, acoes),
@@ -8756,6 +8846,9 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
 
   const bodyEl = h('div', {});
   function render() {
+    comScrollPreservado(() => renderInternoEventoDia(), overlay);
+  }
+  function renderInternoEventoDia() {
     renderHeaderAcoes();
     clear(bodyEl);
     if (!currentEvento || editingEvento) { bodyEl.appendChild(buildCfgForm()); return; }
@@ -8787,7 +8880,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     } else if (currentEvento.tipoEvento === 'Conselheira') {
       bodyEl.appendChild(EmptyState('Este Dia de Conselheira não tem Mini-Faciais nem vagas de agendamento associadas.'));
     }
-    anexarBarraSelecao();
+    sincronizarBarraSelecaoEventos();
   }
 
   // Lista para impressão/PDF: junta as vagas de todos os grupos (principal +
@@ -8829,7 +8922,7 @@ function buildEventoTipoPage(container, goTo, tipo) {
   const tipoInfo = EVENTO_TIPOS.find(t => t.key === tipo);
   const ehDiaEspecial = tipo === 'DiaEspecial';
 
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function onDayClick(dateISO, isPast, ev) {
     if (ehDiaEspecial) {
       // Dias Especiais não têm vagas nem vista de histórico bloqueada —
@@ -8888,7 +8981,7 @@ function buildOrcamentosPage(container, goTo) {
   let orcRowError = '';
   let selectedOrcIds = new Set();
 
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
 
   function orcStartNew() {
     editingOrcId = 'new';
@@ -9079,7 +9172,7 @@ function buildDesafiosPage(container, goTo, embedded) {
   let showForm = false, editingId = null, draft = {}, formError = '', saving = false;
   let selectedIds = new Set();
 
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
 
   function openNew() { draft = { tipoPremio: 'Coletivo', tituloDesafio: '', marcaLaboratorio: '', objetivo: '', premioIncentivo: '', dataInicio: todayISO(), dataFim: '', concluido: false }; editingId = null; formError = ''; showForm = true; rerender(); }
   function openEditSelected() {
@@ -9255,7 +9348,7 @@ function buildObjetivosPage(container, goTo, embedded) {
   let showForm = false, editingId = null, draft = {}, formError = '', saving = false;
   let selectedIds = new Set();
 
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function openNew() { draft = { titulo: '', dataInicio: todayISO(), dataFim: '', ativo: 'Sim', produtos: [{ cnp: '', nome: '', meta: '', atual: '0' }] }; editingId = null; formError = ''; showForm = true; rerender(); }
   function openEditSelected() {
     if (selectedIds.size !== 1) return;
@@ -9762,7 +9855,7 @@ function buildDeclaracaoDespesasPage(container, goTo) {
   })() : { nomeUtente: '', ccUtente: '', genero: 'Masculino', discriminado: false, valorTotalManual: '', itens: [{ cnp: '', nome: '', preco: '' }] };
   let saving = false;
 
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function calcularTotal() {
     if (!draft.discriminado) return parseFloat(String(draft.valorTotalManual).replace(',', '.')) || 0;
     return draft.itens.reduce((s, it) => s + (parseFloat(String(it.preco).replace(',', '.')) || 0), 0);
@@ -9924,7 +10017,7 @@ function buildDeclaracaoAvaliacaoFisicaPage(container, goTo) {
   })() : { nomeUtente: '', ccUtente: '', genero: 'Masculino', dataNascimento: '', altura: '', peso: '', tensao: '' };
   let saving = false;
 
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
 
   // Idade calculada a partir da Data de Nascimento — evita depender de um
   // número que fica desatualizado; se a data não estiver preenchida, o
@@ -10091,7 +10184,7 @@ function buildDeclaracaoPresencaPage(container, goTo) {
   })() : { nomeUtente: '', ccUtente: '', genero: 'Masculino', tipoServico: TIPOS_SERVICO_PRESENCA[0], tipoServicoOutro: '', dataServico: todayISO(), horaInicio: '', duracaoAprox: '' };
   let saving = false;
 
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function tipoServicoFinal() { return draft.tipoServico === 'Outro' ? (draft.tipoServicoOutro || 'Outro') : draft.tipoServico; }
 
   function construirDocumentoNode(dataEmissaoISO) {
@@ -10386,7 +10479,7 @@ function buildHistoricoMensagensPage(container, goTo, embedded) {
   let loading = true;
   let selectedIds = new Set();
 
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function load() {
     loading = true; rerender();
     dbFetchMensagemDiaHistorico().then(list => { historico = list; loading = false; rerender(); });
@@ -10560,7 +10653,7 @@ function buildDefinicoesPage(container, goTo) {
   let selectedIds = new Set();
   let showForm = false, editingId = null, draft = {}, formError = '', saving = false;
 
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function toggleSelect(id) { if (!isMasterUser()) return; if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
 
   function isSelf(id) { return activeUser && activeUser.id === id; }
@@ -10864,7 +10957,7 @@ function buildMapa48hPage(container, goTo) {
   let showForm = false, editingId = null, draft = {}, formError = '', saving = false;
   let selectedIds = new Set();
 
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
 
   function openNew(prefill) {
@@ -11381,7 +11474,7 @@ function buildMapaTarefasPage(container, goTo) {
   let selectedIds = new Set();
 
   function podeEditar() { return isMasterUser(); }
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function toggleSelect(id) {
     if (!podeEditar()) return;
     if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id);
@@ -11573,7 +11666,7 @@ function buildEntregasPage(container, goTo) {
   let showForm = false, editingId = null, draft = {}, formError = '', saving = false;
   let selectedIds = new Set();
 
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
   function trocarFarmacia(f) { farmaciaAtiva = f; activeTab = 'pendentes'; selectedIds = new Set(); searchQuery = ''; showForm = false; rerender(); }
   function voltarSelecaoFarmacia() { if (isBoaNovaOperador()) return; farmaciaAtiva = null; showForm = false; selectedIds = new Set(); rerender(); }
@@ -12102,7 +12195,7 @@ function buildRecolhasPage(container, goTo) {
   let showForm = false, editingId = null, draft = {}, formError = '', saving = false;
   let selectedIds = new Set();
 
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
 
   function openNew() {
@@ -12265,7 +12358,7 @@ function buildTarefasPage(container, goTo) {
   let showForm = false, editingId = null, draft = {}, formError = '', saving = false;
   let selectedIds = new Set();
 
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
   function openNew() { draft = { titulo: '', dataLimite: todayISO(), responsavelAtribuido: '', estado: 'Pendente' }; editingId = null; formError = ''; showForm = true; rerender(); }
   function openEditSelected() {
@@ -12468,7 +12561,7 @@ function buildFormacoesPage(container, goTo) {
   let anoFiltro = 'Todos'; // 'Todos' | 'YYYY' — filtro por ano da listagem inferior
   let colaboradorFiltro = 'Todos'; // 'Todos' | nome do colaborador
 
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
   function openNew() { draft = { data: todayISO(), laboratorioEntidade: '', gamaTema: '', duracao: '', regime: 'Presencial', horario: 'Laboral', participantes: '' }; editingId = null; formError = ''; showForm = true; rerender(); }
   function openEditSelected() {
@@ -12717,7 +12810,7 @@ function buildLixoPage(container, goTo) {
   let searchQuery = '';
   let selectedUids = new Set();
 
-  function rerender() { clear(container); container.appendChild(build()); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function toggleSelect(uid) {
     if (selectedUids.has(uid)) selectedUids.delete(uid);
     else selectedUids.add(uid);
@@ -13100,6 +13193,12 @@ function buildConexaoIndicador() {
 }
 
 function render() {
+  // Preservar a posição de scroll (janela + contentores) durante o
+  // redesenho completo — essencial quando o Realtime dispara um render a
+  // meio de uma lista longa.
+  comScrollPreservado(renderInterno);
+}
+function renderInterno() {
   const root = document.getElementById('root');
   clear(root);
 
