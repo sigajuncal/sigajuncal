@@ -1232,6 +1232,12 @@
   .agenda-vaga-passada{background:var(--pharm-50) !important;color:var(--pharm-400) !important;
     cursor:not-allowed;opacity:.6;}
   .agenda-vaga-futura{cursor:pointer;}
+  /* Vaga livre cujo horário já passou (dia inteiro passado, ou dentro de
+     hoje já ultrapassado pelo relógio) — aspeto esmaecido, mas o botão "+"
+     continua 100% clicável, só que passa por confirmação (registo tardio)
+     antes de abrir o formulário. */
+  .agenda-vaga-expirada{opacity:.6;}
+  .agenda-vaga-expirada .agenda-slot-label{font-style:italic;}
   .agenda-slots-list{display:flex;flex-direction:column;gap:5px;max-height:60vh;overflow-y:auto;}
   .agenda-slot-row{display:flex;align-items:center;gap:12px;padding:9px 12px;border-radius:10px;
     background:var(--pharm-50);}
@@ -2531,6 +2537,27 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   function marcacoesDoDia() {
     return STATE.agendaMarcacoes.filter(m => m.prestadorKey === prestadorKey && m.data === dateISO);
   }
+  // Uma vaga está "expirada" quando o seu horário de início já passou —
+  // qualquer hora num dia inteiramente passado (isPast), ou, no dia de
+  // HOJE, qualquer bloco cuja hora já foi ultrapassada pelo relógio atual.
+  // Continua a poder-se marcar (registo tardio), só passa por confirmação.
+  function vagaExpirada(hora) {
+    if (isPast) return true;
+    if (dateISO !== todayISO()) return false;
+    const agora = new Date();
+    const horaAtual = `${pad2(agora.getHours())}:${pad2(agora.getMinutes())}`;
+    return normalizarHora(hora) < horaAtual;
+  }
+  function confirmarVagaExpirada(hora, aoConfirmar) {
+    confirmDialog(
+      [
+        h('strong', { style: 'display:block;font-size:14.5px;margin-bottom:6px;color:var(--pharm-800);' }, 'Vaga Expirada'),
+        `O horário desta vaga (${hora}) já passou. Desejas efetuar um registo tardio nesta vaga?`,
+      ],
+      aoConfirmar,
+      { confirmLabel: 'Confirmar e Agendar' }
+    );
+  }
 
   function openNovaMarcacao(horaPreenchida, forcarEncaixe) {
     formDraft = { hora: horaPreenchida || agendaSlotsPara(prestadorKey)[0], tipoConsulta: agendaEhPrimaCorpus(prestadorKey) ? PRIMA_CORPUS_SERVICOS[0].nome : '', duracaoManual: 15, nomeCliente: '', contacto: '', aviso: false, observacoes: '', forcarEncaixe: !!forcarEncaixe };
@@ -2966,11 +2993,22 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       const m = ocupacao[hora];
       if (!m) {
         let node;
-        if (isPast) {
-          node = h('div', { class: 'agenda-slot-row agenda-vaga-passada' }, [h('span', { class: 'agenda-slot-hora' }, hora), h('span', { class: 'agenda-slot-label cell-muted' }, '—')]);
+        const expirada = vagaExpirada(hora);
+        const bookBtn = h('button', { class: 'btn-fab-sm tone-blue', title: 'Marcar', 'aria-label': 'Marcar' }, Icon('plus', { size: 13, strokeWidth: 2.4 }));
+        bookBtn.addEventListener('click', () => requireAuth(() => {
+          if (expirada) confirmarVagaExpirada(hora, () => openNovaMarcacao(hora));
+          else openNovaMarcacao(hora);
+        }));
+        if (expirada) {
+          // Vaga com o horário já passado — texto e aspeto esmaecidos, mas
+          // o botão "+" continua acessível para um registo tardio (passa
+          // sempre por confirmação antes de abrir o formulário).
+          node = h('div', { class: 'agenda-slot-row agenda-slot-livre agenda-vaga-expirada' }, [
+            h('span', { class: 'agenda-slot-hora' }, hora),
+            h('span', { class: 'agenda-slot-label cell-muted' }, 'Vaga expirada'),
+            h('div', { class: 'row-actions' }, [bookBtn]),
+          ]);
         } else {
-          const bookBtn = h('button', { class: 'btn-fab-sm tone-blue', title: 'Marcar', 'aria-label': 'Marcar' }, Icon('plus', { size: 13, strokeWidth: 2.4 }));
-          bookBtn.addEventListener('click', () => requireAuth(() => openNovaMarcacao(hora)));
           const blockBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Bloquear vaga', 'aria-label': 'Bloquear vaga' }, Icon('lockClosed', { size: 12, strokeWidth: 2.2 }));
           blockBtn.addEventListener('click', () => requireAuth(() => bloquearVaga(hora)));
           node = h('div', { class: 'agenda-slot-row agenda-slot-livre agenda-vaga-futura' }, [
