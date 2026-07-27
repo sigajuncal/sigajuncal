@@ -357,6 +357,12 @@
     .app-print-area table{page-break-inside:auto;}
     .app-print-area tr{page-break-inside:avoid;break-inside:avoid;}
     .app-print-area thead{display:table-header-group;}
+    /* Reforço genérico da arquitetura de paginação física: qualquer
+       página gerada com a classe .print-page fica com altura de linha
+       fixa e tabela em table-layout:fixed — cálculo garantido, nunca
+       estimado, de quantas linhas cabem em cada folha. */
+    .print-page tr{height:24px;}
+    .print-page table{table-layout:fixed;width:100%;}
     .doc-a4{width:210mm !important;height:297mm !important;max-height:297mm !important;min-height:0 !important;
       box-sizing:border-box !important;box-shadow:none !important;margin:0 !important;
       padding:15mm 18mm !important; /* Margens reais no interior da folha */
@@ -573,8 +579,9 @@
   .field label{display:block;font-size:12px;font-weight:700;color:var(--pharm-600);margin-bottom:5px;}
   .field-helper-text{font-size:11.5px;color:var(--pharm-500);margin-top:5px;font-weight:600;}
   /* Frase informativa no topo de cada Agenda de prestador */
-  .agenda-info-aviso{font-size:12.5px;color:var(--pharm-600);background:var(--pharm-50);
-    border:1px solid var(--pharm-200);border-radius:10px;padding:8px 12px;margin:10px 0 4px;line-height:1.5;}
+  .agenda-info-aviso{font-size:13px;color:#64748b;margin:10px 0 4px;line-height:1.5;
+    display:flex;align-items:center;gap:8px;}
+  .agenda-info-aviso-dot{width:11px;height:11px;border-radius:6px;flex-shrink:0;}
   /* Pop-up de escolha do Calendário de Agendamentos (dia com vários itens) */
   .cal-escolha-lista{display:flex;flex-direction:column;gap:6px;}
   .cal-escolha-item{display:flex;align-items:center;gap:10px;width:100%;border:1px solid var(--pharm-200);
@@ -838,7 +845,8 @@
   .entregas-badge-card .next-evento-card-title{color:#1c1206 !important;}
   .entregas-badge-card .next-evento-card-sub{color:#422006 !important;opacity:.9;}
   /* Número de Entregas Pendentes em destaque tipográfico claro */
-  .entregas-count-big{font-size:30px;font-weight:800;line-height:1.1;color:#1c1206;margin-top:2px;}
+  .entregas-count-big{font-size:30px;font-weight:800;line-height:1.1;color:#fff;margin-top:2px;}
+  .entregas-badge-card .entregas-count-big{color:#1c1206;}
   /* Luz de notificação LED pulsante — só existe no DOM quando há entregas
      pendentes (>0); desaparece sozinha quando o número volta a 0. */
   .entregas-led-pulse{position:absolute;top:12px;right:12px;width:11px;height:11px;border-radius:50%;
@@ -930,7 +938,8 @@
      os botões assentam diretamente sobre o fundo geral da app. */
   .home-section{margin-bottom:36px;}
   .home-section-title{font-weight:800;color:var(--pharm-800);font-size:15px;margin-bottom:14px;}
-  .cal-aviso-pendente-icon{font-size:16px;line-height:1;cursor:help;animation:calAvisoPulse 1.6s ease-in-out infinite;}
+  .cal-aviso-pendente-icon{font-size:16px;line-height:1;animation:calAvisoPulse 1.6s ease-in-out infinite;}
+  .cal-aviso-pendente-texto{font-size:12.5px;color:#64748b;font-weight:600;}
   @keyframes calAvisoPulse{0%,100%{opacity:1;}50%{opacity:.55;}}
   .dash-col{display:flex;flex-direction:column;height:100%;}
   .dash-card-title{font-weight:800;color:var(--pharm-800);font-size:15px;margin-bottom:14px;}
@@ -2939,10 +2948,16 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       .map(item => item.node);
 
     bodyEl.appendChild(h('div', { class: 'agenda-slots-list' }, linhas));
-    if (!isPast) {
-      const encaixeBtn = h('button', { class: 'btn btn-secondary', style: 'margin-top:14px;width:100%;', onclick: () => requireAuth(openEncaixe) }, [Icon('plus', { size: 14 }), ' Nova Linha de Encaixe']);
-      bodyEl.appendChild(encaixeBtn);
-    }
+    // Barra inferior: "Nova Linha de Encaixe" compacto à esquerda,
+    // Imprimir/Download PDF sempre no canto direito (mesmo em dias
+    // passados, para consultar/imprimir o histórico).
+    const encaixeBtn = !isPast
+      ? h('button', { class: 'btn btn-secondary', style: 'width:auto;', onclick: () => requireAuth(openEncaixe) }, [Icon('plus', { size: 14 }), ' Nova Linha de Encaixe'])
+      : h('span', {});
+    bodyEl.appendChild(h('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:14px;flex-wrap:wrap;' }, [
+      encaixeBtn,
+      buildListaDiaAcoes(prestador.nome, prestador.especialidade, dateISO, linhasImpressaoAgenda),
+    ]));
   }
 
   // Lista para impressão/PDF: só marcações efetivas (exclui vagas livres e
@@ -2965,7 +2980,6 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       ]),
       h('div', { style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;' }, [
         headerAcoesEl,
-        buildListaDiaAcoes(prestador.nome, prestador.especialidade, dateISO, linhasImpressaoAgenda),
       ]),
     ]),
     isPast ? h('p', { class: 'readonly-notice' }, 'Este dia já passou — fica só para consulta, sem novos agendamentos.') : null,
@@ -3355,7 +3369,10 @@ function buildCalendarioSection(goTo) {
   // a meta de avisos for cumprida (percentagem desce abaixo dos 80%).
   const percentPendente = percentagemAvisosPendentesProximosDias();
   if (percentPendente >= 80) {
-    tituloKids.push(h('span', { class: 'cal-aviso-pendente-icon', title: 'Lembrar Utentes — a maioria das marcações dos próximos 2 dias ainda não foi avisada', 'aria-label': 'Lembrar Utentes' }, '⚠️'));
+    tituloKids.push(
+      h('span', { class: 'cal-aviso-pendente-icon', 'aria-hidden': 'true' }, '⚠️'),
+      h('span', { class: 'cal-aviso-pendente-texto' }, 'Lembrar Utentes (marcações pendentes)'),
+    );
   }
   return h('div', { class: 'home-section' }, [
     h('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:14px;' }, tituloKids),
@@ -3376,8 +3393,11 @@ function buildAgendaPage(container, goTo, prestadorKey) {
   function build() {
     const wrap = h('div', { class: 'animate-in' });
     wrap.appendChild(withCustomBackButton(buildPageHeader(prestador.icon, prestador.nome, prestador.especialidade, undefined), () => goTo('hub-agendas')));
-    wrap.appendChild(h('p', { class: 'agenda-info-aviso' },
-      '💡 Marcar apenas nos dias com cor aberta. Abertura de novos dias requer confirmação do prestador.'));
+    const corServico = (SERVICOS_CALENDARIO.find(s => s.key === prestadorKey) || {}).cor || 'var(--pharm-400)';
+    wrap.appendChild(h('p', { class: 'agenda-info-aviso' }, [
+      h('span', { class: 'agenda-info-aviso-dot', style: `background:${corServico};` }),
+      'Marcar apenas nos dias com cor aberta. Abertura de novos dias requer confirmação do prestador.',
+    ]));
     wrap.appendChild(buildCalendarioCarrossel(onDayClick, prestadorKey));
     // Bloco de notas rápido — disponível para qualquer utilizador com acesso
     // a esta Agenda (quem já chega a esta página tem permissão de marcação),
@@ -7053,9 +7073,17 @@ function buildHomepage(container, goTo) {
     ]),
   ]);
 
+  const errosCard = h('button', { class: 'stat-card tone-card tone-red clickable next-evento-card', onclick: () => goTo('erros') }, [
+    h('div', { class: 'stat-icon' }, Icon('alert', { size: 19 })),
+    h('div', { style: 'min-width:0;' }, [
+      h('p', { class: 'stat-label' }, 'Erros de Stock'),
+      h('p', { class: 'entregas-count-big' }, String(errosStock)),
+    ]),
+  ]);
+
   wrap.appendChild(h('div', { class: 'stat-grid' }, [
     entregasCard,
-    buildStatCard('alert', 'Erros de stock', errosStock, 'red', () => goTo('erros')),
+    errosCard,
     proximoEventoCard,
     proximaAgendaCard,
     premiosCard,
@@ -7486,13 +7514,13 @@ function buildErrosPage(container, goTo) {
         { th: 'NF', w: '40px', align: 'center' },
         { th: 'DIF', w: '40px', align: 'center' },
       ];
-      // Altura de linha FIXA (22px) e padding reduzido — remove por
+      // Altura de linha FIXA (24px) e padding reduzido — remove por
       // completo a incerteza sobre quanto espaço cada linha ocupa
       // realmente no papel, o que é a única forma de garantir
       // matematicamente que um bloco de N linhas cabe sempre dentro de uma
       // folha física. Sem isto, mesmo um bloco "isolado" podia continuar a
       // transbordar de forma imprevisível (a causa do corte reportado).
-      const bordaCel = 'border:1px solid #94a3b8;padding:2px 4px;font-size:9.5px;color:#000;height:22px;';
+      const bordaCel = 'border:1px solid #94a3b8;padding:2px 4px;font-size:9.5px;color:#000;height:24px;';
       const celProduto = bordaCel + 'text-align:left;white-space:nowrap !important;overflow:hidden !important;text-overflow:ellipsis !important;';
       function buildThead() {
         return h('thead', {}, h('tr', {}, COLS.map(c =>
@@ -7504,7 +7532,7 @@ function buildErrosPage(container, goTo) {
         const sisV = toIntegerOrNull(r.qtdSistema) || 0;
         const dif = fisV - sisV;
         const difTexto = dif > 0 ? `+${dif}` : String(dif);
-        return h('tr', { style: 'height:22px;page-break-inside:avoid !important;break-inside:avoid !important;' }, [
+        return h('tr', { style: 'height:24px;page-break-inside:avoid !important;break-inside:avoid !important;' }, [
           h('td', { style: bordaCel + 'text-align:center;font-size:12px;' }, '☐'),
           h('td', { style: bordaCel + 'text-align:center;font-family:monospace;' }, r.cnp || '—'),
           h('td', { style: celProduto, title: r.produto || '' }, r.produto || '—'),
@@ -7515,14 +7543,14 @@ function buildErrosPage(container, goTo) {
           h('td', { style: bordaCel + 'text-align:center;font-weight:800;' }, difTexto),
         ]);
       }
-      // ---- Paginação MANUAL e determinística por JavaScript: o Safari não
-      // gere de forma fiável quebras de página dentro de uma tabela
-      // dinâmica e contínua — por isso deixa-se de haver UMA tabela longa.
-      // Cada página passa a ser um bloco HTML totalmente independente e
-      // pré-calculado (título só na 1ª, thead próprio em todas), com uma
-      // quebra de página EXPLÍCITA a seguir — exceto no último bloco.
-      const PRIMEIRA_PAGINA_LINHAS = 32; // menos linhas: compensa o espaço do título/legenda
-      const RESTANTES_PAGINAS_LINHAS = 38;
+      // ---- PAGINAÇÃO FÍSICA NO HTML: cada página é um <div class="print-page">
+      // TOTALMENTE isolado e pré-calculado — altura própria (100vh),
+      // padding próprio (12mm) e a sua própria <table> fechada, só com os
+      // registos dessa página. O browser nunca decide onde corta: já está
+      // tudo decidido antes da impressão sequer começar. Isto elimina por
+      // completo o corte de linhas ao meio, tanto no Safari como no Chrome.
+      const PRIMEIRA_PAGINA_LINHAS = 28; // menos linhas: compensa o espaço do título/legenda
+      const RESTANTES_PAGINAS_LINHAS = 35;
       const blocosLinhas = [];
       let resto = pendentes.slice();
       blocosLinhas.push(resto.splice(0, PRIMEIRA_PAGINA_LINHAS));
@@ -7541,21 +7569,24 @@ function buildErrosPage(container, goTo) {
           );
         }
         filhosPagina.push(
-          h('table', { style: 'width:100%;max-width:100%;margin:0 auto;border-collapse:collapse;table-layout:fixed;page-break-inside:auto;' }, [
+          h('table', { style: 'width:100%;table-layout:fixed;border-collapse:collapse;page-break-inside:auto;' }, [
             buildThead(),
             h('tbody', {}, bloco.map(buildLinha)),
           ])
         );
         // A ÚLTIMA página nunca leva quebra a seguir — senão o diálogo de
         // impressão mostraria uma folha extra em branco no final.
-        return h('div', { class: 'folha-pagina', style: ultima ? '' : 'page-break-after:always;break-after:page;' }, filhosPagina);
+        const quebra = ultima ? '' : 'page-break-after:always;break-after:page;';
+        return h('div', { class: 'print-page', style: `${quebra}height:100vh;box-sizing:border-box;padding:12mm;` }, filhosPagina);
       });
       const folha = h('div', { style: 'font-family:Arial,Helvetica,sans-serif;background:#fff;color:#000;' }, paginasHtml);
       // Título do documento (nome sugerido ao "Guardar como PDF"):
       // acerto_de_erros_de_stock_AAAA-MM-DD — reposto automaticamente pelo
-      // motor global assim que o diálogo do sistema fecha. Folha em A4
-      // RETRATO com margem 12mm (vertical) / 10mm (horizontal).
-      imprimirDocumento(folha, { orientacao: 'portrait', paddingCss: '12mm 10mm', titulo: `acerto_de_erros_de_stock_${todayISO()}` });
+      // motor global assim que o diálogo do sistema fecha. A margem física
+      // vive agora dentro de CADA página (padding:12mm no print-page), por
+      // isso o motor global não precisa de aplicar margem nenhuma por cima
+      // (evita duplicar o espaçamento).
+      imprimirDocumento(folha, { titulo: `acerto_de_erros_de_stock_${todayISO()}` });
     }
     const exportBtn = h('button', { class: 'btn btn-secondary', style: 'margin-left:auto;', title: 'Abre o diálogo de impressão do sistema com a lista de Erros por Corrigir — imprima de imediato ou escolha "Guardar como PDF"' },
       [Icon('printer', { size: 14, strokeWidth: 2.2 }), ' Imprimir Lista']);
@@ -9533,7 +9564,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
 
     const children = [h('h3', { class: 'dash-card-title' }, titulo), h('div', { class: 'agenda-slots-list' }, linhas)];
     if (!isPast) {
-      const encaixeBtn = h('button', { class: 'btn btn-secondary', style: 'margin-top:10px;width:100%;', onclick: () => requireAuth(() => abrirEncaixe(grupo)) }, [Icon('plus', { size: 14 }), ' Nova Linha de Encaixe']);
+      const encaixeBtn = h('button', { class: 'btn btn-secondary', style: 'margin-top:10px;width:auto;', onclick: () => requireAuth(() => abrirEncaixe(grupo)) }, [Icon('plus', { size: 14 }), ' Nova Linha de Encaixe']);
       children.push(encaixeBtn);
     }
     return h('div', { class: 'card card-pad', style: 'margin-bottom:16px;' }, children);
@@ -9575,6 +9606,11 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     } else if (currentEvento.tipoEvento === 'Conselheira') {
       bodyEl.appendChild(EmptyState('Este Dia de Conselheira não tem Mini-Faciais nem vagas de agendamento associadas.'));
     }
+    // Imprimir/Download PDF no canto direito da base do modal — sempre
+    // visível, mesmo em dias passados (consulta/impressão do histórico).
+    bodyEl.appendChild(h('div', { style: 'display:flex;justify-content:flex-end;margin-top:14px;' }, [
+      buildListaDiaAcoes(tipoInfo.nome, currentEvento ? eventoLabel(currentEvento) : tipoInfo.nome, dateISO, linhasImpressaoEvento),
+    ]));
     sincronizarBarraSelecaoEventos();
   }
 
@@ -9598,7 +9634,6 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       ]),
       h('div', { style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;' }, [
         headerAcoesEl,
-        buildListaDiaAcoes(tipoInfo.nome, currentEvento ? eventoLabel(currentEvento) : tipoInfo.nome, dateISO, linhasImpressaoEvento),
       ]),
     ]),
     isPast ? h('p', { class: 'readonly-notice' }, 'Este dia já passou — fica só para consulta, sem novos agendamentos.') : null,
