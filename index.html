@@ -447,6 +447,11 @@
   .btn-fab.tone-red:hover{background:#b91c1c;box-shadow:0 5px 14px rgba(220,38,38,.5);}
   .btn-fab.tone-green{background:#16a34a;box-shadow:0 3px 10px rgba(22,163,74,.4);}
   .btn-fab.tone-green:hover{background:#15803d;box-shadow:0 5px 14px rgba(22,163,74,.5);}
+  /* Cancelar (❌) na barra flutuante: laranja/amber bem distinto do verde do
+     Concluir — esta regra estava em falta (só existia para .btn-fab-sm), por
+     isso o botão "Cancelar" herdava o fundo verde-esmeralda base do .btn-fab. */
+  .btn-fab.tone-orange{background:#f59e0b !important;color:#ffffff !important;box-shadow:0 3px 10px rgba(217,119,6,.45);}
+  .btn-fab.tone-orange:hover{background:#d97706 !important;box-shadow:0 5px 14px rgba(217,119,6,.55);}
   .btn-fab:disabled{background:#cbd5e1 !important;box-shadow:none !important;cursor:not-allowed;transform:none !important;}
   .bottom-action-bar{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);display:flex;gap:16px;
     justify-content:center;align-items:center;background:#fff;border:1px solid var(--pharm-200);padding:12px 18px;
@@ -551,6 +556,8 @@
   @media (min-width:640px){.field-sm{grid-column:span 4;}}
   .field label{display:block;font-size:12px;font-weight:700;color:var(--pharm-600);margin-bottom:5px;}
   .field-helper-text{font-size:11.5px;color:var(--pharm-500);margin-top:5px;font-weight:600;}
+  .field-error-inline{font-size:11.5px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;
+    border-radius:7px;padding:5px 9px;margin-top:6px;font-weight:700;line-height:1.4;}
   .backup-status{font-size:12.5px;font-weight:700;margin-top:12px;}
   .input,.select,.textarea{width:100%;border:1px solid var(--pharm-200);background:#fff;border-radius:10px;
     padding:9px 12px;font-size:14px;color:var(--pharm-950);font-family:inherit;}
@@ -6579,6 +6586,20 @@ function buildErrosPage(container, goTo) {
     control.value = draft.cnp || '';
     let debounceTimer = null;
     let ultimoCnpConsultado = '';
+    // Aviso inline imediato (sem esperar pelo submit): assim que o CNP lido/
+    // escrito corresponde a um erro já pendente em "Erros por Corrigir",
+    // avisa-se logo — é uma verificação local e instantânea, ideal para o
+    // ritmo de um leitor de código de barras.
+    const avisoDuplicadoEl = h('p', { class: 'field-error-inline', style: 'display:none;' }, '');
+    function verificarDuplicadoCnp(cnpAtual) {
+      const duplicado = cnpAtual ? STATE.erros.find(r => r.id !== editingId && String(r.cnp || '').trim() === cnpAtual && r.estado !== 'Corrigido') : null;
+      if (duplicado) {
+        avisoDuplicadoEl.textContent = `⚠ O produto (CNP ${cnpAtual}) já se encontra na lista de Erros por Corrigir pendente de acerto.`;
+        avisoDuplicadoEl.style.display = '';
+      } else {
+        avisoDuplicadoEl.style.display = 'none';
+      }
+    }
     // Consulta o dicionario_cnp e, se encontrar, preenche o Produto e salta
     // logo para a Qtd. Física — pensado para o registo ser tão rápido
     // quanto digitar/ler o CNP e escrever só a diferença de stock.
@@ -6609,6 +6630,7 @@ function buildErrosPage(container, goTo) {
       if (cleaned !== control.value) control.value = cleaned;
       draft.cnp = control.value;
       ultimoCnpConsultado = ''; // CNP mudou — liberta para uma nova consulta
+      verificarDuplicadoCnp(control.value.trim());
       if (debounceTimer) clearTimeout(debounceTimer);
       // Debounce curto: cobre tanto quem escreve à mão como um leitor de
       // código de barras, que despeja os dígitos quase instantaneamente.
@@ -6633,6 +6655,8 @@ function buildErrosPage(container, goTo) {
     });
     const kids = [h('label', {}, f.label), control];
     if (f.helperText) kids.push(h('p', { class: 'field-helper-text' }, f.helperText));
+    kids.push(avisoDuplicadoEl);
+    verificarDuplicadoCnp(String(draft.cnp || '').trim()); // estado inicial (ex: reabrir para editar)
     return h('div', { class: 'field' + (f.size ? ' field-' + f.size : '') }, kids);
   }
   async function submit() {
@@ -6656,6 +6680,22 @@ function buildErrosPage(container, goTo) {
       return;
     }
     formError = '';
+    // ---- Prevenção de CNPs duplicados em "Erros por Corrigir" ----
+    // Um mesmo CNP só pode ter UM registo pendente de cada vez. Se já
+    // houver um erro por corrigir com este CNP, bloqueia-se o novo registo
+    // — mas se o anterior já tiver passado para o Histórico de Correções
+    // (estado 'Corrigido'), um novo registo com o mesmo CNP é permitido
+    // normalmente. Ao editar um registo, o próprio registo (editingId)
+    // nunca conta como duplicado de si mesmo.
+    const cnpTrim = String(draft.cnp || '').trim();
+    if (cnpTrim) {
+      const duplicado = STATE.erros.find(r => r.id !== editingId && String(r.cnp || '').trim() === cnpTrim && r.estado !== 'Corrigido');
+      if (duplicado) {
+        formError = `O produto (CNP ${cnpTrim}) já se encontra na lista de Erros por Corrigir pendente de acerto.`;
+        rerender();
+        return;
+      }
+    }
     draft.qtdFisica = fis === null ? '' : String(fis);
     draft.qtdSistema = sis === null ? '' : String(sis);
     draft.responsavel = currentUserName();
@@ -6815,34 +6855,44 @@ function buildErrosPage(container, goTo) {
         .slice()
         .sort((a, b) => (a.data || '').localeCompare(b.data || ''));
       if (!pendentes.length) { showDbErrorToast('Não há erros por corrigir para exportar'); return; }
-      const celTh = 'border:1px solid #94a3b8;padding:6px 7px;background:#059669;color:#fff;font-size:10.5px;font-weight:800;text-align:center;';
-      const celTd = 'border:1px solid #cbd5e1;padding:6px 7px;font-size:10.5px;color:#0f172a;';
-      const linhasHtml = pendentes.map((r, i) => {
+      // ---- Estilo 100% preto e branco: sem fundos coloridos, poupa tinteiro
+      // ao imprimir em papel. Bordas finas cinza-escuro só para separar
+      // células — nenhuma cor de destaque em lado nenhum da folha. ----
+      const celTh = 'border:1px solid #000;padding:5px 6px;background:#fff;color:#000;font-size:9.5px;font-weight:800;text-align:center;';
+      const celTd = 'border:1px solid #555;padding:5px 6px;font-size:9.5px;color:#000;';
+      // Larguras pensadas para o mínimo indispensável nas colunas numéricas/
+      // data/CNP, dando o espaço sobrante quase todo ao Produto — a coluna
+      // que mais precisa de não ficar cortada nem espremida.
+      const larguras = ['5%', '7%', '9%', '30%', '7%', '8%', '7%', '8%', '10%', '9%'];
+      const linhasHtml = pendentes.map((r) => {
         const fisV = toIntegerOrNull(r.qtdFisica) || 0;
         const sisV = toIntegerOrNull(r.qtdSistema) || 0;
-        const fundo = i % 2 === 0 ? '#ffffff' : '#f0fdf9';
-        return h('tr', { style: `background:${fundo};` }, [
-          h('td', { style: celTd + 'text-align:center;font-size:14px;' }, '☐'),
+        return h('tr', {}, [
+          h('td', { style: celTd + 'text-align:center;font-size:12px;' }, '☐'),
           h('td', { style: celTd + 'white-space:nowrap;text-align:center;' }, formatDate(r.data)),
           h('td', { style: celTd + 'text-align:center;' }, r.cnp || '—'),
           h('td', { style: celTd }, r.produto || '—'),
           h('td', { style: celTd + 'text-align:center;font-weight:700;' }, String(sisV)),
-          h('td', { style: celTd + 'background:#fefce8;' }, ''), // Nova Contagem - Sistema (manual)
+          h('td', { style: celTd }, ''), // Nova Contagem - Sistema (manual)
           h('td', { style: celTd + 'text-align:center;font-weight:700;' }, String(fisV)),
-          h('td', { style: celTd + 'background:#fefce8;' }, ''), // Nova Contagem - Física (manual)
+          h('td', { style: celTd }, ''), // Nova Contagem - Física (manual)
           h('td', { style: celTd + 'text-align:center;' }, r.responsavel || '—'),
           h('td', { style: celTd }, r.obs || ''),
         ]);
       });
-      const folha = h('div', { style: 'font-family:Segoe UI,Arial,sans-serif;padding:8mm 10mm;background:#fff;' }, [
-        h('h2', { style: 'margin:0 0 2px;font-size:17px;color:#065f46;' }, 'SigaJuncal · Erros de Stock — Erros por Corrigir'),
-        h('p', { style: 'margin:0 0 10px;font-size:11px;color:#475569;' },
+      const folha = h('div', { style: 'font-family:Arial,Helvetica,sans-serif;background:#fff;color:#000;' }, [
+        h('h2', { style: 'margin:0 0 2px;font-size:15px;color:#000;font-weight:800;' }, 'SigaJuncal · Erros de Stock — Erros por Corrigir'),
+        h('p', { style: 'margin:0 0 5px;font-size:9.5px;color:#000;' },
           `Exportado em ${formatDate(todayISO())} · ${pendentes.length} registo${pendentes.length > 1 ? 's' : ''} · Assinalar ☐ após verificação na farmácia e preencher as Novas Contagens à mão.`),
-        h('table', { style: 'width:100%;border-collapse:collapse;' }, [
+        // Legenda discreta das siglas usadas nos cabeçalhos abreviados.
+        h('p', { style: 'margin:0 0 8px;font-size:8px;color:#333;font-style:italic;' },
+          'Legenda: Qtd. Sist. Ini. = Quantidade Sistema Inicial | Nov. Sist. = Nova Contagem Sistema | Qtd. Fís. Ini. = Quantidade Física Inicial | Nov. Fís. = Nova Contagem Física'),
+        h('table', { style: 'width:100%;border-collapse:collapse;table-layout:fixed;' }, [
+          h('colgroup', {}, larguras.map(w => h('col', { style: `width:${w};` }))),
           h('thead', {}, h('tr', {}, [
-            '☐ Verif.', 'Data', 'CNP/Código', 'Produto',
-            'Qtd. Sistema Inicial', 'Nova Contagem - Sistema',
-            'Qtd. Física Inicial', 'Nova Contagem - Física',
+            '☐', 'Data', 'CNP/Cód.', 'Produto',
+            'Qtd. Sist. Ini.', 'Nov. Sist.',
+            'Qtd. Fís. Ini.', 'Nov. Fís.',
             'Responsável', 'Observações',
           ].map(t => h('th', { style: celTh }, t)))),
           h('tbody', {}, linhasHtml),
@@ -6854,9 +6904,10 @@ function buildErrosPage(container, goTo) {
       // A folha desta impressão é em A4 PAISAGEM (10 colunas), diferente do
       // A4 retrato usado pelos Documentos — injeta-se uma folha de estilo
       // temporária que só existe durante esta impressão e é removida assim
-      // que o diálogo do sistema fecha (imprimiu ou cancelou).
+      // que o diálogo do sistema fecha (imprimiu ou cancelou). As margens de
+      // 12mm evitam que a tabela fique colada aos limites físicos do papel.
       const estiloLandscape = document.createElement('style');
-      estiloLandscape.textContent = '@media print { @page { size: A4 landscape; margin: 10mm; } html, body { width: 297mm !important; height: 210mm !important; } }';
+      estiloLandscape.textContent = '@media print { @page { size: A4 landscape; margin: 12mm; } html, body { width: 297mm !important; height: 210mm !important; } .erros-print-area{padding:0 !important;} }';
       document.head.appendChild(estiloLandscape);
       function limpar() {
         estiloLandscape.remove();
