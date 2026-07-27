@@ -1020,6 +1020,32 @@
     transition:color .15s ease;}
   .pedido-categoria-card span.label{font-size:14px;font-weight:800;color:var(--pharm-800);line-height:1.3;
     transition:color .15s ease;}
+  /* ---- Hub de Pedidos: hierarquia por planos ---- */
+  .pedidos-hub-1plano{justify-content:center;gap:20px;margin-bottom:18px;}
+  .pedidos-hub-2plano{justify-content:center;gap:16px;margin-bottom:14px;opacity:.95;}
+  .pedidos-hub-3plano{justify-content:center;margin-bottom:30px;opacity:.9;}
+  .pedido-categoria-card-destaque{width:230px;padding:34px 22px;border-width:2px;
+    box-shadow:0 6px 18px rgba(15,53,74,.12);}
+  .pedido-categoria-card-destaque .icon-wrap{color:var(--pharm-800);}
+  .pedido-categoria-card-destaque span.label{font-size:16px;}
+  .pedidos-hub-2plano .pedido-categoria-card{width:160px;padding:18px 14px;}
+  .pedidos-hub-2plano .pedido-categoria-card span.label{font-size:12.5px;}
+  .pedidos-hub-3plano .pedido-categoria-card{width:170px;padding:16px 14px;}
+  /* ---- Dashboard Resumo por Setor ---- */
+  .resumo-setores-tabela{width:100%;}
+  .resumo-setor-nome-btn{display:flex;align-items:center;gap:8px;background:none;border:none;
+    font-family:inherit;font-size:13.5px;font-weight:700;color:var(--pharm-800);cursor:pointer;padding:0;}
+  .resumo-setor-nome-btn:hover{color:var(--pharm-600);text-decoration:underline;}
+  .resumo-setor-valor-btn{background:none;border:none;font-family:inherit;font-size:13.5px;font-weight:800;
+    cursor:pointer;padding:2px 8px;border-radius:7px;}
+  .resumo-setor-valor-btn.tone-orange{color:#c2410c;}
+  .resumo-setor-valor-btn.tone-orange:hover{background:#ffedd5;}
+  .resumo-setor-valor-btn.tone-yellow{color:#a16207;}
+  .resumo-setor-valor-btn.tone-yellow:hover{background:#fef9c3;}
+  .resumo-setor-valor-btn.tone-blue{color:#1d4ed8;}
+  .resumo-setor-valor-btn.tone-blue:hover{background:#dbeafe;}
+  .resumo-setor-valor-btn.tone-green{color:#15803d;}
+  .resumo-setor-valor-btn.tone-green:hover{background:#dcfce7;}
   .pedido-categoria-card:hover{transform:translateY(-3px);border-color:var(--pharm-400);
     box-shadow:0 10px 24px rgba(15,53,74,.16);}
   .pedido-categoria-card:active,
@@ -5392,111 +5418,6 @@ function openViewOnlyModal(schema, record, title) {
   document.body.appendChild(overlay);
 }
 
-function openRecordModal(listKey, schema, record, title, onSaved) {
-  closePopover();
-  const draft = Object.assign({}, record);
-  const overlay = h('div', { class: 'modal-overlay' });
-  function close() { document.removeEventListener('keydown', onKeydown); overlay.remove(); }
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-  function onKeydown(e) { if (e.key === 'Escape') close(); }
-  document.addEventListener('keydown', onKeydown);
-  const errorMsg = h('p', { class: 'form-error', style: 'display:none;' }, '');
-  async function save() {
-    const missing = checkRequiredFields(draft, schema);
-    if (missing.length) {
-      errorMsg.textContent = buildRequiredMessage(missing, schema);
-      errorMsg.style.display = '';
-      return;
-    }
-    const formatoInvalido = checkFieldFormats(draft, schema);
-    if (formatoInvalido) {
-      errorMsg.textContent = formatoInvalido;
-      errorMsg.style.display = '';
-      return;
-    }
-    normalizeNameFields(draft);
-    // Ortopedia sem Meias: limpa os campos exclusivos das Meias antes de
-    // gravar, para não persistirem valores de um produto anterior.
-    if (ortopediaCondicional && !ortopediaEhMeias()) CAMPOS_SO_MEIAS.forEach(nome => { draft[nome] = ''; });
-    // Novo fluxo da Farmácia: um registo "Em Orçamento" não fica gravado com
-    // farmácia atribuída — pergunta-se se o Estado passa a "Pedido" ou, em
-    // alternativa, limpa-se o campo (mesma regra do formulário principal).
-    if (typeof categoriaTemOrcamentos === 'function' && categoriaTemOrcamentos(listKey) && draft.estado === 'Em Orçamento' && String(draft.fornecedor || '').trim()) {
-      perguntaSimNaoDialog(`A Farmácia "${String(draft.fornecedor).trim()}" está preenchida mas o Estado continua "Em Orçamento". Para ter farmácia atribuída, o Estado deve ser alterado para "Pedido". Alterar agora o Estado para "Pedido"?`, (sim) => {
-        if (sim) draft.estado = 'Pedido';
-        else draft.fornecedor = '';
-        save(); // reentra já com o estado/campo corrigidos
-      });
-      return;
-    }
-    draft.responsavel = currentUserName();
-    saveBtn.disabled = true; saveBtn.textContent = 'A guardar…';
-    const updated = await dbUpdate(listKey, record.id, draft);
-    if (updated) {
-      STATE[listKey] = STATE[listKey].map(r => r.id === record.id ? updated : r);
-      close();
-      onSaved();
-      // Pop-up de Registo: pedido gravado ainda "Em Orçamento" (sem valor
-      // aprovado pelo cliente) — lembrete de balcão para contactar o utente.
-      // Só nas categorias de pedidos com Gestão de Orçamentos.
-      if (typeof categoriaTemOrcamentos === 'function' && categoriaTemOrcamentos(listKey) && draft.estado === 'Em Orçamento' && !draft.orcamentoAprovado) {
-        confirmDialog('Avisar utente sobre os orçamentos recebidos para aprovação.', () => {}, { confirmLabel: 'Entendido' });
-      }
-    } else {
-      saveBtn.disabled = false; saveBtn.textContent = 'Guardar alterações';
-      errorMsg.textContent = `Não foi possível guardar as alterações. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
-      errorMsg.style.display = '';
-    }
-  }
-  // ---- Ortopedia: campos condicionais ao tipo de Produto ----
-  // No modal de edição, os campos exclusivos das "Meias de Compressão"
-  // (Tipo, Cor, Biqueira e as 4 Medidas) só aparecem quando o Produto é
-  // mesmo "Meias de Compressão". Com "Ortótese / Outro" ficam ocultos e os
-  // seus valores são limpos ao guardar (nunca ficam dados órfãos no registo).
-  const CAMPOS_SO_MEIAS = new Set(['tipo', 'cor', 'biqueira', 'medidaTornozelo', 'medidaBarrigaPerna', 'medidaCoxa', 'medidaAlturaPerna']);
-  const ortopediaCondicional = listKey === 'ortopedia';
-  function ortopediaEhMeias() { return String(draft.produto || '').trim() === 'Meias de Compressão'; }
-  function schemaVisivel() {
-    if (!ortopediaCondicional || ortopediaEhMeias()) return schema;
-    return schema.filter(f => !CAMPOS_SO_MEIAS.has(f.name));
-  }
-  function construirCamposGrid() {
-    return schemaVisivel().map(f => {
-      if (ortopediaCondicional && f.name === 'produto') {
-        // O seletor de Produto re-desenha a grelha ao mudar, para os campos
-        // de Meias aparecerem/desaparecerem imediatamente.
-        return buildField(Object.assign({}, f, { onChange: () => { grid.replaceChildren(...construirCamposGrid()); } }), draft);
-      }
-      return buildField(f, draft);
-    });
-  }
-  const grid = h('div', { class: 'form-grid' }, ortopediaCondicional ? construirCamposGrid() : schema.map(f => buildField(f, draft)));
-  const saveBtn = h('button', { class: 'btn btn-primary', onclick: save }, 'Guardar alterações');
-  const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: close }, 'Cancelar');
-  const panel = h('div', { class: 'modal-panel' }, [
-    h('div', { class: 'modal-title-row' }, [
-      h('div', {}, [h('p', { class: 'modal-tag' }, title), h('p', { class: 'modal-title' }, 'Editar registo')]),
-      h('button', { class: 'close-btn', onclick: close }, Icon('x', { size: 16 })),
-    ]),
-    grid,
-    errorMsg,
-    h('div', { class: 'form-actions' }, [saveBtn, cancelBtn]),
-  ]);
-  overlay.appendChild(panel);
-  document.body.appendChild(overlay);
-}
-
-const TABLE_HIDE = new Set(['numCliente', 'medidaTornozelo', 'medidaBarrigaPerna', 'medidaCoxa', 'medidaAlturaPerna']);
-
-// Medidas opcionais do cliente (só usadas em Ortopedia, quando Produto =
-// "Meias") — combinam-se com as Observações no mesmo popover de detalhe,
-// sempre com as Observações primeiro e as Medidas por baixo.
-const MEDIDA_FIELDS_ORTOPEDIA = [
-  { name: 'medidaTornozelo', label: 'Tornozelo' },
-  { name: 'medidaBarrigaPerna', label: 'Barriga da Perna' },
-  { name: 'medidaCoxa', label: 'Coxa' },
-  { name: 'medidaAlturaPerna', label: 'Altura da Perna' },
-];
 function buildDetalhesTexto(schema, r) {
   const temMedidas = schema.some(f => f.name === 'medidaTornozelo');
   const partes = [];
@@ -5510,6 +5431,76 @@ function buildDetalhesTexto(schema, r) {
   return partes.join('\n\n');
 }
 
+// Contagem por estado (Pendentes/Em Orçamento/Por Levantar/Resolvidos no
+// ano) — usada tanto no resumo agregado do Hub de Pedidos como nos badges
+// de cada página de setor individual, sempre com a mesma classificação.
+function contarEstadosPedido(records) {
+  const anoCorrente = new Date().getFullYear();
+  return {
+    pendentes: records.filter(r => r.estado !== 'Resolvido' && r.estado !== 'Cancelado').length,
+    emOrcamento: records.filter(r => r.estado === 'Em Orçamento').length,
+    porLevantar: records.filter(r => r.estado === 'Satisfeito').length,
+    resolvidosAno: records.filter(r => r.estado === 'Resolvido' && (r.data || '').startsWith(String(anoCorrente))).length,
+    total: records.length,
+  };
+}
+// Filtra os registos de UM setor por estado (badge clicado) + texto livre —
+// a pesquisa varre genericamente todos os campos de texto/combo do schema
+// dessa categoria, para nunca depender de nomes de campo fixos (Manipulados
+// usa "manipulado", os restantes usam "produto", etc.).
+function filtrarRegistosSetor(records, schema, query, statusFilter) {
+  let list = records;
+  const anoCorrente = new Date().getFullYear();
+  if (statusFilter === 'pendentes') list = list.filter(r => r.estado !== 'Resolvido' && r.estado !== 'Cancelado');
+  else if (statusFilter === 'em-orcamento') list = list.filter(r => r.estado === 'Em Orçamento');
+  else if (statusFilter === 'satisfeito') list = list.filter(r => r.estado === 'Satisfeito');
+  else if (statusFilter === 'resolvido-ano') list = list.filter(r => r.estado === 'Resolvido' && (r.data || '').startsWith(String(anoCorrente)));
+  const q = String(query || '').trim().toLowerCase();
+  if (q) {
+    const camposPesquisaveis = schema.filter(f => f.type === 'text' || f.type === 'combo' || f.type === 'textarea').map(f => f.name);
+    list = list.filter(r => camposPesquisaveis.some(fn => String(r[fn] || '').toLowerCase().includes(q)));
+  }
+  return list;
+}
+function statusFilterLabelSetor(sf, anoCorrente) {
+  if (sf === 'pendentes') return 'Pendentes';
+  if (sf === 'em-orcamento') return 'Em Orçamento';
+  if (sf === 'satisfeito') return 'Por Levantar';
+  if (sf === 'resolvido-ano') return `Resolvidos (${anoCorrente})`;
+  return '';
+}
+// Bloco de badges + pesquisa de UMA página de setor — devolve os dois nós
+// (stat-grid, search-card) já prontos a inserir na página; quem chama só
+// precisa de guardar searchQuery/statusFilter no seu próprio estado e voltar
+// a chamar isto num rerender().
+function buildBarraPesquisaEstadoSetor(records, schema, searchQuery, statusFilter, onStatusChange) {
+  const anoCorrente = new Date().getFullYear();
+  const c = contarEstadosPedido(records);
+  const toggle = (sf) => onStatusChange(statusFilter === sf ? null : sf);
+  const statGrid = h('div', { class: 'stat-grid', style: 'margin-bottom:18px;' }, [
+    buildStatCard('alert', 'Pendentes', c.pendentes, 'orange', () => toggle('pendentes')),
+    buildStatCard('clock', 'Em Orçamento', c.emOrcamento, 'yellow', () => toggle('em-orcamento')),
+    buildStatCard('shoppingBag', 'Por Levantar', c.porLevantar, 'blue-soft', () => toggle('satisfeito')),
+    buildStatCard('checkcircle', `Resolvidos (${anoCorrente})`, c.resolvidosAno, 'green', () => toggle('resolvido-ano')),
+  ]);
+  // O campo de pesquisa é devolvido "em bruto", sem listener de input — é
+  // quem chama que liga o oninput a um re-render LEVE (só a tabela de
+  // resultados), nunca ao rerender() da página inteira. Recriar este campo
+  // a cada tecla faria perder o foco/cursor a meio da escrita.
+  const searchInput = h('input', { class: 'search-input', type: 'text', placeholder: 'Pesquisar por nome, contacto, produto ou responsável...' });
+  searchInput.value = searchQuery || '';
+  const chipRow = h('div', { class: 'chip-row' });
+  if (statusFilter) {
+    const closeBtn = h('button', { class: 'chip-close', title: 'Remover filtro' }, Icon('x', { size: 11, strokeWidth: 2.5 }));
+    closeBtn.addEventListener('click', () => onStatusChange(null));
+    chipRow.appendChild(h('span', { class: 'filter-chip' }, [h('span', {}, `Filtro: ${statusFilterLabelSetor(statusFilter, anoCorrente)}`), closeBtn]));
+  }
+  const searchCard = h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
+    h('div', { class: 'search-row' }, [h('div', { class: 'search-input-wrap' }, [h('span', { class: 'icon' }, Icon('search', { size: 15 })), searchInput])]),
+    chipRow,
+  ]);
+  return { statGrid, searchCard, searchInput };
+}
 function buildRecordTable(schema, records, selectedIds, onToggleSelect, listKey, tableOpts) {
   if (records.length === 0) {
     return EmptyState('Sem registos para mostrar. Adiciona o primeiro pedido pela barra de ações abaixo.');
@@ -5704,6 +5695,9 @@ function buildOrtopediaPage(container, goTo) {
   let formError = '';
   let saving = false;
   let selectedIds = new Set();
+  let searchQuery = '';
+  let statusFilter = (STATE.consultaPreset && STATE.consultaPreset.statusFilter) || null;
+  STATE.consultaPreset = null;
   // Farmácia/Orçamentos: true assim que o utilizador escreve diretamente no
   // campo "Farmácia" do topo — nesse caso os Orçamentos ficam bloqueados.
   let fornecedorEditadoManualmente = false;
@@ -5850,9 +5844,20 @@ function buildOrtopediaPage(container, goTo) {
       const painelOrcamentos = buildOrcamentosPanel(listKey, draft, rerender, estadoOrcamento.orcamentosBloqueados);
       if (painelOrcamentos) wrap.appendChild(painelOrcamentos);
     } else {
-      wrap.appendChild(buildRecordTable(ortopediaSchema, records(), selectedIds, toggleSelect, listKey, {
-        onSaved: rerender,
-      }));
+      const { statGrid, searchCard, searchInput } = buildBarraPesquisaEstadoSetor(records(), ortopediaSchema, searchQuery, statusFilter,
+        (sf) => { statusFilter = sf; rerender(); });
+      const resultsEl = h('div', {});
+      function renderResultsOnly() {
+        clear(resultsEl);
+        resultsEl.appendChild(buildRecordTable(ortopediaSchema, filtrarRegistosSetor(records(), ortopediaSchema, searchQuery, statusFilter), selectedIds, toggleSelect, listKey, {
+          onSaved: rerender,
+        }));
+      }
+      searchInput.addEventListener('input', () => { searchQuery = searchInput.value; renderResultsOnly(); });
+      renderResultsOnly();
+      wrap.appendChild(statGrid);
+      wrap.appendChild(searchCard);
+      wrap.appendChild(resultsEl);
     }
     if (!showForm) {
       wrap.appendChild(buildBottomActionBar({
@@ -5874,6 +5879,11 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
   let formError = '';
   let saving = false;
   let selectedIds = new Set();
+  let searchQuery = '';
+  // Filtro de estado vindo do Dashboard Resumo do Hub de Pedidos (clique
+  // numa célula tipo "3 Pendentes") — aplica-se uma única vez, ao entrar.
+  let statusFilter = (STATE.consultaPreset && STATE.consultaPreset.statusFilter) || null;
+  STATE.consultaPreset = null;
   // Farmácia/Orçamentos: true assim que o utilizador escreve diretamente no
   // campo "Farmácia" do topo — nesse caso os Orçamentos ficam bloqueados.
   let fornecedorEditadoManualmente = false;
@@ -6051,9 +6061,22 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
       const painelOrcamentos = buildOrcamentosPanel(listKey, draft, rerender, estado.orcamentosBloqueados);
       if (painelOrcamentos) wrap.appendChild(painelOrcamentos);
     } else {
-      wrap.appendChild(buildRecordTable(schema, records(), selectedIds, toggleSelect, listKey, {
-        onSaved: rerender,
-      }));
+      const { statGrid, searchCard, searchInput } = buildBarraPesquisaEstadoSetor(records(), schema, searchQuery, statusFilter,
+        (sf) => { statusFilter = sf; rerender(); });
+      const resultsEl = h('div', {});
+      function renderResultsOnly() {
+        clear(resultsEl);
+        resultsEl.appendChild(buildRecordTable(schema, filtrarRegistosSetor(records(), schema, searchQuery, statusFilter), selectedIds, toggleSelect, listKey, {
+          onSaved: rerender,
+        }));
+      }
+      // Re-render LEVE (só a tabela) a cada tecla — o próprio campo de
+      // pesquisa nunca é recriado, por isso o foco/cursor nunca se perde.
+      searchInput.addEventListener('input', () => { searchQuery = searchInput.value; renderResultsOnly(); });
+      renderResultsOnly();
+      wrap.appendChild(statGrid);
+      wrap.appendChild(searchCard);
+      wrap.appendChild(resultsEl);
     }
     if (extraButton && !showForm) {
       wrap.appendChild(h('div', { style: 'margin-top:18px;text-align:center;' }, [
@@ -7995,155 +8018,68 @@ function buildValidadesPage(container, goTo) {
 // um filtra a tabela) e, logo a seguir, a tabela de pesquisa/consulta unificada
 // já visível — sem precisar de entrar num separador "Pesquisa de Pedidos" à parte.
 function buildPedidosHubPage(container, preset, goTo) {
-  function unified() {
-    const m = STATE.manipulados.map(r => ({ id: `M${r.id}`, origId: r.id, listKey: 'manipulados', schema: manipuladosSchema, tag: 'Manipulados', categoria: 'Manipulados', icon: 'flask', nome: r.nome, contacto: r.contacto, produto: r.manipulado, responsavel: r.responsavel, estado: r.estado, data: r.data, aviso: r.aviso, obs: r.obs }));
-    const o = STATE.ortopedia.map(r => ({ id: `O${r.id}`, origId: r.id, listKey: 'ortopedia', schema: ortopediaSchema, tag: 'Ortopedia', categoria: 'Ortopedia', icon: 'body', nome: r.nome, contacto: r.contacto, produto: r.tipo ? `${r.produto} · ${r.tipo}` : (r.descricaoArtigo ? `${r.produto} · ${r.descricaoArtigo}` : r.produto), responsavel: r.responsavel, estado: r.estado, data: r.data, aviso: r.aviso, obs: r.obs }));
-    const e = STATE.ervanaria.map(r => ({ id: `E${r.id}`, origId: r.id, listKey: 'ervanaria', schema: ervanariaSchema, tag: 'Ervanária', categoria: 'Ervanária', icon: 'leaf', nome: r.nome, contacto: r.contacto, produto: r.produto, responsavel: r.responsavel, estado: r.estado, data: r.data, aviso: r.aviso, obs: r.obs }));
-    const f = STATE.outros.map(r => ({ id: `F${r.id}`, origId: r.id, listKey: 'outros', schema: outrosSchema, tag: 'Outros Fornecedores', categoria: 'Outros Fornecedores', icon: 'package', nome: r.nome, contacto: r.contacto, produto: r.produto, responsavel: r.responsavel, estado: r.estado, data: r.data, aviso: r.aviso, obs: r.obs }));
-    const v = STATE.veterinaria.map(r => ({ id: `V${r.id}`, origId: r.id, listKey: 'veterinaria', schema: veterinariaSchema, tag: 'Veterinária', categoria: 'Veterinária', icon: 'paw', nome: r.nome, contacto: r.contacto, produto: r.produto, responsavel: r.responsavel, estado: r.estado, data: r.data, aviso: r.aviso, obs: r.obs }));
-    return [...m, ...o, ...e, ...f, ...v].sort((a, b) => (b.data || '').localeCompare(a.data || ''));
-  }
-  const categorias = ['Todos', 'Manipulados', 'Ortopedia', 'Ervanária', 'Veterinária', 'Outros Fornecedores'];
-  const effective = preset || STATE.consultaState || {};
-  let statusFilter = effective.statusFilter || null;
-  const anoCorrente = new Date().getFullYear();
-
   clear(container);
   const wrap = h('div', { class: 'animate-in' });
-  wrap.appendChild(withBackButton(buildPageHeader('clipboard', 'Pedidos', 'Criação rápida e pesquisa de todos os pedidos registados.', undefined), goTo));
+  wrap.appendChild(withBackButton(buildPageHeader('clipboard', 'Pedidos', 'Painel geral por setor — clica num setor para gerir os seus pedidos.', undefined), goTo));
 
-  // Botões de criação rápida por categoria (Manipulados, Ortopedia, Ervanária,
-  // Veterinária, Outros Fornecedores) — os mesmos do antigo hub genérico.
-  const pedidosSection = NAV_SECTIONS.find(s => s.title === 'Pedidos');
-  const createGrid = h('div', { class: 'quick-grid pedidos-hub-cats', style: 'margin-bottom:28px;' }, pedidosSection.items.map(item => h('button', { class: 'pedido-categoria-card', onclick: () => goTo(item.key) }, [
-    h('span', { class: 'icon-wrap' }, Icon(item.icon, { size: 40, strokeWidth: 1.6 })),
-    h('span', { class: 'label' }, item.label),
-  ])));
-  wrap.appendChild(createGrid);
-
-  const allPedidos = unified();
-  const pendentesCount = allPedidos.filter(r => r.estado !== 'Resolvido' && r.estado !== 'Cancelado').length;
-  const emOrcamentoCount = allPedidos.filter(r => r.estado === 'Em Orçamento').length;
-  const porLevantarCount = allPedidos.filter(r => r.estado === 'Satisfeito').length;
-  const resolvidosAnoCount = allPedidos.filter(r => r.estado === 'Resolvido' && (r.data || '').startsWith(String(anoCorrente))).length;
-
-  const searchInput = h('input', { class: 'search-input', type: 'text', placeholder: 'Pesquisar por nome, contacto, produto ou responsável...' });
-  const filterSelect = h('select', { class: 'filter-select' }, categorias.map(c => h('option', { value: c }, c)));
-  searchInput.value = effective.query || '';
-  filterSelect.value = effective.cat || 'Todos';
-  const resultsCount = h('p', { class: 'results-count' }, '');
-  const chipRow = h('div', { class: 'chip-row' });
-  const resultsContainer = h('div', {});
-
-  function applyQuickFilter(sf) {
-    filterSelect.value = 'Todos';
-    searchInput.value = '';
-    statusFilter = sf;
-    renderChip();
-    renderResults();
+  // ---- Hierarquia por planos: Manipulados/Ortopedia em destaque (maiores,
+  // no topo), Veterinária/Ervanária em 2º plano, Outros Fornecedores no
+  // fundo — só para criação/navegação rápida. Cada botão leva à página
+  // dedicada e autónoma desse setor (pesquisa, badges e tabela próprios). ----
+  const SETORES_INFO = {
+    manipulados: { key: 'manipulados', label: 'Manipulados', icon: 'flask', listKey: 'manipulados', schema: manipuladosSchema },
+    ortopedia: { key: 'ortopedia', label: 'Ortopedia', icon: 'body', listKey: 'ortopedia', schema: ortopediaSchema },
+    veterinaria: { key: 'veterinaria', label: 'Veterinária', icon: 'paw', listKey: 'veterinaria', schema: veterinariaSchema },
+    ervanaria: { key: 'ervanaria', label: 'Ervanária', icon: 'leaf', listKey: 'ervanaria', schema: ervanariaSchema },
+    outros: { key: 'outros', label: 'Outros Fornecedores', icon: 'package', listKey: 'outros', schema: outrosSchema },
+  };
+  function buildSetorBtn(info, grande) {
+    return h('button', { class: 'pedido-categoria-card' + (grande ? ' pedido-categoria-card-destaque' : ''), onclick: () => goTo(info.key) }, [
+      h('span', { class: 'icon-wrap' }, Icon(info.icon, { size: grande ? 48 : 34, strokeWidth: 1.6 })),
+      h('span', { class: 'label' }, info.label),
+    ]);
   }
-  // 4 badges de métricas — cor intuitiva por estado, cada um filtra a tabela abaixo ao clicar.
-  wrap.appendChild(h('div', { class: 'stat-grid pedidos-hub-stats' }, [
-    buildStatCard('alert', 'Pendentes', pendentesCount, 'orange', () => applyQuickFilter('pendentes')),
-    buildStatCard('clock', 'Em Orçamento', emOrcamentoCount, 'yellow', () => applyQuickFilter('em-orcamento')),
-    buildStatCard('shoppingBag', 'Por Levantar', porLevantarCount, 'blue-soft', () => applyQuickFilter('satisfeito')),
-    buildStatCard('checkcircle', `Resolvidos (${anoCorrente})`, resolvidosAnoCount, 'green', () => applyQuickFilter('resolvido-ano')),
+  wrap.appendChild(h('div', { class: 'quick-grid pedidos-hub-cats pedidos-hub-1plano' }, [
+    buildSetorBtn(SETORES_INFO.manipulados, true),
+    buildSetorBtn(SETORES_INFO.ortopedia, true),
+  ]));
+  wrap.appendChild(h('div', { class: 'quick-grid pedidos-hub-cats pedidos-hub-2plano' }, [
+    buildSetorBtn(SETORES_INFO.veterinaria, false),
+    buildSetorBtn(SETORES_INFO.ervanaria, false),
+  ]));
+  wrap.appendChild(h('div', { class: 'quick-grid pedidos-hub-cats pedidos-hub-3plano' }, [
+    buildSetorBtn(SETORES_INFO.outros, false),
   ]));
 
-  const searchCard = h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
-    h('div', { class: 'search-row' }, [
-      h('div', { class: 'search-input-wrap' }, [h('span', { class: 'icon' }, Icon('search', { size: 15 })), searchInput]),
-      filterSelect,
-    ]),
-    chipRow,
-    resultsCount,
-  ]);
-  wrap.appendChild(searchCard);
-  wrap.appendChild(resultsContainer);
+  // ---- Dashboard Resumo — situação global, mas SEGREGADA por setor (sem
+  // pesquisa nem tabela agregada: só consulta rápida). Cada linha é
+  // clicável e leva à página desse setor, já com o filtro de estado
+  // correspondente aplicado (via STATE.consultaPreset). ----
+  wrap.appendChild(h('h3', { class: 'home-section-title', style: 'margin-top:8px;' }, 'Dashboard Resumo por Setor'));
+  const theadResumo = h('thead', {}, h('tr', {}, ['Setor', 'Pendentes', 'Em Orçamento', 'Por Levantar', `Resolvidos (${new Date().getFullYear()})`, 'Total'].map(t => h('th', {}, t))));
+  const linhasResumo = Object.values(SETORES_INFO).map(info => {
+    const c = contarEstadosPedido(STATE[info.listKey] || []);
+    function irParaSetorComFiltro(sf) {
+      goTo(info.key, { statusFilter: sf });
+    }
+    const celFiltravel = (valor, sf, tonalidade) => {
+      const td = h('td', {}, valor > 0
+        ? h('button', { class: 'resumo-setor-valor-btn tone-' + tonalidade, onclick: () => irParaSetorComFiltro(sf) }, String(valor))
+        : h('span', { class: 'cell-muted' }, '0'));
+      return td;
+    };
+    return h('tr', {}, [
+      h('td', {}, h('button', { class: 'resumo-setor-nome-btn', onclick: () => goTo(info.key) }, [Icon(info.icon, { size: 14, style: 'color:var(--pharm-500);' }), h('span', {}, info.label)])),
+      celFiltravel(c.pendentes, 'pendentes', 'orange'),
+      celFiltravel(c.emOrcamento, 'em-orcamento', 'yellow'),
+      celFiltravel(c.porLevantar, 'satisfeito', 'blue'),
+      celFiltravel(c.resolvidosAno, 'resolvido-ano', 'green'),
+      h('td', { class: 'cell-strong' }, String(c.total)),
+    ]);
+  });
+  wrap.appendChild(h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', { class: 'resumo-setores-tabela' }, [theadResumo, h('tbody', {}, linhasResumo)]))));
+
   container.appendChild(wrap);
-
-  function statusFilterLabel(sf) {
-    if (sf === 'pendentes') return 'Pendentes';
-    if (sf === 'em-orcamento') return 'Em Orçamento';
-    if (sf === 'satisfeito') return 'Por Levantar';
-    if (sf === 'resolvido-ano') return `Resolvidos (${anoCorrente})`;
-    return '';
-  }
-
-  function renderChip() {
-    clear(chipRow);
-    if (!statusFilter) return;
-    const closeBtn = h('button', { class: 'chip-close', title: 'Remover filtro' }, Icon('x', { size: 11, strokeWidth: 2.5 }));
-    closeBtn.addEventListener('click', () => { statusFilter = null; renderChip(); renderResults(); });
-    chipRow.appendChild(h('span', { class: 'filter-chip' }, [h('span', {}, `Filtro: ${statusFilterLabel(statusFilter)}`), closeBtn]));
-  }
-
-  function openEdit(row) {
-    openRecordModal(row.listKey, row.schema, STATE[row.listKey].find(r => r.id === row.origId), row.tag, () => {
-      buildPedidosHubPage(container, { query: searchInput.value, cat: filterSelect.value, statusFilter }, goTo);
-    });
-  }
-
-  // Mesmo toggle de um clique usado em todas as outras listas da app —
-  // aqui a lista agrega várias categorias, por isso usa-se listKey/origId
-  // de cada linha para saber a que tabela e registo gravar.
-  async function toggleAvisoResultado(r) {
-    async function aplicar() {
-      const updated = await dbUpdate(r.listKey, r.origId, { aviso: !r.aviso });
-      if (updated) { STATE[r.listKey] = STATE[r.listKey].map(x => x.id === r.origId ? updated : x); renderResults(); }
-      else showDbErrorToast('Não foi possível atualizar o aviso');
-    }
-    if (r.aviso) confirmarReverterAviso(aplicar);
-    else await aplicar();
-  }
-
-  function renderResults() {
-    const query = searchInput.value.trim().toLowerCase();
-    const cat = filterSelect.value;
-    STATE.consultaState = { query: searchInput.value, cat, statusFilter };
-    const filtered = unified().filter(r => {
-      if (cat !== 'Todos' && r.categoria !== cat) return false;
-      if (statusFilter === 'pendentes' && (r.estado === 'Resolvido' || r.estado === 'Cancelado')) return false;
-      if (statusFilter === 'em-orcamento' && r.estado !== 'Em Orçamento') return false;
-      if (statusFilter === 'satisfeito' && r.estado !== 'Satisfeito') return false;
-      if (statusFilter === 'resolvido-ano' && !(r.estado === 'Resolvido' && (r.data || '').startsWith(String(anoCorrente)))) return false;
-      if (!query) return true;
-      return [r.nome, r.contacto, r.produto, r.responsavel].some(v => (v || '').toLowerCase().includes(query));
-    });
-    resultsCount.textContent = `${filtered.length} resultado${filtered.length === 1 ? '' : 's'} encontrado${filtered.length === 1 ? '' : 's'}`;
-
-    clear(resultsContainer);
-    if (filtered.length === 0) {
-      resultsContainer.appendChild(EmptyState('Nenhum resultado para essa pesquisa.'));
-      return;
-    }
-    const thead = h('thead', {}, h('tr', {}, [...['Categoria', 'Nome', 'Contacto', 'Produto', 'Responsável', 'Data', 'Estado', 'Aviso', 'Obs.'].map(t => h('th', {}, t)), h('th', { class: 'text-right' }, 'Ações')]));
-    const tbody = h('tbody', {}, filtered.map(r => {
-      const avisadoBtn = h('button', {
-        class: 'aviso-tag aviso-toggle' + (r.aviso ? ' aviso-ativo' : ' aviso-inativo'),
-        title: r.aviso ? 'Utente avisado — clicar para desmarcar' : 'Utente não avisado — clicar para marcar',
-      }, Icon(r.aviso ? 'bell' : 'bellOff', { size: 16, strokeWidth: 2.2 }));
-      avisadoBtn.addEventListener('click', (e) => { e.stopPropagation(); requireAuth(() => toggleAvisoResultado(r)); });
-      return h('tr', { class: rowClassForEstado(r.estado) }, [
-        h('td', {}, [h('span', { style: 'display:inline-flex;align-items:center;gap:6px;' }, [Icon(r.icon, { size: 14, style: 'color:var(--pharm-500);' }), r.categoria])]),
-        h('td', { class: 'cell-strong' }, r.nome),
-        h('td', {}, r.contacto),
-        h('td', {}, r.produto || '—'),
-        h('td', {}, r.responsavel || '—'),
-        h('td', {}, formatDate(r.data)),
-        h('td', {}, r.estado ? StatusBadge(r.estado) : h('span', { class: 'cell-muted' }, '—')),
-        h('td', {}, avisadoBtn),
-        h('td', {}, ObsIndicator(buildDetalhesTexto(r.schema, STATE[r.listKey].find(x => x.id === r.origId) || {}))),
-        h('td', { class: 'text-right' }, editIconButton(() => openEdit(r))),
-      ]);
-    }));
-    resultsContainer.appendChild(h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', {}, [thead, tbody]))));
-  }
-
-  searchInput.addEventListener('input', renderResults);
-  filterSelect.addEventListener('change', renderResults);
-  renderChip();
-  renderResults();
 }
 
 
