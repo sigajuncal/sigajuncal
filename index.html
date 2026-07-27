@@ -12586,6 +12586,110 @@ function buildMapaTarefasPage(container, goTo) {
   rerender();
 }
 
+// ---- Empresas Parceiras: cadastro simples e limpo (partilhado entre a
+// Farmácia Juncal e a Farmácia Boa Nova — não é um "pedido" com estado, por
+// isso NUNCA usa os badges Pendentes/Em Orçamento/Por Levantar/Resolvidos
+// do buildCategoryPage genérico; tem a sua própria página dedicada). ----
+function buildEmpresasParceirasPage(container, goTo) {
+  let showForm = false, editingId = null, draft = emptyRecord(empresaParceiraSchema);
+  let formError = '';
+  let saving = false;
+  let searchQuery = '';
+
+  function records() { return STATE.empresasParceiras || []; }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+
+  function openNew() { draft = emptyRecord(empresaParceiraSchema); editingId = null; formError = ''; showForm = true; rerender(); }
+  function openEdit(r) { draft = Object.assign({}, r); editingId = r.id; formError = ''; showForm = true; rerender(); }
+  function cancel() { formError = ''; showForm = false; rerender(); }
+
+  async function submit() {
+    const missing = checkRequiredFields(draft, empresaParceiraSchema);
+    if (missing.length) { formError = buildRequiredMessage(missing, empresaParceiraSchema); rerender(); return; }
+    const formatoInvalido = checkFieldFormats(draft, empresaParceiraSchema);
+    if (formatoInvalido) { formError = formatoInvalido; rerender(); return; }
+    formError = '';
+    normalizeNameFields(draft);
+    saving = true; rerender();
+    if (editingId) {
+      const updated = await dbUpdate('empresasParceiras', editingId, draft);
+      if (updated) STATE.empresasParceiras = records().map(r => r.id === editingId ? updated : r);
+      else formError = `Não foi possível guardar as alterações. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
+    } else {
+      const created = await dbInsert('empresasParceiras', draft);
+      // A dropdown "Empresa Parceira" do formulário de Entregas lê sempre
+      // STATE.empresasParceiras em tempo real — ao gravar aqui, fica logo
+      // disponível lá, sem qualquer passo extra de sincronização.
+      if (created) STATE.empresasParceiras = [created, ...records()];
+      else formError = `Não foi possível adicionar a empresa parceira. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
+    }
+    saving = false;
+    if (!formError) showForm = false;
+    rerender();
+  }
+  function removeEmpresa(r) {
+    confirmDialog(`Tem a certeza de que quer eliminar "${r.nome}"? Esta ação não pode ser desfeita.`, async () => {
+      const apagados = await bulkSoftDelete('empresasParceiras', [r.id]);
+      STATE.empresasParceiras = records().filter(x => !apagados.has(x.id));
+      rerender();
+    }, { danger: true, confirmLabel: 'Eliminar' });
+  }
+
+  function build() {
+    const wrap = h('div', { class: 'animate-in' });
+    wrap.appendChild(withCustomBackButton(buildPageHeader('briefcase', 'Empresas Parceiras', 'Gestão de empresas parceiras para preenchimento automático das entregas — partilhada pela Farmácia Juncal e pela Farmácia Boa Nova.', undefined), () => goTo('entregas')));
+
+    if (showForm) {
+      wrap.appendChild(buildRecordForm(empresaParceiraSchema, draft, {
+        editing: !!editingId, onSubmit: submit, onCancel: cancel, errorMessage: formError, saving,
+      }));
+      return wrap;
+    }
+
+    const searchInput = h('input', { class: 'search-input', type: 'text', placeholder: 'Pesquisar por nome, morada ou contacto...' });
+    searchInput.value = searchQuery;
+    const resultsEl = h('div', {});
+    function renderResultsOnly() {
+      clear(resultsEl);
+      const q = searchQuery.trim().toLowerCase();
+      const filtradas = !q ? records() : records().filter(r =>
+        [r.nome, r.morada, r.localidade, r.contacto].some(v => String(v || '').toLowerCase().includes(q)));
+      if (!filtradas.length) {
+        resultsEl.appendChild(EmptyState(q ? 'Nenhuma empresa encontrada para essa pesquisa.' : 'Sem empresas parceiras registadas. Adiciona a primeira pelo botão abaixo.'));
+        return;
+      }
+      const thead = h('thead', {}, h('tr', {}, ['Nome da Empresa', 'Morada', 'Localidade', 'Contacto', 'Ações'].map(t => h('th', {}, t))));
+      const tbody = h('tbody', {}, filtradas.map(r => {
+        const editBtn = h('button', { class: 'btn-fab-sm tone-blue', title: 'Editar', 'aria-label': 'Editar' }, Icon('pencil', { size: 13, strokeWidth: 2.2 }));
+        editBtn.addEventListener('click', () => requireAuth(() => openEdit(r)));
+        const delBtn = h('button', { class: 'btn-fab-sm tone-red', title: 'Eliminar', 'aria-label': 'Eliminar' }, Icon('trash', { size: 13, strokeWidth: 2.2 }));
+        delBtn.addEventListener('click', () => requireAuth(() => removeEmpresa(r)));
+        return h('tr', {}, [
+          h('td', { class: 'cell-strong' }, r.nome || '—'),
+          h('td', {}, r.morada || '—'),
+          h('td', {}, r.localidade || '—'),
+          h('td', {}, r.contacto || '—'),
+          h('td', {}, h('div', { class: 'row-actions' }, [editBtn, delBtn])),
+        ]);
+      }));
+      resultsEl.appendChild(h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', { class: 'pedidos-table' }, [thead, tbody]))));
+    }
+    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; renderResultsOnly(); });
+    renderResultsOnly();
+
+    const novaBtn = h('button', { class: 'btn btn-primary', style: 'margin-bottom:18px;' }, [Icon('plus', { size: 14 }), ' Nova Empresa Parceira']);
+    novaBtn.addEventListener('click', () => requireAuth(openNew));
+    wrap.appendChild(novaBtn);
+    wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
+      h('div', { class: 'search-row' }, [h('div', { class: 'search-input-wrap' }, [h('span', { class: 'icon' }, Icon('search', { size: 15 })), searchInput])]),
+    ]));
+    wrap.appendChild(resultsEl);
+    return wrap;
+  }
+
+  container.appendChild(build());
+}
+
 function buildEntregasPage(container, goTo) {
   // Só Estafeta e Administrador escolhem entre as duas farmácias — todos os
   // restantes colaboradores entram direta e automaticamente na Juncal.
@@ -13073,13 +13177,14 @@ function buildEntregasPage(container, goTo) {
 
     const pendentesCount = STATE.entregas.filter(r => r.farmacia === farmaciaAtiva && r.estadoEntrega !== 'Entregue').length;
     const historicoCount = STATE.entregas.filter(r => r.farmacia === farmaciaAtiva && r.estadoEntrega === 'Entregue').length;
-    const tabsRow = h('div', { class: 'tabs-row' }, [
+    const tabsRow = h('div', { class: 'tabs-row', style: 'align-items:center;' }, [
       h('button', { class: 'tab-btn tone-orange' + (activeTab === 'pendentes' ? ' active' : ''), onclick: () => { activeTab = 'pendentes'; selectedIds = new Set(); rerender(); } }, [
         Icon('truck', { size: 14 }), h('span', {}, 'Entregas Pendentes'), h('span', { class: 'tab-count' }, String(pendentesCount)),
       ]),
       h('button', { class: 'tab-btn tone-green' + (activeTab === 'historico' ? ' active' : ''), onclick: () => { activeTab = 'historico'; selectedIds = new Set(); rerender(); } }, [
         Icon('checkcircle', { size: 14 }), h('span', {}, 'Histórico'), h('span', { class: 'tab-count' }, String(historicoCount)),
       ]),
+      h('button', { class: 'btn btn-secondary', style: 'margin-left:auto;', onclick: () => requireAuth(() => goTo('gestao-empresas-parceiras')) }, [Icon('settings', { size: 14, strokeWidth: 2.2 }), ' Gerir Empresas Parceiras']),
     ]);
     wrap.appendChild(tabsRow);
 
@@ -14285,7 +14390,7 @@ function renderInterno() {
       case 'mapa48h': buildMapa48hPage(pageContainer, goTo); break;
       case 'mapa-tarefas': buildMapaTarefasPage(pageContainer, goTo); break;
       case 'entregas': buildEntregasPage(pageContainer, goTo); break;
-      case 'gestao-empresas-parceiras': buildCategoryPage(pageContainer, 'Empresas Parceiras', 'briefcase', 'Gestão de empresas parceiras para preenchimento automático das entregas.', empresaParceiraSchema, 'empresasParceiras', goTo); break;
+      case 'gestao-empresas-parceiras': buildEmpresasParceirasPage(pageContainer, goTo); break;
       case 'recolhas': buildRecolhasPage(pageContainer, goTo); break;
       case 'tarefas': buildTarefasPage(pageContainer, goTo); break;
       case 'formacoes': buildFormacoesPage(pageContainer, goTo); break;
