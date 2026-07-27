@@ -6498,6 +6498,15 @@ function abrirModalGaveta() {
   async function enviarRecado() {
     if (!novoDestinatarioId) { formError = 'Por favor, selecione o colega destinatário.'; render(); return; }
     if (!String(novaMensagem || '').trim()) { formError = 'Por favor, escreva a mensagem do recado.'; render(); return; }
+    // Rede de segurança: a conta sintética do Administrador fundador (só
+    // usada quando o registo real está inacessível na base de dados) não
+    // tem um ID válido para gravar como remetente — mostra-se um aviso
+    // claro em vez de deixar o Supabase rejeitar com um erro técnico.
+    if (activeUser && activeUser.id === ADMIN_FUNDADOR.id) {
+      formError = 'Não é possível enviar o recado: a app está a usar a conta de emergência (sem ligação à base de dados de utilizadores). Verifique a ligação e tente novamente.';
+      render();
+      return;
+    }
     formError = '';
     saving = true; render();
     const created = await dbInsertRecado({
@@ -14013,10 +14022,21 @@ function findUsuario(username, pin) {
   const uname = String(username || '').trim().toLowerCase();
   const p = String(pin || '').trim();
   if (!uname || !p) return null;
-  if (uname === ADMIN_FUNDADOR.username && p === ADMIN_FUNDADOR.pin) return ADMIN_FUNDADOR;
-  return (STATE.usuarios || []).find(u =>
+  // O registo REAL da base de dados tem sempre prioridade: só tem um "id"
+  // válido (gravável em qualquer coluna com chave estrangeira, como
+  // remetente_id/destinatario_id da Gaveta de Recados) o registo que veio
+  // mesmo do Supabase. O ADMIN_FUNDADOR sintético (id: 'admin-fundador-99',
+  // uma string que NÃO existe em usuarios_app) é só uma rede de segurança
+  // para o caso desse registo estar apagado/corrompido ou a app estar sem
+  // ligação — nunca deve ser usado por defeito quando o registo real já
+  // existe e está acessível, sob pena de qualquer escrita que dependa do
+  // ID do utilizador (como enviar um recado) falhar sempre.
+  const real = (STATE.usuarios || []).find(u =>
     String(u.username || '').trim().toLowerCase() === uname && String(u.pin || '') === p
-  ) || null;
+  );
+  if (real) return real;
+  if (uname === ADMIN_FUNDADOR.username && p === ADMIN_FUNDADOR.pin) return ADMIN_FUNDADOR;
+  return null;
 }
 
 // Constrói o botão/badge do utilizador consoante o estado atual — chamado
