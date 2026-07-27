@@ -13074,20 +13074,25 @@ function buildMapaTarefasPage(container, goTo) {
   rerender();
 }
 
-// ---- Empresas Parceiras: cadastro simples e limpo (partilhado entre a
-// Farmácia Juncal e a Farmácia Boa Nova — não é um "pedido" com estado, por
-// isso NUNCA usa os badges Pendentes/Em Orçamento/Por Levantar/Resolvidos
-// do buildCategoryPage genérico; tem a sua própria página dedicada). ----
-function buildEmpresasParceirasPage(container, goTo) {
+// ---- Empresas Parceiras: cadastro simples e limpo, ISOLADO por farmácia —
+// cada empresa fica associada à farmácia em que foi criada (campo
+// `farmacia`, "Juncal" ou "Boa Nova", igual ao já usado em `entregas`); a
+// listagem e o autocomplete do formulário de Entregas só mostram as
+// empresas da farmácia ativa. Não é um "pedido" com estado, por isso NUNCA
+// usa os badges Pendentes/Em Orçamento/Por Levantar/Resolvidos do
+// buildCategoryPage genérico; tem a sua própria página dedicada. ----
+function buildEmpresasParceirasPage(container, goTo, farmaciaAtiva) {
   let showForm = false, editingId = null, draft = emptyRecord(empresaParceiraSchema);
   let formError = '';
   let saving = false;
   let searchQuery = '';
 
-  function records() { return STATE.empresasParceiras || []; }
+  // Só entram nesta lista as empresas criadas nesta farmácia — nunca as da
+  // outra farmácia, mesmo que STATE.empresasParceiras traga ambas.
+  function records() { return (STATE.empresasParceiras || []).filter(e => e.farmacia === farmaciaAtiva); }
   function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
 
-  function openNew() { draft = emptyRecord(empresaParceiraSchema); editingId = null; formError = ''; showForm = true; rerender(); }
+  function openNew() { draft = emptyRecord(empresaParceiraSchema); draft.farmacia = farmaciaAtiva; editingId = null; formError = ''; showForm = true; rerender(); }
   function openEdit(r) { draft = Object.assign({}, r); editingId = r.id; formError = ''; showForm = true; rerender(); }
   function cancel() { formError = ''; showForm = false; rerender(); }
 
@@ -13125,7 +13130,7 @@ function buildEmpresasParceirasPage(container, goTo) {
 
   function build() {
     const wrap = h('div', { class: 'animate-in' });
-    wrap.appendChild(withCustomBackButton(buildPageHeader('briefcase', 'Empresas Parceiras', 'Gestão de empresas parceiras para preenchimento automático das entregas — partilhada pela Farmácia Juncal e pela Farmácia Boa Nova.', undefined), () => goTo('entregas')));
+    wrap.appendChild(withCustomBackButton(buildPageHeader('briefcase', `Empresas Parceiras · ${farmaciaAtiva}`, `Gestão de Empresas Parceiras da Farmácia ${farmaciaAtiva} — preenchimento automático das entregas desta farmácia.`, undefined), () => goTo('entregas')));
 
     if (showForm) {
       wrap.appendChild(buildRecordForm(empresaParceiraSchema, draft, {
@@ -13345,7 +13350,9 @@ function buildEntregasPage(container, goTo) {
     ]);
   }
   function buildEmpresaParceiraField(f) {
-    const empresas = STATE.empresasParceiras || [];
+    // Autocomplete isolado por farmácia: só entram as empresas criadas na
+    // farmácia ativa desta sessão de Entregas.
+    const empresas = (STATE.empresasParceiras || []).filter(e => e.farmacia === farmaciaAtiva);
     const sel = h('select', { class: 'select' }, [
       h('option', { value: '' }, 'Escolher empresa...'),
       ...empresas.map(e => h('option', { value: String(e.id), selected: String(draft.empresaParceiraId) === String(e.id) ? 'selected' : undefined }, e.nome)),
@@ -13358,7 +13365,7 @@ function buildEntregasPage(container, goTo) {
       rerender();
     });
     const gerirBtn = h('button', { type: 'button', class: 'btn-fab-sm tone-gray', title: 'Gerir Empresas Parceiras', 'aria-label': 'Gerir Empresas Parceiras' }, Icon('settings', { size: 13, strokeWidth: 2.2 }));
-    gerirBtn.addEventListener('click', () => requireAuth(() => goTo('gestao-empresas-parceiras')));
+    gerirBtn.addEventListener('click', () => requireAuth(() => goTo('gestao-empresas-parceiras', { farmacia: farmaciaAtiva })));
     return h('div', { class: 'field' + (f.col === 2 ? ' span2' : (f.size ? ' field-' + f.size : '')) }, [h('label', {}, f.label), h('div', { style: 'display:flex;gap:8px;align-items:center;' }, [sel, gerirBtn])]);
   }
   function buildEstadoPagamentoField(f) {
@@ -13672,7 +13679,7 @@ function buildEntregasPage(container, goTo) {
       h('button', { class: 'tab-btn tone-green' + (activeTab === 'historico' ? ' active' : ''), onclick: () => { activeTab = 'historico'; selectedIds = new Set(); rerender(); } }, [
         Icon('checkcircle', { size: 14 }), h('span', {}, 'Histórico'), h('span', { class: 'tab-count' }, String(historicoCount)),
       ]),
-      h('button', { class: 'btn btn-secondary', style: 'margin-left:auto;', onclick: () => requireAuth(() => goTo('gestao-empresas-parceiras')) }, [Icon('settings', { size: 14, strokeWidth: 2.2 }), ' Gerir Empresas Parceiras']),
+      h('button', { class: 'btn btn-secondary', style: 'margin-left:auto;', onclick: () => requireAuth(() => goTo('gestao-empresas-parceiras', { farmacia: farmaciaAtiva })) }, [Icon('settings', { size: 14, strokeWidth: 2.2 }), ' Gerir Empresas Parceiras']),
     ]);
     wrap.appendChild(tabsRow);
 
@@ -14827,7 +14834,12 @@ function renderInterno() {
   // Perfil Farmácia Boa Nova: entra direta e automaticamente no módulo de
   // Entregas (nem sequer passa pela Página Inicial) — e fica lá preso,
   // sempre fixo na Farmácia Boa Nova (ver farmaciaAtiva em buildEntregasPage).
-  if (isBoaNovaOperador() && STATE.page !== 'entregas') {
+  // Exceção: a Gestão de Empresas Parceiras é acedida a partir de Entregas
+  // (botão "Gerir Empresas Parceiras") e tem de ficar acessível também a
+  // este perfil — sem esta exceção, o goTo() para lá era imediatamente
+  // revertido para 'entregas' neste mesmo render, e o botão parecia não
+  // fazer nada.
+  if (isBoaNovaOperador() && STATE.page !== 'entregas' && STATE.page !== 'gestao-empresas-parceiras') {
     STATE.page = 'entregas';
   }
 
@@ -14878,7 +14890,7 @@ function renderInterno() {
       case 'mapa48h': buildMapa48hPage(pageContainer, goTo); break;
       case 'mapa-tarefas': buildMapaTarefasPage(pageContainer, goTo); break;
       case 'entregas': buildEntregasPage(pageContainer, goTo); break;
-      case 'gestao-empresas-parceiras': buildEmpresasParceirasPage(pageContainer, goTo); break;
+      case 'gestao-empresas-parceiras': buildEmpresasParceirasPage(pageContainer, goTo, (STATE.consultaPreset && STATE.consultaPreset.farmacia) || 'Juncal'); STATE.consultaPreset = null; break;
       case 'recolhas': buildRecolhasPage(pageContainer, goTo); break;
       case 'tarefas': buildTarefasPage(pageContainer, goTo); break;
       case 'formacoes': buildFormacoesPage(pageContainer, goTo); break;
