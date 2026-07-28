@@ -763,11 +763,6 @@
   .badge-doc-reserva{display:inline-block;margin-top:3px;font-size:11px;font-weight:700;
     color:#7c3aed;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:6px;padding:2px 8px;
     white-space:nowrap;}
-  /* Coluna "Obs." da tabela de Entregas: texto discreto truncado numa
-     linha só — o texto completo aparece no tooltip nativo (title) ao
-     passar o cursor por cima. */
-  .cell-obs-resumo{display:inline-block;max-width:160px;overflow:hidden;text-overflow:ellipsis;
-    white-space:nowrap;vertical-align:bottom;font-size:12.5px;color:var(--pharm-600);}
   /* Temporizador Inteligente de Hora Limite — Entregas Pendentes */
   .entrega-timer-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;
     border-radius:999px;padding:3px 9px 3px 7px;white-space:nowrap;border:1px solid transparent;}
@@ -2406,7 +2401,7 @@ const entregasSchema = [
   { name: 'precisaTroco', label: 'Cliente necessita de troco?', type: 'checkbox' },
   { name: 'valorEntregue', label: 'Valor entregue pelo cliente (€)', type: 'number', size: 'xs' },
   { name: 'troco', label: 'Troco (€)', type: 'number', size: 'xs' },
-  { name: 'observacoes', label: 'Observações', type: 'textarea', col: 2 },
+  { name: 'observacoes', label: 'Observações / Notas', type: 'textarea', col: 2 },
 ];
 const empresaParceiraSchema = [
   { name: 'nome', label: 'Nome da Empresa', type: 'text', col: 2 },
@@ -5260,7 +5255,7 @@ function ObsIndicator(text) {
 // Botão circular azul com ícone de olho — usado nas Marcações de Eventos
 function obsEyeButton(text) {
   if (!text || !text.trim()) return h('span', { class: 'cell-muted' }, '—');
-  const btn = h('button', { class: 'btn-fab-sm tone-blue', title: 'Ver observações', 'aria-label': 'Ver observações' }, Icon('eye', { size: 13, strokeWidth: 2.2 }));
+  const btn = h('button', { class: 'btn-fab-sm tone-blue', title: text, 'aria-label': 'Ver observações' }, Icon('eye', { size: 13, strokeWidth: 2.2 }));
   btn.addEventListener('click', (e) => { e.stopPropagation(); showObsPopover(btn, text); });
   return btn;
 }
@@ -13452,9 +13447,13 @@ function buildAssistenteRotaCard(farmaciaAtiva) {
   } else {
     const farm = farmaciaAtiva || 'Juncal';
     escopo = pend(farm);
-    mensagemBase = escopo.length === 0
-      ? `Olá, ${nome}! Não há entregas pendentes de momento na Farmácia ${farm}. Bom trabalho!`
-      : `Olá, ${nome}! Existem ${escopo.length} ${pluralPT(escopo.length, 'entrega pendente', 'entregas pendentes')} na ${farm}.`;
+    if (escopo.length === 0) {
+      mensagemBase = `Olá, ${nome}! Não existem entregas pendentes na ${farm}.`;
+    } else if (escopo.length === 1) {
+      mensagemBase = `Olá, ${nome}! Existe 1 entrega pendente na ${farm}.`;
+    } else {
+      mensagemBase = `Olá, ${nome}! Existem ${escopo.length} entregas pendentes na ${farm}.`;
+    }
   }
 
   const urgentes = entregasUrgentesOuAtrasadas(escopo);
@@ -14323,7 +14322,7 @@ function buildEntregasPage(container, goTo) {
         : (activeTab === 'historico' ? 'Ainda não há entregas concluídas.' : 'Sem entregas pendentes.');
       return EmptyState(msg);
     }
-    const thead = h('thead', {}, h('tr', {}, ['', 'Prazo', 'Cliente', 'Estado', 'Contacto', 'Morada', 'Data', 'Registado por', 'Bloco Horário', 'Pagamento', 'Obs.', 'Ações'].map(t => h('th', {}, t))));
+    const thead = h('thead', {}, h('tr', {}, ['', 'Prazo', 'Cliente', 'Estado', 'Obs.', 'Contacto', 'Morada', 'Data', 'Registado por', 'Bloco Horário', 'Pagamento', 'Ações'].map(t => h('th', {}, t))));
     const rows = list.map(r => {
       const selected = selectedIds.has(r.id);
       // Coluna "Prazo": em Pendentes mostra o temporizador regressivo ao
@@ -14393,24 +14392,23 @@ function buildEntregasPage(container, goTo) {
       ]);
       const printRowBtn = h('button', { class: 'btn-fab-sm tone-blue', title: 'Reimprimir formulário de entrega', 'aria-label': 'Reimprimir formulário de entrega' }, Icon('printer', { size: 12, strokeWidth: 2.2 }));
       printRowBtn.addEventListener('click', (e) => { e.stopPropagation(); imprimirFormularioEntrega(r); });
-      // Coluna "Obs." própria: texto truncado numa linha (ellipsis), com o
-      // texto completo disponível ao passar o cursor (title = tooltip
-      // nativo do browser) — consulta instantânea, sem abrir nada.
-      const obsCell = r.observacoes && r.observacoes.trim()
-        ? h('span', { class: 'cell-obs-resumo', title: r.observacoes }, r.observacoes)
-        : h('span', { class: 'cell-muted' }, '—');
+      // Coluna "Obs." própria: só o ícone de olho (sem texto na célula, para
+      // não ocupar espaço na linha) — hover mostra tooltip nativo, clique
+      // abre o popover com o texto completo (obsEyeButton já trata dos dois
+      // casos, com ou sem observações).
+      const obsCell = obsEyeButton(r.observacoes);
       const row = h('tr', { class: 'selectable-row' + (selected ? ' row-selected' : '') }, [
         buildSelectionCheckbox(r.id, selectedIds, toggleSelect),
         h('td', {}, prazoCell),
         h('td', { class: 'cell-strong' }, nomeCell),
         h('td', {}, estadoBadge),
+        h('td', {}, obsCell),
         h('td', {}, r.contacto || '—'),
         h('td', {}, moradaCell),
         h('td', {}, formatDate(r.dataEntrega)),
         h('td', {}, r.registadoPor || '—'),
         h('td', {}, r.blocoHorario ? h('span', { class: 'badge-bloco' }, r.blocoHorario) : '—'),
         h('td', {}, pagamentoCell),
-        h('td', {}, obsCell),
         h('td', {}, printRowBtn),
       ]);
       return row;
