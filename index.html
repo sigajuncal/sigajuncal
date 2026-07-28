@@ -2400,10 +2400,22 @@ function agendaGerarSlots(passoMin) {
 const AGENDA_SLOTS_PADRAO = agendaGerarSlots(AGENDA_SLOT_MIN);
 // Grelha própria da Podologia (Dra. Patrícia): vagas de 20 em 20 minutos.
 const AGENDA_SLOTS_PODOLOGIA = agendaGerarSlots(20);
-// Passo e grelha de horários POR PRESTADOR — a Podologia usa 20 min, os
-// restantes mantêm a grelha padrão de 15 min.
-function agendaSlotMinPara(prestadorKey) { return prestadorKey === 'podologia_patricia' ? 20 : AGENDA_SLOT_MIN; }
-function agendaSlotsPara(prestadorKey) { return prestadorKey === 'podologia_patricia' ? AGENDA_SLOTS_PODOLOGIA : AGENDA_SLOTS_PADRAO; }
+// Grelha própria da Massagem do Marco Gomes: vagas de 30 em 30 minutos (era
+// a grelha padrão de 15 em 15 min) — uma massagem de 60 min continua a
+// bloquear corretamente 2 blocos de 30 min via agendaNumSlots/agendaHorariosOcupados.
+const AGENDA_SLOTS_MARCO = agendaGerarSlots(30);
+// Passo e grelha de horários POR PRESTADOR — a Podologia usa 20 min, a
+// Massagem do Marco usa 30 min, os restantes mantêm a grelha padrão de 15 min.
+function agendaSlotMinPara(prestadorKey) {
+  if (prestadorKey === 'podologia_patricia') return 20;
+  if (prestadorKey === 'massagem_marco') return 30;
+  return AGENDA_SLOT_MIN;
+}
+function agendaSlotsPara(prestadorKey) {
+  if (prestadorKey === 'podologia_patricia') return AGENDA_SLOTS_PODOLOGIA;
+  if (prestadorKey === 'massagem_marco') return AGENDA_SLOTS_MARCO;
+  return AGENDA_SLOTS_PADRAO;
+}
 
 function agendaEhNutricao(prestadorKey) { return prestadorKey === 'nutricao_tatiana' || prestadorKey === 'nutricao_joana'; }
 function agendaEhDepilacao(prestadorKey) { return prestadorKey === 'depilacao_laser'; }
@@ -3665,6 +3677,7 @@ function buildAgendaPage(container, goTo, prestadorKey) {
 const recolhasSchema = [
   { name: 'codigoProduto', label: 'Código do Produto / CNP (opcional)', type: 'text', size: 'sm', inputmode: 'numeric', pattern: '[0-9]*', digitsOnly: true },
   { name: 'nomeProduto', label: 'Nome do Produto', type: 'text', col: 2 },
+  { name: 'entidadeRecolha', label: 'Entidade / Fornecedor de Recolha', type: 'text', col: 2 },
   { name: 'dataCriacao', label: 'Data de Criação do Pedido', type: 'date', size: 'xs' },
   { name: 'dataConfirmacao', label: 'Data de Confirmação de Recolha', type: 'date', size: 'xs' },
 ];
@@ -13731,7 +13744,7 @@ function buildRecolhasPage(container, goTo) {
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
 
   function openNew() {
-    draft = { nomeProduto: '', codigoProduto: '', dataCriacao: todayISO(), dataConfirmacao: '', estado: 'Pendente' };
+    draft = { nomeProduto: '', codigoProduto: '', entidadeRecolha: 'STOP Ortopedia', dataCriacao: todayISO(), dataConfirmacao: '', estado: 'Pendente' };
     editingId = null; formError = ''; showForm = true; rerender();
   }
   function openEditSelected() {
@@ -13796,7 +13809,7 @@ function buildRecolhasPage(container, goTo) {
   function visibleRecolhas() {
     const q = searchQuery.trim().toLowerCase();
     let list = STATE.recolhas.filter(r => activeTab === 'concluidas' ? r.estado === 'Concluída' : r.estado !== 'Concluída');
-    if (q) list = list.filter(r => [r.nomeProduto, r.codigoProduto].some(v => (v || '').toLowerCase().includes(q)));
+    if (q) list = list.filter(r => [r.nomeProduto, r.codigoProduto, r.entidadeRecolha].some(v => (v || '').toLowerCase().includes(q)));
     return list.slice().sort((a, b) => (b.dataCriacao || '').localeCompare(a.dataCriacao || ''));
   }
 
@@ -13807,13 +13820,14 @@ function buildRecolhasPage(container, goTo) {
         : (activeTab === 'concluidas' ? 'Ainda não há recolhas concluídas.' : 'Sem recolhas pendentes.');
       return EmptyState(msg);
     }
-    const thead = h('thead', {}, h('tr', {}, ['', 'Produto', 'Código / CNP', 'Data de Criação', 'Data de Confirmação', 'Estado'].map(t => h('th', {}, t))));
+    const thead = h('thead', {}, h('tr', {}, ['', 'Produto', 'Código / CNP', 'Entidade / Fornecedor', 'Data de Criação', 'Data de Confirmação', 'Estado'].map(t => h('th', {}, t))));
     const tbody = h('tbody', {}, list.map(r => {
       const selected = selectedIds.has(r.id);
       const row = h('tr', { class: 'selectable-row' + (selected ? ' row-selected' : '') }, [
         buildSelectionCheckbox(r.id, selectedIds, toggleSelect),
         h('td', { class: 'cell-strong' }, r.nomeProduto || '—'),
         h('td', {}, r.codigoProduto || '—'),
+        h('td', {}, r.entidadeRecolha || '—'),
         h('td', {}, formatDate(r.dataCriacao)),
         h('td', {}, formatDate(r.dataConfirmacao)),
         h('td', {}, r.estado === 'Concluída' ? h('span', { class: 'badge badge-green' }, 'CONCLUÍDA') : h('span', { class: 'badge badge-orange' }, 'PENDENTE')),
@@ -13848,7 +13862,7 @@ function buildRecolhasPage(container, goTo) {
     ]);
     wrap.appendChild(tabsRow);
 
-    const searchInput = h('input', { class: 'search-input', type: 'text', placeholder: 'Pesquisar por produto ou código...' });
+    const searchInput = h('input', { class: 'search-input', type: 'text', placeholder: 'Pesquisar por produto, código ou entidade...' });
     searchInput.value = searchQuery;
     const resultsContainer = h('div', {});
     function renderResults() { clear(resultsContainer); resultsContainer.appendChild(buildTable(visibleRecolhas())); }
