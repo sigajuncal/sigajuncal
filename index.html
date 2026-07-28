@@ -1041,6 +1041,46 @@
   .posologia-farmaco-freq{font-size:11.5px;color:var(--pharm-500);margin:10px 0 0;}
   .posologia-disclaimer{font-size:12px;color:var(--amber);background:#fffbeb;border:1px solid #fde68a;
     border-radius:10px;padding:9px 12px;margin:14px 0 0;line-height:1.5;}
+
+  /* ---- Calculadora de Doses Pediátricas (módulo retrátil, fundo do Dashboard) ---- */
+  .posped-module{border-radius:16px;}
+  .posped-main-header{width:100%;display:flex;align-items:center;justify-content:space-between;
+    gap:12px;background:none;border:none;padding:0;cursor:pointer;text-align:left;}
+  .posped-main-sub{font-size:12.5px;color:var(--pharm-500);margin:0;}
+  .posped-main-chevron{flex-shrink:0;width:32px;height:32px;border-radius:50%;background:var(--pharm-100);
+    color:var(--pharm-700);display:flex;align-items:center;justify-content:center;
+    font-size:18px;font-weight:800;line-height:1;}
+  .posped-main-body{margin-top:16px;}
+  .posped-main-body.posped-hidden{display:none;}
+  .posped-categorias{display:flex;flex-direction:column;gap:10px;}
+  .posped-accordion-item{border:1px solid var(--pharm-100);border-radius:12px;overflow:hidden;background:#fff;}
+  .posped-accordion-header{width:100%;display:flex;align-items:center;justify-content:space-between;
+    gap:10px;background:var(--pharm-50);border:none;padding:12px 16px;cursor:pointer;
+    text-align:left;font-size:14px;font-weight:700;color:var(--pharm-800);}
+  .posped-accordion-chevron{flex-shrink:0;width:22px;height:22px;border-radius:50%;background:#fff;
+    border:1px solid var(--pharm-200);color:var(--pharm-600);display:flex;align-items:center;
+    justify-content:center;font-size:14px;font-weight:800;line-height:1;}
+  .posped-accordion-body{padding:16px;}
+  .posped-accordion-body.posped-hidden{display:none;}
+  .posped-select{width:100%;}
+  .posped-resultado-card{background:var(--pharm-50);border:1px solid var(--pharm-100);border-radius:12px;
+    padding:14px 16px;text-align:center;}
+  .posped-resultado-label{font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+    color:var(--pharm-500);margin:0 0 4px;}
+  .posped-resultado-valor{font-size:24px;font-weight:800;color:var(--pharm-800);margin:0;}
+  .posped-resultado-nota{font-size:13px;color:var(--pharm-600);line-height:1.5;margin:0;}
+  .posped-aviso{font-size:12px;font-weight:700;color:#b45309;background:#fffbeb;border:1px solid #fde68a;
+    border-radius:8px;padding:6px 10px;margin:10px 0 0;}
+  @media (max-width:640px){
+    .posped-module{padding:14px !important;}
+    .posped-main-sub{font-size:11.5px;}
+    .posped-accordion-header{padding:11px 13px;font-size:13px;}
+    .posped-accordion-body{padding:13px;}
+    .posped-resultado-valor{font-size:20px;}
+    /* Slider e select com alvo de toque maior no telemóvel */
+    .posped-select{padding:11px 12px;font-size:14px;}
+    .posologia-slider{height:32px;}
+  }
   @media (min-width:768px){.dash-grid{grid-template-columns:1fr 1fr;}}
   .dash-grid > *{margin-bottom:0 !important;}
   .dash-grid .nota-rapida-card{margin-top:0;height:100%;display:flex;flex-direction:column;}
@@ -2337,6 +2377,8 @@ const entregasSchema = [
   { name: 'tipoDestinatario', label: 'Tipo de Destinatário', type: 'select', options: ['Particular', 'Empresa Parceira'], size: 'sm' },
   { name: 'empresaParceiraId', label: 'Empresa Parceira', type: 'select', options: [], size: 'sm' },
   { name: 'nomeCliente', label: 'Nome do Cliente/Destinatário', type: 'text', col: 2 },
+  { name: 'entregaEmpresaParceira', label: '🏢 Entregar numa Empresa Parceira', type: 'checkbox' },
+  { name: 'enderecoEmpresaParceiraId', label: 'Empresa Parceira (morada de entrega)', type: 'select', options: [], size: 'sm' },
   { name: 'morada', label: 'Morada', type: 'text', col: 2 },
   { name: 'localidade', label: 'Localidade', type: 'text', size: 'sm' },
   { name: 'contacto', label: 'Contacto', type: 'text', size: 'sm', maxLength: 9, inputmode: 'numeric', pattern: '[0-9]{9}', digitsOnly: true, placeholder: '9 dígitos' },
@@ -7549,6 +7591,11 @@ function buildHomepage(container, goTo) {
     buildPosologiaInfantilCard(),
   ]));
 
+  // Módulo retrátil no fundo da página, por baixo de tudo — Calculadora de
+  // Doses Pediátricas por patologia (antibioterapia, corticoides, etc.),
+  // distinta da Posologia Infantil simples (analgésicos/antipiréticos) acima.
+  wrap.appendChild(buildCalculadoraDosesPediatricasModule());
+
   container.appendChild(wrap);
 }
 
@@ -7645,6 +7692,440 @@ function buildPosologiaInfantilCard() {
 
   atualizar();
   return cardEl;
+}
+
+/* =================================================================
+   CALCULADORA DE DOSES PEDIÁTRICAS (Dashboard) — módulo retrátil, por
+   patologia/categoria, distinto da Posologia Infantil simples acima
+   (aquela é só Ben-u-ron/Brufen). Puramente informativa — nunca grava
+   nada no Supabase. Cada categoria tem o seu próprio dropdown de
+   fármaco/concentração + slider de peso (3-50 kg) + resultado em mL (ou
+   gotas)/dose, respeitando sempre a dose máxima diária quando indicada.
+   Valores de referência (mg/kg/dia, escalões etários) alinhados com o
+   AlgoritMD (https://algoritmd.com/pt/areas-clinicas/calculadora-de-doses-pediatricas/)
+   — consultado e confirmado em 2026-07-28. Corticoides, Antieméticos e
+   Antivíricos/Antifúngicos usam Peso ou Idade consoante o fármaco; os
+   Anti-histamínicos dividem-se em "dose ajustada ao peso" (Hidroxizina) e
+   "dose ajustada à idade" (Desloratadina/Cetirizina/Levocetirizina — tabela
+   de escalões fixa, não uma fórmula por mg/kg).
+================================================================= */
+const POSOLOGIA_PEDIATRICA_CATEGORIAS = [
+  {
+    nome: 'Amigdalite Bacteriana',
+    farmacos: [
+      { label: 'Amoxicilina 250mg/5mL (12/12h, 10 dias - máx. 1000mg/dia)', concMgMl: 50, mgKgDia: 50, tomasDia: 2, maxDiarioMg: 1000 },
+      { label: 'Amoxicilina 500mg/5mL (12/12h, 10 dias - máx. 1000mg/dia)', concMgMl: 100, mgKgDia: 50, tomasDia: 2, maxDiarioMg: 1000 },
+      { label: 'Claritromicina 125mg/5mL (12/12h, 15mg/kg/dia)', concMgMl: 25, mgKgDia: 15, tomasDia: 2 },
+      { label: 'Claritromicina 250mg/5mL (12/12h, 15mg/kg/dia)', concMgMl: 50, mgKgDia: 15, tomasDia: 2 },
+      { label: 'Azitromicina 200mg/5mL (24/24h, 5 dias, 12mg/kg/dia)', concMgMl: 40, mgKgDia: 12, tomasDia: 1 },
+      { label: 'Cefuroxima 125mg/5mL (12/12h, 20-30mg/kg/dia)', concMgMl: 25, mgKgDia: 25, tomasDia: 2 },
+    ],
+  },
+  {
+    nome: 'Otite Média Aguda (OMA)',
+    farmacos: [
+      { label: 'Amoxicilina 250mg/5mL (12/12h, 80-90mg/kg/dia)', concMgMl: 50, mgKgDia: 85, tomasDia: 2 },
+      { label: 'Amoxicilina 500mg/5mL (12/12h, 80-90mg/kg/dia)', concMgMl: 100, mgKgDia: 85, tomasDia: 2 },
+      { label: 'Amoxicilina + Ác. Clavulânico 400mg+57mg/5mL (12/12h, 80-90mg/kg/dia)', concMgMl: 80, mgKgDia: 85, tomasDia: 2 },
+      { label: 'Amoxicilina + Ác. Clavulânico ES 600mg+42.9mg/5mL (12/12h, 80-90mg/kg/dia)', concMgMl: 120, mgKgDia: 85, tomasDia: 2 },
+    ],
+  },
+  {
+    nome: 'Pneumonia Adquirida na Comunidade (PAC)',
+    farmacos: [
+      { label: 'Amoxicilina 250mg/5mL (8/8h, 90mg/kg/dia)', concMgMl: 50, mgKgDia: 90, tomasDia: 3 },
+      { label: 'Amoxicilina 500mg/5mL (8/8h, 90mg/kg/dia)', concMgMl: 100, mgKgDia: 90, tomasDia: 3 },
+      { label: 'Amoxicilina + Clavulânico 400mg+57mg/5mL (8/8h, 80-90mg/kg/dia)', concMgMl: 80, mgKgDia: 85, tomasDia: 3 },
+      { label: 'Amoxicilina + Clavulânico ES 600mg+42.9mg/5mL (8/8h, 80-90mg/kg/dia)', concMgMl: 120, mgKgDia: 85, tomasDia: 3 },
+    ],
+  },
+  {
+    nome: 'Infeção do Trato Urinário (ITU)',
+    farmacos: [
+      { label: 'Cefuroxima 125mg/5mL (12/12h, 20-30mg/kg/dia)', concMgMl: 25, mgKgDia: 25, tomasDia: 2 },
+      { label: 'Amoxicilina + Clavulânico 400mg+57mg/5mL (8/8h, 20-40mg/kg/dia)', concMgMl: 80, mgKgDia: 30, tomasDia: 3 },
+      { label: 'Amoxicilina + Clavulânico ES 600mg+42.9mg/5mL (8/8h, 20-40mg/kg/dia)', concMgMl: 120, mgKgDia: 30, tomasDia: 3 },
+    ],
+  },
+  {
+    nome: 'Infeções dos Tecidos Moles / Abcessos',
+    farmacos: [
+      { label: 'Flucloxacilina 125mg/5mL (8/8h — 3 tomas/dia, 50mg/kg/dia)', concMgMl: 25, mgKgDia: 50, tomasDia: 3 },
+      { label: 'Flucloxacilina 125mg/5mL (6/6h — 4 tomas/dia, 50mg/kg/dia)', concMgMl: 25, mgKgDia: 50, tomasDia: 4 },
+      { label: 'Flucloxacilina 250mg/5mL (8/8h — 3 tomas/dia, 50mg/kg/dia)', concMgMl: 50, mgKgDia: 50, tomasDia: 3 },
+      { label: 'Flucloxacilina 250mg/5mL (6/6h — 4 tomas/dia, 50mg/kg/dia)', concMgMl: 50, mgKgDia: 50, tomasDia: 4 },
+    ],
+  },
+  // ---- Corticoides — só estas 2 opções (AlgoritMD), resultado em GOTAS.
+  // Fórmula EXATA verificada com o caso de teste do AlgoritMD: Deflazacorte
+  // 19.5kg a 24/24h (1x/dia) = 20 gotas ⇒ 1 gota/kg/dia (Math.round(19.5)=20);
+  // Betametasona = 5 gotas/kg/dia. Usa-se gotasPorKgDia diretamente — NÃO a
+  // conversão via mg/kg/dia + concentração/20gtt-por-mL, que dava valores
+  // diferentes (17 gotas em vez de 20) da calculadora oficial.
+  {
+    nome: 'Corticoides',
+    tipo: 'peso',
+    farmacos: [
+      { label: 'Betametasona 0.5mg/mL (Celestone)', gotasPorKgDia: 5, frequenciasDia: [1, 2], unidade: 'gotas' },
+      { label: 'Deflazacorte 22.75mg/mL (Rosilan)', gotasPorKgDia: 1, frequenciasDia: [1, 2], unidade: 'gotas' },
+    ],
+  },
+  // ---- Anti-histamínicos: dose ajustada ao PESO (AlgoritMD) ----
+  {
+    nome: 'Anti-histamínicos: dose ajustada ao peso',
+    tipo: 'peso',
+    farmacos: [
+      { label: 'Hidroxizina 2mg/mL xarope (Atarax)', concMgMl: 2, mgKgDia: 2, frequenciasDia: [1, 2, 3] },
+    ],
+  },
+  // ---- Anti-histamínicos: dose ajustada à IDADE — tabela fixa de
+  // escalões (não é uma fórmula por peso), com seletor dinâmico de Idade
+  // que mostra o resultado de imediato ao escolher o escalão. ----
+  {
+    nome: 'Anti-histamínicos: dose ajustada à idade',
+    tipo: 'idade',
+    farmacos: [
+      {
+        label: 'Desloratadina 0.5mg/mL xarope', escaloes: [
+          { label: '1 a 5 anos', resultado: '2.5 mL', freq: '1x/dia' },
+          { label: '6 a 11 anos', resultado: '5 mL', freq: '1x/dia' },
+          { label: '≥ 12 anos', resultado: '10 mL', freq: '1x/dia' },
+        ],
+      },
+      {
+        label: 'Cetirizina 1mg/mL solução oral', escaloes: [
+          { label: '2 a 6 anos', resultado: '2.5 mL (2x/dia) ou 5 mL (1x/dia)', freq: '' },
+          { label: '6 a 12 anos', resultado: '5 mL', freq: '2x/dia' },
+          { label: '> 12 anos', resultado: '10 mL', freq: '1x/dia' },
+        ],
+      },
+      {
+        label: 'Levocetirizina 0.5mg/mL solução oral/gotas', escaloes: [
+          { label: '2 a 6 anos', resultado: '2.5 mL / 5 gotas', freq: '2x/dia' },
+          { label: '6 a 12 anos e adultos', resultado: '10 mL / 20 gotas', freq: '1x/dia' },
+        ],
+      },
+    ],
+  },
+  // ---- Antieméticos: Metoclopramida (AlgoritMD: "dose ajustada à idade,
+  // de acordo com o RCM") — dose oficial RCM/EMA: 0.1mg/kg/dose, fixada a
+  // 8/8h (3x/dia, prática clínica standard), máx. 5 dias; contraindicado
+  // <1 ano. Idade em vez de peso (tal como o módulo do AlgoritMD): o peso
+  // de referência por idade é estimado por uma fórmula clínica padrão
+  // (1-10 anos: (idade+4)×2; 11-18 anos: idade×3.3), mostrado junto ao
+  // resultado para o profissional poder comparar com o peso real da
+  // criança e ajustar se for muito diferente da média.
+  {
+    nome: 'Antieméticos: Metoclopramida',
+    tipo: 'idade-slider',
+    farmaco: {
+      label: 'Metoclopramida 1mg/mL solução oral (Primperan)', concMgMl: 1, doseMgKgPorToma: 0.1, tomasDia: 3,
+      maxPorTomaMg: 10, notaExtra: '⚠️ Contraindicado em crianças com menos de 1 ano de idade. Duração máxima recomendada: 5 dias consecutivos.',
+    },
+  },
+  // ---- Antivírico: Aciclovir — seletor de Patologia (AlgoritMD) ----
+  {
+    nome: 'Antivírico: Aciclovir',
+    tipo: 'patologia',
+    farmaco: {
+      label: 'Aciclovir suspensão 200mg/5mL', concMgMl: 40, tomasDia: 4,
+      patologias: [
+        { label: 'Varicela', mgKgDia: 80 },
+        { label: 'Herpes simples', mgKgDia: 40 },
+      ],
+      notaExtra: 'Tratamento indicado para crianças imunocomprometidas. Duração conforme indicação clínica (RCM).',
+    },
+  },
+  // ---- Antifúngico: Fluconazol — seletor de Patologia (AlgoritMD) ----
+  {
+    nome: 'Antifúngico: Fluconazol',
+    tipo: 'patologia',
+    farmaco: {
+      label: 'Fluconazol 50mg/5mL suspensão oral', concMgMl: 10, tomasDia: 1,
+      patologias: [
+        { label: 'Candidíase das mucosas', mgKgDia: 3 },
+        { label: 'Candidíase sistémica ou infeção criptocócica', mgKgDia: 9 },
+      ],
+      notaExtra: 'Duração conforme indicação clínica (RCM).',
+    },
+  },
+];
+
+// tomasDiaEscolhido — só usado pelas categorias com "frequenciasDia"
+// (Corticoides, Hidroxizina, Metoclopramida); nos restantes fármacos usa-se
+// sempre o f.tomasDia fixo já definido.
+function calcularPosologiaPediatrica(peso, f, tomasDiaEscolhido) {
+  const tomasDia = tomasDiaEscolhido || f.tomasDia;
+  // Corticoides (Celestone/Rosilan): gotas calculadas DIRETAMENTE a partir
+  // de gotas/kg/dia, sem passar por mg/kg + concentração — fórmula exata
+  // confirmada contra o AlgoritMD (ver comentário na definição da categoria).
+  if (f.gotasPorKgDia !== undefined) {
+    const gotasDiarias = peso * f.gotasPorKgDia;
+    return { valor: Math.round(gotasDiarias / tomasDia), unidade: 'gotas', limitado: false };
+  }
+  const doseDiariaBrutaMg = f.doseMgKgPorToma !== undefined ? peso * f.doseMgKgPorToma * tomasDia : peso * f.mgKgDia;
+  let doseDiariaMg = doseDiariaBrutaMg;
+  let limitado = false;
+  if (f.maxDiarioMg && doseDiariaMg > f.maxDiarioMg) { doseDiariaMg = f.maxDiarioMg; limitado = true; }
+  let dosePorTomaMg = doseDiariaMg / tomasDia;
+  if (f.maxPorTomaMg && dosePorTomaMg > f.maxPorTomaMg) { dosePorTomaMg = f.maxPorTomaMg; limitado = true; }
+  const volumeMl = dosePorTomaMg / f.concMgMl;
+  if (f.unidade === 'gotas') return { valor: Math.round(volumeMl * (f.gotasPorMl || 20)), unidade: 'gotas', limitado };
+  return { valor: volumeMl, unidade: 'mL', limitado };
+}
+
+// Acordeão genérico reaproveitável — corpo construído "lazy" (só na 1ª vez
+// que se abre), com ícone '+' / '−' a alternar no cabeçalho clicável.
+function buildAccordionItem(headerNodes, buildBody, abertoInicial) {
+  let aberto = !!abertoInicial;
+  let construido = false;
+  const chevron = h('span', { class: 'posped-accordion-chevron' }, aberto ? '−' : '+');
+  const bodyWrap = h('div', { class: 'posped-accordion-body' + (aberto ? '' : ' posped-hidden') });
+  const header = h('button', { class: 'posped-accordion-header', type: 'button' }, [
+    h('span', { class: 'posped-accordion-header-content' }, headerNodes),
+    chevron,
+  ]);
+  if (aberto) { bodyWrap.appendChild(buildBody()); construido = true; }
+  header.addEventListener('click', () => {
+    aberto = !aberto;
+    chevron.textContent = aberto ? '−' : '+';
+    bodyWrap.classList.toggle('posped-hidden', !aberto);
+    if (aberto && !construido) { bodyWrap.appendChild(buildBody()); construido = true; }
+  });
+  return h('div', { class: 'posped-accordion-item' }, [header, bodyWrap]);
+}
+
+function formatarValorDose(valor, unidade) {
+  const casas = unidade === 'gotas' ? 0 : 1;
+  return `${(Math.round(valor * Math.pow(10, casas)) / Math.pow(10, casas)).toLocaleString('pt-PT', { minimumFractionDigits: casas, maximumFractionDigits: casas })} ${unidade}`;
+}
+
+// Corpo padrão (tipo:'peso' ou sem tipo definido): dropdown de fármaco/
+// concentração + (opcional) dropdown de Frequência quando o fármaco define
+// frequenciasDia + slider de peso (3-50 kg) + resultado em mL ou gotas/dose.
+function buildCategoriaPosologiaBody(categoria) {
+  let idx = 0;
+  let peso = 10; // ponto de partida razoável dentro do intervalo 3-50 kg
+  let tomasEscolhidas = null;
+
+  const select = h('select', { class: 'select posped-select' },
+    categoria.farmacos.map((f, i) => h('option', { value: String(i) }, f.label)));
+  const freqSelect = h('select', { class: 'select posped-select' });
+  const freqField = h('div', { class: 'field', style: 'margin-bottom:14px;' }, [h('label', {}, 'Frequência'), freqSelect]);
+  const pesoBadge = h('span', { class: 'posologia-peso-valor' }, '');
+  const slider = h('input', { class: 'posologia-slider', type: 'range', min: '3', max: '40', step: '0.5', value: String(peso), 'aria-label': 'Peso da criança em quilogramas' });
+  const resultBox = h('div', { class: 'posped-resultado' });
+  const avisoBox = h('p', { class: 'posped-aviso' }, '⚠️ Dose limitada ao máximo diário recomendado');
+  avisoBox.style.display = 'none';
+  const notaExtraBox = h('p', { class: 'field-helper-text', style: 'margin-top:10px;' }, '');
+
+  function atualizarFreqOptions() {
+    const f = categoria.farmacos[idx];
+    clear(freqSelect);
+    if (!f || !f.frequenciasDia) { freqField.style.display = 'none'; tomasEscolhidas = null; return; }
+    freqField.style.display = '';
+    f.frequenciasDia.forEach(n => freqSelect.appendChild(h('option', { value: String(n) }, `${n}x/dia`)));
+    tomasEscolhidas = f.frequenciasDia[0];
+    freqSelect.value = String(tomasEscolhidas);
+  }
+  function atualizar() {
+    pesoBadge.textContent = `${peso.toLocaleString('pt-PT', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} kg`;
+    const f = categoria.farmacos[idx];
+    clear(resultBox);
+    notaExtraBox.textContent = (f && f.notaExtra) || '';
+    notaExtraBox.style.display = (f && f.notaExtra) ? '' : 'none';
+    if (!f || f.semFormula) {
+      resultBox.appendChild(h('p', { class: 'posped-resultado-nota' }, (categoria.notaSemFormula) || 'Consultar RCM/bula.'));
+      avisoBox.style.display = 'none';
+      return;
+    }
+    const r = calcularPosologiaPediatrica(peso, f, tomasEscolhidas);
+    resultBox.appendChild(h('p', { class: 'posped-resultado-label' }, 'Quantidade por dose'));
+    resultBox.appendChild(h('p', { class: 'posped-resultado-valor' }, formatarValorDose(r.valor, r.unidade)));
+    avisoBox.style.display = r.limitado ? '' : 'none';
+  }
+  select.addEventListener('change', () => { idx = parseInt(select.value, 10) || 0; atualizarFreqOptions(); atualizar(); });
+  freqSelect.addEventListener('change', () => { tomasEscolhidas = parseInt(freqSelect.value, 10) || tomasEscolhidas; atualizar(); });
+  slider.addEventListener('input', () => { const v = parseFloat(slider.value); if (!Number.isNaN(v)) { peso = v; atualizar(); } });
+  atualizarFreqOptions();
+  atualizar();
+
+  return h('div', { class: 'posped-categoria-body' }, [
+    h('div', { class: 'field', style: 'margin-bottom:14px;' }, [h('label', {}, 'Fármaco / Concentração'), select]),
+    freqField,
+    h('div', { class: 'posologia-slider-row' }, [
+      h('span', { class: 'posologia-slider-limite' }, '3 kg'),
+      slider,
+      h('span', { class: 'posologia-slider-limite' }, '40 kg'),
+    ]),
+    h('div', { style: 'text-align:center;margin-bottom:12px;' }, pesoBadge),
+    h('div', { class: 'posped-resultado-card' }, [resultBox, avisoBox]),
+    notaExtraBox,
+  ]);
+}
+
+// Corpo tipo:'patologia' — 1 único fármaco por categoria (Aciclovir,
+// Fluconazol), com dropdown de Patologia (cada uma com o seu mg/kg/dia) +
+// slider de peso, exatamente como o AlgoritMD organiza estes 2 módulos.
+function buildCategoriaComPatologiaBody(categoria) {
+  const f = categoria.farmaco;
+  let patIdx = 0;
+  let peso = 10;
+
+  const patSelect = h('select', { class: 'select posped-select' },
+    f.patologias.map((p, i) => h('option', { value: String(i) }, p.label)));
+  const pesoBadge = h('span', { class: 'posologia-peso-valor' }, '');
+  const slider = h('input', { class: 'posologia-slider', type: 'range', min: '3', max: '40', step: '0.5', value: String(peso), 'aria-label': 'Peso da criança em quilogramas' });
+  const resultBox = h('div', { class: 'posped-resultado' });
+  const avisoBox = h('p', { class: 'posped-aviso' }, '⚠️ Dose limitada ao máximo diário recomendado');
+  avisoBox.style.display = 'none';
+
+  function atualizar() {
+    pesoBadge.textContent = `${peso.toLocaleString('pt-PT', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} kg`;
+    const pat = f.patologias[patIdx];
+    const cfg = { concMgMl: f.concMgMl, tomasDia: f.tomasDia, mgKgDia: pat.mgKgDia, maxDiarioMg: f.maxDiarioMg };
+    const r = calcularPosologiaPediatrica(peso, cfg);
+    clear(resultBox);
+    resultBox.appendChild(h('p', { class: 'posped-resultado-label' }, `Quantidade por dose · ${f.tomasDia}x/dia`));
+    resultBox.appendChild(h('p', { class: 'posped-resultado-valor' }, formatarValorDose(r.valor, r.unidade)));
+    avisoBox.style.display = r.limitado ? '' : 'none';
+  }
+  patSelect.addEventListener('change', () => { patIdx = parseInt(patSelect.value, 10) || 0; atualizar(); });
+  slider.addEventListener('input', () => { const v = parseFloat(slider.value); if (!Number.isNaN(v)) { peso = v; atualizar(); } });
+  atualizar();
+
+  const kids = [
+    h('div', { class: 'field', style: 'margin-bottom:6px;' }, [h('label', {}, f.label)]),
+    h('div', { class: 'field', style: 'margin-bottom:14px;' }, [h('label', {}, 'Patologia'), patSelect]),
+    h('div', { class: 'posologia-slider-row' }, [
+      h('span', { class: 'posologia-slider-limite' }, '3 kg'),
+      slider,
+      h('span', { class: 'posologia-slider-limite' }, '40 kg'),
+    ]),
+    h('div', { style: 'text-align:center;margin-bottom:12px;' }, pesoBadge),
+    h('div', { class: 'posped-resultado-card' }, [resultBox, avisoBox]),
+  ];
+  if (f.notaExtra) kids.push(h('p', { class: 'field-helper-text', style: 'margin-top:10px;' }, f.notaExtra));
+  return h('div', { class: 'posped-categoria-body' }, kids);
+}
+
+// Corpo tipo:'idade' — tabela fixa de escalões etários (não é cálculo por
+// peso): dropdown de Fármaco + dropdown de Idade (as opções mudam consoante
+// o fármaco escolhido), resultado mostrado de imediato ao selecionar.
+function buildCategoriaIdadeLookupBody(categoria) {
+  let farIdx = 0;
+  let escIdx = 0;
+
+  const farSelect = h('select', { class: 'select posped-select' },
+    categoria.farmacos.map((f, i) => h('option', { value: String(i) }, f.label)));
+  const idadeSelect = h('select', { class: 'select posped-select' });
+  const resultBox = h('div', { class: 'posped-resultado' });
+
+  function atualizarIdadeOptions() {
+    clear(idadeSelect);
+    const f = categoria.farmacos[farIdx];
+    f.escaloes.forEach((e, i) => idadeSelect.appendChild(h('option', { value: String(i) }, e.label)));
+    escIdx = 0;
+    idadeSelect.value = '0';
+  }
+  function atualizar() {
+    const f = categoria.farmacos[farIdx];
+    const e = f.escaloes[escIdx];
+    clear(resultBox);
+    resultBox.appendChild(h('p', { class: 'posped-resultado-label' }, e.freq ? `Quantidade por dose · ${e.freq}` : 'Quantidade por dose'));
+    resultBox.appendChild(h('p', { class: 'posped-resultado-valor', style: 'font-size:19px;' }, e.resultado));
+  }
+  farSelect.addEventListener('change', () => { farIdx = parseInt(farSelect.value, 10) || 0; atualizarIdadeOptions(); atualizar(); });
+  idadeSelect.addEventListener('change', () => { escIdx = parseInt(idadeSelect.value, 10) || 0; atualizar(); });
+  atualizarIdadeOptions();
+  atualizar();
+
+  return h('div', { class: 'posped-categoria-body' }, [
+    h('div', { class: 'field', style: 'margin-bottom:14px;' }, [h('label', {}, 'Fármaco'), farSelect]),
+    h('div', { class: 'field', style: 'margin-bottom:14px;' }, [h('label', {}, 'Idade do Utente'), idadeSelect]),
+    h('div', { class: 'posped-resultado-card' }, [resultBox]),
+  ]);
+}
+
+// Peso de referência médio por idade (1-18 anos) — só usado pela
+// Metoclopramida, cujo módulo no AlgoritMD pede a Idade e não o Peso.
+// 1-10 anos: fórmula clínica clássica (idade+4)×2; 11-18 anos: idade×3.3
+// (aproximação linear até ao peso médio adulto).
+function estimarPesoPorIdade(idade) {
+  return idade <= 10 ? (idade + 4) * 2 : idade * 3.3;
+}
+
+// Corpo tipo:'idade-slider' — Metoclopramida: slider de Idade (1-18 anos,
+// substitui o slider de peso), frequência FIXA em 8/8h (3x/dia), resultado
+// em mL/dose calculado a partir do peso de referência estimado para a
+// idade, com o aviso de segurança sempre visível no rodapé do card.
+function buildMetoclopramidaBody(categoria) {
+  const f = categoria.farmaco;
+  let idade = 5; // ponto de partida razoável dentro do intervalo 1-18 anos
+
+  const idadeBadge = h('span', { class: 'posologia-peso-valor' }, '');
+  const slider = h('input', { class: 'posologia-slider', type: 'range', min: '1', max: '18', step: '1', value: String(idade), 'aria-label': 'Idade do utente em anos' });
+  const resultBox = h('div', { class: 'posped-resultado' });
+  const pesoRefTxt = h('p', { class: 'field-helper-text', style: 'text-align:center;margin:0 0 12px;' }, '');
+
+  function atualizar() {
+    idadeBadge.textContent = `${idade} ano${idade === 1 ? '' : 's'}`;
+    const pesoRef = estimarPesoPorIdade(idade);
+    pesoRefTxt.textContent = `Peso de referência estimado para esta idade: ${(Math.round(pesoRef * 10) / 10).toLocaleString('pt-PT', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} kg — ajustar se o peso real da criança for muito diferente.`;
+    const r = calcularPosologiaPediatrica(pesoRef, f);
+    clear(resultBox);
+    resultBox.appendChild(h('p', { class: 'posped-resultado-label' }, 'Quantidade por dose · 8/8h (3x/dia)'));
+    resultBox.appendChild(h('p', { class: 'posped-resultado-valor' }, formatarValorDose(r.valor, r.unidade)));
+  }
+  slider.addEventListener('input', () => { const v = parseInt(slider.value, 10); if (!Number.isNaN(v)) { idade = v; atualizar(); } });
+  atualizar();
+
+  return h('div', { class: 'posped-categoria-body' }, [
+    h('div', { class: 'field', style: 'margin-bottom:6px;' }, [h('label', {}, f.label)]),
+    h('div', { class: 'posologia-slider-row' }, [
+      h('span', { class: 'posologia-slider-limite' }, '1 ano'),
+      slider,
+      h('span', { class: 'posologia-slider-limite' }, '18 anos'),
+    ]),
+    h('div', { style: 'text-align:center;margin-bottom:4px;' }, idadeBadge),
+    pesoRefTxt,
+    h('div', { class: 'posped-resultado-card' }, [resultBox]),
+    h('p', { class: 'posped-aviso', style: 'margin-top:10px;' }, f.notaExtra),
+  ]);
+}
+
+function buildCorpoCategoriaPosped(categoria) {
+  if (categoria.tipo === 'patologia') return buildCategoriaComPatologiaBody(categoria);
+  if (categoria.tipo === 'idade') return buildCategoriaIdadeLookupBody(categoria);
+  if (categoria.tipo === 'idade-slider') return buildMetoclopramidaBody(categoria);
+  return buildCategoriaPosologiaBody(categoria);
+}
+
+function buildCalculadoraDosesPediatricasModule() {
+  let aberto = false;
+  let construido = false;
+  const chevronPrincipal = h('span', { class: 'posped-main-chevron' }, '+');
+  const bodyWrap = h('div', { class: 'posped-main-body posped-hidden' });
+  function construirCorpo() {
+    bodyWrap.appendChild(h('p', { class: 'posologia-disclaimer', style: 'margin:0 0 14px;' },
+      '⚠ Valores indicativos calculados pelo peso/idade — confirme sempre a posologia e as contraindicações no RCM/bula oficial e ajuste conforme a avaliação clínica de cada caso.'));
+    bodyWrap.appendChild(h('div', { class: 'posped-categorias' },
+      POSOLOGIA_PEDIATRICA_CATEGORIAS.map(cat => buildAccordionItem([h('span', {}, cat.nome)], () => buildCorpoCategoriaPosped(cat)))));
+  }
+  const header = h('button', { class: 'posped-main-header', type: 'button' }, [
+    h('div', {}, [
+      h('h3', { class: 'dash-card-title', style: 'margin:0 0 4px;' }, '🧮 Calculadora de Doses Pediátricas'),
+      h('p', { class: 'posped-main-sub' }, 'Apoio à dosagem com base no peso e evidência clínica (Guia ARSLVT/DGS)'),
+    ]),
+    chevronPrincipal,
+  ]);
+  header.addEventListener('click', () => {
+    aberto = !aberto;
+    chevronPrincipal.textContent = aberto ? '−' : '+';
+    bodyWrap.classList.toggle('posped-hidden', !aberto);
+    if (aberto && !construido) { construirCorpo(); construido = true; }
+  });
+  return h('div', { class: 'card card-pad posped-module', style: 'margin-top:16px;' }, [header, bodyWrap]);
 }
 
 /* =================================================================
@@ -12774,9 +13255,19 @@ function checkEntregaRequired(d) {
 // ---- Formulário de Entrega imprimível — reaproveita o cabeçalho/rodapé
 // e a infraestrutura de impressão/PDF já existente para as declarações. ----
 function buildFormularioEntregaDoc(r) {
+  // Entrega de um Particular na morada de uma Empresa Parceira ("ao
+  // cuidado de") — o estafeta precisa de ver logo os dois nomes juntos,
+  // para saber que a campainha/receção a tocar é a da empresa, não a de
+  // uma casa própria do cliente.
+  const empresaEnderecoEmprestado = r.entregaEmpresaParceira && r.enderecoEmpresaParceiraId
+    ? (STATE.empresasParceiras || []).find(e => String(e.id) === String(r.enderecoEmpresaParceiraId))
+    : null;
+  const clienteDestinatarioTxt = empresaEnderecoEmprestado
+    ? `${r.nomeCliente || '—'} (c/o ${empresaEnderecoEmprestado.nome})`
+    : (r.nomeCliente || '—');
   const linhasAntes = [
     ['Farmácia', r.farmacia || '—'],
-    ['Cliente / Destinatário', r.nomeCliente || '—'],
+    ['Cliente / Destinatário', clienteDestinatarioTxt],
     ['Morada', [r.morada, r.localidade].filter(Boolean).join(', ') || '—'],
     ['Contacto', r.contacto || '—'],
     ['Data de Entrega', formatDate(r.dataEntrega)],
@@ -13258,6 +13749,51 @@ function buildMapaTarefasPage(container, goTo) {
 // empresas da farmácia ativa. Não é um "pedido" com estado, por isso NUNCA
 // usa os badges Pendentes/Em Orçamento/Por Levantar/Resolvidos do
 // buildCategoryPage genérico; tem a sua própria página dedicada. ----
+// Modal rápido de "➕ Cadastrar Nova Empresa" — usado a partir do formulário
+// de Entregas (morada emprestada de uma Empresa Parceira) para nunca
+// obrigar a sair do formulário e perder o que já lá estava preenchido.
+// Reaproveita o mesmo schema/validação/insert da página de Empresas
+// Parceiras; ao gravar com sucesso, devolve o registo criado a onCriada().
+function abrirModalNovaEmpresaParceiraRapida(farmaciaAtiva, onCriada) {
+  let draft = emptyRecord(empresaParceiraSchema);
+  draft.farmacia = farmaciaAtiva;
+  let formError = '';
+  let saving = false;
+  const overlay = h('div', { class: 'modal-overlay' });
+  function fechar() { document.removeEventListener('keydown', onKeydown); overlay.remove(); }
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) fechar(); });
+  function onKeydown(e) { if (e.key === 'Escape') fechar(); }
+  document.addEventListener('keydown', onKeydown);
+
+  function rerenderPanel() {
+    clear(panel);
+    panel.appendChild(h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;' }, [
+      h('p', { class: 'modal-title', style: 'margin:0;' }, `➕ Cadastrar Nova Empresa Parceira (${farmaciaAtiva})`),
+      h('button', { class: 'close-btn', onclick: fechar, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
+    ]));
+    panel.appendChild(buildRecordForm(empresaParceiraSchema, draft, {
+      onSubmit: submit, onCancel: fechar, errorMessage: formError, saving,
+    }));
+  }
+  async function submit() {
+    const missing = checkRequiredFields(draft, empresaParceiraSchema);
+    if (missing.length) { formError = buildRequiredMessage(missing, empresaParceiraSchema); rerenderPanel(); return; }
+    const formatoInvalido = checkFieldFormats(draft, empresaParceiraSchema);
+    if (formatoInvalido) { formError = formatoInvalido; rerenderPanel(); return; }
+    formError = '';
+    normalizeNameFields(draft);
+    saving = true; rerenderPanel();
+    const created = await dbInsert('empresasParceiras', draft);
+    saving = false;
+    if (!created) { formError = `Não foi possível adicionar a empresa parceira. ${lastDbError || 'Verifique a ligação e tente novamente.'}`; rerenderPanel(); return; }
+    fechar();
+    onCriada(created);
+  }
+  const panel = h('div', { class: 'modal-panel', style: 'max-width:460px;' });
+  rerenderPanel();
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+}
 function buildEmpresasParceirasPage(container, goTo, farmaciaAtiva) {
   let showForm = false, editingId = null, draft = emptyRecord(empresaParceiraSchema);
   let formError = '';
@@ -13400,7 +13936,8 @@ function buildEntregasPage(container, goTo) {
     const hoje = todayISO();
     draft = {
       farmacia: farmaciaAtiva, tipoDestinatario: 'Particular', empresaParceiraId: '',
-      nomeCliente: '', morada: '', localidade: '', contacto: '', dataEntrega: hoje,
+      nomeCliente: '', entregaEmpresaParceira: false, enderecoEmpresaParceiraId: '',
+      morada: '', localidade: '', contacto: '', dataEntrega: hoje,
       blocoHorario: entregaEhSabado(hoje) ? BLOCO_SABADO : '', horaLimite: '', urgente: false,
       entreguePor: estafetaPredefinidoNome(), estadoPagamento: '', metodoPagamento: '', levarTerminalMb: false,
       valorAPagar: '', precisaTroco: false, valorEntregue: '', troco: '',
@@ -13429,6 +13966,13 @@ function buildEntregasPage(container, goTo) {
     const pago = draft.estadoPagamento === 'Pago';
     const camposOcultos = new Set();
     if (!ehEmpresa) camposOcultos.add('empresaParceiraId');
+    // O toggle "🏢 Entregar numa Empresa Parceira" só faz sentido para um
+    // Particular — quando o Tipo de Destinatário já é "Empresa Parceira", a
+    // morada da empresa já vem preenchida pelo mecanismo acima, por isso
+    // este 2º mecanismo (só empresta a morada, mantém o nome do Particular)
+    // fica escondido para não haver dois caminhos a fazer a mesma coisa.
+    if (ehEmpresa) { camposOcultos.add('entregaEmpresaParceira'); camposOcultos.add('enderecoEmpresaParceiraId'); }
+    else if (!draft.entregaEmpresaParceira) camposOcultos.add('enderecoEmpresaParceiraId');
     if (!ehDinheiro) camposOcultos.add('precisaTroco');
     if (!ehDinheiro || !draft.precisaTroco) { camposOcultos.add('valorEntregue'); camposOcultos.add('troco'); }
     // TPA só faz sentido quando ainda há algo a cobrar na rua — com a
@@ -13441,6 +13985,17 @@ function buildEntregasPage(container, goTo) {
       }
       if (f.name === 'empresaParceiraId') {
         return f;
+      }
+      if (f.name === 'entregaEmpresaParceira') {
+        return Object.assign({}, f, {
+          onChange: () => {
+            // Desligar o toggle limpa a seleção — mas nunca apaga a Morada/
+            // Localidade já preenchidas: ficam como texto livre normal,
+            // exatamente como pedido no comportamento por omissão.
+            if (!draft.entregaEmpresaParceira) draft.enderecoEmpresaParceiraId = '';
+            rerender();
+          },
+        });
       }
       if (f.name === 'dataEntrega') {
         return Object.assign({}, f, {
@@ -13546,6 +14101,36 @@ function buildEntregasPage(container, goTo) {
     gerirBtn.addEventListener('click', () => requireAuth(() => goTo('gestao-empresas-parceiras', { farmacia: farmaciaAtiva })));
     return h('div', { class: 'field' + (f.col === 2 ? ' span2' : (f.size ? ' field-' + f.size : '')) }, [h('label', {}, f.label), h('div', { style: 'display:flex;gap:8px;align-items:center;' }, [sel, gerirBtn])]);
   }
+  function buildEnderecoEmpresaParceiraField(f) {
+    // Autocomplete isolado por farmácia — mesma lista da Empresa Parceira
+    // "cliente direto" acima, mas aqui só empresta a MORADA/LOCALIDADE: o
+    // Nome do Cliente e o Contacto continuam a ser os do Particular.
+    const empresas = (STATE.empresasParceiras || []).filter(e => e.farmacia === farmaciaAtiva);
+    const sel = h('select', { class: 'select' }, [
+      h('option', { value: '' }, 'Escolher empresa...'),
+      ...empresas.map(e => h('option', { value: String(e.id), selected: String(draft.enderecoEmpresaParceiraId) === String(e.id) ? 'selected' : undefined }, e.nome)),
+    ]);
+    sel.value = draft.enderecoEmpresaParceiraId || '';
+    sel.addEventListener('change', () => {
+      draft.enderecoEmpresaParceiraId = sel.value;
+      const emp = empresaPorId(sel.value);
+      // Morada/Localidade continuam campos de texto normais (editáveis) —
+      // isto só os pré-preenche, tal como pedido.
+      if (emp) { draft.morada = emp.morada || ''; draft.localidade = emp.localidade || ''; }
+      rerender();
+    });
+    const novaBtn = h('button', { type: 'button', class: 'btn-fab-sm tone-green', title: 'Cadastrar Nova Empresa', 'aria-label': 'Cadastrar Nova Empresa' }, Icon('plus', { size: 13, strokeWidth: 2.4 }));
+    novaBtn.addEventListener('click', () => requireAuth(() => abrirModalNovaEmpresaParceiraRapida(farmaciaAtiva, (criada) => {
+      STATE.empresasParceiras = [criada, ...(STATE.empresasParceiras || [])];
+      draft.enderecoEmpresaParceiraId = String(criada.id);
+      draft.morada = criada.morada || ''; draft.localidade = criada.localidade || '';
+      rerender();
+    })));
+    return h('div', { class: 'field' + (f.col === 2 ? ' span2' : (f.size ? ' field-' + f.size : '')) }, [
+      h('label', {}, f.label),
+      h('div', { style: 'display:flex;gap:8px;align-items:center;' }, [sel, novaBtn]),
+    ]);
+  }
   function buildEstadoPagamentoField(f) {
     const opts = [{ value: 'Pago', tone: 'green' }, { value: 'Não Pago', tone: 'red' }];
     const btns = opts.map(o => {
@@ -13581,6 +14166,7 @@ function buildEntregasPage(container, goTo) {
     return {
       morada: buildMoradaComMapsField,
       empresaParceiraId: buildEmpresaParceiraField,
+      enderecoEmpresaParceiraId: buildEnderecoEmpresaParceiraField,
       estadoPagamento: buildEstadoPagamentoField,
       troco: buildTrocoReadonlyField,
     };
