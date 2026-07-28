@@ -4214,10 +4214,33 @@ async function dbPermanentDelete(listKey, id) {
     return true;
   } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error(`[Supabase] erro de rede ao eliminar definitivamente ${listKey}#${id}:`, formatarErroSeguro(e)); return false; }
 }
+// Campos que existem no formulário só como ESTADO DE INTERFACE — nunca
+// correspondem a uma coluna na base de dados, por design (não é um "por
+// enquanto"): o valor é sempre derivável de outro campo que esse sim é
+// persistido, por isso nunca vale a pena gastar uma coluna a duplicar essa
+// informação. Ex: o checkbox "🏢 Entregar numa Empresa Parceira" só serve
+// para mostrar/esconder o dropdown da empresa no formulário — o que
+// realmente importa gravar é enderecoEmpresaParceiraId (esse sim, uma
+// coluna real); ao reabrir para editar, o checkbox é reconstruído a partir
+// desse valor (ver openEdit/openEditSelected), nunca precisa de vir do
+// servidor. Sempre que um "Could not find the '...' column" apontar para um
+// campo que é claramente um estado do formulário (não um dado do negócio em
+// si), o padrão é este: acrescentar aqui, nunca inventar uma coluna nova só
+// para uma flag.
+const CAMPOS_SO_UI_POR_TABELA = {
+  entregas: ['entregaEmpresaParceira'],
+};
+function limparCamposSoUI(listKey, record) {
+  const remover = CAMPOS_SO_UI_POR_TABELA[listKey];
+  if (!remover || !remover.length || !record) return record;
+  const out = Object.assign({}, record);
+  remover.forEach(k => { delete out[k]; });
+  return out;
+}
 async function dbInsert(listKey, record) {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível (verifique se o CDN do Supabase carregou).'; return null; }
   try {
-    const { data, error } = await sb.from(TABLES[listKey]).insert(recordToRow(record)).select().single();
+    const { data, error } = await sb.from(TABLES[listKey]).insert(recordToRow(limparCamposSoUI(listKey, record))).select().single();
     if (error) { if (erroDeRede(error)) marcarConexao(false); lastDbError = error.message; console.error(`[Supabase] erro ao inserir em ${listKey}:`, error.message); return null; }
     marcarConexao(true);
     return rowToRecord(data);
@@ -4303,7 +4326,7 @@ async function dbUpdate(listKey, id, patch) {
   // exatamente como sempre foi — sem qualquer risco de partir um update.
   const usaLockOtimista = !!(atual && atual.updatedAt);
   try {
-    let query = sb.from(TABLES[listKey]).update(recordToRow(patchFinal)).eq('id', id);
+    let query = sb.from(TABLES[listKey]).update(recordToRow(limparCamposSoUI(listKey, patchFinal))).eq('id', id);
     if (usaLockOtimista) query = query.eq('updated_at', atual.updatedAt);
     const { data, error } = await query.select().single();
     if (error) {
@@ -13270,7 +13293,11 @@ function buildFormularioEntregaDoc(r) {
   // cuidado de") — o estafeta precisa de ver logo os dois nomes juntos,
   // para saber que a campainha/receção a tocar é a da empresa, não a de
   // uma casa própria do cliente.
-  const empresaEnderecoEmprestado = r.entregaEmpresaParceira && r.enderecoEmpresaParceiraId
+  // enderecoEmpresaParceiraId é o único dos dois campos que fica persistido
+  // (entregaEmpresaParceira é só um estado de checkbox no formulário, nunca
+  // vai para o servidor — ver CAMPOS_SO_UI_POR_TABELA), por isso é o único
+  // em que se pode confiar aqui, incluindo logo a seguir a criar o registo.
+  const empresaEnderecoEmprestado = r.enderecoEmpresaParceiraId
     ? (STATE.empresasParceiras || []).find(e => String(e.id) === String(r.enderecoEmpresaParceiraId))
     : null;
   const clienteDestinatarioTxt = empresaEnderecoEmprestado
@@ -13979,7 +14006,11 @@ function buildEntregasPage(container, goTo) {
     if (selectedIds.size !== 1) return;
     const r = STATE.entregas.find(x => x.id === [...selectedIds][0]);
     if (!r) return;
-    draft = Object.assign({}, r); editingId = r.id; formError = ''; showForm = true; rerender();
+    // entregaEmpresaParceira nunca vem do servidor (é só estado de UI, ver
+    // CAMPOS_SO_UI_POR_TABELA) — reconstrói-se aqui a partir do campo que
+    // realmente fica gravado, para o checkbox abrir já certo.
+    draft = Object.assign({}, r, { entregaEmpresaParceira: !!r.enderecoEmpresaParceiraId });
+    editingId = r.id; formError = ''; showForm = true; rerender();
   }
   function cancel() { formError = ''; showForm = false; rerender(); }
 
