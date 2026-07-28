@@ -602,9 +602,16 @@
   .field label{display:block;font-size:12px;font-weight:700;color:var(--pharm-600);margin-bottom:5px;}
   .field-helper-text{font-size:11.5px;color:var(--pharm-500);margin-top:5px;font-weight:600;}
   /* Frase informativa no topo de cada Agenda de prestador */
-  .agenda-info-aviso{font-size:13px;color:#64748b;margin:10px 0 4px;line-height:1.5;
-    display:flex;align-items:center;gap:8px;}
-  .agenda-info-aviso-dot{width:11px;height:11px;border-radius:6px;flex-shrink:0;}
+  .agenda-info-aviso{font-size:13px;color:#64748b;margin:8px 0 4px;line-height:1.5;}
+  /* Badge/chip de cor da Agenda — fundo translúcido na cor do prestador,
+     borda suave a meio-tom, texto/ícone na cor forte, com uma bolinha
+     sólida de 10px lá dentro a reforçar o tom exato. Fica sozinha, em
+     destaque, por cima da frase de instrução. */
+  .agenda-cor-badge{display:inline-flex;align-items:center;gap:7px;padding:6px 14px 6px 10px;
+    border-radius:999px;border:1px solid;font-size:12.5px;font-weight:800;
+    letter-spacing:.01em;margin:10px 0 8px;}
+  .agenda-cor-badge-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;
+    box-shadow:0 0 0 1px rgba(0,0,0,.06) inset;}
   /* Pop-up de escolha do Calendário de Agendamentos (dia com vários itens) */
   .cal-escolha-lista{display:flex;flex-direction:column;gap:6px;}
   .cal-escolha-item{display:flex;align-items:center;gap:10px;width:100%;border:1px solid var(--pharm-200);
@@ -3657,10 +3664,17 @@ function buildAgendaPage(container, goTo, prestadorKey) {
     const wrap = h('div', { class: 'animate-in' });
     wrap.appendChild(withCustomBackButton(buildPageHeader(prestador.icon, prestador.nome, prestador.especialidade, undefined), () => goTo('hub-agendas')));
     const corServico = (SERVICOS_CALENDARIO.find(s => s.key === prestadorKey) || {}).cor || 'var(--pharm-400)';
-    wrap.appendChild(h('p', { class: 'agenda-info-aviso' }, [
-      h('span', { class: 'agenda-info-aviso-dot', style: `background:${corServico};` }),
+    const badgeCorAgenda = h('span', {
+      class: 'agenda-cor-badge',
+      style: `background:${hexParaRgba(corServico, 0.16)};border-color:${hexParaRgba(corServico, 0.4)};color:${corServico};`,
+    }, [
+      h('span', { class: 'agenda-cor-badge-dot', style: `background:${corServico};` }),
+      `Agenda ${prestador.nome}`,
+    ]);
+    wrap.appendChild(h('div', { style: 'display:flex;' }, [badgeCorAgenda]));
+    wrap.appendChild(h('p', { class: 'agenda-info-aviso' },
       'Marcar apenas nos dias com cor aberta. Abertura de novos dias requer confirmação do prestador.',
-    ]));
+    ));
     wrap.appendChild(buildCalendarioCarrossel(onDayClick, prestadorKey));
     // Bloco de notas rápido — disponível para qualquer utilizador com acesso
     // a esta Agenda (quem já chega a esta página tem permissão de marcação),
@@ -4863,7 +4877,33 @@ function emptyRecord(schema) {
   });
   return obj;
 }
+// Debounce genérico — usado por TODOS os campos de pesquisa em tempo real da
+// app (Documentos, Pedidos, Entregas, Stocks, Recolhas, Agendas, etc.) para
+// não disparar um re-render a cada tecla: espera `wait` ms de silêncio desde
+// a última chamada antes de executar `fn`. Nunca mexe no valor do próprio
+// <input> — esse já é gerido nativamente pelo browser — só atrasa o
+// re-render dos RESULTADOS filtrados, evitando renders excessivos sem nunca
+// perder/atrasar o que a pessoa vê escrito na caixa.
+function debounce(fn, wait) {
+  let timer = null;
+  return function (...args) {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => fn.apply(this, args), wait);
+  };
+}
 function pad2(n) { return String(n).padStart(2, '0'); }
+// Converte um hex ("#60a5fa") para "rgba(r,g,b,alpha)" — usado na badge de
+// cor da Agenda (fundo suave translúcido sobre a cor forte do prestador).
+// Se não for um hex válido (ex: veio uma var CSS de fallback), devolve a
+// própria string tal como veio, sem tentar converter.
+function hexParaRgba(hex, alpha) {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(hex || '').trim());
+  if (!m) return hex;
+  let h = m[1];
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
 // Normaliza qualquer forma de introduzir uma hora ("9:00", "9:15", "09:15
 // · Encaixe"...) para sempre "HH:MM" com zero à esquerda — usada sempre que
 // se grava, filtra, compara ou ordena horários (Agendas, Rastreios, Dias de
@@ -6135,7 +6175,8 @@ function buildOrtopediaPage(container, goTo) {
           onSaved: rerender,
         }));
       }
-      searchInput.addEventListener('input', () => { searchQuery = searchInput.value; renderResultsOnly(); });
+      const debouncedRenderResultsOnly = debounce(renderResultsOnly, 180);
+      searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResultsOnly(); });
       renderResultsOnly();
       wrap.appendChild(statGrid);
       wrap.appendChild(searchCard);
@@ -6354,7 +6395,8 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
       }
       // Re-render LEVE (só a tabela) a cada tecla — o próprio campo de
       // pesquisa nunca é recriado, por isso o foco/cursor nunca se perde.
-      searchInput.addEventListener('input', () => { searchQuery = searchInput.value; renderResultsOnly(); });
+      const debouncedRenderResultsOnly = debounce(renderResultsOnly, 180);
+      searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResultsOnly(); });
       renderResultsOnly();
       wrap.appendChild(statGrid);
       wrap.appendChild(searchCard);
@@ -7990,7 +8032,8 @@ function buildErrosPage(container, goTo) {
       clear(resultsContainer);
       resultsContainer.appendChild(buildTable(list, activeTab === 'resolved' ? 'resolved' : 'pending'));
     }
-    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; renderResults(); });
+    const debouncedRenderResults = debounce(renderResults, 180);
+    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
 
     const searchCard = h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
       h('div', { class: 'search-row' }, [
@@ -8300,13 +8343,20 @@ function buildValidadesPage(container, goTo) {
 
     const searchInput = h('input', { class: 'search-input', type: 'text', placeholder: 'Pesquisar por produto, CNP ou localização...' });
     searchInput.value = searchQuery;
-    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; rerender(); });
     wrap.appendChild(searchInput);
 
-    const lista = visibleValidades();
-    if (!lista.length) {
-      wrap.appendChild(h('p', { class: 'cell-muted', style: 'margin-top:16px;' }, 'Ainda não há produtos registados em Validades.'));
-    } else {
+    // A lista vive num container PRÓPRIO, separado do <input> de pesquisa —
+    // ao filtrar, só este container é reconstruído (nunca o wrap inteiro),
+    // por isso o próprio campo de pesquisa nunca é destruído/recriado e o
+    // foco/cursor nunca se perde a meio da escrita.
+    const resultsEl = h('div', {});
+    function renderResultsOnly() {
+      clear(resultsEl);
+      const lista = visibleValidades();
+      if (!lista.length) {
+        resultsEl.appendChild(h('p', { class: 'cell-muted', style: 'margin-top:16px;' }, 'Ainda não há produtos registados em Validades.'));
+        return;
+      }
       const linhas = lista.map(r => {
         const limite30 = new Date(); limite30.setDate(limite30.getDate() + 30);
         const perto = validadeUltimoDia(r.validade) && validadeUltimoDia(r.validade) <= limite30;
@@ -8344,8 +8394,12 @@ function buildValidadesPage(container, goTo) {
         row.addEventListener('click', () => toggleSelect(r.id));
         return row;
       });
-      wrap.appendChild(h('div', { style: 'display:flex;flex-direction:column;gap:6px;margin-top:14px;' }, linhas));
+      resultsEl.appendChild(h('div', { style: 'display:flex;flex-direction:column;gap:6px;margin-top:14px;' }, linhas));
     }
+    const debouncedRenderResultsOnly = debounce(renderResultsOnly, 180);
+    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResultsOnly(); });
+    renderResultsOnly();
+    wrap.appendChild(resultsEl);
 
     // Mesma Barra/Cápsula de Ações Inferior usada em todos os restantes
     // módulos da app — garante que o botão de adicionar está sempre visível
@@ -8813,7 +8867,8 @@ function buildLembretesPage(container, goTo, embedded) {
       clear(resultsContainer);
       resultsContainer.appendChild(buildTable(list, activeTab === 'resolved' ? 'resolved' : 'pending'));
     }
-    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; renderResults(); });
+    const debouncedRenderResults = debounce(renderResults, 180);
+    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
 
     const searchCard = h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
       h('div', { class: 'search-row' }, [
@@ -9001,7 +9056,8 @@ function buildReclamacoesPage(container, goTo) {
       clear(resultsContainer);
       resultsContainer.appendChild(buildTable(list, activeTab === 'resolved' ? 'resolved' : 'pending'));
     }
-    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; renderResults(); });
+    const debouncedRenderResults = debounce(renderResults, 180);
+    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
 
     const searchCard = h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
       h('div', { class: 'search-row' }, [
@@ -10299,7 +10355,8 @@ function buildOrcamentosPage(container, goTo) {
       clear(resultsContainer);
       resultsContainer.appendChild(buildTable(list));
     }
-    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; renderResults(); });
+    const debouncedRenderResults = debounce(renderResults, 180);
+    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
     wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
       h('div', { class: 'search-row' }, [h('div', { class: 'search-input-wrap' }, [h('span', { class: 'icon' }, Icon('search', { size: 15 })), searchInput])]),
       resultsCount,
@@ -10474,7 +10531,8 @@ function buildDesafiosPage(container, goTo, embedded) {
     searchInput.value = searchQuery;
     const resultsContainer = h('div', {});
     function renderResults() { clear(resultsContainer); resultsContainer.appendChild(buildTable(visibleDesafios())); }
-    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; renderResults(); });
+    const debouncedRenderResults = debounce(renderResults, 180);
+    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
     wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
       h('div', { class: 'search-row' }, [h('div', { class: 'search-input-wrap' }, [h('span', { class: 'icon' }, Icon('search', { size: 15 })), searchInput])]),
     ]));
@@ -10714,7 +10772,8 @@ function buildObjetivosPage(container, goTo, embedded) {
     searchInput.value = searchQuery;
     const resultsContainer = h('div', {});
     function renderResults() { clear(resultsContainer); resultsContainer.appendChild(buildTable(visibleObjetivos())); }
-    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; renderResults(); });
+    const debouncedRenderResults = debounce(renderResults, 180);
+    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
     wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
       h('div', { class: 'search-row' }, [h('div', { class: 'search-input-wrap' }, [h('span', { class: 'icon' }, Icon('search', { size: 15 })), searchInput])]),
     ]));
@@ -11697,28 +11756,33 @@ function buildHistoricoDocumentosSection(goTo) {
       const apagados = new Set(ids.filter((id, i) => resultados[i]));
       STATE.documentosEmitidos = STATE.documentosEmitidos.filter(r => !apagados.has(r.id));
       selectedIds = new Set([...selectedIds].filter(id => !apagados.has(id)));
-      render();
+      renderResultsOnly();
     }, { danger: true, confirmLabel: 'Eliminar' });
   }
 
-  function render() {
-    clear(wrap);
-    wrap.appendChild(h('h3', { class: 'dash-card-title' }, 'Histórico de Documentos Emitidos'));
+  wrap.appendChild(h('h3', { class: 'dash-card-title' }, 'Histórico de Documentos Emitidos'));
 
-    const searchInput = h('input', { class: 'input', placeholder: 'Pesquisar por Nome, CC ou Tipo de Documento...' });
-    searchInput.value = query;
-    searchInput.addEventListener('input', () => { query = searchInput.value; render(); });
-    const filtroSelect = h('select', { class: 'select' }, [
-      h('option', { value: 'todos' }, 'Todos os Tipos'),
-      ...Object.keys(TIPOS_DOCUMENTO_LABELS).map(t => h('option', { value: t, selected: filtroTipo === t ? 'selected' : undefined }, TIPOS_DOCUMENTO_LABELS[t])),
-    ]);
-    filtroSelect.value = filtroTipo;
-    filtroSelect.addEventListener('change', () => { filtroTipo = filtroSelect.value; render(); });
-    wrap.appendChild(h('div', { class: 'doc-fields-row', style: 'margin:14px 0 18px;' }, [
-      h('div', { class: 'field', style: 'flex:2 1 260px;' }, [searchInput]),
-      h('div', { class: 'field doc-w-xs' }, [filtroSelect]),
-    ]));
+  // Barra de pesquisa/filtro construída UMA ÚNICA VEZ, fora de qualquer
+  // função de render — nunca volta a ser recriada, por isso o <input> nunca
+  // perde o foco/cursor ao escrever. Só o container de resultados abaixo
+  // (resultsEl) é reconstruído a cada pesquisa/filtro.
+  const searchInput = h('input', { class: 'input', placeholder: 'Pesquisar por Nome, CC ou Tipo de Documento...' });
+  searchInput.value = query;
+  const filtroSelect = h('select', { class: 'select' }, [
+    h('option', { value: 'todos' }, 'Todos os Tipos'),
+    ...Object.keys(TIPOS_DOCUMENTO_LABELS).map(t => h('option', { value: t, selected: filtroTipo === t ? 'selected' : undefined }, TIPOS_DOCUMENTO_LABELS[t])),
+  ]);
+  filtroSelect.value = filtroTipo;
+  wrap.appendChild(h('div', { class: 'doc-fields-row', style: 'margin:14px 0 18px;' }, [
+    h('div', { class: 'field', style: 'flex:2 1 260px;' }, [searchInput]),
+    h('div', { class: 'field doc-w-xs' }, [filtroSelect]),
+  ]));
 
+  const resultsEl = h('div', {});
+  wrap.appendChild(resultsEl);
+
+  function renderResultsOnly() {
+    clear(resultsEl);
     const termo = query.trim().toLowerCase();
     let lista = (STATE.documentosEmitidos || []).filter(r => TIPOS_DOCUMENTO_LABELS[r.tipo]); // exclui outros tipos (ex: encomendas de Ortopedia) deste histórico
     if (filtroTipo !== 'todos') lista = lista.filter(r => r.tipo === filtroTipo);
@@ -11731,15 +11795,15 @@ function buildHistoricoDocumentosSection(goTo) {
     const idsVisiveis = new Set(lista.map(r => r.id));
     selectedIds = new Set([...selectedIds].filter(id => idsVisiveis.has(id)));
 
-    if (!lista.length) { wrap.appendChild(EmptyState('Sem documentos emitidos para os critérios atuais.')); return; }
+    if (!lista.length) { resultsEl.appendChild(EmptyState('Sem documentos emitidos para os critérios atuais.')); return; }
 
     function toggleUm(id) {
       if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id);
-      render();
+      renderResultsOnly();
     }
     function toggleTodos() {
       selectedIds = (selectedIds.size === lista.length) ? new Set() : new Set(lista.map(r => r.id));
-      render();
+      renderResultsOnly();
     }
 
     const selectAllCb = h('input', { type: 'checkbox', class: 'row-checkbox', checked: (lista.length > 0 && selectedIds.size === lista.length) ? 'checked' : undefined, title: 'Selecionar Todos' });
@@ -11768,7 +11832,7 @@ function buildHistoricoDocumentosSection(goTo) {
         h('td', {}, h('div', { style: 'display:flex;gap:6px;' }, [verBtn, editBtn, pdfBtn])),
       ]);
     });
-    wrap.appendChild(h('div', { class: 'table-wrap' }, [
+    resultsEl.appendChild(h('div', { class: 'table-wrap' }, [
       h('table', {}, [
         h('thead', {}, h('tr', {}, [h('th', { class: 'checkbox-cell' }, selectAllCb), ...['Data/Hora', 'Tipo', 'Nome', 'CC', 'Emitido por', 'Ações'].map(t => h('th', {}, t))])),
         h('tbody', {}, linhas),
@@ -11777,10 +11841,13 @@ function buildHistoricoDocumentosSection(goTo) {
 
     if (selectedIds.size > 0) {
       const delBtn = h('button', { class: 'btn-fab tone-red', onclick: () => requireAuth(eliminarSelecionados), title: 'Eliminar selecionados', 'aria-label': 'Eliminar selecionados' }, Icon('trash', { size: 19, strokeWidth: 2.3 }));
-      wrap.appendChild(h('div', { class: 'bottom-action-bar' }, [delBtn]));
+      resultsEl.appendChild(h('div', { class: 'bottom-action-bar' }, [delBtn]));
     }
   }
-  render();
+  const debouncedRenderResultsOnly = debounce(renderResultsOnly, 180);
+  searchInput.addEventListener('input', () => { query = searchInput.value; debouncedRenderResultsOnly(); });
+  filtroSelect.addEventListener('change', () => { filtroTipo = filtroSelect.value; renderResultsOnly(); });
+  renderResultsOnly();
   return wrap;
 }
 
@@ -12596,7 +12663,8 @@ function buildMapa48hPage(container, goTo) {
     searchInput.value = searchQuery;
     const resultsContainer = h('div', {});
     function renderResults() { clear(resultsContainer); resultsContainer.appendChild(buildTable(visibleMapa48h())); }
-    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; renderResults(); });
+    const debouncedRenderResults = debounce(renderResults, 180);
+    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
     wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
       h('div', { class: 'search-row' }, [h('div', { class: 'search-input-wrap' }, [h('span', { class: 'icon' }, Icon('search', { size: 15 })), searchInput])]),
     ]));
@@ -13184,7 +13252,8 @@ function buildEmpresasParceirasPage(container, goTo, farmaciaAtiva) {
       }));
       resultsEl.appendChild(h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', { class: 'pedidos-table' }, [thead, tbody]))));
     }
-    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; renderResultsOnly(); });
+    const debouncedRenderResultsOnly = debounce(renderResultsOnly, 180);
+    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResultsOnly(); });
     renderResultsOnly();
 
     const novaBtn = h('button', { class: 'btn btn-primary', style: 'margin-bottom:18px;' }, [Icon('plus', { size: 14 }), ' Nova Empresa Parceira']);
@@ -13704,7 +13773,8 @@ function buildEntregasPage(container, goTo) {
     searchInput.value = searchQuery;
     const resultsContainer = h('div', {});
     function renderResults() { clear(resultsContainer); resultsContainer.appendChild(buildTable(visibleEntregas())); }
-    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; renderResults(); });
+    const debouncedRenderResults = debounce(renderResults, 180);
+    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
     wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
       h('div', { class: 'search-row' }, [h('div', { class: 'search-input-wrap' }, [h('span', { class: 'icon' }, Icon('search', { size: 15 })), searchInput])]),
     ]));
@@ -13870,7 +13940,8 @@ function buildRecolhasPage(container, goTo) {
     searchInput.value = searchQuery;
     const resultsContainer = h('div', {});
     function renderResults() { clear(resultsContainer); resultsContainer.appendChild(buildTable(visibleRecolhas())); }
-    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; renderResults(); });
+    const debouncedRenderResults = debounce(renderResults, 180);
+    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
     wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
       h('div', { class: 'search-row' }, [h('div', { class: 'search-input-wrap' }, [h('span', { class: 'icon' }, Icon('search', { size: 15 })), searchInput])]),
     ]));
@@ -14505,7 +14576,8 @@ function buildLixoPage(container, goTo) {
       clear(resultsContainer);
       resultsContainer.appendChild(buildTable(list));
     }
-    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; renderResults(); });
+    const debouncedRenderResults = debounce(renderResults, 180);
+    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
 
     const searchCard = h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
       h('div', { class: 'search-row' }, [
