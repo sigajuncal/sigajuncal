@@ -347,6 +347,15 @@
   .doc-pagamento-symbol{font-size:16pt;line-height:1;flex-shrink:0;}
   .doc-pagamento-box.doc-pagamento-ok{border-width:2px;}
   .doc-pagamento-box.doc-pagamento-alerta{border:3px dashed #000;font-size:16pt;padding:14px 18px;}
+  /* Variante de 2 linhas da caixa de destaque — quando há troco a dar, a
+     linha 1 (valor a cobrar) mantém-se igual, e ganha uma 2ª linha por
+     baixo com o valor entregue pelo utente e o troco a devolver, separada
+     por uma linha tracejada fina para não se confundir com o valor total. */
+  .doc-pagamento-alerta-troco{flex-direction:column;align-items:stretch;gap:10px;}
+  .doc-pagamento-linha1{display:flex;align-items:center;gap:12px;}
+  .doc-pagamento-troco-linha{display:flex;align-items:center;flex-wrap:wrap;gap:10px;
+    font-size:12pt;padding-top:9px;border-top:2px dashed #000;}
+  .doc-pagamento-troco-sep{opacity:.4;font-weight:400;}
   .doc-rodape{flex:0 0 auto;display:flex;flex-direction:column;align-items:flex-end;text-align:right;margin-left:auto;}
   .doc-date-line{margin:0 0 42px;font-size:13px;color:#0f172a;}
   .doc-signature-block{margin-top:8px;}
@@ -354,6 +363,19 @@
   .doc-signature-name{font-size:13px;font-weight:700;margin:0;color:#0f172a;}
   .doc-declaracao-legal{font-size:9.5px;line-height:1.5;color:#334155;margin:12px 0 0;
     max-width:420px;text-align:justify;font-style:italic;}
+  /* Modificador SÓ do Formulário de Entrega (doc-signature-block-wide): a
+     linha de assinatura e o parágrafo legal passam a ter a MESMA largura
+     fixa (420px), em vez da linha (280px) e do parágrafo (até 420px)
+     ficarem à direita cada um com a sua largura própria — isso é o que
+     causava o desalinhamento entre os dois. O texto legal deixa de estar
+     justificado (evita linhas finais com 1 palavra solta/"órfã", típico de
+     texto justificado em coluna estreita) e passa a alinhado à esquerda,
+     mais legível. As Declarações com carimbo (buildDocRodapeComResponsavel)
+     NÃO usam este modificador — mantêm-se exatamente como estavam.
+   */
+  .doc-signature-block-wide{width:420px;}
+  .doc-signature-block-wide .doc-signature-line{width:100%;}
+  .doc-signature-block-wide .doc-declaracao-legal{width:100%;max-width:100%;text-align:justify;}
   .doc-stamp-box{width:260px;height:120px;border:1.5px dashed #64748b;margin-top:22px;
     display:flex;align-items:center;justify-content:center;font-size:10px;color:#64748b;
     text-transform:uppercase;letter-spacing:.06em;}
@@ -12721,7 +12743,12 @@ function buildFormularioEntregaDoc(r) {
   if (aCobrar) {
     if (r.metodoPagamento === 'Dinheiro') {
       if (r.valorAPagar !== '' && r.valorAPagar !== undefined && r.valorAPagar !== null) linhasDepois.push(['Valor a Cobrar', `${Number(r.valorAPagar).toFixed(2)}€`]);
-      if (r.precisaTroco && r.troco !== '' && r.troco !== undefined && r.troco !== null) linhasDepois.push(['Troco Necessário', `${Number(r.troco).toFixed(2)}€`]);
+      if (r.precisaTroco && r.troco !== '' && r.troco !== undefined && r.troco !== null) {
+        if (r.valorEntregue !== '' && r.valorEntregue !== undefined && r.valorEntregue !== null) {
+          linhasDepois.push(['Valor Entregue pelo Utente', `${Number(r.valorEntregue).toFixed(2)}€`]);
+        }
+        linhasDepois.push(['Troco a Entregar', `${Number(r.troco).toFixed(2)}€`]);
+      }
     } else if (r.metodoPagamento === 'MB' && r.levarTerminalMb) {
       linhasDepois.push(['Terminal MB (TPA)', '💳 Levar Terminal Físico']);
     }
@@ -12754,10 +12781,27 @@ function buildFormularioEntregaDoc(r) {
     const valorTxt = (r.metodoPagamento === 'Dinheiro' && r.valorAPagar !== '' && r.valorAPagar !== undefined && r.valorAPagar !== null)
       ? ` NO ATO DA ENTREGA: ${Number(r.valorAPagar).toFixed(2)}€`
       : (r.metodoPagamento ? ` — ${r.metodoPagamento}` : '');
-    pagamentoBox = h('div', { class: 'doc-pagamento-box doc-pagamento-alerta' }, [
+    const linha1 = h('div', { class: 'doc-pagamento-linha1' }, [
       h('span', { class: 'doc-pagamento-symbol' }, '[ ⚠ ]'),
       h('span', {}, `A COBRAR${valorTxt}`),
     ]);
+    // 2ª linha só aparece quando o pagamento é em Dinheiro, "Cliente
+    // necessita de troco?" está ativo, e há valores efetivamente gravados
+    // para o Valor Entregue e o Troco — caso contrário mantém-se a caixa
+    // simples de uma linha só, como antes.
+    const temTroco = r.metodoPagamento === 'Dinheiro' && r.precisaTroco
+      && r.valorEntregue !== '' && r.valorEntregue !== undefined && r.valorEntregue !== null
+      && r.troco !== '' && r.troco !== undefined && r.troco !== null;
+    if (temTroco) {
+      const linha2 = h('div', { class: 'doc-pagamento-troco-linha' }, [
+        h('span', {}, `💶 UTENTE ENTREGA: ${Number(r.valorEntregue).toFixed(2)}€`),
+        h('span', { class: 'doc-pagamento-troco-sep' }, '|'),
+        h('span', {}, `🔄 TROCO A ENTREGAR: ${Number(r.troco).toFixed(2)}€`),
+      ]);
+      pagamentoBox = h('div', { class: 'doc-pagamento-box doc-pagamento-alerta doc-pagamento-alerta-troco' }, [linha1, linha2]);
+    } else {
+      pagamentoBox = h('div', { class: 'doc-pagamento-box doc-pagamento-alerta' }, [linha1]);
+    }
   } else {
     pagamentoBox = h('div', { class: 'doc-pagamento-box' }, [
       h('span', { class: 'doc-pagamento-symbol' }, '[ — ]'),
@@ -12773,7 +12817,7 @@ function buildFormularioEntregaDoc(r) {
   ];
   const nomeFarmaciaDeclaracao = r.farmacia === 'Boa Nova' ? 'Farmácia Boa Nova' : 'Farmácia Juncal';
   const rodape = h('div', { class: 'doc-rodape' }, [
-    h('div', { class: 'doc-signature-block' }, [
+    h('div', { class: 'doc-signature-block doc-signature-block-wide' }, [
       h('div', { class: 'doc-signature-line' }),
       h('p', { class: 'doc-signature-name' }, 'Assinatura de quem recebeu'),
       h('p', { class: 'doc-declaracao-legal' },
