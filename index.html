@@ -4214,13 +4214,41 @@ async function dbPermanentDelete(listKey, id) {
     return true;
   } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error(`[Supabase] erro de rede ao eliminar definitivamente ${listKey}#${id}:`, formatarErroSeguro(e)); return false; }
 }
+// Campos que já existem no formulário/schema da app mas cuja coluna AINDA
+// NÃO foi criada em farmacia_entregas no Supabase — filtrados aqui, antes
+// de qualquer INSERT/UPDATE, para nunca bloquear a gravação da entrega
+// com o erro "Could not find the '...' column". Isto é um DESVIO
+// TEMPORÁRIO: enquanto os campos aqui listados estiverem nesta lista, o
+// que a pessoa escrever nesses campos específicos fica visível no ecrã
+// durante a sessão mas NÃO é guardado a sério na base de dados — ao
+// recarregar a página ou noutro posto de trabalho, esse valor desaparece.
+// Assim que a coluna correspondente for criada no Supabase (ver SQL nas
+// notas do projeto), basta remover o nome da lista abaixo para o campo
+// passar a gravar-se normalmente, sem mais nenhuma alteração de código.
+const CAMPOS_SEM_COLUNA_SUPABASE = {
+  entregas: ['docReserva', 'enderecoEmpresaParceiraId'],
+};
+function removerCamposSemColuna(listKey, record) {
+  const excluir = CAMPOS_SEM_COLUNA_SUPABASE[listKey];
+  if (!excluir || !excluir.length || !record) return record;
+  const out = Object.assign({}, record);
+  excluir.forEach(k => { delete out[k]; });
+  return out;
+}
 async function dbInsert(listKey, record) {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível (verifique se o CDN do Supabase carregou).'; return null; }
   try {
-    const { data, error } = await sb.from(TABLES[listKey]).insert(recordToRow(record)).select().single();
+    const { data, error } = await sb.from(TABLES[listKey]).insert(recordToRow(removerCamposSemColuna(listKey, record))).select().single();
     if (error) { if (erroDeRede(error)) marcarConexao(false); lastDbError = error.message; console.error(`[Supabase] erro ao inserir em ${listKey}:`, error.message); return null; }
     marcarConexao(true);
-    return rowToRecord(data);
+    // Os campos filtrados acima (sem coluna ainda) não vêm na resposta do
+    // servidor — repõem-se aqui a partir do que a pessoa escreveu no
+    // formulário, só para a sessão atual continuar a mostrá-los (impressão
+    // imediata, etc.); não sobrevivem a um refresh, como já assinalado acima.
+    const criado = rowToRecord(data);
+    const excluidos = CAMPOS_SEM_COLUNA_SUPABASE[listKey];
+    if (excluidos) excluidos.forEach(k => { if (record[k] !== undefined) criado[k] = record[k]; });
+    return criado;
   } catch (e) { if (erroDeRede(e)) marcarConexao(false); lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error(`[Supabase] erro de rede ao inserir em ${listKey}:`, formatarErroSeguro(e)); return null; }
 }
 /* =================================================================
@@ -4303,7 +4331,7 @@ async function dbUpdate(listKey, id, patch) {
   // exatamente como sempre foi — sem qualquer risco de partir um update.
   const usaLockOtimista = !!(atual && atual.updatedAt);
   try {
-    let query = sb.from(TABLES[listKey]).update(recordToRow(patchFinal)).eq('id', id);
+    let query = sb.from(TABLES[listKey]).update(recordToRow(removerCamposSemColuna(listKey, patchFinal))).eq('id', id);
     if (usaLockOtimista) query = query.eq('updated_at', atual.updatedAt);
     const { data, error } = await query.select().single();
     if (error) {
@@ -4333,7 +4361,10 @@ async function dbUpdate(listKey, id, patch) {
       lastDbError = error.message; console.error(`[Supabase] erro ao atualizar ${listKey}#${id}:`, error.message); return null;
     }
     marcarConexao(true);
-    return rowToRecord(data);
+    const atualizado = rowToRecord(data);
+    const excluidos = CAMPOS_SEM_COLUNA_SUPABASE[listKey];
+    if (excluidos) excluidos.forEach(k => { if (patchFinal[k] !== undefined) atualizado[k] = patchFinal[k]; else if (atual && atual[k] !== undefined) atualizado[k] = atual[k]; });
+    return atualizado;
   } catch (e) {
     if (erroDeRede(e)) {
       marcarConexao(false);
