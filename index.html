@@ -5066,9 +5066,9 @@ function getRequiredFieldNames(schema) {
   if (fieldNames.includes('info')) return ['info'];
   if (fieldNames.includes('qtdFisica')) return ['data', 'produto'];
   // Empresas Parceiras (identificado pela presença de morada+localidade,
-  // exclusiva deste schema): só o Nome da Empresa é obrigatório — Morada,
+  // exclusiva deste schema): Nome da Empresa e Morada são obrigatórios —
   // Localidade e Contacto ficam ao critério de quem faz o registo.
-  if (fieldNames.includes('morada') && fieldNames.includes('localidade')) return ['nome'];
+  if (fieldNames.includes('morada') && fieldNames.includes('localidade')) return ['nome', 'morada'];
   const itemFieldName = fieldNames.includes('manipulado') ? 'manipulado' : 'produto';
   return ['data', 'nome', 'contacto', 'numCliente', itemFieldName];
 }
@@ -5099,10 +5099,10 @@ function buildRequiredMessage(missing, schema) {
   const fieldNames = schema.map(f => f.name);
   if (fieldNames.includes('info')) return 'Por favor, preencha a Informação do lembrete.';
   if (fieldNames.includes('qtdFisica')) return 'Por favor, preencha os campos obrigatórios do erro de stock (Data e Produto).';
-  // Empresas Parceiras: única mensagem possível, já que só o Nome é
-  // obrigatório neste formulário — nunca a frase genérica de Entregas
-  // (Data/Nº Ficha/Produto não existem sequer neste módulo).
-  if (fieldNames.includes('morada') && fieldNames.includes('localidade')) return 'Por favor, preencha o Nome da Empresa.';
+  // Empresas Parceiras: mensagem dedicada, já que Nome e Morada são os
+  // únicos obrigatórios neste formulário — nunca a frase genérica de
+  // Entregas (Data/Nº Ficha/Produto não existem sequer neste módulo).
+  if (fieldNames.includes('morada') && fieldNames.includes('localidade')) return 'Por favor, preencha o Nome da Empresa e a Morada — são campos obrigatórios.';
   // "Produto" adapta-se dinamicamente ao separador ativo: em Manipulados
   // chama-se "Manipulado", nos restantes (Ortopedia, Ervanária, Veterinária,
   // Outros Fornecedores) chama-se "Produto" — usa sempre o rótulo real do
@@ -13742,14 +13742,14 @@ function buildMapaTarefasPage(container, goTo) {
   rerender();
 }
 
-// ---- Empresas Parceiras: cadastro simples e limpo, ISOLADO por farmácia —
+// ---- Empresas Parceiras: registo simples e limpo, ISOLADO por farmácia —
 // cada empresa fica associada à farmácia em que foi criada (campo
 // `farmacia`, "Juncal" ou "Boa Nova", igual ao já usado em `entregas`); a
 // listagem e o autocomplete do formulário de Entregas só mostram as
 // empresas da farmácia ativa. Não é um "pedido" com estado, por isso NUNCA
 // usa os badges Pendentes/Em Orçamento/Por Levantar/Resolvidos do
 // buildCategoryPage genérico; tem a sua própria página dedicada. ----
-// Modal rápido de "➕ Cadastrar Nova Empresa" — usado a partir do formulário
+// Modal rápido de "➕ Registar Nova Empresa" — usado a partir do formulário
 // de Entregas (morada emprestada de uma Empresa Parceira) para nunca
 // obrigar a sair do formulário e perder o que já lá estava preenchido.
 // Reaproveita o mesmo schema/validação/insert da página de Empresas
@@ -13768,7 +13768,7 @@ function abrirModalNovaEmpresaParceiraRapida(farmaciaAtiva, onCriada) {
   function rerenderPanel() {
     clear(panel);
     panel.appendChild(h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;' }, [
-      h('p', { class: 'modal-title', style: 'margin:0;' }, `➕ Cadastrar Nova Empresa Parceira (${farmaciaAtiva})`),
+      h('p', { class: 'modal-title', style: 'margin:0;' }, `➕ Registar Nova Empresa Parceira (${farmaciaAtiva})`),
       h('button', { class: 'close-btn', onclick: fechar, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
     ]));
     panel.appendChild(buildRecordForm(empresaParceiraSchema, draft, {
@@ -13834,8 +13834,15 @@ function buildEmpresasParceirasPage(container, goTo, farmaciaAtiva) {
     rerender();
   }
   function removeEmpresa(r) {
+    // A tabela empresas_parceiras não tem coluna de soft delete
+    // (data_eliminacao) — ao contrário da maioria das tabelas da app, a
+    // eliminação aqui é sempre definitiva (bulkHardDelete/DELETE direto).
+    if (!isMasterUser()) {
+      showToast('Apenas Administrador ou Master podem eliminar empresas parceiras.', 'error');
+      return;
+    }
     confirmDialog(`Tem a certeza de que quer eliminar "${r.nome}"? Esta ação não pode ser desfeita.`, async () => {
-      const apagados = await bulkSoftDelete('empresasParceiras', [r.id]);
+      const apagados = await bulkHardDelete('empresasParceiras', [r.id]);
       STATE.empresasParceiras = records().filter(x => !apagados.has(x.id));
       rerender();
     }, { danger: true, confirmLabel: 'Eliminar' });
@@ -13868,8 +13875,13 @@ function buildEmpresasParceirasPage(container, goTo, farmaciaAtiva) {
       const tbody = h('tbody', {}, filtradas.map(r => {
         const editBtn = h('button', { class: 'btn-fab-sm tone-blue', title: 'Editar', 'aria-label': 'Editar' }, Icon('pencil', { size: 13, strokeWidth: 2.2 }));
         editBtn.addEventListener('click', () => requireAuth(() => openEdit(r)));
-        const delBtn = h('button', { class: 'btn-fab-sm tone-red', title: 'Eliminar', 'aria-label': 'Eliminar' }, Icon('trash', { size: 13, strokeWidth: 2.2 }));
-        delBtn.addEventListener('click', () => requireAuth(() => removeEmpresa(r)));
+        const podeEliminar = isMasterUser();
+        const delBtn = h('button', {
+          class: 'btn-fab-sm tone-red', title: podeEliminar ? 'Eliminar' : 'Só Administrador ou Master podem eliminar empresas parceiras',
+          'aria-label': 'Eliminar', disabled: podeEliminar ? undefined : 'disabled',
+          style: podeEliminar ? undefined : 'opacity:.4;cursor:not-allowed;',
+        }, Icon('trash', { size: 13, strokeWidth: 2.2 }));
+        if (podeEliminar) delBtn.addEventListener('click', () => requireAuth(() => removeEmpresa(r)));
         return h('tr', {}, [
           h('td', { class: 'cell-strong' }, r.nome || '—'),
           h('td', {}, r.morada || '—'),
@@ -14119,7 +14131,7 @@ function buildEntregasPage(container, goTo) {
       if (emp) { draft.morada = emp.morada || ''; draft.localidade = emp.localidade || ''; }
       rerender();
     });
-    const novaBtn = h('button', { type: 'button', class: 'btn-fab-sm tone-green', title: 'Cadastrar Nova Empresa', 'aria-label': 'Cadastrar Nova Empresa' }, Icon('plus', { size: 13, strokeWidth: 2.4 }));
+    const novaBtn = h('button', { type: 'button', class: 'btn-fab-sm tone-green', title: 'Registar Nova Empresa', 'aria-label': 'Registar Nova Empresa' }, Icon('plus', { size: 13, strokeWidth: 2.4 }));
     novaBtn.addEventListener('click', () => requireAuth(() => abrirModalNovaEmpresaParceiraRapida(farmaciaAtiva, (criada) => {
       STATE.empresasParceiras = [criada, ...(STATE.empresasParceiras || [])];
       draft.enderecoEmpresaParceiraId = String(criada.id);
@@ -15585,8 +15597,11 @@ function renderInterno() {
 
   // Rede de segurança: um Estafeta só pode estar na Página Inicial (restrita,
   // com apenas o botão de Entregas) ou no próprio ecrã de Entregas — qualquer
-  // outra página é bloqueada e devolve-o imediatamente a Entregas.
-  if (isEstafeta() && STATE.page !== 'entregas' && STATE.page !== 'home') {
+  // outra página é bloqueada e devolve-o imediatamente a Entregas. Exceção:
+  // Gestão de Empresas Parceiras — qualquer perfil pode adicionar/editar
+  // empresas parceiras (só a eliminação fica restrita a Administrador/Master,
+  // controlado à parte dentro da própria página).
+  if (isEstafeta() && STATE.page !== 'entregas' && STATE.page !== 'home' && STATE.page !== 'gestao-empresas-parceiras') {
     STATE.page = 'entregas';
   }
   // Mesma lógica para o Prestador de Serviço: só a Página Inicial (restrita)
