@@ -4223,10 +4223,7 @@ async function dbPermanentDelete(listKey, id) {
 // realmente importa gravar é enderecoEmpresaParceiraId (esse sim, uma
 // coluna real); ao reabrir para editar, o checkbox é reconstruído a partir
 // desse valor (ver openEdit/openEditSelected), nunca precisa de vir do
-// servidor. Sempre que um "Could not find the '...' column" apontar para um
-// campo que é claramente um estado do formulário (não um dado do negócio em
-// si), o padrão é este: acrescentar aqui, nunca inventar uma coluna nova só
-// para uma flag.
+// servidor.
 const CAMPOS_SO_UI_POR_TABELA = {
   entregas: ['entregaEmpresaParceira'],
 };
@@ -4237,10 +4234,59 @@ function limparCamposSoUI(listKey, record) {
   remover.forEach(k => { delete out[k]; });
   return out;
 }
+/* -----------------------------------------------------------------------
+   SOLUÇÃO ESTRUTURAL para "Could not find the 'X' column of 'Y' in the
+   schema cache": em vez de continuar a caçar campos em falta um a um à mão
+   (o que já falhou 4 vezes seguidas, sempre num campo diferente), a app
+   passa a APRENDER sozinha, table a table, QUALQUER campo que o Supabase
+   diga não existir — na primeira vez que isso acontece, tenta de novo
+   automaticamente sem esse campo, na mesma chamada, e nunca mais volta a
+   enviá-lo enquanto a página estiver aberta. O utilizador deixa de ver
+   este erro, mesmo para colunas que ainda nem sabemos que faltam.
+   Isto substitui a necessidade de manter uma allow-list escrita à mão
+   (frágil — bastava esquecer um campo para voltar a partir): a única
+   fonte de verdade sobre "que colunas existem mesmo" passa a ser o
+   próprio Supabase, perguntado em tempo real.
+----------------------------------------------------------------------- */
+const CAMPOS_APRENDIDOS_EM_FALTA = {}; // { listKey: Set('coluna_snake_case', ...) }
+// A mensagem do PostgREST é sempre "Could not find the 'coluna' column of
+// 'tabela' in the schema cache" — extrai só o nome da coluna (já em
+// snake_case, tal como o Supabase o reporta).
+function extrairColunaEmFalta(mensagemErro) {
+  const m = /Could not find the '([^']+)' column/i.exec(String(mensagemErro || ''));
+  return m ? m[1] : null;
+}
+function removerColunasAprendidas(listKey, row) {
+  const set = CAMPOS_APRENDIDOS_EM_FALTA[listKey];
+  if (!set || !set.size || !row) return row;
+  const out = Object.assign({}, row);
+  set.forEach(col => { delete out[col]; });
+  return out;
+}
+// Executa fn() (uma chamada Supabase que devolve {data,error}) e, sempre
+// que o erro for "coluna em falta", aprende essa coluna, remove-a do row e
+// tenta outra vez — até um máximo de tentativas generoso (cobre vários
+// campos em falta ao mesmo tempo, não só um).
+async function comAutoLimpezaDeColunas(listKey, row, fn) {
+  let tentativas = 0;
+  let rowAtual = removerColunasAprendidas(listKey, row);
+  while (true) {
+    const resultado = await fn(rowAtual);
+    const coluna = resultado.error ? extrairColunaEmFalta(resultado.error.message) : null;
+    if (!coluna || tentativas >= 8) return resultado;
+    const set = CAMPOS_APRENDIDOS_EM_FALTA[listKey] || (CAMPOS_APRENDIDOS_EM_FALTA[listKey] = new Set());
+    set.add(coluna);
+    console.warn(`[Supabase] coluna "${coluna}" não existe em "${TABLES[listKey] || listKey}" — removida automaticamente e a tentar de novo.`);
+    rowAtual = removerColunasAprendidas(listKey, row);
+    tentativas += 1;
+  }
+}
 async function dbInsert(listKey, record) {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível (verifique se o CDN do Supabase carregou).'; return null; }
   try {
-    const { data, error } = await sb.from(TABLES[listKey]).insert(recordToRow(limparCamposSoUI(listKey, record))).select().single();
+    const rowBase = recordToRow(limparCamposSoUI(listKey, record));
+    const { data, error } = await comAutoLimpezaDeColunas(listKey, rowBase,
+      (row) => sb.from(TABLES[listKey]).insert(row).select().single());
     if (error) { if (erroDeRede(error)) marcarConexao(false); lastDbError = error.message; console.error(`[Supabase] erro ao inserir em ${listKey}:`, error.message); return null; }
     marcarConexao(true);
     return rowToRecord(data);
@@ -4326,9 +4372,12 @@ async function dbUpdate(listKey, id, patch) {
   // exatamente como sempre foi — sem qualquer risco de partir um update.
   const usaLockOtimista = !!(atual && atual.updatedAt);
   try {
-    let query = sb.from(TABLES[listKey]).update(recordToRow(limparCamposSoUI(listKey, patchFinal))).eq('id', id);
-    if (usaLockOtimista) query = query.eq('updated_at', atual.updatedAt);
-    const { data, error } = await query.select().single();
+    const rowBase = recordToRow(limparCamposSoUI(listKey, patchFinal));
+    const { data, error } = await comAutoLimpezaDeColunas(listKey, rowBase, (row) => {
+      let query = sb.from(TABLES[listKey]).update(row).eq('id', id);
+      if (usaLockOtimista) query = query.eq('updated_at', atual.updatedAt);
+      return query.select().single();
+    });
     if (error) {
       if (erroDeRede(error)) {
         marcarConexao(false);
