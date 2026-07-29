@@ -2003,7 +2003,7 @@ const manipuladosSchema = [
   { name: 'pvp', label: 'PVP (€)', type: 'number', size: 'xs' },
   { name: 'manipulado', label: 'Manipulado', type: 'text', col: 2 },
   { name: 'estado', label: 'Estado', type: 'select', options: ESTADOS, size: 'sm' },
-  { name: 'rota', label: 'Rota', type: 'checkbox', help: 'Colocar na Rota apenas quando a farmácia fornecedora de manipulados (ex: Clérigos, Serpa Pinto ou outra) avisar por e-mail/contacto que o manipulado está pronto para levantamento. Nota: os manipulados da Guarani são entregues diretamente pela Alliance Healthcare, não necessitando de rota.' },
+  { name: 'rota', label: 'Rota', type: 'checkbox', help: 'Quando a farmácia enviar email a informar que o manipulado está pronto para recolha, colocar a informação no ficheiro excel das rotas.' },
   { name: 'aviso', label: 'Aviso ao cliente', type: 'checkbox' },
   { name: 'obs', label: 'Observações', type: 'textarea', col: 2, maxLength: 200 },
 ];
@@ -4666,9 +4666,14 @@ function perfilSemAcessoAoChat() {
   return !!activeUser && (isEstafeta() || isPrestadorServico() || isBoaNovaOperador());
 }
 // Contagem usada por TODOS os indicadores (badge do ícone, título da aba,
-// botão Chat, cartão "Retomar Sessão"): zero para perfis excluídos, contagem
-// real para os restantes — incluindo o modo de consulta sem sessão.
+// botão Chat, "Chat pendente" no botão de login): zero para perfis
+// excluídos E para o Modo Sem Sessão Iniciada — nenhum badge acumulado
+// aparece sem sessão ativa. A notificação/push em tempo real de uma
+// mensagem nova continua a disparar sempre (ver handleNovaMensagemChat),
+// já que não depende desta contagem — só o número acumulado é que fica
+// escondido até haver login.
 function contagemChatParaIndicadores() {
+  if (!activeUser) return 0;
   return perfilSemAcessoAoChat() ? 0 : chatUnreadCount();
 }
 /* ---- Badging API + Notificações nativas do sistema, para o Chat avisar
@@ -6090,6 +6095,18 @@ function buildRecordTable(schema, records, selectedIds, onToggleSelect, listKey,
     return EmptyState('Sem registos para mostrar. Adiciona o primeiro pedido pela barra de ações abaixo.');
   }
   const cols = schema.filter(f => !TABLE_HIDE.has(f.name));
+  // Reordenação SÓ da tabela — nunca do array `schema` em si, que continua a
+  // controlar a ordem dos campos no formulário de Novo/Editar Registo. O
+  // Estado passa para logo a seguir ao Nome do Utente/Cliente, para ficar
+  // visível sem scroll horizontal e permitir a alteração rápida do estado
+  // junto da identificação do utente/cliente — pedido para todas as
+  // categorias de Pedidos (Manipulados, Ortopedia, Ervanária, Veterinária,
+  // Outros Fornecedores), já que todas partilham esta mesma função de tabela.
+  const estadoIdx = cols.findIndex(f => f.name === 'estado');
+  if (estadoIdx > 1) {
+    const [estadoCol] = cols.splice(estadoIdx, 1);
+    cols.splice(1, 0, estadoCol);
+  }
   // Só a Ortopedia tem Tipo/Cor/Biqueira/Fornecedor a dobrar numa coluna
   // "Características" — "fornecedor" existe também noutras categorias
   // (ex: "Farmácia" em Manipulados) com um papel central, por isso esta
@@ -16442,14 +16459,14 @@ function buildUserBadgeElement() {
     ]);
   }
   // Modo Sem Sessão Iniciada (estilo Digital Care): o badge nunca revela o
-  // utilizador anterior — apenas convida a iniciar sessão — e mostra um
-  // indicador discreto (ponto) quando há mensagens de chat por ler.
+  // utilizador anterior — apenas convida a iniciar sessão. Sem nenhum
+  // indicador de chat pendente aqui: os badges/contadores acumulados só
+  // aparecem depois de sessão iniciada (a notificação/push em tempo real de
+  // uma mensagem nova continua a disparar à mesma, ver handleNovaMensagemChat).
   const kidsInativo = [
     h('p', { class: 'active-user-name' }, 'Iniciar Sessão'),
     h('p', { class: 'active-user-role' }, 'Modo Sem Sessão'),
   ];
-  const temChatPendente = contagemChatParaIndicadores() > 0;
-  if (temChatPendente) kidsInativo.push(h('p', { class: 'active-user-perfil', style: 'color:var(--red);display:flex;align-items:center;gap:5px;' }, [h('span', { style: 'width:7px;height:7px;border-radius:50%;background:var(--red);display:inline-block;' }), 'Chat pendente']));
   return h('button', { class: 'active-user-badge inactive', onclick: () => { pedirPermissaoNotificacoes(); requireAuth(() => { if (STATE.page === 'home') render(); }); }, title: 'Iniciar sessão', 'aria-label': 'Iniciar sessão' }, [
     h('span', { class: 'active-user-icon' }, Icon('lockClosed', { size: 26, strokeWidth: 2 })),
     h('div', {}, kidsInativo),
