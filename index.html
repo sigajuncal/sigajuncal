@@ -1649,6 +1649,9 @@
   .login-bio-btn{margin-bottom:4px;border-color:var(--pharm-300) !important;font-weight:700;}
   .login-bio-divisor{font-size:11px;color:var(--pharm-400);text-transform:uppercase;letter-spacing:.08em;
     margin:2px 0 12px;}
+  .login-bio-remover{display:block;width:100%;margin-top:10px;background:none;border:none;
+    color:var(--pharm-400);font-size:11px;font-family:inherit;cursor:pointer;text-decoration:underline;}
+  .login-bio-remover:hover{color:var(--pharm-600);}
   .btn-text-reset{display:block;width:100%;margin-top:12px;background:none;border:none;
     color:var(--pharm-400);font-size:11px;font-family:inherit;cursor:pointer;text-decoration:underline;}
   .btn-text-reset:hover{color:var(--pharm-600);}
@@ -16494,6 +16497,24 @@ const WEBAUTHN_KEY = 'sigajuncal_webauthn_credencial';
 function webauthnSuportado() {
   return !!(window.PublicKeyCredential && navigator.credentials && navigator.credentials.create && navigator.credentials.get);
 }
+// Deteção de telemóvel/tablet (iOS/Android) — o CONVITE automático de
+// biometria só faz sentido nestes aparelhos (Face ID/Touch ID/impressão
+// digital são o método natural de desbloqueio); em computador Desktop ou
+// portátil (macOS/Windows), mesmo que o hardware tenha leitor biométrico
+// (ex: Touch ID de MacBook, Windows Hello), o convite NUNCA aparece — só
+// o Username+PIN. Combina User Agent (mais fiável para distinguir iPad de
+// MacBook, já que ambos têm suporte a touch) com um teste de largura de
+// ecrã como rede de segurança adicional.
+function ehDispositivoMobileOuTablet() {
+  const ua = navigator.userAgent || '';
+  const ehIOS = /iPhone|iPad|iPod/.test(ua) || (ua.includes('Macintosh') && navigator.maxTouchPoints > 1); // iPadOS finge ser "Macintosh"
+  const ehAndroid = /Android/.test(ua);
+  if (ehIOS || ehAndroid) return true;
+  // Rede de segurança: outro UA móvel genérico + ecrã estreito com touch.
+  const uaMovelGenerico = /Mobi|Tablet/i.test(ua);
+  const ecraEstreitoComTouch = navigator.maxTouchPoints > 0 && window.innerWidth <= 1024;
+  return uaMovelGenerico || ecraEstreitoComTouch;
+}
 function base64urlParaBytes(b64url) {
   const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(b64url.length / 4) * 4, '=');
   const bin = atob(b64);
@@ -16609,10 +16630,11 @@ function showUserLoginScreen(onSuccess) {
   const errorMsg = h('p', { class: 'login-error' }, '');
 
   // Depois de um login normal bem-sucedido, oferece ativar a biometria
-  // neste dispositivo — só quando há mesmo um sensor disponível E ainda
-  // não há nenhuma passkey guardada aqui.
+  // neste dispositivo — só quando há mesmo um sensor disponível, ainda não
+  // há nenhuma passkey guardada aqui, E o aparelho é um telemóvel/tablet
+  // (nunca em Desktop/Laptop, mesmo que tenha leitor biométrico próprio).
   async function ofereceAtivarBiometriaSeAplicavel(user) {
-    if (!webauthnSuportado() || getCredencialBiometrica()) return;
+    if (!ehDispositivoMobileOuTablet() || !webauthnSuportado() || getCredencialBiometrica()) return;
     let disponivel = false;
     try { disponivel = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable(); } catch (e) { disponivel = false; }
     if (!disponivel) return;
@@ -16676,10 +16698,25 @@ function showUserLoginScreen(onSuccess) {
   ];
   // Botão de biometria só aparece quando este dispositivo já tem uma
   // passkey registada — nunca antes da primeira ativação.
+  let removerBioBtn = null;
   if (webauthnSuportado() && getCredencialBiometrica()) {
     const bioBtn = h('button', { class: 'btn btn-secondary login-bio-btn', type: 'button', onclick: tryLoginBiometrico }, '🔓 Entrar com Biometria / Face ID');
     panelKids.push(bioBtn);
     panelKids.push(h('p', { class: 'login-bio-divisor' }, 'ou'));
+    // Remover/Desativar a passkey deste dispositivo — só apaga o que está
+    // guardado localmente (localStorage); a conta em si não é afetada, e
+    // pode voltar a ativar-se do zero a qualquer momento depois de um login
+    // normal. Discreto de propósito (link de texto, não um botão principal).
+    removerBioBtn = h('button', { type: 'button', class: 'login-bio-remover' }, 'Remover Biometria deste dispositivo');
+    removerBioBtn.addEventListener('click', () => {
+      confirmDialog('Remover a biometria/passkey guardada neste dispositivo? Pode voltar a ativá-la a qualquer momento, depois de um login normal.', () => {
+        limparCredencialBiometrica();
+        bioBtn.remove();
+        panel.querySelectorAll('.login-bio-divisor').forEach(el => el.remove());
+        removerBioBtn.remove();
+        showToast('Biometria removida deste dispositivo.', 'success');
+      }, { confirmLabel: 'Remover' });
+    });
   }
   panelKids.push(
     h('div', { class: 'login-field' }, [userInput]),
@@ -16688,10 +16725,21 @@ function showUserLoginScreen(onSuccess) {
     enterBtn,
     cancelBtn,
   );
+  if (removerBioBtn) panelKids.push(removerBioBtn);
   const panel = h('div', { class: 'login-panel modal-panel-compact' }, panelKids);
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
-  setTimeout(() => userInput.focus(), 60);
+  // Em mobile/tablet com biometria já registada neste dispositivo, dispara
+  // logo o prompt nativo (Face ID/Touch ID/impressão digital) ao abrir o
+  // modal — sem precisar de tocar em nenhum botão. O Username+PIN ficam
+  // sempre visíveis por baixo, como alternativa imediata: se a biometria
+  // falhar, for cancelada, ou o aparelho não tiver nada registado, a pessoa
+  // simplesmente preenche à mão sem qualquer passo extra.
+  if (ehDispositivoMobileOuTablet() && webauthnSuportado() && getCredencialBiometrica()) {
+    setTimeout(() => { tryLoginBiometrico(); }, 400);
+  } else {
+    setTimeout(() => userInput.focus(), 60);
+  }
 }
 
 /* ---- Modo de Teste do Administrador: pausa o bloqueio automático de 30s
