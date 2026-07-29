@@ -1501,6 +1501,7 @@
   .lembrete-urgente-row{display:flex;align-items:center;gap:10px;background:var(--red-bg);
     border:1px solid var(--red-bd);border-radius:10px;padding:10px 12px;}
   .welcome-sub{font-size:13.5px;color:var(--pharm-500);margin-top:5px;}
+  .dados-atualizados-indicador{font-size:11px;color:var(--pharm-400);margin:3px 0 0;}
 
   /* Search bar */
   .search-row{display:flex;flex-direction:column;gap:10px;}
@@ -1645,6 +1646,9 @@
   .login-input-masked{-webkit-text-security:disc;-moz-text-security:disc;text-security:disc;letter-spacing:.25em;}
   .login-error{color:var(--red);font-size:12px;font-weight:600;min-height:16px;margin:0 0 12px;}
   .login-panel .btn{width:100%;justify-content:center;}
+  .login-bio-btn{margin-bottom:4px;border-color:var(--pharm-300) !important;font-weight:700;}
+  .login-bio-divisor{font-size:11px;color:var(--pharm-400);text-transform:uppercase;letter-spacing:.08em;
+    margin:2px 0 12px;}
   .btn-text-reset{display:block;width:100%;margin-top:12px;background:none;border:none;
     color:var(--pharm-400);font-size:11px;font-family:inherit;cursor:pointer;text-decoration:underline;}
   .btn-text-reset:hover{color:var(--pharm-600);}
@@ -5126,6 +5130,39 @@ function debounce(fn, wait) {
     timer = setTimeout(() => fn.apply(this, args), wait);
   };
 }
+/* -----------------------------------------------------------------------
+   RASCUNHOS EM LOCALSTORAGE — salvaguarda contra perda de dados em
+   formulários-chave (Entregas, composição de Recados/Tarefas na Gaveta).
+   Se a sessão expirar por inatividade ou o separador fechar sem querer a
+   meio do preenchimento, o rascunho fica à espera para ser restaurado
+   automaticamente da próxima vez que o mesmo formulário for aberto —
+   nunca sobrevive a uma submissão bem-sucedida (limparRascunhoLocal).
+----------------------------------------------------------------------- */
+function salvarRascunhoLocal(chave, dados) {
+  try { window.localStorage.setItem('sigajuncal_rascunho_' + chave, JSON.stringify({ dados, em: Date.now() })); } catch (e) { /* localStorage indisponível — sem rede de segurança, mas nunca bloqueia o formulário */ }
+}
+function lerRascunhoLocal(chave) {
+  try {
+    const bruto = window.localStorage.getItem('sigajuncal_rascunho_' + chave);
+    if (!bruto) return null;
+    const obj = JSON.parse(bruto);
+    // Rascunhos com mais de 24h já não são restaurados sozinhos — mais
+    // provável serem lixo esquecido do que algo que a pessoa ainda queira.
+    if (!obj || !obj.dados || (Date.now() - (obj.em || 0)) > 24 * 60 * 60 * 1000) return null;
+    return obj.dados;
+  } catch (e) { return null; }
+}
+function limparRascunhoLocal(chave) {
+  try { window.localStorage.removeItem('sigajuncal_rascunho_' + chave); } catch (e) { /* ignora */ }
+}
+// Considera "vazio" um rascunho de Entregas cujos únicos campos preenchidos
+// são os automáticos (farmácia, data, registadoPor) — não vale a pena
+// avisar/restaurar um rascunho que na prática ninguém escreveu.
+function rascunhoEntregaTemConteudo(d) {
+  if (!d) return false;
+  const camposIgnorar = new Set(['farmacia', 'dataEntrega', 'registadoPor', 'tipoDestinatario', 'estadoEntrega', 'entregaEmpresaParceira', 'empresaParceiraId', 'enderecoEmpresaParceiraId']);
+  return Object.keys(d).some(k => !camposIgnorar.has(k) && d[k] !== '' && d[k] !== false && d[k] != null);
+}
 function pad2(n) { return String(n).padStart(2, '0'); }
 // Converte um hex ("#60a5fa") para "rgba(r,g,b,alpha)" — usado na badge de
 // cor da Agenda (fundo suave translúcido sobre a cor forte do prestador).
@@ -7352,13 +7389,13 @@ function abrirModalGaveta() {
     }, { danger: true, confirmLabel: 'Eliminar' });
   }
   function abrirThread(outroId) {
-    threadComId = outroId; view = 'thread'; composerTexto = ''; composerError = ''; tipoEnvio = 'mensagem'; searchQuery = '';
+    threadComId = outroId; view = 'thread'; composerTexto = lerRascunhoLocal(`gaveta_composer_${activeUser.id}_${outroId}`) || ''; composerError = ''; tipoEnvio = 'mensagem'; searchQuery = '';
     render();
     if (outroId !== 'EQUIPA' && outroId !== 'MULTI') marcarMensagensLidas(outroId);
   }
   function abrirComposerMulti() {
     if (!multiSelecionados.size) return;
-    threadComId = 'MULTI'; view = 'thread'; composerTexto = ''; composerError = ''; tipoEnvio = 'mensagem'; searchQuery = '';
+    threadComId = 'MULTI'; view = 'thread'; composerTexto = lerRascunhoLocal(`gaveta_composer_${activeUser.id}_MULTI`) || ''; composerError = ''; tipoEnvio = 'mensagem'; searchQuery = '';
     render();
   }
   async function enviarComposer() {
@@ -7382,6 +7419,7 @@ function abrirModalGaveta() {
     const criados = resultados.filter(Boolean);
     if (criados.length) STATE.gavetaRecados = [...criados, ...STATE.gavetaRecados];
     if (criados.length === destinatarios.length) {
+      limparRascunhoLocal(`gaveta_composer_${activeUser.id}_${threadComId}`);
       composerTexto = '';
       if (threadComId === 'EQUIPA' || threadComId === 'MULTI') { view = 'lista'; threadComId = null; multiSelecionados = new Map(); }
     } else {
@@ -7523,8 +7561,11 @@ function abrirModalGaveta() {
 
     const composerInput = h('textarea', { class: 'textarea', placeholder: tipoEnvio === 'tarefa' ? 'Descrever a tarefa/pedido...' : 'Escrever uma mensagem...', maxlength: '500', rows: '2' });
     composerInput.value = composerTexto;
-    composerInput.addEventListener('input', () => { composerTexto = composerInput.value; });
-    const enviarBtn = h('button', { class: 'btn btn-primary', onclick: composerSaving ? null : enviarComposer, disabled: composerSaving ? 'disabled' : undefined },
+    const guardarRascunhoComposerDebounced = debounce(() => {
+      if (activeUser) salvarRascunhoLocal(`gaveta_composer_${activeUser.id}_${threadComId}`, composerTexto);
+    }, 400);
+    composerInput.addEventListener('input', () => { composerTexto = composerInput.value; guardarRascunhoComposerDebounced(); });
+    const enviarBtn = h('button', { class: 'btn btn-primary', onclick: composerSaving ? null : () => requireAuth(enviarComposer), disabled: composerSaving ? 'disabled' : undefined },
       composerSaving ? 'A enviar…' : (tipoEnvio === 'tarefa' ? 'Enviar Tarefa' : 'Enviar Mensagem'));
 
     return h('div', {}, [
@@ -7610,6 +7651,23 @@ function abrirModalGaveta() {
   document.body.appendChild(overlay);
   render();
 }
+// Indicador discreto de frescura dos dados — "• Atualizado agora mesmo" /
+// "• Atualizado há 5 min" — junto à saudação da Página Inicial. O texto do
+// próprio elemento é atualizado sozinho a cada 30s (ver setInterval no
+// arranque), sem precisar de voltar a desenhar o resto do Dashboard.
+function textoDadosAtualizados() {
+  if (!STATE.ultimaAtualizacaoEm) return '';
+  const segundos = Math.floor((Date.now() - new Date(STATE.ultimaAtualizacaoEm).getTime()) / 1000);
+  if (segundos < 45) return '• Atualizado agora mesmo';
+  const minutos = Math.floor(segundos / 60);
+  if (minutos < 60) return `• Atualizado há ${minutos} min`;
+  const horas = Math.floor(minutos / 60);
+  return `• Atualizado há ${horas}h`;
+}
+function atualizarIndicadorDadosAtualizados() {
+  const el = document.getElementById('dados-atualizados-indicador');
+  if (el) el.textContent = textoDadosAtualizados();
+}
 function buildHomepage(container, goTo) {
   clear(container);
 
@@ -7687,6 +7745,7 @@ function buildHomepage(container, goTo) {
         gavetaBtn,
       ]),
       h('p', { class: 'welcome-sub' }, 'O teu espaço central de trabalho e gestão na Farmácia Juncal.'),
+      h('p', { class: 'dados-atualizados-indicador', id: 'dados-atualizados-indicador' }, textoDadosAtualizados()),
     ]),
     presencaBadgeHome,
   ]));
@@ -8715,14 +8774,16 @@ function buildErrosPage(container, goTo) {
       // (cabeçalhos a repetir a meio da folha 1, texto sobreposto). Corrigido
       // para height:287mm — medida FÍSICA e absoluta, que nunca varia
       // consoante o motor de renderização.
-      const PRIMEIRA_PAGINA_LINHAS = 41; // menos linhas: compensa o espaço do título/legenda
-      // Nota: as páginas seguintes já estavam perto do limite físico da
-      // folha (45 linhas × 23px = 1035px, contra um orçamento de ~1085px
-      // em 287mm — só ~50px de folga). Subir direto para 50 ultrapassaria
-      // esse limite em ~65px e voltaria a cortar linhas. Ficou em 46 (o
-      // máximo com folga de segurança real, ~27px) — ver explicação
-      // completa na resposta ao pedido.
-      const RESTANTES_PAGINAS_LINHAS = 46;
+      // Orçamento de altura recalculado para a margem REAL de 10mm topo+
+      // fundo introduzida agora (287mm − 20mm = 267mm ≈ 1009px, contra os
+      // ~1085px de antes, que tratavam a folha inteira como útil porque a
+      // margem nunca era descontada a sério). Números por baixo do teto
+      // teórico (~1 linha de folga), para nunca voltar a cortar conteúdo —
+      // por não ser possível confirmar por impressão real neste ambiente,
+      // vale a pena confirmar com um teste real e ajustar ainda mais se
+      // sobrar muito espaço em branco.
+      const PRIMEIRA_PAGINA_LINHAS = 36; // menos linhas: compensa o espaço do título/legenda
+      const RESTANTES_PAGINAS_LINHAS = 42;
       const blocosLinhas = [];
       let resto = pendentes.slice();
       blocosLinhas.push(resto.splice(0, PRIMEIRA_PAGINA_LINHAS));
@@ -8750,14 +8811,21 @@ function buildErrosPage(container, goTo) {
         return h('div', { class: 'pagina-a4' }, filhosPagina);
       });
       const folha = h('div', { style: 'font-family:Arial,Helvetica,sans-serif;background:#fff;color:#000;' }, paginasHtml);
-      // CSS literal e exato da janela de impressão: @page a 10mm (com
-      // !important — necessário para vencer a regra base do motor global,
-      // que por defeito usa margin:0 para os Documentos .doc-a4), cada
-      // .pagina-a4 com altura física fixa de 287mm (área útil de impressão
-      // A4, nunca 100vh) e overflow:hidden — nenhuma tabela consegue
-      // alguma vez ultrapassar os limites da sua própria página.
+      // CSS literal e exato da janela de impressão. IMPORTANTE: a margem
+      // NÃO vem de @page — ao contrário do que a regra anterior sugeria
+      // (`@page{margin:12mm}`), essa margem nunca chegava a ser aplicada
+      // na prática (documentado pelo próprio orçamento de altura usado
+      // até agora: 287mm × 96/25.4 ≈ 1085px — o valor da folha A4 inteira,
+      // sem descontar margem nenhuma). É o mesmo motivo por que o resto do
+      // motor de impressão global já evita @page para margens (o Safari
+      // ignora-o) — aqui replica-se essa técnica comprovada: margem FÍSICA
+      // via padding real no .pagina-a4 (cada página já é uma unidade
+      // isolada e independente, por isso o padding aplica-se corretamente
+      // em TODAS as páginas, não só na primeira). @page fica a 0 de propósito
+      // para não haver duas margens a somar-se (a do @page, se alguma vez
+      // passar a ser respeitada, mais a do padding).
       const cssExtraErros = `
-  @page { size: A4 portrait; margin: 12mm !important; }
+  @page { size: A4 portrait; margin: 0 !important; }
   .app-print-area, body { margin: 0 !important; padding: 0 !important; background: #fff !important; }
   .pagina-a4 {
     box-sizing: border-box;
@@ -8768,7 +8836,8 @@ function buildErrosPage(container, goTo) {
     flex-direction: column;
     justify-content: flex-start;
     overflow: hidden;
-    padding-right: 2px;
+    padding: 10mm;
+    padding-right: calc(10mm + 2px);
   }
   .pagina-a4:last-child {
     page-break-after: avoid;
@@ -14180,7 +14249,10 @@ function buildEntregasPage(container, goTo) {
   let showForm = false, editingId = null, draft = {}, formError = '', saving = false;
   let selectedIds = new Set();
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  const guardarRascunhoEntregaDebounced = debounce(() => {
+    if (showForm && !editingId && farmaciaAtiva) salvarRascunhoLocal(`entregas_nova_${farmaciaAtiva}`, draft);
+  }, 400);
+  function rerender() { guardarRascunhoEntregaDebounced(); comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
   function trocarFarmacia(f) { farmaciaAtiva = f; activeTab = 'pendentes'; selectedIds = new Set(); searchQuery = ''; showForm = false; rerender(); }
   function voltarSelecaoFarmacia() { if (isBoaNovaOperador()) return; farmaciaAtiva = null; showForm = false; selectedIds = new Set(); rerender(); }
@@ -14215,6 +14287,14 @@ function buildEntregasPage(container, goTo) {
       valorAPagar: '', precisaTroco: false, valorEntregue: '', troco: '',
       observacoes: '', estadoEntrega: 'Pendente',
     };
+    // Salvaguarda contra perda de dados: se havia um rascunho por gravar
+    // desta farmácia (sessão expirou / formulário fechado sem querer),
+    // restaura-o automaticamente por cima do rascunho em branco.
+    const rascunho = lerRascunhoLocal(`entregas_nova_${farmaciaAtiva}`);
+    if (rascunho && rascunhoEntregaTemConteudo(rascunho)) {
+      draft = Object.assign(draft, rascunho, { farmacia: farmaciaAtiva });
+      showToast('Rascunho anterior restaurado automaticamente.', 'success');
+    }
     editingId = null; formError = ''; showForm = true; rerender();
   }
   function openEditSelected() {
@@ -14479,6 +14559,7 @@ function buildEntregasPage(container, goTo) {
     draft.responsavel = currentUserName();
     normalizeNameFields(draft);
     saving = true; rerender();
+    const eraNovo = !editingId;
     let registoGuardado = null;
     if (editingId) {
       const updated = await dbUpdate('entregas', editingId, draft);
@@ -14491,6 +14572,9 @@ function buildEntregasPage(container, goTo) {
     }
     saving = false;
     if (!formError) {
+      // Só limpa o rascunho local numa criação bem-sucedida — nunca a meio
+      // de erros de rede, para nunca se perder o que já estava escrito.
+      if (eraNovo) limparRascunhoLocal(`entregas_nova_${farmaciaAtiva}`);
       showForm = false;
       selectedIds = new Set();
       // Redireciona automaticamente para a lista de Pendentes/Histórico da
@@ -16187,6 +16271,9 @@ function setupRealtime() {
         // aberto neste posto — os dados nunca ficam desatualizados; só o
         // redesenho do ecrã é que pode ficar em espera (ver renderOuAdiarSeOcupado).
         STATE[listKey] = sanitizarSupabase(await dbFetchAll(listKey));
+        // Timestamp da última atualização de dados com sucesso — alimenta o
+        // indicador discreto "Atualizado há X min" na Página Inicial.
+        STATE.ultimaAtualizacaoEm = new Date().toISOString();
         // Notificação nativa de "Nova Entrega Pendente" — exclusiva da tabela
         // de Entregas e só quando é mesmo um registo novo (INSERT); a
         // verificação de perfil (só Estafeta) acontece dentro da função.
@@ -16389,6 +16476,99 @@ function requireAuth(actionFn) {
   });
 }
 
+/* =================================================================
+   BIOMETRIA / PASSKEYS (WebAuthn) — desbloqueio rápido por dispositivo
+   Face ID / Touch ID / impressão digital, como atalho ao Username+PIN.
+   IMPORTANTE (limite honesto do modelo de segurança): esta app não tem
+   servidor de autenticação próprio (fala diretamente com o Supabase por
+   tabelas, sem backend de verificação FIDO2/attestation). Por isso o
+   WebAuthn é usado aqui como um "desbloqueio local do dispositivo" —a
+   garantia real é a do próprio sistema operativo (só quem passa o sensor
+   biométrico registado NESTE aparelho consegue completar o gesto), não
+   uma verificação criptográfica ponta-a-ponta do lado do servidor. É um
+   atalho de conveniência para dispositivos pessoais de confiança, não
+   substitui o Username+PIN como camada de segurança principal — por isso
+   continua sempre disponível como alternativa.
+================================================================= */
+const WEBAUTHN_KEY = 'sigajuncal_webauthn_credencial';
+function webauthnSuportado() {
+  return !!(window.PublicKeyCredential && navigator.credentials && navigator.credentials.create && navigator.credentials.get);
+}
+function base64urlParaBytes(b64url) {
+  const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(b64url.length / 4) * 4, '=');
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+function bytesParaBase64url(bytes) {
+  let bin = '';
+  new Uint8Array(bytes).forEach(b => { bin += String.fromCharCode(b); });
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function getCredencialBiometrica() {
+  try {
+    const bruto = window.localStorage.getItem(WEBAUTHN_KEY);
+    return bruto ? JSON.parse(bruto) : null;
+  } catch (e) { return null; }
+}
+function limparCredencialBiometrica() {
+  try { window.localStorage.removeItem(WEBAUTHN_KEY); } catch (e) { /* ignora */ }
+}
+// Regista uma passkey neste dispositivo para o utilizador indicado —
+// chamado depois de um login normal (Username+PIN) bem-sucedido, só
+// quando o dispositivo tem mesmo um sensor biométrico disponível.
+async function registarBiometriaNesteDispositivo(user) {
+  if (!webauthnSuportado()) return false;
+  try {
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    const userIdBytes = new TextEncoder().encode(String(user.id));
+    const credential = await navigator.credentials.create({
+      publicKey: {
+        challenge,
+        rp: { name: 'SigaJuncal', id: location.hostname },
+        user: { id: userIdBytes, name: user.username, displayName: user.nomeCompleto || user.username },
+        pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+        authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred' },
+        timeout: 60000,
+        attestation: 'none',
+      },
+    });
+    if (!credential) return false;
+    window.localStorage.setItem(WEBAUTHN_KEY, JSON.stringify({
+      credentialId: bytesParaBase64url(credential.rawId),
+      userId: String(user.id), username: user.username, nomeCompleto: user.nomeCompleto || user.username,
+    }));
+    return true;
+  } catch (e) { console.warn('[WebAuthn] não foi possível registar a biometria:', e && e.message); return false; }
+}
+// Pede o gesto biométrico ao dispositivo e, se o sistema operativo o
+// confirmar, devolve o utilizador guardado — sem pedir Username nem PIN.
+async function tentarLoginBiometrico() {
+  const guardada = getCredencialBiometrica();
+  if (!guardada || !webauthnSuportado()) return null;
+  try {
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    const assertion = await navigator.credentials.get({
+      publicKey: {
+        challenge,
+        allowCredentials: [{ id: base64urlParaBytes(guardada.credentialId), type: 'public-key' }],
+        userVerification: 'required',
+        timeout: 60000,
+      },
+    });
+    if (!assertion) return null;
+    // Confirma que a conta ainda existe e não foi entretanto eliminada —
+    // a passkey só destranca, quem decide se a conta é válida é sempre a
+    // mesma tabela usuarios_app de sempre.
+    const u = (STATE.usuarios || []).find(x => String(x.id) === String(guardada.userId) && x.username === guardada.username);
+    if (u) return u;
+    if (guardada.username === ADMIN_FUNDADOR.username) return ADMIN_FUNDADOR;
+    limparCredencialBiometrica();
+    return null;
+  } catch (e) { console.warn('[WebAuthn] autenticação biométrica cancelada/falhou:', e && e.message); return null; }
+}
+
 // Modal de Login da Equipa (Camada 2) — Username e PIN, ambos mascarados
 // visualmente só por CSS (a máscara nunca reescreve o valor real do campo,
 // eliminando qualquer risco de o valor enviado ficar corrompido). O valor
@@ -16414,7 +16594,7 @@ function showUserLoginScreen(onSuccess) {
   // nunca há pré-preenchimento do utilizador anterior.
   const credenciais = { usernameReal: '', pinReal: '' };
 
-  const userInput = h('input', { class: 'login-input login-input-masked', type: 'text', inputmode: 'numeric', pattern: '[0-9]{2,4}', maxlength: '4', placeholder: 'Username', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
+  const userInput = h('input', { class: 'login-input login-input-masked', type: 'text', inputmode: 'numeric', pattern: '[0-9]{2,4}', maxlength: '4', placeholder: 'Username', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', autofocus: 'autofocus' });
   userInput.addEventListener('input', () => { const v = userInput.value.replace(/\D/g, ''); if (v !== userInput.value) userInput.value = v; credenciais.usernameReal = v; });
 
   // O PIN normal (utilizadores reais) é sempre numérico, 2 a 4 dígitos —
@@ -16428,6 +16608,33 @@ function showUserLoginScreen(onSuccess) {
 
   const errorMsg = h('p', { class: 'login-error' }, '');
 
+  // Depois de um login normal bem-sucedido, oferece ativar a biometria
+  // neste dispositivo — só quando há mesmo um sensor disponível E ainda
+  // não há nenhuma passkey guardada aqui.
+  async function ofereceAtivarBiometriaSeAplicavel(user) {
+    if (!webauthnSuportado() || getCredencialBiometrica()) return;
+    let disponivel = false;
+    try { disponivel = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable(); } catch (e) { disponivel = false; }
+    if (!disponivel) return;
+    confirmDialog(`Deseja ativar o acesso por Face ID / Biometria neste dispositivo, ${user.nomeCompleto || user.username}? Da próxima vez pode entrar sem escrever o Username nem o PIN.`, async () => {
+      const ok = await registarBiometriaNesteDispositivo(user);
+      showToast(ok ? 'Biometria ativada neste dispositivo.' : 'Não foi possível ativar a biometria — tente novamente mais tarde.', ok ? 'success' : 'error');
+    }, { confirmLabel: 'Ativar' });
+  }
+
+  function concluirLogin(u) {
+    activeUser = { id: u.id, username: u.username, nomeCompleto: u.nomeCompleto || u.username, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', prestadorKey: u.prestadorKey || '' };
+    // Herdar do modo convidado o que já tinha sido lido antes do login —
+    // evita que o badge reconte mensagens já vistas no ecrã anterior.
+    sincronizarChatLastRead('sigaJuncalChatLastRead_convidado', `sigaJuncalChatLastRead_${activeUser.username}`);
+    guardarSessaoPersistente(activeUser);
+    pedirPermissaoNotificacoes();
+    iniciarPresenca();
+    document.removeEventListener('keydown', onKeydown);
+    overlay.remove();
+    onSuccess();
+    atualizarIndicadoresChat();
+  }
   function tryLogin() {
     const pareceNumerico = /^[0-9]{2,4}$/.test(credenciais.usernameReal) && /^[0-9]{2,4}$/.test(credenciais.pinReal);
     const podeSerContaEmergencia = credenciais.usernameReal === ADMIN_FUNDADOR.username;
@@ -16439,23 +16646,22 @@ function showUserLoginScreen(onSuccess) {
     // usamos sempre os valores reais guardados no objeto de estado.
     const u = findUsuario(credenciais.usernameReal, credenciais.pinReal);
     if (u) {
-      activeUser = { id: u.id, username: u.username, nomeCompleto: u.nomeCompleto || u.username, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', prestadorKey: u.prestadorKey || '' };
-      // Herdar do modo convidado o que já tinha sido lido antes do login —
-      // evita que o badge reconte mensagens já vistas no ecrã anterior.
-      sincronizarChatLastRead('sigaJuncalChatLastRead_convidado', `sigaJuncalChatLastRead_${activeUser.username}`);
-      guardarSessaoPersistente(activeUser);
-      pedirPermissaoNotificacoes();
-      iniciarPresenca();
-      document.removeEventListener('keydown', onKeydown);
-      overlay.remove();
-      onSuccess();
-      atualizarIndicadoresChat();
+      concluirLogin(u);
+      // Oferece a biometria só DEPOIS do modal já ter fechado — não atrasa
+      // o login em si.
+      ofereceAtivarBiometriaSeAplicavel(u);
     } else {
       errorMsg.textContent = 'Username ou PIN incorretos.';
       credenciais.pinReal = '';
       pinInput.value = '';
       pinInput.focus();
     }
+  }
+  async function tryLoginBiometrico() {
+    errorMsg.textContent = '';
+    const u = await tentarLoginBiometrico();
+    if (u) concluirLogin(u);
+    else errorMsg.textContent = 'Não foi possível autenticar por biometria. Use o Username e o PIN.';
   }
   userInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') pinInput.focus(); });
   pinInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryLogin(); });
@@ -16464,15 +16670,25 @@ function showUserLoginScreen(onSuccess) {
   // navegação de consulta geral, sem acesso a dados nem ações privadas.
   const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: close, title: 'Continuar sem sessão iniciada (modo de consulta)' }, 'Cancelar');
 
-  const panel = h('div', { class: 'login-panel modal-panel-compact' }, [
+  const panelKids = [
     h('img', { src: SIGA_LOGO_DATA_URI, alt: 'SigaJuncal', class: 'login-logo' }),
     h('p', { class: 'login-sub' }, 'Identifique-se para continuar (Username e PIN do seu posto).'),
+  ];
+  // Botão de biometria só aparece quando este dispositivo já tem uma
+  // passkey registada — nunca antes da primeira ativação.
+  if (webauthnSuportado() && getCredencialBiometrica()) {
+    const bioBtn = h('button', { class: 'btn btn-secondary login-bio-btn', type: 'button', onclick: tryLoginBiometrico }, '🔓 Entrar com Biometria / Face ID');
+    panelKids.push(bioBtn);
+    panelKids.push(h('p', { class: 'login-bio-divisor' }, 'ou'));
+  }
+  panelKids.push(
     h('div', { class: 'login-field' }, [userInput]),
     h('div', { class: 'login-field' }, [pinInput]),
     errorMsg,
     enterBtn,
     cancelBtn,
-  ]);
+  );
+  const panel = h('div', { class: 'login-panel modal-panel-compact' }, panelKids);
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
   setTimeout(() => userInput.focus(), 60);
@@ -16666,6 +16882,7 @@ async function startApp() {
   // mesmo perante uma falha completamente imprevista durante o arranque.
   try {
     await loadAllData();
+    STATE.ultimaAtualizacaoEm = new Date().toISOString();
     await autoCancelOldOrders();
   } catch (e) {
     console.error('[Arranque] erro inesperado durante a inicialização:', formatarErroSeguro(e));
@@ -16682,8 +16899,11 @@ async function startApp() {
   // guardada e ainda válida, a app arranca já autenticada, sem pedir PIN.
   restaurarSessaoPersistente();
   // Sem sessão ativa (Camada 2), render() mostra de imediato o ecrã de
-  // bloqueio "Iniciar Sessão" — já não existe Modo de Consulta Livre.
+  // bloqueio "Iniciar Sessão" — e o próprio modal de autenticação abre-se
+  // logo a seguir, sem precisar de um clique extra no badge, para o fluxo
+  // de entrada ser o mais rápido possível ao balcão.
   render();
+  if (!activeUser) showUserLoginScreen(() => { refreshSidebarBadges(); });
   document.body.appendChild(buildSignature());
   document.body.appendChild(buildClock());
   setupRealtime();
@@ -16696,6 +16916,7 @@ async function startApp() {
   // Temporizadores de Hora Limite das Entregas — só existem badges quando a
   // vista de Pendentes está visível; o querySelectorAll é barato quando não há nenhum.
   setInterval(atualizarTodosEntregaTimerBadges, 20000);
+  setInterval(atualizarIndicadorDadosAtualizados, 30000);
   // Ticker de Validades na Página Inicial — só existe o elemento quando há
   // produtos registados; o querySelectorAll é barato quando não há nenhum.
   setInterval(avancarTodosValidadesTickers, 4000);
