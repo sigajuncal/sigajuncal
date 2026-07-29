@@ -16191,7 +16191,14 @@ function restaurarSessaoPersistente() {
   const u = (STATE.usuarios || []).find(x => String(x.id) === String(guardada.id) && x.username === guardada.username);
   // Só restaura se a conta ainda existir E continuar com um destes dois
   // perfis — protege contra a sessão persistente sobreviver a uma mudança
-  // de perfil ou a uma conta entretanto eliminada.
+  // de perfil ou a uma conta entretanto eliminada. Nota: esta persistência
+  // em localStorage é exclusiva de Estafeta/Boa Nova (postos fixos
+  // dedicados) — nunca foi alargada a outros perfis, mesmo em mobile,
+  // porque sobreviveria a um fecho completo da app/separador, e o pedido
+  // do utilizador é claro: fechar por completo deve terminar a sessão. Em
+  // mobile, a proteção contra caducar por inatividade vem só de desligar o
+  // temporizador (ver resetInactivityTimer) — o estado em memória já dura
+  // sozinho enquanto a aba/app estiver viva, sem precisar de persistência.
   if (!u || (u.perfilNivel !== 'Estafeta' && u.perfilNivel !== 'Farmácia Boa Nova')) {
     limparSessaoPersistente();
     return false;
@@ -16864,13 +16871,27 @@ function buildSidebarBadgeSlotContent() {
      de volta ao fim desse tempo.
    - Todos os restantes perfis (Básico, Administrador, etc.): mantêm o
      limite padrão, mais curto, por estarem sempre junto ao posto de
-     trabalho no balcão. */
+     trabalho no balcão.
+   - Telemóvel/Tablet (iOS/iPadOS/Android): NUNCA expira por inatividade,
+     seja qual for o perfil — é um aparelho pessoal, não um posto partilhado
+     de balcão, por isso não faz sentido pedir PIN outra vez só por a app
+     ter ficado em segundo plano. A sessão só termina se a pessoa clicar
+     mesmo em "Sair/Terminar Sessão", ou se fechar mesmo o separador/app
+     (nesse caso o próprio browser descarta a memória, incluindo activeUser
+     — não há nada a "persistir entre fechos" sem token de servidor; ver
+     showUserLoginScreen para os detalhes desse limite). Em Desktop/Laptop
+     mantém-se sempre o timeout automático de segurança de posto partilhado,
+     mesmo que o dispositivo tenha ecrã tátil (ex: laptop 2-em-1 em modo
+     computador). */
 const INACTIVITY_LIMIT_MS = 60000; // 1 minuto
 const INACTIVITY_LIMIT_PRESTADOR_MS = 60 * 60 * 1000; // 1 hora (3600s) — só Prestador de Serviço
 let inactivityTimer = null;
 function resetInactivityTimer() {
   if (inactivityTimer) clearTimeout(inactivityTimer);
   if (modoTesteAtivo) return; // bloqueio automático suspenso pelo Modo de Teste do Administrador
+  // Telemóvel/Tablet: sessão nunca expira por inatividade, seja qual for o
+  // perfil (ver explicação completa no comentário acima desta função).
+  if (ehDispositivoMobileOuTablet()) return;
   // Estafeta e Farmácia Boa Nova: nunca expira por inatividade.
   if (isEstafeta() || isBoaNovaOperador()) return;
   const limite = isPrestadorServico() ? INACTIVITY_LIMIT_PRESTADOR_MS : INACTIVITY_LIMIT_MS;
@@ -16910,6 +16931,54 @@ function setupInactivityWatcher() {
     document.addEventListener(evt, resetInactivityTimer, { passive: true });
   });
   resetInactivityTimer();
+}
+
+/* -----------------------------------------------------------------------
+   ATUALIZAÇÃO SILENCIOSA DE DADOS — com a sessão iniciada (ou em modo de
+   consulta), a app deve manter-se sempre com os dados frescos SEM nunca
+   pedir PIN outra vez e SEM dar F5 à página (isso perderia o ecrã onde a
+   pessoa está). É um mecanismo à parte do Realtime (que já atualiza ao
+   vivo sempre que algo muda na base de dados) — serve de rede de
+   segurança extra para os casos em que o Realtime possa ter perdido
+   alguma coisa (ex: leve interrupção de rede) e para o pedido explícito de
+   atualizar já ao regressar à aba/app. NUNCA mexe em activeUser nem em
+   STATE.page — só volta a carregar os dados das tabelas.
+   Blindagem: reaproveita sempre uiEstaOcupada() (modal aberto ou foco num
+   input/textarea/select) antes de sequer começar a atualizar, e verifica-o
+   outra vez no fim através de renderOuAdiarSeOcupado() — nunca fecha uma
+   caixa de texto, nunca apaga o que está a ser escrito, nunca rouba o
+   foco do teclado.
+----------------------------------------------------------------------- */
+let ultimoRefreshSilenciosoEm = 0;
+const REFRESH_SILENCIOSO_MIN_INTERVALO_MS = 15000; // nunca repete a menos de 15s de distância
+const IDLE_REFRESH_MS = 20000; // ~20s sem interação = pequena pausa
+async function refrescarDadosSilenciosamente() {
+  if (!STATE.ultimaAtualizacaoEm) return; // o arranque ainda nem completou a 1ª carga
+  if (document.visibilityState === 'hidden') return; // só com o separador/app visível
+  if (uiEstaOcupada()) return; // blindagem: nunca interrompe escrita ou um modal aberto
+  const agora = Date.now();
+  if (agora - ultimoRefreshSilenciosoEm < REFRESH_SILENCIOSO_MIN_INTERVALO_MS) return;
+  ultimoRefreshSilenciosoEm = agora;
+  await loadAllData();
+  STATE.ultimaAtualizacaoEm = new Date().toISOString();
+  renderOuAdiarSeOcupado(); // volta a confirmar no fim — pode ter começado a escrever entretanto
+}
+let idleRefreshTimer = null;
+function resetIdleRefreshTimer() {
+  if (idleRefreshTimer) clearTimeout(idleRefreshTimer);
+  idleRefreshTimer = setTimeout(() => { refrescarDadosSilenciosamente(); resetIdleRefreshTimer(); }, IDLE_REFRESH_MS);
+}
+function setupSilentDataRefreshWatcher() {
+  ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'].forEach(evt => {
+    document.addEventListener(evt, resetIdleRefreshTimer, { passive: true });
+  });
+  // Regresso à aba/app (troca de separador, minimizar/restaurar, voltar de
+  // outra app no telemóvel) — atualiza logo, sem esperar pela pausa de 20s.
+  window.addEventListener('focus', refrescarDadosSilenciosamente);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') refrescarDadosSilenciosamente();
+  });
+  resetIdleRefreshTimer();
 }
 
 async function startApp() {
@@ -16956,6 +17025,7 @@ async function startApp() {
   document.body.appendChild(buildClock());
   setupRealtime();
   setupInactivityWatcher();
+  setupSilentDataRefreshWatcher();
   // Sincroniza todos os indicadores de chat logo no arranque (badge do
   // ícone, título da aba, botão Chat) e sempre que a aba/janela volta a
   // ficar visível — cobre o caso de mensagens recebidas em segundo plano.
