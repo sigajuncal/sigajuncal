@@ -28,6 +28,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   :root{
+    color-scheme:light; /* toda a app é sempre clara — nunca deixar o Safari/WebKit aplicar o tema nativo escuro do sistema aos controlos de formulário (autofill, datalist, select, date/time picker), que é a causa mais comum do texto branco-sobre-branco */
     --pharm-50:#f0f7fb; --pharm-100:#dcedf5; --pharm-200:#b9dbeb; --pharm-300:#8cc3dc;
     --pharm-400:#57a4c8; --pharm-500:#3688b0; --pharm-600:#256f95; --pharm-700:#1f5a7a;
     --pharm-800:#1c4a63; --pharm-900:#193d52; --pharm-950:#0d2530;
@@ -707,10 +708,39 @@
     border-radius:7px;padding:5px 9px;margin-top:6px;font-weight:700;line-height:1.4;}
   .backup-status{font-size:12.5px;font-weight:700;margin-top:12px;}
   .input,.select,.textarea{width:100%;border:1px solid var(--pharm-200);background:#fff;border-radius:10px;
-    padding:9px 12px;font-size:14px;color:var(--pharm-950);font-family:inherit;}
+    padding:9px 12px;font-size:14px;color:var(--pharm-950);font-family:inherit;
+    color-scheme:light;} /* impede o Safari/WebKit de aplicar o tema nativo escuro (modo escuro do sistema) aos controlos e às sugestões do datalist, causa mais comum do texto branco-sobre-branco */
   .textarea{resize:vertical;min-height:56px;}
   .input:focus,.select:focus,.textarea:focus{outline:none;border-color:var(--pharm-400);
     box-shadow:0 0 0 3px rgba(54,136,176,.15);}
+  /* Bug conhecido do Safari/WebKit: com o sistema em Modo Escuro, o
+     preenchimento automático (autofill) e as sugestões do <datalist>
+     nativo dos campos "combo" (Farmácia/Fornecedor, Tipo/Cor, etc.) podem
+     ficar com texto branco/sem contraste contra o fundo claro da app —
+     mesmo já com color-scheme:light acima, o autofill do WebKit tem uma
+     camada própria que ignora `color`/`background` normais e só responde
+     a -webkit-text-fill-color / -webkit-box-shadow. Aplicado globalmente
+     a QUALQUER input da app (não só aos combos) para nunca se repetir.
+  */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  input:-webkit-autofill:active{
+    -webkit-text-fill-color:#1e293b !important;
+    -webkit-box-shadow:0 0 0 1000px #ffffff inset !important;
+    box-shadow:0 0 0 1000px #ffffff inset !important;
+    caret-color:#1e293b;
+    transition:background-color 999999s ease-in-out 0s; /* impede o "flash" amarelo do autofill nativo */
+  }
+  /* Sugestões do <datalist> nativo (Farmácia/Fornecedor, Tipo/Cor, etc.):
+     o Safari não permite estilizar por completo o menu da lista (é UI
+     nativa do sistema), mas o próprio <input>/<datalist> aceitam forçar
+     cor de texto e fundo — combinado com color-scheme:light acima, é o
+     que evita o texto invisível quando o sistema está em Modo Escuro. */
+  datalist,
+  .input::-webkit-list-button,
+  .input::-webkit-calendar-picker-indicator{color:#1e293b;background:#ffffff;}
+  option{color:#1e293b !important;background:#ffffff !important;}
   .checkbox-field{display:flex;align-items:center;gap:8px;padding-top:23px;cursor:pointer;user-select:none;
     grid-column:span 6;white-space:nowrap;}
   .checkbox-field input{width:16px;height:16px;accent-color:var(--pharm-600);cursor:pointer;flex-shrink:0;}
@@ -2076,27 +2106,43 @@ const NAV_ITEMS = NAV_SECTIONS.flatMap(s => s.items);
 let __id = 1000;
 const nextId = () => (__id += 1);
 let __datalistCounter = 0;
-// ---- Correção global de um bug conhecido dos campos "combo" (input +
-// <datalist> nativo) ----
-// Em alguns browsers/webviews (sobretudo em tablets/POS usados ao balcão),
-// depois de escolher uma sugestão e voltar a editar o campo — apagar o
-// texto para escolher outra opção, ou reentrar no campo — a caixa de
-// sugestões nativa pode ficar "presa" num estado antigo: aparece
-// comprimida, com texto invisível/branco, ou sobreposta ao valor anterior.
-// Forçar a remoção e reposição do atributo "list" obriga o browser a
-// recalcular a lista de sugestões do zero. Só dispara ao focar o campo
-// (reentrar) ou quando fica completamente vazio (apagou tudo) — nunca a
-// cada tecla, para não interromper a filtragem normal enquanto se escreve.
+// ---- Correção global dos campos "combo" (input + <datalist> nativo) ----
+// Problema 1 — filtro "preso" ao reabrir: um <input list="..."> nativo
+// filtra as sugestões pelo TEXTO ATUAL do campo. Depois de escolher uma
+// opção, o valor fica exatamente igual a essa opção — por isso, ao focar
+// de novo para escolher outra, o browser só mostra essa opção (é o único
+// texto que "bate certo" com o filtro), em vez da lista completa. A única
+// forma fiável de repor a lista toda é limpar visualmente o campo ao
+// focar (sem apagar o valor já escolhido do estado da app) — se a pessoa
+// sair do campo sem escrever nada de novo, o valor anterior é reposto.
+// Problema 2 — caixa de sugestões "partida" (comprimida, sobreposta) em
+// alguns browsers/webviews: forçar a remoção e reposição do atributo
+// "list" obriga o browser a recalcular a lista do zero.
 // Aplicado a TODOS os campos combo/autocomplete da app (ver buildField,
 // buildFornecedorTopField, e o campo de fornecedor da Gestão de Orçamentos).
 function repararDatalistAoEditar(inputEl, listId) {
-  function reset() {
+  let valorAntesDoFoco = null;
+  function resetAtributoList() {
     inputEl.removeAttribute('list');
     requestAnimationFrame(() => inputEl.setAttribute('list', listId));
   }
-  inputEl.addEventListener('focus', reset);
-  inputEl.addEventListener('input', () => { if (!inputEl.value) reset(); });
+  inputEl.addEventListener('focus', () => {
+    valorAntesDoFoco = inputEl.value;
+    if (inputEl.value) inputEl.value = ''; // esvazia SÓ visualmente — a app continua a saber o valor anterior
+    resetAtributoList();
+  });
+  inputEl.addEventListener('blur', () => {
+    // Saiu do campo sem escrever nada de novo (nenhum evento "input"
+    // disparou entretanto) — repõe o valor visual que lá estava.
+    if (!inputEl.value && valorAntesDoFoco) inputEl.value = valorAntesDoFoco;
+    valorAntesDoFoco = null;
+  });
+  inputEl.addEventListener('input', () => {
+    valorAntesDoFoco = null; // já há edição real — deixa de haver "valor a repor" no blur
+    if (!inputEl.value) resetAtributoList();
+  });
 }
+
 
 /* =================================================================
    SCHEMAS DE FORMULÁRIO POR CATEGORIA
