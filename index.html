@@ -717,6 +717,7 @@
   .msg-dia-text{font-size:13.5px;color:var(--pharm-800);line-height:1.5;margin:0;white-space:pre-wrap;
     font-weight:500;}
   .msg-dia-text.placeholder{color:#9ca3af;font-style:italic;font-weight:400;}
+  .msg-dia-visto-por{font-size:11px;color:#9ca3af;margin:6px 0 0;font-weight:400;}
   .msg-edit-btn{position:absolute;bottom:12px;right:12px;}
   .msg-dia-banner-nova{animation:msgDiaPulse 1.2s ease-in-out infinite;}
   @keyframes msgDiaPulse{
@@ -1585,6 +1586,7 @@
   .modal-title-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;}
   .modal-title{font-weight:800;color:var(--pharm-800);font-size:16px;}
   .modal-tag{font-size:11px;font-weight:700;color:var(--pharm-500);text-transform:uppercase;letter-spacing:.03em;margin-top:2px;}
+  .modal-tag-aviso-24h{color:#dc2626 !important;}
   .confirm-panel{max-width:420px;}
   .confirm-message{font-size:14px;color:var(--pharm-800);line-height:1.55;margin:0 0 18px;}
   .btn-danger-solid{background:var(--red);color:#fff;font-weight:700;box-shadow:0 1px 2px rgba(0,0,0,.06);
@@ -2172,19 +2174,15 @@ function orcamentoStatusTone(draft, listKey) {
 //   PVP), e a Farmácia do topo fica bloqueada nesse valor.
 function resolveFornecedorOrcamentoState(listKey, draft, fornecedorManual) {
   if (!categoriaTemOrcamentos(listKey)) return { fornecedorBloqueado: false, orcamentosBloqueados: false };
-  // Enquanto o Estado for "Em Orçamento", a Farmácia/Fornecedor ainda não é
-  // conhecida — o campo fica sempre bloqueado e vazio, independentemente do
-  // progresso dos Orçamentos, até o Estado avançar (Pedido, Satisfeito,
-  // Resolvido ou Cancelado), altura em que a lógica normal abaixo volta a
-  // decidir se fica bloqueado (preenchido pelos Orçamentos) ou editável.
-  // NOVO FLUXO: enquanto o Estado é "Em Orçamento", a Farmácia/Fornecedor
-  // pode ser selecionada previamente pelo utilizador (campo livre). A
-  // validação acontece só na hora de GUARDAR: se o estado se mantiver "Em
-  // Orçamento" com farmácia preenchida, a app pergunta se passa a "Pedido"
-  // — ou limpa o campo se ficar mesmo só em orçamento (ver interceção nos
-  // fluxos de gravação).
+  // Enquanto o Estado for "Em Orçamento", a Farmácia/Fornecedor do topo
+  // fica SEMPRE bloqueada — só a secção "Gestão de Orçamentos" pode ser
+  // usada para pedir cotações. Isto elimina o cenário ambíguo de haver
+  // farmácia preenchida com o Estado ainda em "Em Orçamento" (por isso já
+  // não é preciso perguntar nada na hora de gravar — ver submit()); e como
+  // preencher a Farmácia noutro estado passa logo o Estado a "Pedido" (ver
+  // buildFornecedorTopField), esse cenário nunca chega sequer a acontecer.
   if (draft.estado === 'Em Orçamento') {
-    return { fornecedorBloqueado: false, orcamentosBloqueados: false, aDefinirViaOrcamento: true };
+    return { fornecedorBloqueado: true, orcamentosBloqueados: false, aDefinirViaOrcamento: true };
   }
   const max = orcamentoMaxSlots(listKey);
   const aprovadoIdx = parseInt(draft.orcamentoAprovado, 10);
@@ -2217,6 +2215,11 @@ function buildFornecedorTopField(fieldDef, draft, bloqueado, onManualChange, aDe
   inp.value = draft[fieldDef.name] || '';
   inp.addEventListener('change', () => {
     draft[fieldDef.name] = inp.value;
+    // Preencher a Farmácia/Fornecedor aqui é sempre um Pedido Direto — o
+    // Estado passa logo a "Pedido" sozinho, sem perguntar nada (o campo só
+    // fica acessível quando o Estado já não é "Em Orçamento", por isso
+    // nunca há conflito entre os dois).
+    if (String(inp.value || '').trim()) draft.estado = 'Pedido';
     onManualChange(!!String(inp.value || '').trim());
   });
   const kids = [h('label', {}, fieldDef.label), inp, dl];
@@ -5067,6 +5070,19 @@ async function dbMarcarMensagemLida(userId, mensagemId) {
     return true;
   } catch (e) { console.error('[Supabase] erro de rede ao marcar mensagem como lida:', formatarErroSeguro(e)); return false; }
 }
+// Lista de quem já leu uma mensagem — alimenta a linha discreta "Visto
+// por:" no cartão da Página Inicial.
+async function dbFetchLeitoresMensagem(mensagemId) {
+  if (!sb || !mensagemId) return [];
+  try {
+    const { data, error } = await sb.from('mensagens_lidas').select('user_id').eq('mensagem_id', mensagemId);
+    if (error) { console.error('[Supabase] erro ao ler leitores da mensagem:', error.message); return []; }
+    return (data || []).map(r => r.user_id);
+  } catch (e) { console.error('[Supabase] erro de rede ao ler leitores da mensagem:', formatarErroSeguro(e)); return []; }
+}
+// Cache em memória (só desta sessão) dos nomes de quem já leu cada
+// mensagem — evita repetir a consulta sempre que a Home volta a renderizar.
+const MENSAGEM_LEITORES_CACHE = new Map();
 // Cache em memória (só desta sessão do browser) para não repetir a consulta
 // nem reanimar o banner sempre que a Página Inicial voltar a renderizar.
 const MENSAGEM_LIDA_CACHE = new Set();
@@ -6362,7 +6378,14 @@ function buildOrtopediaPage(container, goTo) {
       else formError = `Não foi possível adicionar o registo. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
     }
     saving = false;
-    if (!formError) showForm = false;
+    if (!formError) {
+      showForm = false;
+      // Aviso informativo de Pedido Direto — só na criação. A Ortopedia não
+      // usa o ficheiro Excel de rotas, por isso mostra-se só a frase geral.
+      if (!editingId && draft.estado === 'Pedido' && String(draft.fornecedor || '').trim()) {
+        showToast('Atenção: Registo guardado como PEDIDO DIRETO (sem pedido de orçamento prévio).', 'info');
+      }
+    }
     rerender();
   }
   function cancel() { formError = ''; showForm = false; rerender(); }
@@ -6547,22 +6570,6 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
     if (formatoInvalido) { formError = formatoInvalido; rerender(); return; }
     formError = '';
 
-    // NOVO FLUXO da Farmácia/Fornecedor (categorias com Orçamentos): a
-    // farmácia pode ser escolhida previamente, mas um registo que fique
-    // gravado "Em Orçamento" não deve ter farmácia atribuída. Na hora de
-    // Guardar, se o Estado se mantiver "Em Orçamento" com farmácia
-    // preenchida, pergunta-se: Sim → o Estado passa já a "Pedido" (e o
-    // fluxo da Rota corre normalmente a seguir); Não → o campo Farmácia é
-    // limpo e o registo grava como simples orçamento.
-    if (categoriaTemOrcamentos(listKey) && draft.estado === 'Em Orçamento' && String(draft.fornecedor || '').trim()) {
-      perguntaSimNaoDialog(`A Farmácia "${String(draft.fornecedor).trim()}" está preenchida mas o Estado continua "Em Orçamento". Para ter farmácia atribuída, o Estado deve ser alterado para "Pedido". Alterar agora o Estado para "Pedido"?`, (sim) => {
-        if (sim) draft.estado = 'Pedido';
-        else draft.fornecedor = '';
-        submit(); // reentra: com "Pedido" segue para o fluxo da Rota; com o campo limpo grava como orçamento
-      });
-      return;
-    }
-
     // Automação/confirmação da Rota ao transitar o Estado para "Pedido" —
     // só em Manipulados e Ervanária, e só quando o Estado realmente muda
     // (nunca ao simplesmente reabrir um registo que já estava em "Pedido").
@@ -6621,6 +6628,18 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
       // aprovado pelo cliente) — lembrete de balcão para contactar o utente.
       if (draft.estado === 'Em Orçamento' && !draft.orcamentoAprovado) {
         confirmDialog('Avisar utente sobre os orçamentos recebidos para aprovação.', () => {}, { confirmLabel: 'Entendido' });
+      }
+      // Aviso informativo de Pedido Direto — só na criação (a edição de um
+      // registo já existente não repete o aviso a cada gravação). Aplica-se
+      // a QUALQUER categoria de Pedidos: basta ter Farmácia/Fornecedor
+      // preenchido e o Estado ter ficado "Pedido".
+      if (!editingId && draft.estado === 'Pedido' && String(draft.fornecedor || '').trim()) {
+        let aviso = 'Atenção: Registo guardado como PEDIDO DIRETO (sem pedido de orçamento prévio).';
+        const ehGuaraniAviso = listKey === 'manipulados' && String(draft.fornecedor).trim().toLowerCase().includes('guarani');
+        if ((listKey === 'manipulados' && !ehGuaraniAviso) || listKey === 'ervanaria') {
+          aviso += ' Quando o fornecedor/farmácia confirmar que o pedido está pronto para recolha, colocar a informação no ficheiro excel das rotas.';
+        }
+        showToast(aviso, 'info');
       }
     }
     rerender();
@@ -6768,7 +6787,7 @@ function openMensagemDiaModal(onSaved, seedRecord) {
 
   const panel = h('div', { class: 'modal-panel' }, [
     h('div', { class: 'modal-title-row' }, [
-      h('div', {}, [h('p', { class: 'modal-tag' }, 'Passagem de turno'), h('p', { class: 'modal-title' }, 'Mensagem do Dia')]),
+      h('div', {}, [h('p', { class: 'modal-tag modal-tag-aviso-24h' }, 'Visível por 24 horas'), h('p', { class: 'modal-title' }, 'Mensagem do Dia')]),
       h('button', { class: 'close-btn', onclick: close }, Icon('x', { size: 16 })),
     ]),
     h('div', { class: 'form-grid' }, [
@@ -6988,10 +7007,18 @@ function buildMensagemDiaBanner(onSaved) {
   const texto = ativa ? ativa.texto : 'Deixa uma mensagem ou aviso importante para a equipa...';
   const editBtn = h('button', { class: 'btn-fab-sm tone-blue msg-edit-btn', title: 'Editar mensagem do dia', 'aria-label': 'Editar mensagem do dia' }, Icon('pencil', { size: 13, strokeWidth: 2.2 }));
   editBtn.addEventListener('click', () => openMensagemDiaModal(onSaved));
+  // Linha discreta "Visto por: Nome, Nome..." — só primeiros nomes, texto
+  // pequeno e em tom suave, para servir de confirmação de leitura da
+  // equipa sem chamar a atenção visual do painel. Carregada à parte
+  // (assíncrona) e atualizada diretamente no DOM quando chega, sem
+  // precisar de voltar a desenhar o resto da Home.
+  const vistoPorEl = h('p', { class: 'msg-dia-visto-por', id: 'msg-dia-visto-por' }, '');
   const banner = h('div', { class: 'msg-dia-banner' }, [
     h('p', { class: 'msg-dia-text' + (ativa ? '' : ' placeholder') }, texto),
+    ativa ? vistoPorEl : null,
     editBtn,
   ]);
+  if (ativa) carregarVistoPorMensagem(ativa.id, vistoPorEl);
 
   // Mensagem nova/editada para este utilizador (ainda não lida em nenhum
   // dispositivo, segundo o Supabase) → destaque a pulsar durante 6s, e só
@@ -7008,12 +7035,33 @@ function buildMensagemDiaBanner(onSaved) {
         setTimeout(() => {
           banner.classList.remove('msg-dia-banner-nova');
           MENSAGEM_LIDA_CACHE.add(cacheKey);
-          dbMarcarMensagemLida(String(activeUser.id), ativa.id);
+          dbMarcarMensagemLida(String(activeUser.id), ativa.id).then(() => {
+            MENSAGEM_LEITORES_CACHE.delete(ativa.id); // força a reler, para se incluir a si próprio
+            carregarVistoPorMensagem(ativa.id, document.getElementById('msg-dia-visto-por'));
+          });
         }, 6000);
       });
     }
   }
   return banner;
+}
+// Carrega (ou usa em cache) quem já leu a mensagem e escreve a linha "Visto
+// por: Nome, Nome..." diretamente no elemento indicado — nunca mostra nada
+// se ainda ninguém a tiver lido, para não aparecer uma linha vazia.
+function carregarVistoPorMensagem(mensagemId, el) {
+  if (!el) return;
+  function aplicar(nomes) {
+    const alvo = document.getElementById('msg-dia-visto-por') || el;
+    alvo.textContent = nomes.length ? `Visto por: ${nomes.join(', ')}` : '';
+  }
+  if (MENSAGEM_LEITORES_CACHE.has(mensagemId)) { aplicar(MENSAGEM_LEITORES_CACHE.get(mensagemId)); return; }
+  dbFetchLeitoresMensagem(mensagemId).then(userIds => {
+    const nomes = userIds
+      .map(id => { const u = (STATE.usuarios || []).find(x => String(x.id) === String(id)); return u ? (u.nomeCompleto || u.username).trim().split(/\s+/)[0] : null; })
+      .filter(Boolean);
+    MENSAGEM_LEITORES_CACHE.set(mensagemId, nomes);
+    aplicar(nomes);
+  });
 }
 
 // Ticker de Validades na Página Inicial — roda sozinho entre os produtos a
