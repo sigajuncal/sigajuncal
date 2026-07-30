@@ -2076,6 +2076,27 @@ const NAV_ITEMS = NAV_SECTIONS.flatMap(s => s.items);
 let __id = 1000;
 const nextId = () => (__id += 1);
 let __datalistCounter = 0;
+// ---- Correção global de um bug conhecido dos campos "combo" (input +
+// <datalist> nativo) ----
+// Em alguns browsers/webviews (sobretudo em tablets/POS usados ao balcão),
+// depois de escolher uma sugestão e voltar a editar o campo — apagar o
+// texto para escolher outra opção, ou reentrar no campo — a caixa de
+// sugestões nativa pode ficar "presa" num estado antigo: aparece
+// comprimida, com texto invisível/branco, ou sobreposta ao valor anterior.
+// Forçar a remoção e reposição do atributo "list" obriga o browser a
+// recalcular a lista de sugestões do zero. Só dispara ao focar o campo
+// (reentrar) ou quando fica completamente vazio (apagou tudo) — nunca a
+// cada tecla, para não interromper a filtragem normal enquanto se escreve.
+// Aplicado a TODOS os campos combo/autocomplete da app (ver buildField,
+// buildFornecedorTopField, e o campo de fornecedor da Gestão de Orçamentos).
+function repararDatalistAoEditar(inputEl, listId) {
+  function reset() {
+    inputEl.removeAttribute('list');
+    requestAnimationFrame(() => inputEl.setAttribute('list', listId));
+  }
+  inputEl.addEventListener('focus', reset);
+  inputEl.addEventListener('input', () => { if (!inputEl.value) reset(); });
+}
 
 /* =================================================================
    SCHEMAS DE FORMULÁRIO POR CATEGORIA
@@ -2298,6 +2319,7 @@ function buildFornecedorTopField(fieldDef, draft, bloqueado, onManualChange, aDe
   const dl = h('datalist', { id: listId }, (fieldDef.options || []).map(o => h('option', { value: o })));
   const inp = h('input', { class: 'input', list: listId, placeholder: aDefinir ? 'A definir via Orçamento' : (fieldDef.placeholder || 'Escrever ou escolher...'), disabled: bloqueado ? 'disabled' : undefined });
   inp.value = draft[fieldDef.name] || '';
+  repararDatalistAoEditar(inp, listId);
   inp.addEventListener('change', () => {
     draft[fieldDef.name] = inp.value;
     // Preencher a Farmácia/Fornecedor aqui é sempre um Pedido Direto — o
@@ -2310,7 +2332,7 @@ function buildFornecedorTopField(fieldDef, draft, bloqueado, onManualChange, aDe
   const kids = [h('label', {}, fieldDef.label), inp, dl];
   if (bloqueado) {
     kids.push(h('p', { class: 'field-helper-text' }, aDefinir
-      ? 'A farmácia/fornecedor só fica definida depois de aprovar um orçamento — enquanto o Estado for "Em Orçamento", este campo mantém-se bloqueado.'
+      ? 'A farmácia/fornecedor só deve ser selecionada após a confirmação do orçamento (alterando o Estado para "Pedido").'
       : (draft[fieldDef.name]
         ? 'Preenchido automaticamente pela Gestão de Orçamentos.'
         : 'Bloqueado — há mais do que uma farmácia marcada nos Orçamentos.')));
@@ -2346,6 +2368,7 @@ function buildOrcamentosPanel(listKey, draft, rerender, bloqueado) {
       const dl = h('datalist', { id: listId }, presets.map(p => h('option', { value: p })));
       const inp = h('input', { class: 'input', list: listId, placeholder: i === 4 ? 'Nome da Farmácia/Fornecedor' : 'Escrever ou escolher...', disabled: bloqueado ? 'disabled' : undefined });
       inp.value = draft[fCampo] || '';
+      repararDatalistAoEditar(inp, listId);
       inp.addEventListener('input', () => { draft[fCampo] = inp.value; });
       fornInput = h('div', { class: 'orcamento-nome-combo' }, [inp, dl]);
     } else {
@@ -5786,6 +5809,7 @@ function buildField(field, draft) {
     extra = h('datalist', { id: listId }, field.options.map(o => h('option', { value: o })));
     control = h('input', { class: 'input', list: listId, placeholder: field.placeholder || 'Escrever ou escolher...' });
     control.value = draft[field.name] || '';
+    repararDatalistAoEditar(control, listId);
     control.addEventListener('input', () => { draft[field.name] = control.value; });
     if (field.onChange) control.addEventListener('change', () => field.onChange());
   } else if (field.integer) {
@@ -6779,7 +6803,15 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
     rerender();
   }
 
-  function openNew() { draft = emptyRecord(schema); editingId = null; formError = ''; fornecedorEditadoManualmente = false; estadoOriginal = null; showForm = true; rerender(); }
+  function openNew() {
+    draft = emptyRecord(schema);
+    // Predefinição pedida: todo o pedido novo nasce "Em Orçamento" — só
+    // passa a "Pedido" (ou outro estado ativo) depois de a farmácia/
+    // fornecedor ser mesmo confirmada, seja pela Gestão de Orçamentos ou
+    // por escolha direta (ver resolveFornecedorOrcamentoState/fieldOverrides).
+    draft.estado = 'Em Orçamento';
+    editingId = null; formError = ''; fornecedorEditadoManualmente = false; estadoOriginal = null; showForm = true; rerender();
+  }
   function openEditSelected() {
     if (selectedIds.size !== 1) return;
     const id = [...selectedIds][0];
@@ -6902,7 +6934,20 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
       const fieldOverrides = categoriaTemOrcamentos(listKey) ? {
         fornecedor: (f) => buildFornecedorTopField(f, draft, estado.fornecedorBloqueado, (isManual) => { fornecedorEditadoManualmente = isManual; rerender(); }, estado.aDefinirViaOrcamento),
         estado: (f) => buildField(Object.assign({}, f, { onChange: () => rerender() }), draft),
-      } : {};
+      } : {
+        // Categorias sem painel de Gestão de Orçamentos (ex: Outros
+        // Fornecedores) — a mesma regra simples, sem o preenchimento
+        // automático: bloqueado enquanto o Estado for "Em Orçamento", com
+        // texto de ajuda explicativo; Estado com onChange a redesenhar
+        // para o desbloqueio ficar imediato ao mudar para "Pedido".
+        fornecedor: (f) => buildField(Object.assign({}, f, {
+          disabled: draft.estado === 'Em Orçamento',
+          helperText: draft.estado === 'Em Orçamento'
+            ? 'A farmácia/fornecedor só deve ser selecionada após a confirmação do orçamento (alterando o Estado para "Pedido").'
+            : f.helperText,
+        }), draft),
+        estado: (f) => buildField(Object.assign({}, f, { onChange: () => rerender() }), draft),
+      };
       // Tentar LIGAR a Rota manualmente (fora da transição de Estado) exige
       // a mesma validação: Guarani confirma sozinha, as restantes pedem
       // confirmação do Excel — responder "Não" bloqueia mesmo a ativação.
