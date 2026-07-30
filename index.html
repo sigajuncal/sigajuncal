@@ -645,6 +645,7 @@
     letter-spacing:.01em;margin:10px 0 8px;}
   .agenda-cor-badge-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;
     box-shadow:0 0 0 1px rgba(0,0,0,.06) inset;}
+  .agenda-atrasada-card{border-left:3px solid #f59e0b;}
   /* Pop-up de escolha do Calendário de Agendamentos (dia com vários itens) */
   .cal-escolha-lista{display:flex;flex-direction:column;gap:6px;}
   .cal-escolha-item{display:flex;align-items:center;gap:10px;width:100%;border:1px solid var(--pharm-200);
@@ -1390,6 +1391,9 @@
   .agenda-slot-cancelada{background:#fee2e2 !important;}
   .agenda-slot-cancelada .agenda-slot-label{color:#b91c1c;text-decoration:line-through;}
   .agenda-slot-cancelada .agenda-slot-nome{color:#b91c1c !important;text-decoration:line-through;}
+  .agenda-slot-concluida{background:#dbeafe !important;}
+  .agenda-slot-concluida .agenda-slot-label{color:#1d4ed8;}
+  .agenda-slot-concluida .agenda-slot-nome{color:#1d4ed8 !important;}
   .agenda-dia-panel .agenda-slots-list{margin-top:4px;}
 
   /* Zonas cromáticas dos cartões principais da Homepage */
@@ -3107,11 +3111,13 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   function estadoClasseVaga(m) {
     if (m.estado === 'confirmada') return ' agenda-slot-confirmada';
     if (m.estado === 'cancelada') return ' agenda-slot-cancelada';
+    if (m.estado === 'concluida') return ' agenda-slot-concluida';
     return '';
   }
   function estadoSufixoVaga(m) {
     if (m.estado === 'confirmada') return ' · Confirmada';
     if (m.estado === 'cancelada') return ' · Cancelada';
+    if (m.estado === 'concluida') return ' · Concluída';
     return '';
   }
   async function toggleAviso(m) {
@@ -3821,6 +3827,109 @@ function buildCalendarioSection(goTo) {
    PÁGINA DE AGENDA DE UM PRESTADOR — carrossel de 3 meses (clicar num
    dia abre a grelha de horários) + histórico em árvore Ano → Mês → Dias.
 ================================================================= */
+/* =================================================================
+   VERIFICAÇÃO DE MARCAÇÕES ATRASADAS (Agendas de prestador) — deteta
+   marcações ainda "Agendada/Pendente" (sem cancelar nem concluir) cuja
+   hora de término já passou há mais de 30 minutos, para nunca ficarem
+   esquecidas por atualizar. Corre EXCLUSIVAMENTE dentro de buildAgendaPage
+   (ver mais abaixo) — nunca na Home, Tarefas ou qualquer outra secção.
+================================================================= */
+// Instante exato de término de uma marcação (data + hora + duração) — ao
+// contrário de um "new Date()" simples (que assume sempre HOJE), usa a
+// própria data da marcação, para funcionar corretamente também com
+// marcações de dias anteriores.
+function agendaMarcacaoFimDate(m) {
+  const [hh, mm] = normalizarHora(m.hora || '').split(':').map(Number);
+  const d = new Date(`${m.data}T00:00:00`);
+  d.setHours(isNaN(hh) ? 23 : hh, (isNaN(mm) ? 0 : mm) + (m.duracaoMin || 20), 0, 0);
+  return d;
+}
+const AGENDA_ATRASO_LIMITE_MS = 30 * 60 * 1000; // 30 minutos
+function agendaMarcacoesAtrasadas(prestadorKey, ignoradasIds) {
+  const agora = Date.now();
+  return (STATE.agendaMarcacoes || [])
+    .filter(m => m.prestadorKey === prestadorKey
+      && m.tipoLinha !== 'bloqueado'
+      && String(m.nomeCliente || '').trim()
+      && m.estado !== 'cancelada' && m.estado !== 'concluida'
+      && !(ignoradasIds && ignoradasIds.has(m.id))
+      && (agora - agendaMarcacaoFimDate(m).getTime()) > AGENDA_ATRASO_LIMITE_MS)
+    .sort((a, b) => (a.data + normalizarHora(a.hora)).localeCompare(b.data + normalizarHora(b.hora)));
+}
+async function agendaMarcarConcluida(m) {
+  const updated = await dbUpdate('agendaMarcacoes', m.id, { estado: 'concluida' });
+  if (updated) { STATE.agendaMarcacoes = STATE.agendaMarcacoes.map(x => x.id === m.id ? updated : x); return true; }
+  showDbErrorToast('Não foi possível marcar como concluída');
+  return false;
+}
+async function agendaMarcarCanceladaAtrasada(m) {
+  const updated = await dbUpdate('agendaMarcacoes', m.id, { estado: 'cancelada' });
+  if (updated) { STATE.agendaMarcacoes = STATE.agendaMarcacoes.map(x => x.id === m.id ? updated : x); return true; }
+  showDbErrorToast('Não foi possível cancelar');
+  return false;
+}
+// Popup de "atualização rápida" — lista todas as marcações atrasadas deste
+// prestador, com toda a informação relevante e ação de 1 clique por linha.
+// onFechar(idsIgnorados) devolve os ids que ficaram por tratar (o
+// utilizador fechou/ignorou), para a página não voltar a incomodar com os
+// mesmos enquanto estiver aberta.
+function abrirModalMarcacoesAtrasadas(itensIniciais, prestador, onFechar) {
+  let itens = itensIniciais.slice();
+  const overlay = h('div', { class: 'modal-overlay' });
+  function fechar() {
+    document.removeEventListener('keydown', onKeydown);
+    overlay.remove();
+    onFechar(itens.map(m => m.id));
+  }
+  function onKeydown(e) { if (e.key === 'Escape') fechar(); }
+  document.addEventListener('keydown', onKeydown);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) fechar(); });
+
+  const listaEl = h('div', {});
+  function renderLista() {
+    clear(listaEl);
+    if (!itens.length) { fechar(); return; }
+    itens.forEach(m => {
+      const fim = agendaMarcacaoFimDate(m);
+      const horaFimTxt = `${pad2(fim.getHours())}:${pad2(fim.getMinutes())}`;
+      const concluirBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12.5px;padding:7px 12px;' }, '✓ Concluída');
+      const cancelarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12.5px;padding:7px 12px;color:var(--red);' }, '✕ Cancelada');
+      concluirBtn.addEventListener('click', () => requireAuth(async () => {
+        concluirBtn.disabled = true; cancelarBtn.disabled = true;
+        if (await agendaMarcarConcluida(m)) { itens = itens.filter(x => x.id !== m.id); renderLista(); }
+        else { concluirBtn.disabled = false; cancelarBtn.disabled = false; }
+      }));
+      cancelarBtn.addEventListener('click', () => requireAuth(async () => {
+        concluirBtn.disabled = true; cancelarBtn.disabled = true;
+        if (await agendaMarcarCanceladaAtrasada(m)) { itens = itens.filter(x => x.id !== m.id); renderLista(); }
+        else { concluirBtn.disabled = false; cancelarBtn.disabled = false; }
+      }));
+      listaEl.appendChild(h('div', { class: 'card card-pad agenda-atrasada-card' }, [
+        h('div', { style: 'display:flex;justify-content:space-between;gap:10px;margin-bottom:8px;' }, [
+          h('p', { class: 'cell-strong', style: 'margin:0;' }, m.nomeCliente || '—'),
+          h('span', { class: 'badge badge-orange' }, `${formatDate(m.data)} · ${normalizarHora(m.hora)}–${horaFimTxt}`),
+        ]),
+        h('p', { class: 'cell-muted', style: 'margin:0 0 3px;font-size:12.5px;' }, `📞 ${m.contacto || '—'}`),
+        h('p', { class: 'cell-muted', style: 'margin:0 0 3px;font-size:12.5px;' }, `${m.tipoConsulta || 'Consulta/Serviço'} · ${prestador.nome}`),
+        m.observacoes ? h('p', { class: 'cell-muted', style: 'margin:0 0 8px;font-size:12.5px;font-style:italic;' }, `"${m.observacoes}"`) : h('div', { style: 'margin-bottom:8px;' }),
+        h('div', { style: 'display:flex;gap:8px;' }, [concluirBtn, cancelarBtn]),
+      ]));
+    });
+  }
+  renderLista();
+  const panel = h('div', { class: 'modal-panel', style: 'max-width:480px;' }, [
+    h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;' }, [
+      h('p', { class: 'modal-title', style: 'margin:0;' }, '⏰ Marcações por Atualizar'),
+      h('button', { class: 'close-btn', onclick: fechar, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
+    ]),
+    h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' },
+      `${itens.length > 1 ? 'Estas marcações já terminaram' : 'Esta marcação já terminou'} há mais de 30 minutos e continuam por atualizar — confirme o que aconteceu.`),
+    h('div', { style: 'max-height:60vh;overflow-y:auto;display:flex;flex-direction:column;gap:10px;' }, [listaEl]),
+  ]);
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+}
+
 function buildAgendaPage(container, goTo, prestadorKey) {
   const prestador = PRESTADORES_AGENDA.find(p => p.key === prestadorKey);
 
@@ -3850,6 +3959,30 @@ function buildAgendaPage(container, goTo, prestadorKey) {
     wrap.appendChild(buildNotaRapidaWidget(`agenda_${prestadorKey}`, 'Bloco de Notas'));
     return wrap;
   }
+
+  // ---- Verificação de Marcações Atrasadas (>30min) — SÓ nesta Agenda ----
+  // Corre ao abrir a página (gatilho a) e volta a verificar sozinha a cada
+  // minuto enquanto esta Agenda continuar aberta no ecrã (gatilho b), para
+  // apanhar o momento exato em que uma marcação completa os 30 minutos de
+  // atraso. Ignoradas nesta sessão (fechadas sem ação) não voltam a
+  // incomodar enquanto a página não for reaberta. O temporizador para-se
+  // sozinho assim que o `container` desta página sai do ecrã — nunca
+  // continua a correr depois de se navegar para outra secção.
+  let modalAtrasadasAberto = false;
+  const ignoradasNestaSessao = new Set();
+  function verificarMarcacoesAtrasadas() {
+    if (!container.isConnected) { clearInterval(watcherAtrasadas); return; }
+    if (modalAtrasadasAberto) return;
+    const atrasadas = agendaMarcacoesAtrasadas(prestadorKey, ignoradasNestaSessao);
+    if (!atrasadas.length) return;
+    modalAtrasadasAberto = true;
+    abrirModalMarcacoesAtrasadas(atrasadas, prestador, (idsPorTratar) => {
+      idsPorTratar.forEach(id => ignoradasNestaSessao.add(id));
+      modalAtrasadasAberto = false;
+    });
+  }
+  const watcherAtrasadas = setInterval(verificarMarcacoesAtrasadas, 60000);
+  setTimeout(verificarMarcacoesAtrasadas, 400); // gatilho (a): logo ao abrir, depois do 1º render
 
   rerender();
 }
