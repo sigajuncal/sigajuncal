@@ -351,15 +351,17 @@
   .doc-pagamento-symbol{font-size:16pt;line-height:1;flex-shrink:0;}
   .doc-pagamento-box.doc-pagamento-ok{border-width:2px;}
   .doc-pagamento-box.doc-pagamento-alerta{border:3px dashed #000;font-size:16pt;padding:14px 18px;}
-  /* Variante de 2 linhas da caixa de destaque — quando há troco a dar, a
-     linha 1 (valor a cobrar) mantém-se igual, e ganha uma 2ª linha por
-     baixo com o valor entregue pelo utente e o troco a devolver, separada
-     por uma linha tracejada fina para não se confundir com o valor total. */
+  /* Bloco de detalhe do troco — 3 linhas por extenso e sem ambiguidade
+     (Valor a Pagar pelo Cliente / Valor Entregue em Notas-Moedas / TROCO A
+     LEVAR PELA FARMÁCIA), a última bem mais forte que as outras duas para
+     ser impossível de confundir qual delas é o troco a dar ao cliente. */
   .doc-pagamento-alerta-troco{flex-direction:column;align-items:stretch;gap:10px;}
   .doc-pagamento-linha1{display:flex;align-items:center;gap:12px;}
-  .doc-pagamento-troco-linha{display:flex;align-items:center;flex-wrap:wrap;gap:10px;
-    font-size:12pt;padding-top:9px;border-top:2px dashed #000;}
-  .doc-pagamento-troco-sep{opacity:.4;font-weight:400;}
+  .doc-pagamento-troco-bloco{display:flex;flex-direction:column;gap:5px;padding-top:10px;border-top:2px dashed #000;font-size:11pt;}
+  .doc-pagamento-troco-linha-simples{display:flex;align-items:baseline;justify-content:space-between;gap:12px;font-weight:600;}
+  .doc-pagamento-troco-destaque{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
+    font-weight:800;font-size:14pt;margin-top:4px;padding-top:6px;border-top:1px solid #000;}
+  .doc-pagamento-troco-valor{white-space:nowrap;}
   /* Espaço em branco para apontamentos manuais do estafeta, no Formulário
      de Entrega impresso — nunca mostra o texto das Observações da app. */
   .doc-obs-estafeta{margin-top:18px;}
@@ -756,6 +758,22 @@
     border-radius:6px;padding:2px 7px;text-transform:uppercase;letter-spacing:.02em;white-space:nowrap;}
   .progress-track{flex:1;height:8px;border-radius:6px;background:var(--pharm-100);overflow:hidden;min-width:70px;}
   .progress-fill{height:100%;border-radius:6px;transition:width .3s ease,background-color .3s ease;}
+  /* ---- Módulo Financeiro ---- */
+  .fin-kpi-card{min-height:110px;}
+  .fin-kpi-label{font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;
+    color:var(--pharm-500);margin:0;}
+  .fin-kpi-valor{font-size:24px;font-weight:800;color:var(--pharm-900);margin:4px 0 0;}
+  .fin-kpi-sub{font-size:12px;color:var(--pharm-500);margin:4px 0 0;}
+  .fin-kpi-sub.tone-positivo{color:#16a34a;font-weight:700;}
+  .fin-kpi-sub.tone-negativo{color:#dc2626;font-weight:700;}
+  .fin-liquido-preview-card{background:var(--pharm-50);border:1px solid var(--pharm-100);border-radius:10px;
+    padding:10px 14px;margin:4px 0 14px;}
+  .fin-liquido-preview{margin:0;font-size:14px;font-weight:800;color:var(--pharm-800);text-align:center;}
+  .fin-chart-row{display:flex;align-items:flex-end;gap:10px;min-width:max-content;padding:0 4px;}
+  .fin-chart-col{display:flex;flex-direction:column;align-items:center;gap:6px;width:34px;height:100%;}
+  .fin-chart-bar-track{flex:1;width:100%;display:flex;align-items:flex-end;}
+  .fin-chart-bar{width:100%;border-radius:4px 4px 0 0;min-height:2px;transition:height .3s ease;}
+  .fin-chart-label{font-size:9.5px;color:var(--pharm-500);white-space:nowrap;transform:rotate(0deg);}
 
   /* Entregas — ecrã de transição (escolha de farmácia) */
   .entrega-selector-grid{display:grid;grid-template-columns:1fr;gap:18px;max-width:520px;margin:32px 0 0;}
@@ -1962,6 +1980,9 @@ const NAV_SECTIONS = [
     { key: 'recolhas', label: 'Recolhas', icon: 'returnBox' },
     { key: 'calculadoras', label: 'Calculadoras PVP', icon: 'calculator' },
     { key: 'validades', label: 'Validades', icon: 'hourglass' },
+  ] },
+  { title: 'Financeiro', items: [
+    { key: 'financeiro', label: 'Financeiro', icon: 'fileDollar' },
   ] },
   { title: 'Gestão', items: [
     { key: 'reclamacoes', label: 'Reclamações', icon: 'bookOpen', tone: 'red' },
@@ -4254,6 +4275,8 @@ const TABLES = {
   usuarios: 'usuarios_app',
   empresasParceiras: 'empresas_parceiras',
   validades: 'farmacia_validades',
+  financeiro: 'faturacao_diaria',
+  objetivosMensais: 'objetivos_mensais',
 };
 
 function camelToSnake(s) { return s.replace(/[A-Z]/g, m => '_' + m.toLowerCase()); }
@@ -4438,6 +4461,13 @@ async function dbPermanentDelete(listKey, id) {
 // servidor.
 const CAMPOS_SO_UI_POR_TABELA = {
   entregas: ['entregaEmpresaParceira'],
+  // valorLiquido é uma coluna GERADA no Postgres (valor_bruto - valor_trocas,
+  // calculada sempre pelo próprio Supabase) — nunca pode ser enviada num
+  // INSERT/UPDATE, senão o Postgres rejeita com erro. É "só de leitura",
+  // mesmo sendo um dado de negócio real (ao contrário de entregaEmpresaParceira
+  // acima, que é puramente estado de UI) — a razão da exclusão é diferente,
+  // mas o mecanismo para a aplicar é exatamente o mesmo.
+  financeiro: ['valorLiquido'],
 };
 function limparCamposSoUI(listKey, record) {
   const remover = CAMPOS_SO_UI_POR_TABELA[listKey];
@@ -5253,6 +5283,8 @@ const STATE = {
   usuarios: [],
   empresasParceiras: [],
   validades: [],
+  financeiro: [],
+  objetivosMensais: [],
   mensagemDia: null,
   mensagensChat: [],
   documentosEmitidos: [],
@@ -5359,6 +5391,7 @@ function dateToISO(d) {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 function todayISO() { return dateToISO(new Date()); }
+function ontemISO() { const d = new Date(); d.setDate(d.getDate() - 1); return dateToISO(d); }
 function formatDateTime(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -9473,6 +9506,621 @@ function buildValidadesPage(container, goTo) {
       onEdit: openEditSelected,
       onDelete: removeSelecionados,
     }));
+
+    return wrap;
+  }
+
+  rerender();
+}
+
+/* =================================================================
+   FINANCEIRO — Faturação Diária (Líquida vs Bruta/com Trocas do Grupo)
+   ATENÇÃO (histórico importado): os ficheiros CSV de "Faturação do Grupo"
+   entregues só têm totais SEMANAIS/MENSAIS de Previsão e Real — não têm
+   granularidade diária nem separam Trocas do Grupo do resto. Por isso:
+   - HISTORICO_FATURACAO_MENSAL (abaixo) alimenta a Meta por omissão de
+     cada mês e o Gráfico de Evolução Mensal Homóloga 2025 vs 2026.
+   - A tabela `faturacao_diaria` arranca VAZIA — não há registos diários
+     nem separação Líquida/Trocas anteriores para importar; esses dados só
+     existem a partir do momento em que a equipa começar a registar dia a
+     dia através deste módulo (Gráfico de Composição fica vazio até lá).
+================================================================= */
+const HISTORICO_FATURACAO_MENSAL = [
+  { ano: 2025, mes: 3, mesNome: 'Março', previsao: 260000, real: 300340 },
+  { ano: 2025, mes: 4, mesNome: 'Abril', previsao: 255000, real: 297514 },
+  { ano: 2025, mes: 5, mesNome: 'Maio', previsao: 275000, real: 320411 },
+  { ano: 2025, mes: 6, mesNome: 'Junho', previsao: 270000, real: 289159 },
+  { ano: 2025, mes: 7, mesNome: 'Julho', previsao: 285000, real: 333852 },
+  { ano: 2025, mes: 8, mesNome: 'Agosto', previsao: 260000, real: 324072 },
+  { ano: 2025, mes: 9, mesNome: 'Setembro', previsao: 270000, real: 337515 },
+  { ano: 2025, mes: 10, mesNome: 'Outubro', previsao: 290000, real: 356026 },
+  { ano: 2025, mes: 11, mesNome: 'Novembro', previsao: 300000, real: 368231 },
+  { ano: 2025, mes: 12, mesNome: 'Dezembro', previsao: 300000, real: 394814 },
+  { ano: 2026, mes: 1, mesNome: 'Janeiro', previsao: 360000, real: 378442 },
+  { ano: 2026, mes: 2, mesNome: 'Fevereiro', previsao: 290000, real: 350080 },
+  { ano: 2026, mes: 3, mesNome: 'Março', previsao: 340000, real: 401041 },
+  { ano: 2026, mes: 4, mesNome: 'Abril', previsao: 340000, real: 397212 },
+  { ano: 2026, mes: 5, mesNome: 'Maio', previsao: 360000, real: 427419 },
+  { ano: 2026, mes: 6, mesNome: 'Junho', previsao: 330000, real: 397528 },
+  { ano: 2026, mes: 7, mesNome: 'Julho', previsao: 375000, real: 422967 },
+];
+const MESES_PT_NOMES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+
+function financeiroFormatarEuro(v, casas) {
+  return (Number(v) || 0).toLocaleString('pt-PT', { style: 'currency', currency: 'EUR', minimumFractionDigits: casas === undefined ? 0 : casas, maximumFractionDigits: casas === undefined ? 0 : casas });
+}
+function financeiroRegistoDoDia(dataISO) {
+  return (STATE.financeiro || []).find(r => r.data === dataISO);
+}
+// UPSERT ao nível da app: se já existe registo para a data, atualiza-o em
+// vez de duplicar (a coluna `data` também tem UNIQUE na base de dados,
+// como rede de segurança final). Reaproveita os dbInsert/dbUpdate
+// genéricos — com auto-limpeza de colunas em falta incluída de origem.
+async function financeiroGuardarDia(dataISO, valorBruto, valorTrocas) {
+  const existente = financeiroRegistoDoDia(dataISO);
+  const payload = { data: dataISO, valorBruto: valorBruto, valorTrocas: valorTrocas || 0, registadoPor: currentUserName() };
+  if (existente) {
+    const updated = await dbUpdate('financeiro', existente.id, payload);
+    if (updated) { STATE.financeiro = STATE.financeiro.map(r => r.id === existente.id ? updated : r); return updated; }
+    return null;
+  }
+  const created = await dbInsert('financeiro', payload);
+  if (created) { STATE.financeiro = [created, ...STATE.financeiro]; return created; }
+  return null;
+}
+function financeiroRegistosDoMes(ano, mes) {
+  const prefixo = `${ano}-${pad2(mes)}`;
+  return (STATE.financeiro || []).filter(r => (r.data || '').startsWith(prefixo));
+}
+function financeiroTotalMes(ano, mes, campo) {
+  return financeiroRegistosDoMes(ano, mes).reduce((s, r) => s + (parseFloat(r[campo]) || 0), 0);
+}
+function financeiroMediaDiariaMes(ano, mes, campo) {
+  const registos = financeiroRegistosDoMes(ano, mes);
+  if (!registos.length) return 0;
+  return financeiroTotalMes(ano, mes, campo) / registos.length;
+}
+// Meta/Previsão do mês: usa primeiro um objetivo gravado em objetivos_mensais
+// (editável para qualquer mês — presente, passado ou futuro — via
+// abrirModalDefinirMeta), senão cai para a Previsão do histórico importado
+// dos CSV; devolve null se não houver nenhuma das duas.
+function financeiroMetaDoMes(ano, mes) {
+  const r = (STATE.objetivosMensais || []).find(x => x.ano === ano && x.mes === mes);
+  if (r && r.meta) return parseFloat(r.meta);
+  const hist = HISTORICO_FATURACAO_MENSAL.find(h => h.ano === ano && h.mes === mes);
+  return (hist && hist.previsao) ? hist.previsao : null;
+}
+// UPSERT ao nível da app — mesmo padrão de financeiroGuardarDia.
+async function financeiroDefinirMetaDoMes(ano, mes, valor) {
+  const existente = (STATE.objetivosMensais || []).find(x => x.ano === ano && x.mes === mes);
+  const payload = { ano, mes, meta: valor };
+  if (existente) {
+    const updated = await dbUpdate('objetivosMensais', existente.id, payload);
+    if (updated) { STATE.objetivosMensais = STATE.objetivosMensais.map(x => x.id === existente.id ? updated : x); return updated; }
+    return null;
+  }
+  const created = await dbInsert('objetivosMensais', payload);
+  if (created) { STATE.objetivosMensais = [created, ...STATE.objetivosMensais]; return created; }
+  return null;
+}
+// Total mensal "Real" para o Gráfico de Evolução Homóloga — usa o
+// histórico importado quando existe (2025 completo, 2026 até Julho);
+// para meses fora desse histórico, soma os registos diários reais já
+// lançados neste módulo. O histórico do CSV nunca distinguia Trocas do
+// resto, por isso conta sempre como valor "bruto".
+function financeiroTotalMensalReal(ano, mes, liquido) {
+  const hist = HISTORICO_FATURACAO_MENSAL.find(h => h.ano === ano && h.mes === mes);
+  if (hist && hist.real) return hist.real;
+  return financeiroTotalMes(ano, mes, liquido ? 'valorLiquido' : 'valorBruto');
+}
+
+function buildFinanceiroBarraChart(itens, alturaPx) {
+  const max = Math.max(1, ...itens.map(it => it.valor));
+  return h('div', { class: 'fin-chart-row', style: `height:${alturaPx}px;` }, itens.map(it =>
+    h('div', { class: 'fin-chart-col', title: `${it.rotulo}: ${financeiroFormatarEuro(it.valor)}` }, [
+      h('div', { class: 'fin-chart-bar-track' }, [
+        h('div', { class: 'fin-chart-bar', style: `height:${Math.max(2, (it.valor / max) * 100)}%;background:${it.cor};` }),
+      ]),
+      h('span', { class: 'fin-chart-label' }, it.rotulo),
+    ])
+  ));
+}
+
+function abrirModalDefinirMeta(anoDefault, mesDefault, onGuardado) {
+  const overlay = h('div', { class: 'modal-overlay' });
+  function close() { document.removeEventListener('keydown', onKeydown); overlay.remove(); }
+  function onKeydown(e) { if (e.key === 'Escape') close(); }
+  document.addEventListener('keydown', onKeydown);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  const anoAtualReal = new Date().getFullYear();
+  const anos = [];
+  for (let a = anoAtualReal - 1; a <= anoAtualReal + 2; a++) anos.push(a);
+
+  const mesSelect = h('select', { class: 'select' }, MESES_PT_NOMES.map((nome, i) => h('option', { value: String(i + 1) }, nome)));
+  mesSelect.value = String(mesDefault);
+  const anoSelect = h('select', { class: 'select' }, anos.map(a => h('option', { value: String(a) }, String(a))));
+  anoSelect.value = String(anoDefault);
+  const metaInput = h('input', { class: 'input', type: 'number', step: '0.01', min: '0', placeholder: '0.00' });
+  const errorEl = h('p', { class: 'form-error' }, '');
+  errorEl.style.display = 'none';
+
+  function carregarMetaAtual() {
+    const m = financeiroMetaDoMes(parseInt(anoSelect.value, 10), parseInt(mesSelect.value, 10));
+    metaInput.value = m || '';
+  }
+  mesSelect.addEventListener('change', carregarMetaAtual);
+  anoSelect.addEventListener('change', carregarMetaAtual);
+  carregarMetaAtual();
+
+  const guardarBtn = h('button', { class: 'btn btn-primary' }, 'Guardar');
+  guardarBtn.addEventListener('click', () => requireAuth(async () => {
+    const valor = parseFloat(String(metaInput.value).replace(',', '.'));
+    if (isNaN(valor) || valor <= 0) {
+      errorEl.textContent = 'Por favor, indique um valor de Meta válido.'; errorEl.style.display = ''; return;
+    }
+    errorEl.style.display = 'none';
+    guardarBtn.disabled = true; guardarBtn.textContent = 'A guardar…';
+    const resultado = await financeiroDefinirMetaDoMes(parseInt(anoSelect.value, 10), parseInt(mesSelect.value, 10), valor);
+    if (resultado) { close(); onGuardado(); }
+    else { guardarBtn.disabled = false; guardarBtn.textContent = 'Guardar'; showDbErrorToast('Não foi possível guardar a Meta'); }
+  }));
+  const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: close }, 'Cancelar');
+
+  const panel = h('div', { class: 'modal-panel', style: 'max-width:380px;' }, [
+    h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;' }, [
+      h('p', { class: 'modal-title', style: 'margin:0;' }, 'Definir Meta / Objetivo'),
+      h('button', { class: 'close-btn', onclick: close, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
+    ]),
+    h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, 'Pode definir ou alterar a Meta de qualquer mês — passado, presente ou já planeado.'),
+    h('div', { class: 'form-grid' }, [
+      h('div', { class: 'field', style: 'flex:1;' }, [h('label', {}, 'Mês'), mesSelect]),
+      h('div', { class: 'field field-sm' }, [h('label', {}, 'Ano'), anoSelect]),
+    ]),
+    h('div', { class: 'field' }, [h('label', {}, 'Meta / Objetivo (€)'), metaInput]),
+    errorEl,
+    h('div', { class: 'form-actions' }, [guardarBtn, cancelBtn]),
+  ]);
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+  setTimeout(() => metaInput.focus(), 60);
+}
+
+function abrirModalRegistarFaturacao(onGuardado) {
+  const overlay = h('div', { class: 'modal-overlay' });
+  function close() { document.removeEventListener('keydown', onKeydown); overlay.remove(); }
+  function onKeydown(e) { if (e.key === 'Escape') close(); }
+  document.addEventListener('keydown', onKeydown);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  let saving = false;
+  let errorMsg = '';
+  const dataInput = h('input', { class: 'input', type: 'date', max: todayISO() });
+  dataInput.value = ontemISO();
+  const brutoInput = h('input', { class: 'input', type: 'number', step: '0.01', min: '0', placeholder: '0.00', autofocus: 'autofocus' });
+  const trocasInput = h('input', { class: 'input', type: 'number', step: '0.01', min: '0', placeholder: '0.00 (opcional)' });
+  const liquidoPreview = h('p', { class: 'fin-liquido-preview' }, 'Faturação Líquida Real: 0,00 €');
+  const errorEl = h('p', { class: 'form-error' }, '');
+  errorEl.style.display = 'none';
+
+  function atualizarPreview() {
+    const bruto = parseFloat(brutoInput.value) || 0;
+    const trocas = parseFloat(trocasInput.value) || 0;
+    liquidoPreview.textContent = `Faturação Líquida Real: ${financeiroFormatarEuro(bruto - trocas, 2)}`;
+  }
+  brutoInput.addEventListener('input', atualizarPreview);
+  trocasInput.addEventListener('input', atualizarPreview);
+  dataInput.addEventListener('change', () => {
+    const existente = financeiroRegistoDoDia(dataInput.value);
+    if (existente) {
+      brutoInput.value = existente.valorBruto || '';
+      trocasInput.value = existente.valorTrocas || '';
+      atualizarPreview();
+    }
+  });
+
+  const guardarBtn = h('button', { class: 'btn btn-primary', onclick: null }, 'Guardar');
+  guardarBtn.addEventListener('click', () => requireAuth(async () => {
+    const bruto = parseFloat(brutoInput.value);
+    if (!dataInput.value || isNaN(bruto) || bruto < 0) {
+      errorMsg = 'Por favor, indique a Data e a Faturação Bruta (€).';
+      errorEl.textContent = errorMsg; errorEl.style.display = ''; return;
+    }
+    errorEl.style.display = 'none';
+    saving = true; guardarBtn.disabled = true; guardarBtn.textContent = 'A guardar…';
+    const trocas = parseFloat(trocasInput.value) || 0;
+    const resultado = await financeiroGuardarDia(dataInput.value, bruto, trocas);
+    saving = false;
+    if (resultado) { close(); onGuardado(); }
+    else { guardarBtn.disabled = false; guardarBtn.textContent = 'Guardar'; showDbErrorToast('Não foi possível guardar a faturação do dia'); }
+  }));
+  const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: close }, 'Cancelar');
+
+  const panel = h('div', { class: 'modal-panel', style: 'max-width:400px;' }, [
+    h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;' }, [
+      h('p', { class: 'modal-title', style: 'margin:0;' }, 'Registar Faturação do Dia'),
+      h('button', { class: 'close-btn', onclick: close, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
+    ]),
+    h('div', { class: 'field' }, [h('label', {}, 'Data'), dataInput,
+      h('p', { class: 'field-helper-text' }, 'Pode escolher qualquer dia anterior para corrigir ou completar um registo.')]),
+    h('div', { class: 'field' }, [h('label', {}, 'Faturação Bruta (€)'), brutoInput]),
+    h('div', { class: 'field' }, [h('label', {}, 'Trocas do Grupo (€)'), trocasInput,
+      h('p', { class: 'field-helper-text' }, 'Valor de trocas/cedências do grupo — opcional, assume 0.')]),
+    h('div', { class: 'fin-liquido-preview-card' }, [liquidoPreview]),
+    errorEl,
+    h('div', { class: 'form-actions' }, [guardarBtn, cancelBtn]),
+  ]);
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+  setTimeout(() => brutoInput.focus(), 60);
+}
+
+// ---- Exportação CSV ----
+function financeiroRegistosNoIntervalo(dataInicio, dataFim) {
+  return (STATE.financeiro || [])
+    .filter(r => r.data >= dataInicio && r.data <= dataFim)
+    .sort((a, b) => (a.data || '').localeCompare(b.data || ''));
+}
+function financeiroGerarCSV(dataInicio, dataFim) {
+  const linhas = financeiroRegistosNoIntervalo(dataInicio, dataFim);
+  const cabecalho = ['Data', 'Faturação Bruta (€)', 'Trocas do Grupo (€)', 'Faturação Líquida (€)', 'Objetivo do Mês (€)', 'Registado Por'];
+  const numPt = (v) => (Number(v) || 0).toFixed(2).replace('.', ',');
+  const corpo = linhas.map(r => {
+    const [ano, mes] = r.data.split('-').map(Number);
+    const meta = financeiroMetaDoMes(ano, mes);
+    return [
+      formatDate(r.data), numPt(r.valorBruto), numPt(r.valorTrocas), numPt(r.valorLiquido),
+      meta ? numPt(meta) : '', r.registadoPor || '',
+    ];
+  });
+  const escapar = (v) => /[;"\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
+  return [cabecalho, ...corpo].map(l => l.map(escapar).join(';')).join('\r\n');
+}
+function financeiroDescarregarCSV(dataInicio, dataFim) {
+  const csv = financeiroGerarCSV(dataInicio, dataFim);
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' }); // BOM: acentos corretos ao abrir no Excel PT
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `financeiro_${dataInicio}_a_${dataFim}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+// Seletor de período reutilizável — Mês/Ano ou Intervalo de Datas
+// personalizado — partilhado pelos modais de Exportar CSV e Relatório PDF.
+function buildSeletorPeriodo(onMudar) {
+  let modo = 'mes'; // 'mes' | 'intervalo'
+  const hoje = new Date();
+  const anos = []; for (let a = hoje.getFullYear() - 1; a <= hoje.getFullYear() + 1; a++) anos.push(a);
+  const modoMesBtn = h('button', { class: 'gaveta-tipo-btn ativo', type: 'button' }, 'Mês / Ano');
+  const modoIntervaloBtn = h('button', { class: 'gaveta-tipo-btn', type: 'button' }, 'Intervalo de Datas');
+  const mesSelect = h('select', { class: 'select' }, MESES_PT_NOMES.map((nome, i) => h('option', { value: String(i + 1) }, nome)));
+  mesSelect.value = String(hoje.getMonth() + 1);
+  const anoSelect = h('select', { class: 'select' }, anos.map(a => h('option', { value: String(a) }, String(a))));
+  anoSelect.value = String(hoje.getFullYear());
+  const blocoMes = h('div', { class: 'form-grid' }, [
+    h('div', { class: 'field', style: 'flex:1;' }, [h('label', {}, 'Mês'), mesSelect]),
+    h('div', { class: 'field field-sm' }, [h('label', {}, 'Ano'), anoSelect]),
+  ]);
+  const dataInicioInput = h('input', { class: 'input', type: 'date', max: todayISO() });
+  const dataFimInput = h('input', { class: 'input', type: 'date', max: todayISO() });
+  dataInicioInput.value = dateToISO(new Date(hoje.getFullYear(), hoje.getMonth(), 1));
+  dataFimInput.value = todayISO();
+  const blocoIntervalo = h('div', { class: 'form-grid', style: 'display:none;' }, [
+    h('div', { class: 'field' }, [h('label', {}, 'Data Inicial'), dataInicioInput]),
+    h('div', { class: 'field' }, [h('label', {}, 'Data Final'), dataFimInput]),
+  ]);
+  function obterIntervalo() {
+    if (modo === 'mes') {
+      const ano = parseInt(anoSelect.value, 10), mes = parseInt(mesSelect.value, 10);
+      const ini = dateToISO(new Date(ano, mes - 1, 1));
+      const fim = dateToISO(new Date(ano, mes, 0));
+      return { dataInicio: ini, dataFim: fim, rotulo: `${MESES_PT_NOMES[mes - 1]} de ${ano}` };
+    }
+    return { dataInicio: dataInicioInput.value, dataFim: dataFimInput.value, rotulo: `${formatDate(dataInicioInput.value)} a ${formatDate(dataFimInput.value)}` };
+  }
+  function trocarModo(novoModo) {
+    modo = novoModo;
+    modoMesBtn.classList.toggle('ativo', modo === 'mes');
+    modoIntervaloBtn.classList.toggle('ativo', modo === 'intervalo');
+    blocoMes.style.display = modo === 'mes' ? '' : 'none';
+    blocoIntervalo.style.display = modo === 'intervalo' ? '' : 'none';
+    if (onMudar) onMudar();
+  }
+  modoMesBtn.addEventListener('click', () => trocarModo('mes'));
+  modoIntervaloBtn.addEventListener('click', () => trocarModo('intervalo'));
+  [mesSelect, anoSelect, dataInicioInput, dataFimInput].forEach(el => el.addEventListener('change', () => { if (onMudar) onMudar(); }));
+  const wrap = h('div', {}, [
+    h('div', { class: 'gaveta-tipo-envio' }, [modoMesBtn, modoIntervaloBtn]),
+    blocoMes, blocoIntervalo,
+  ]);
+  return { el: wrap, obterIntervalo };
+}
+function abrirModalExportarCSV() {
+  const overlay = h('div', { class: 'modal-overlay' });
+  function close() { overlay.remove(); }
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  const seletor = buildSeletorPeriodo();
+  const exportarBtn = h('button', { class: 'btn btn-primary' }, 'Exportar CSV');
+  exportarBtn.addEventListener('click', () => {
+    const { dataInicio, dataFim } = seletor.obterIntervalo();
+    if (dataInicio > dataFim) { showToast('A data inicial não pode ser depois da data final.', 'error'); return; }
+    financeiroDescarregarCSV(dataInicio, dataFim);
+    close();
+  });
+  const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: close }, 'Cancelar');
+  const panel = h('div', { class: 'modal-panel', style: 'max-width:400px;' }, [
+    h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;' }, [
+      h('p', { class: 'modal-title', style: 'margin:0;' }, 'Exportar CSV'),
+      h('button', { class: 'close-btn', onclick: close, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
+    ]),
+    h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, 'Data, Faturação Bruta, Trocas, Faturação Líquida, Objetivo do Mês e Registado Por.'),
+    seletor.el,
+    h('div', { class: 'form-actions', style: 'margin-top:14px;' }, [exportarBtn, cancelBtn]),
+  ]);
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+}
+
+// ---- Relatório Executivo PDF ----
+function financeiroResumoPeriodo(dataInicio, dataFim) {
+  const registos = financeiroRegistosNoIntervalo(dataInicio, dataFim);
+  const totalBruto = registos.reduce((s, r) => s + (parseFloat(r.valorBruto) || 0), 0);
+  const totalTrocas = registos.reduce((s, r) => s + (parseFloat(r.valorTrocas) || 0), 0);
+  const totalLiquido = registos.reduce((s, r) => s + (parseFloat(r.valorLiquido) || 0), 0);
+  const mediaDiariaLiquida = registos.length ? totalLiquido / registos.length : 0;
+  // Meta do período: soma da Meta de cada mês tocado pelo intervalo.
+  const mesesTocados = new Set(registos.map(r => r.data.slice(0, 7)));
+  if (!mesesTocados.size) { // sem registos — usa na mesma os meses do próprio intervalo, para a % não ficar sempre vazia num período futuro/vazio
+    let d = new Date(dataInicio + 'T00:00:00');
+    const fim = new Date(dataFim + 'T00:00:00');
+    while (d <= fim) { mesesTocados.add(dateToISO(d).slice(0, 7)); d.setMonth(d.getMonth() + 1, 1); }
+  }
+  let metaPeriodo = 0, metaConhecida = false;
+  mesesTocados.forEach(chave => {
+    const [a, m] = chave.split('-').map(Number);
+    const meta = financeiroMetaDoMes(a, m);
+    if (meta) { metaPeriodo += meta; metaConhecida = true; }
+  });
+  const pctConcretizacao = metaConhecida && metaPeriodo > 0 ? (totalLiquido / metaPeriodo) * 100 : null;
+  return { registos, totalBruto, totalTrocas, totalLiquido, mediaDiariaLiquida, metaPeriodo, pctConcretizacao };
+}
+function buildRelatorioFinanceiroDoc(dataInicio, dataFim, rotuloPeriodo) {
+  const resumo = financeiroResumoPeriodo(dataInicio, dataFim);
+  const linhaResumo = (label, valor) => h('tr', {}, [
+    h('td', { style: 'border:1px solid #94a3b8;padding:5px 8px;font-size:10.5px;font-weight:700;' }, label),
+    h('td', { style: 'border:1px solid #94a3b8;padding:5px 8px;font-size:10.5px;text-align:right;' }, valor),
+  ]);
+  const tabelaResumo = h('table', { style: 'width:100%;border-collapse:collapse;margin:10px 0 16px;' }, [
+    h('tbody', {}, [
+      linhaResumo('Total Faturado (Bruto)', financeiroFormatarEuro(resumo.totalBruto, 2)),
+      linhaResumo('Total Faturado (Líquido)', financeiroFormatarEuro(resumo.totalLiquido, 2)),
+      linhaResumo('Total de Trocas do Grupo', financeiroFormatarEuro(resumo.totalTrocas, 2)),
+      linhaResumo('Média Diária Líquida', financeiroFormatarEuro(resumo.mediaDiariaLiquida, 2)),
+      linhaResumo('% de Concretização do Objetivo', resumo.pctConcretizacao === null ? 'Sem Objetivo definido' : `${resumo.pctConcretizacao.toFixed(1)}%`),
+    ]),
+  ]);
+  const itensGrafico = resumo.registos.map(r => ({
+    rotulo: formatDate(r.data).slice(0, 5), valor: parseFloat(r.valorLiquido) || 0, cor: '#16a34a',
+  }));
+  const grafico = itensGrafico.length
+    ? h('div', { style: 'margin:0 0 18px;' }, [buildFinanceiroBarraChart(itensGrafico, 110)])
+    : h('p', { style: 'font-size:10.5px;color:#64748b;margin:0 0 18px;' }, 'Sem registos diários neste período.');
+  const cabecalho = [
+    buildDocLetterhead(),
+    h('h1', { class: 'doc-title', style: 'font-size:16px;letter-spacing:.02em;text-transform:none;margin-bottom:2px;' }, 'Relatório Financeiro — Farmácia Juncal'),
+    h('p', { style: 'font-size:11px;color:#334155;margin:0 0 2px;' }, `Período analisado: ${rotuloPeriodo}`),
+    h('p', { style: 'font-size:10px;color:#64748b;margin:0 0 4px;' }, `Data de emissão: ${formatDate(todayISO())}`),
+    h('h3', { style: 'font-size:12px;margin:14px 0 0;' }, 'Resumo dos KPIs'),
+    tabelaResumo,
+    h('h3', { style: 'font-size:12px;margin:0 0 0;' }, 'Evolução da Faturação Líquida Diária'),
+    grafico,
+    h('h3', { style: 'font-size:12px;margin:0 0 0;' }, 'Registos Diários Detalhados'),
+  ];
+  return buildListaMultiPaginaDoc({
+    cabecalho,
+    colunas: [
+      { label: 'Data', width: '18%', align: 'left' },
+      { label: 'Bruto (€)', width: '18%', align: 'right' },
+      { label: 'Trocas (€)', width: '18%', align: 'right' },
+      { label: 'Líquido (€)', width: '18%', align: 'right' },
+      { label: 'Registado Por', width: '28%', align: 'left', nowrap: true },
+    ],
+    linhas: resumo.registos.map(r => [formatDate(r.data), financeiroFormatarEuro(r.valorBruto, 2), financeiroFormatarEuro(r.valorTrocas, 2), financeiroFormatarEuro(r.valorLiquido, 2), r.registadoPor || '—']),
+    linhasPrimeira: 10,
+    linhasResto: 45,
+    semDadosTexto: 'Sem registos de faturação diária neste período.',
+    linhaTotalFinal: ['Total', financeiroFormatarEuro(resumo.totalBruto, 2), financeiroFormatarEuro(resumo.totalTrocas, 2), financeiroFormatarEuro(resumo.totalLiquido, 2), ''],
+  });
+}
+function abrirModalRelatorioPDF() {
+  const overlay = h('div', { class: 'modal-overlay' });
+  function close() { overlay.remove(); }
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  const seletor = buildSeletorPeriodo();
+
+  // Atalhos rápidos: Mês Atual / Mês Anterior — só afinam o seletor Mês/Ano
+  // já visível, sem precisar de um modo à parte.
+  const hoje = new Date();
+  const atalhoAtualBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 10px;' }, 'Mês Atual');
+  const atalhoAnteriorBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 10px;' }, 'Mês Anterior');
+  atalhoAtualBtn.addEventListener('click', () => { seletor.el.querySelectorAll('select')[0].value = String(hoje.getMonth() + 1); seletor.el.querySelectorAll('select')[1].value = String(hoje.getFullYear()); });
+  atalhoAnteriorBtn.addEventListener('click', () => {
+    const anterior = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
+    seletor.el.querySelectorAll('select')[0].value = String(anterior.getMonth() + 1);
+    seletor.el.querySelectorAll('select')[1].value = String(anterior.getFullYear());
+  });
+
+  const imprimirBtn = h('button', { class: 'btn btn-secondary' }, 'Imprimir');
+  const pdfBtn = h('button', { class: 'btn btn-primary' }, 'Descarregar PDF');
+  imprimirBtn.addEventListener('click', () => {
+    const { dataInicio, dataFim, rotulo } = seletor.obterIntervalo();
+    if (dataInicio > dataFim) { showToast('A data inicial não pode ser depois da data final.', 'error'); return; }
+    imprimirDocumento(buildRelatorioFinanceiroDoc(dataInicio, dataFim, rotulo), { titulo: `relatorio_financeiro_${dataInicio}_a_${dataFim}` });
+    close();
+  });
+  pdfBtn.addEventListener('click', async () => {
+    const { dataInicio, dataFim, rotulo } = seletor.obterIntervalo();
+    if (dataInicio > dataFim) { showToast('A data inicial não pode ser depois da data final.', 'error'); return; }
+    pdfBtn.disabled = true; pdfBtn.textContent = 'A gerar…';
+    await baixarPdfDocumento(buildRelatorioFinanceiroDoc(dataInicio, dataFim, rotulo), `relatorio_financeiro_${dataInicio}_a_${dataFim}.pdf`);
+    pdfBtn.disabled = false; pdfBtn.textContent = 'Descarregar PDF';
+    close();
+  });
+  const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: close }, 'Cancelar');
+
+  const panel = h('div', { class: 'modal-panel', style: 'max-width:420px;' }, [
+    h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;' }, [
+      h('p', { class: 'modal-title', style: 'margin:0;' }, 'Gerar Relatório PDF'),
+      h('button', { class: 'close-btn', onclick: close, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
+    ]),
+    h('div', { style: 'display:flex;gap:8px;margin-bottom:12px;' }, [atalhoAtualBtn, atalhoAnteriorBtn]),
+    seletor.el,
+    h('p', { class: 'field-helper-text', style: 'margin:14px 0 0;' },
+      'Para períodos longos (vários meses), prefira "Imprimir" e escolha "Guardar como PDF" na caixa do browser — garante todas as páginas. "Descarregar PDF" é mais rápido para relatórios de 1 página.'),
+    h('div', { class: 'form-actions', style: 'margin-top:10px;' }, [pdfBtn, imprimirBtn, cancelBtn]),
+  ]);
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+}
+
+function buildFinanceiroPage(container, goTo) {
+  if (!isMasterUser()) { goTo('home'); return; }
+  let modoLiquido = true; // true = Faturação Líquida (sem Trocas) | false = Bruta (com Trocas)
+
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+
+  function build() {
+    const hoje = new Date();
+    const anoAtual = hoje.getFullYear(), mesAtual = hoje.getMonth() + 1;
+    const campo = modoLiquido ? 'valorLiquido' : 'valorBruto';
+
+    const wrap = h('div', { class: 'animate-in' });
+    wrap.appendChild(withBackButton(buildPageHeader('fileDollar', 'Financeiro', 'Faturação diária, líquida ou bruta (com Trocas do Grupo).', (STATE.financeiro || []).length), goTo));
+
+    // ---- Toggle Líquida / Bruta ----
+    const toggleLiq = h('button', { class: 'gaveta-tipo-btn' + (modoLiquido ? ' ativo' : ''), type: 'button' }, 'Faturação Líquida (Sem Trocas)');
+    const toggleBru = h('button', { class: 'gaveta-tipo-btn' + (!modoLiquido ? ' ativo tone-tarefa' : ''), type: 'button' }, 'Faturação Bruta (Com Trocas)');
+    toggleLiq.addEventListener('click', () => { modoLiquido = true; rerender(); });
+    toggleBru.addEventListener('click', () => { modoLiquido = false; rerender(); });
+    wrap.appendChild(h('div', { class: 'gaveta-tipo-envio', style: 'max-width:520px;' }, [toggleLiq, toggleBru]));
+
+    const registarBtn = h('button', { class: 'btn btn-primary', style: 'margin:14px 8px 18px 0;' }, [Icon('plus', { size: 14 }), ' Registar Faturação do Dia']);
+    registarBtn.addEventListener('click', () => requireAuth(() => abrirModalRegistarFaturacao(rerender)));
+    const csvBtn = h('button', { class: 'btn btn-secondary', style: 'margin:14px 8px 18px 0;font-size:12.5px;' }, [Icon('download', { size: 13 }), ' Exportar CSV']);
+    csvBtn.addEventListener('click', () => requireAuth(abrirModalExportarCSV));
+    const pdfBtn = h('button', { class: 'btn btn-secondary', style: 'margin:14px 0 18px;font-size:12.5px;' }, [Icon('printer', { size: 13 }), ' Gerar Relatório PDF']);
+    pdfBtn.addEventListener('click', () => requireAuth(abrirModalRelatorioPDF));
+    wrap.appendChild(h('div', {}, [registarBtn, csvBtn, pdfBtn]));
+
+    // ---- KPI Cards ----
+    const ontemISOAtual = ontemISO();
+    const registoOntem = financeiroRegistoDoDia(ontemISOAtual);
+    const valorOntem = registoOntem ? (parseFloat(registoOntem[campo]) || 0) : null;
+    const mediaMesAtual = financeiroMediaDiariaMes(anoAtual, mesAtual, campo);
+    const variacaoOntem = (valorOntem !== null && mediaMesAtual > 0) ? ((valorOntem - mediaMesAtual) / mediaMesAtual) * 100 : null;
+
+    const cardHoje = h('div', { class: 'card card-pad fin-kpi-card' }, [
+      h('p', { class: 'fin-kpi-label' }, 'Faturação de Ontem'),
+      h('p', { class: 'fin-kpi-valor' }, registoOntem ? financeiroFormatarEuro(valorOntem) : '—'),
+      h('p', { class: 'fin-kpi-sub' + (variacaoOntem === null ? '' : (variacaoOntem >= 0 ? ' tone-positivo' : ' tone-negativo')) },
+        variacaoOntem === null ? 'Ainda sem registo de ontem' : `${variacaoOntem >= 0 ? '▲' : '▼'} ${Math.abs(variacaoOntem).toFixed(1)}% vs média do mês`),
+    ]);
+
+    const totalMesAtual = financeiroTotalMes(anoAtual, mesAtual, campo);
+    const metaMesAtual = financeiroMetaDoMes(anoAtual, mesAtual);
+    const pctMeta = metaMesAtual ? (totalMesAtual / metaMesAtual) * 100 : null;
+    const editarMetaBtn = h('button', { class: 'btn-fab-sm tone-blue', title: 'Definir/Editar Meta do Mês', 'aria-label': 'Definir/Editar Meta do Mês' }, Icon('pencil', { size: 12, strokeWidth: 2.2 }));
+    editarMetaBtn.addEventListener('click', () => requireAuth(() => abrirModalDefinirMeta(anoAtual, mesAtual, rerender)));
+    const cardMes = h('div', { class: 'card card-pad fin-kpi-card' }, [
+      h('div', { style: 'display:flex;align-items:center;justify-content:space-between;' }, [
+        h('p', { class: 'fin-kpi-label', style: 'margin:0;' }, 'Faturação Mês Atual'),
+        editarMetaBtn,
+      ]),
+      h('p', { class: 'fin-kpi-valor' }, financeiroFormatarEuro(totalMesAtual)),
+      metaMesAtual ? h('div', { style: 'margin-top:6px;' }, [
+        h('div', { class: 'progress-track' }, [h('div', { class: 'progress-fill', style: `width:${Math.min(100, pctMeta)}%;background:${pctMeta >= 100 ? '#16a34a' : '#3b82f6'};` })]),
+        h('p', { class: 'fin-kpi-sub', style: 'margin-top:4px;' }, `${pctMeta.toFixed(0)}% da Meta (${financeiroFormatarEuro(metaMesAtual)})`),
+      ]) : h('p', { class: 'fin-kpi-sub' }, 'Sem Meta definida — clique no lápis para definir.'),
+    ]);
+
+    const diasNoMes = new Date(anoAtual, mesAtual, 0).getDate();
+    const projecaoMes = mediaMesAtual * diasNoMes;
+    let totalAnoAcumulado = 0;
+    for (let m = 1; m < mesAtual; m++) totalAnoAcumulado += financeiroTotalMensalReal(anoAtual, m, modoLiquido);
+    totalAnoAcumulado += totalMesAtual;
+    const fimAno = new Date(anoAtual, 11, 31);
+    const diasRestantesAno = Math.max(0, Math.round((fimAno - hoje) / 86400000));
+    const projecaoAno = totalAnoAcumulado + mediaMesAtual * diasRestantesAno;
+    const cardProjecao = h('div', { class: 'card card-pad fin-kpi-card' }, [
+      h('p', { class: 'fin-kpi-label' }, 'Projeção Mês & Ano'),
+      h('p', { class: 'fin-kpi-sub', style: 'margin:2px 0 0;' }, 'Mês'),
+      h('p', { class: 'fin-kpi-valor', style: 'font-size:19px;' }, mediaMesAtual > 0 ? financeiroFormatarEuro(projecaoMes) : '—'),
+      h('p', { class: 'fin-kpi-sub', style: 'margin:8px 0 0;' }, 'Ano'),
+      h('p', { class: 'fin-kpi-valor', style: 'font-size:19px;' }, mediaMesAtual > 0 ? financeiroFormatarEuro(projecaoAno) : '—'),
+    ]);
+
+    wrap.appendChild(h('div', { class: 'dash-grid', style: 'grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-bottom:24px;' }, [cardHoje, cardMes, cardProjecao]));
+
+    if (!metaMesAtual) {
+      wrap.appendChild(h('p', { class: 'field-helper-text', style: 'margin:-14px 0 20px;' },
+        'Sem histórico de Meta importado para este mês — defina-a manualmente no lápis do card "Faturação Mês Atual".'));
+    }
+
+    // ---- Gráfico 1: Evolução Mensal Homóloga 2025 vs 2026 ----
+    wrap.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:0 0 4px;' }, 'Evolução Mensal Homóloga — 2025 vs 2026'));
+    wrap.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 10px;' },
+      modoLiquido ? 'Valores totais mensais (histórico importado — sem separação de Trocas).' : 'Valores totais mensais (histórico importado — sem separação de Trocas).'));
+    const itensEvolucao = [];
+    MESES_PT_NOMES.forEach((nome, i) => {
+      const mes = i + 1;
+      const v25 = financeiroTotalMensalReal(2025, mes, modoLiquido);
+      const v26 = financeiroTotalMensalReal(2026, mes, modoLiquido);
+      if (v25) itensEvolucao.push({ rotulo: `${nome.slice(0, 3)} '25`, valor: v25, cor: '#94a3b8' });
+      if (v26) itensEvolucao.push({ rotulo: `${nome.slice(0, 3)} '26`, valor: v26, cor: '#3b82f6' });
+    });
+    wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:24px;overflow-x:auto;' }, [
+      itensEvolucao.length ? buildFinanceiroBarraChart(itensEvolucao, 180) : h('p', { class: 'cell-muted' }, 'Sem dados para mostrar.'),
+      h('div', { style: 'display:flex;gap:16px;margin-top:10px;font-size:11px;color:var(--pharm-500);' }, [
+        h('span', {}, [h('span', { style: 'display:inline-block;width:9px;height:9px;background:#94a3b8;border-radius:2px;margin-right:5px;' }), '2025']),
+        h('span', {}, [h('span', { style: 'display:inline-block;width:9px;height:9px;background:#3b82f6;border-radius:2px;margin-right:5px;' }), '2026']),
+      ]),
+    ]));
+
+    // ---- Gráfico 2: Composição de Volume (Líquida vs Trocas) ----
+    wrap.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:0 0 4px;' }, 'Composição de Volume — Líquida vs Trocas do Grupo'));
+    wrap.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 10px;' }, 'Só a partir dos registos diários lançados neste módulo — últimos meses com dados.'));
+    const mesesComDados = [...new Set((STATE.financeiro || []).map(r => (r.data || '').slice(0, 7)))].sort().slice(-6);
+    const itensComposicao = [];
+    mesesComDados.forEach(chave => {
+      const [a, m] = chave.split('-').map(Number);
+      const liq = financeiroTotalMes(a, m, 'valorLiquido');
+      const troc = financeiroTotalMes(a, m, 'valorTrocas');
+      const rotulo = `${MESES_PT_NOMES[m - 1].slice(0, 3)}/${String(a).slice(2)}`;
+      itensComposicao.push({ rotulo: rotulo + ' Líq.', valor: liq, cor: '#16a34a' });
+      if (troc > 0) itensComposicao.push({ rotulo: rotulo + ' Troc.', valor: troc, cor: '#f59e0b' });
+    });
+    wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:24px;overflow-x:auto;' }, [
+      itensComposicao.length ? buildFinanceiroBarraChart(itensComposicao, 160)
+        : h('p', { class: 'cell-muted' }, 'Ainda sem registos diários lançados — comece por "Registar Faturação do Dia".'),
+    ]));
+
+    // ---- Últimos registos ----
+    const recentes = (STATE.financeiro || []).slice().sort((a, b) => (b.data || '').localeCompare(a.data || '')).slice(0, 10);
+    if (recentes.length) {
+      wrap.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:0 0 10px;' }, 'Últimos Registos'));
+      wrap.appendChild(h('div', { class: 'table-wrap card' }, [
+        h('table', {}, [
+          h('thead', {}, h('tr', {}, ['Data', 'Bruto', 'Trocas', 'Líquido', 'Registado por'].map(t => h('th', {}, t)))),
+          h('tbody', {}, recentes.map(r => h('tr', {}, [
+            h('td', {}, formatDate(r.data)),
+            h('td', {}, financeiroFormatarEuro(r.valorBruto, 2)),
+            h('td', {}, financeiroFormatarEuro(r.valorTrocas, 2)),
+            h('td', { class: 'cell-strong' }, financeiroFormatarEuro(r.valorLiquido, 2)),
+            h('td', {}, r.registadoPor || '—'),
+          ]))),
+        ]),
+      ]));
+    }
 
     return wrap;
   }
@@ -13837,25 +14485,34 @@ function buildFormularioEntregaDoc(r) {
       h('span', {}, `PAGO${metodoTxt}`),
     ]);
   } else if (aCobrar) {
-    const valorTxt = (r.metodoPagamento === 'Dinheiro' && r.valorAPagar !== '' && r.valorAPagar !== undefined && r.valorAPagar !== null)
-      ? ` NO ATO DA ENTREGA: ${Number(r.valorAPagar).toFixed(2)}€`
-      : (r.metodoPagamento ? ` — ${r.metodoPagamento}` : '');
+    // Método + Valor SEMPRE juntos na mesma linha de destaque — nunca só
+    // um ou só o outro, para nunca haver margem para dúvidas sobre quanto
+    // cobrar nem como (ex: "A COBRAR — MB: 85,40 €").
+    const temValor = r.valorAPagar !== '' && r.valorAPagar !== undefined && r.valorAPagar !== null;
+    let sufixo = '';
+    if (r.metodoPagamento && temValor) sufixo = ` — ${r.metodoPagamento}: ${Number(r.valorAPagar).toFixed(2)}€`;
+    else if (r.metodoPagamento) sufixo = ` — ${r.metodoPagamento}`;
+    else if (temValor) sufixo = `: ${Number(r.valorAPagar).toFixed(2)}€`;
     const linha1 = h('div', { class: 'doc-pagamento-linha1' }, [
       h('span', { class: 'doc-pagamento-symbol' }, '[ ⚠ ]'),
-      h('span', {}, `A COBRAR${valorTxt}`),
+      h('span', {}, `A COBRAR${sufixo}`),
     ]);
-    // 2ª linha só aparece quando o pagamento é em Dinheiro, "Cliente
+    // 2ª/3ª linhas só aparecem quando o pagamento é em Dinheiro, "Cliente
     // necessita de troco?" está ativo, e há valores efetivamente gravados
     // para o Valor Entregue e o Troco — caso contrário mantém-se a caixa
-    // simples de uma linha só, como antes.
+    // simples de uma linha só. Rótulos por extenso, sem margem para
+    // interpretação errada de quem é o valor de quem.
     const temTroco = r.metodoPagamento === 'Dinheiro' && r.precisaTroco
       && r.valorEntregue !== '' && r.valorEntregue !== undefined && r.valorEntregue !== null
       && r.troco !== '' && r.troco !== undefined && r.troco !== null;
     if (temTroco) {
-      const linha2 = h('div', { class: 'doc-pagamento-troco-linha' }, [
-        h('span', {}, `💶 UTENTE ENTREGA: ${Number(r.valorEntregue).toFixed(2)}€`),
-        h('span', { class: 'doc-pagamento-troco-sep' }, '|'),
-        h('span', {}, `🔄 TROCO A ENTREGAR: ${Number(r.troco).toFixed(2)}€`),
+      const linhaDetalhe = (rotulo, valor, destaque) => h('div', { class: destaque ? 'doc-pagamento-troco-destaque' : 'doc-pagamento-troco-linha-simples' }, [
+        h('span', {}, rotulo), h('span', { class: 'doc-pagamento-troco-valor' }, `${Number(valor).toFixed(2)} €`),
+      ]);
+      const linha2 = h('div', { class: 'doc-pagamento-troco-bloco' }, [
+        linhaDetalhe('Valor a Pagar pelo Cliente', r.valorAPagar, false),
+        linhaDetalhe('Valor Entregue em Notas/Moedas pelo Cliente', r.valorEntregue, false),
+        linhaDetalhe('TROCO A LEVAR PELA FARMÁCIA', r.troco, true),
       ]);
       pagamentoBox = h('div', { class: 'doc-pagamento-box doc-pagamento-alerta doc-pagamento-alerta-troco' }, [linha1, linha2]);
     } else {
@@ -14758,6 +15415,11 @@ function buildEntregasPage(container, goTo) {
     }
     formError = '';
     draft.responsavel = currentUserName();
+    // Reforço defensivo: nunca deixar "Registado por" em branco a gravar —
+    // cobre tanto criações novas (já vinha preenchido desde openNew) como
+    // edições de registos antigos que nunca chegaram a ter este campo
+    // gravado a sério (coluna ainda não existia no Supabase nessa altura).
+    if (!String(draft.registadoPor || '').trim()) draft.registadoPor = currentUserName();
     normalizeNameFields(draft);
     saving = true; rerender();
     const eraNovo = !editingId;
@@ -14889,7 +15551,7 @@ function buildEntregasPage(container, goTo) {
         badge.addEventListener('click', (e) => { e.stopPropagation(); requireAuth(() => togglePagamento(r)); });
         pagamentoCell = h('div', { style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;' }, [
           badge,
-          r.metodoPagamento ? h('span', { class: 'cell-muted', style: 'font-size:12px;' }, r.metodoPagamento) : null,
+          r.metodoPagamento ? h('span', { class: 'cell-strong', style: 'font-size:12px;' }, r.metodoPagamento) : null,
         ]);
       } else if (r.estadoPagamento === 'Não Pago') {
         const badge = h('span', { class: 'badge badge-red estado-badge-clicavel', title: 'Clicar para alternar o estado de pagamento' }, '🔴 A COBRAR');
@@ -14905,7 +15567,7 @@ function buildEntregasPage(container, goTo) {
         }
         pagamentoCell = h('div', { style: 'display:flex;flex-direction:column;gap:3px;align-items:flex-start;' }, [
           badge,
-          detalhes.length ? h('span', { class: 'cell-muted', style: 'font-size:11.5px;font-weight:600;' }, detalhes.join(' · ')) : null,
+          detalhes.length ? h('span', { class: 'cell-strong', style: 'font-size:11.5px;color:#b91c1c;' }, detalhes.join(' · ')) : null,
         ]);
       }
       // Badge de Estado — clicável: PENDENTE → confirma passagem a Entregue;
@@ -16002,6 +16664,9 @@ function buildSidebarContent(onClose, goTo) {
       if (estafeta) allowed = item.key === 'entregas';
       else if (prestadorServico) allowed = false; // só a própria Agenda, tratada no ramo "else" abaixo
       else if (boaNovaOperador) allowed = item.key === 'entregas';
+      // Financeiro é sempre reservado a Administrador/Master, mesmo para
+      // perfis Básico com sessão normal — são dados sensíveis de faturação.
+      if (item.key === 'financeiro' && !isMasterUser()) allowed = false;
       const active = allowed && STATE.page === item.key;
       const iconSize = item.key === 'chat' ? 24 : 17;
       const btnKids = [h('span', { class: 'nav-icon' }, Icon(item.icon, { size: iconSize })), h('span', {}, section.title)];
@@ -16257,6 +16922,7 @@ function renderInterno() {
       case 'objetivos': buildObjetivosPage(pageContainer, goTo); break;
       case 'historico-mensagens': buildHistoricoMensagensPage(pageContainer, goTo); break;
       case 'validades': buildValidadesPage(pageContainer, goTo); break;
+      case 'financeiro': buildFinanceiroPage(pageContainer, goTo); break;
       case 'doc-despesas': buildDeclaracaoDespesasPage(pageContainer, goTo); break;
       case 'doc-presenca': buildDeclaracaoPresencaPage(pageContainer, goTo); break;
       case 'doc-avaliacao-fisica': buildDeclaracaoAvaliacaoFisicaPage(pageContainer, goTo); break;
