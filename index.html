@@ -16987,12 +16987,30 @@ function buildConexaoIndicador() {
    atualizado antes disto ser chamado); só o REDESENHO visual é que fica em
    espera até o posto ficar livre outra vez.
 ================================================================= */
+// Janela de tolerância pós-edição: mantém o ciclo de sincronização em
+// pausa por mais alguns segundos depois de um campo perder o foco —
+// cobre pausas curtas a meio do preenchimento de um formulário (pensar no
+// valor seguinte, clicar numa etiqueta, mudar de campo com o rato,
+// verificar outra coisa no ecrã) sem depender de cada um dos ~170
+// formulários da app avisar explicitamente "estou aberto". Um único
+// listener global, sem alterar nenhuma página existente.
+const JANELA_TOLERANCIA_EDICAO_MS = 8000;
+let ultimoFocoEmCampoEm = 0;
+document.addEventListener('focusin', (e) => {
+  const tag = e.target && e.target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') ultimoFocoEmCampoEm = Date.now();
+}, true);
 function uiEstaOcupada() {
   // Qualquer modal aberto (Agenda, Eventos, formulários de registo, etc.)
   // vive fora de #root, em document.body — nunca é destruído por um
   // render() global, mas a PÁGINA por trás dele seria, por isso conta como
   // "ocupado" na mesma.
   if (document.querySelector('.modal-overlay')) return true;
+  // Esteve a escrever/selecionar num campo há poucos segundos — mesmo que
+  // o foco tenha saído dele agora mesmo (ex: parou para pensar, clicou
+  // fora sem querer), continua a contar como "ocupado" até passar a janela
+  // de tolerância.
+  if (Date.now() - ultimoFocoEmCampoEm < JANELA_TOLERANCIA_EDICAO_MS) return true;
   // Um campo de formulário com foco (a escrever texto, um número, a
   // escolher uma data) é o sinal mais direto de trabalho em curso.
   const ativo = document.activeElement;
@@ -17800,10 +17818,24 @@ function showUserLoginScreen(onSuccess) {
     overlay.remove();
     onSuccess();
     atualizarIndicadoresChat();
-    // Carrega já os dados financeiros (se o perfil tiver acesso) — sem
-    // esperar pelo próximo refresh periódico em segundo plano — para o
-    // módulo já aparecer preenchido se a pessoa navegar até lá a seguir.
-    carregarDadosFinanceirosSeAutorizado().then(() => renderOuAdiarSeOcupado());
+    // Sincronização completa e silenciosa logo após o login (ou troca de
+    // utilizador) — sem esperar pelo próximo refresh periódico em segundo
+    // plano nem pedir F5. loadAllData() já reavalia tudo o que depende do
+    // novo utilizador: módulos com acesso condicionado por perfil (ex:
+    // Financeiro, via carregarDadosFinanceirosSeAutorizado embutido),
+    // recados da Gaveta, e a lista de leitores da Mensagem do Dia
+    // ("Visto por", através do registarLeituraMensagemDoDiaSeNecessario já
+    // chamado acima). Corre em segundo plano (await dentro de uma função
+    // assíncrona não bloqueia a interface, que já ficou interativa assim
+    // que o modal fechou) e só redesenha o ecrã no fim — via
+    // renderOuAdiarSeOcupado(), que adia sozinho para não interromper um
+    // campo em edição ou outro modal entretanto aberto, evitando qualquer
+    // flicker brusco nos menus.
+    loadAllData().then(() => {
+      STATE.ultimaAtualizacaoEm = new Date().toISOString();
+      atualizarIndicadoresChat();
+      renderOuAdiarSeOcupado();
+    });
   }
   function tryLogin() {
     const pareceNumerico = /^[0-9]{2,4}$/.test(credenciais.usernameReal) && /^[0-9]{2,4}$/.test(credenciais.pinReal);
@@ -18099,16 +18131,29 @@ function setupInactivityWatcher() {
 let ultimoRefreshSilenciosoEm = 0;
 const REFRESH_SILENCIOSO_MIN_INTERVALO_MS = 15000; // nunca repete a menos de 15s de distância
 const IDLE_REFRESH_MS = 20000; // ~20s sem interação = pequena pausa
+// Nunca dois pedidos ao mesmo tempo: o intervalo mínimo de 15s acima já
+// evita a maioria das sobreposições, mas sozinho não chega numa rede lenta
+// (um loadAllData() que demore mais de 15s a responder deixaria um 2º
+// disparo — ex: regresso à aba — arrancar em paralelo). Esta flag garante
+// que nunca há dois pedidos pendentes ao mesmo tempo, seja qual for a
+// duração do anterior.
+let refreshSilenciosoEmCurso = false;
 async function refrescarDadosSilenciosamente() {
   if (!STATE.ultimaAtualizacaoEm) return; // o arranque ainda nem completou a 1ª carga
   if (document.visibilityState === 'hidden') return; // só com o separador/app visível
   if (uiEstaOcupada()) return; // blindagem: nunca interrompe escrita ou um modal aberto
+  if (refreshSilenciosoEmCurso) return; // já há um pedido pendente — nunca sobrepõe
   const agora = Date.now();
   if (agora - ultimoRefreshSilenciosoEm < REFRESH_SILENCIOSO_MIN_INTERVALO_MS) return;
   ultimoRefreshSilenciosoEm = agora;
-  await loadAllData();
-  STATE.ultimaAtualizacaoEm = new Date().toISOString();
-  renderOuAdiarSeOcupado(); // volta a confirmar no fim — pode ter começado a escrever entretanto
+  refreshSilenciosoEmCurso = true;
+  try {
+    await loadAllData();
+    STATE.ultimaAtualizacaoEm = new Date().toISOString();
+    renderOuAdiarSeOcupado(); // volta a confirmar no fim — pode ter começado a escrever entretanto
+  } finally {
+    refreshSilenciosoEmCurso = false;
+  }
 }
 let idleRefreshTimer = null;
 function resetIdleRefreshTimer() {
