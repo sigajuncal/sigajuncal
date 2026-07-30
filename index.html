@@ -17816,6 +17816,14 @@ function showUserLoginScreen(onSuccess) {
     registarLeituraMensagemDoDiaSeNecessario();
     document.removeEventListener('keydown', onKeydown);
     overlay.remove();
+    // A janela de tolerância de edição (uiEstaOcupada) fica "quente" pelos
+    // próprios campos de Username/PIN que a pessoa acabou de preencher no
+    // modal — sem este reset, o refresh imediato a seguir ao login ficava
+    // adiado até 8s (ver JANELA_TOLERANCIA_EDICAO_MS), e nesse intervalo o
+    // indicador "Atualizado há X min" continuava a mostrar o valor
+    // desatualizado de antes do login. O modal acabou de fechar, não há
+    // nenhum formulário aberto a proteger — pode limpar-se já.
+    ultimoFocoEmCampoEm = 0;
     onSuccess();
     atualizarIndicadoresChat();
     // Sincronização completa e silenciosa logo após o login (ou troca de
@@ -17833,6 +17841,11 @@ function showUserLoginScreen(onSuccess) {
     // flicker brusco nos menus.
     loadAllData().then(() => {
       STATE.ultimaAtualizacaoEm = new Date().toISOString();
+      // Atualiza já o indicador "Atualizado agora mesmo" diretamente no
+      // DOM (sem depender do render completo, que pode ficar adiado por
+      // uiEstaOcupada) — garante que o texto nunca fica preso no valor de
+      // antes do login, mesmo que o resto do ecrã só atualize a seguir.
+      atualizarIndicadorDadosAtualizados();
       atualizarIndicadoresChat();
       renderOuAdiarSeOcupado();
     });
@@ -18140,17 +18153,21 @@ const IDLE_REFRESH_MS = 20000; // ~20s sem interação = pequena pausa
 let refreshSilenciosoEmCurso = false;
 async function refrescarDadosSilenciosamente() {
   if (!STATE.ultimaAtualizacaoEm) return; // o arranque ainda nem completou a 1ª carga
-  if (document.visibilityState === 'hidden') return; // só com o separador/app visível
-  if (uiEstaOcupada()) return; // blindagem: nunca interrompe escrita ou um modal aberto
-  if (refreshSilenciosoEmCurso) return; // já há um pedido pendente — nunca sobrepõe
+  if (document.visibilityState === 'hidden') { console.log('[SigaJuncal] refresh silencioso: ignorado (aba em segundo plano)'); return; }
+  if (uiEstaOcupada()) { console.log('[SigaJuncal] refresh silencioso: adiado (formulário/modal em uso)'); return; } // blindagem: nunca interrompe escrita ou um modal aberto
+  if (refreshSilenciosoEmCurso) { console.log('[SigaJuncal] refresh silencioso: ignorado (já há um pedido em curso)'); return; } // já há um pedido pendente — nunca sobrepõe
   const agora = Date.now();
-  if (agora - ultimoRefreshSilenciosoEm < REFRESH_SILENCIOSO_MIN_INTERVALO_MS) return;
+  if (agora - ultimoRefreshSilenciosoEm < REFRESH_SILENCIOSO_MIN_INTERVALO_MS) return; // demasiado cedo desde o último — sem log, dispara com frequência normal
   ultimoRefreshSilenciosoEm = agora;
   refreshSilenciosoEmCurso = true;
+  console.log(`[SigaJuncal] refresh silencioso: a começar (${new Date().toLocaleTimeString('pt-PT')}, sessão: ${activeUser ? activeUser.username : 'sem sessão'})`);
   try {
     await loadAllData();
     STATE.ultimaAtualizacaoEm = new Date().toISOString();
     renderOuAdiarSeOcupado(); // volta a confirmar no fim — pode ter começado a escrever entretanto
+    console.log(`[SigaJuncal] refresh silencioso: concluído (${new Date().toLocaleTimeString('pt-PT')})`);
+  } catch (e) {
+    console.log('[SigaJuncal] refresh silencioso: falhou —', formatarErroSeguro(e));
   } finally {
     refreshSilenciosoEmCurso = false;
   }
@@ -18165,10 +18182,17 @@ function setupSilentDataRefreshWatcher() {
     document.addEventListener(evt, resetIdleRefreshTimer, { passive: true });
   });
   // Regresso à aba/app (troca de separador, minimizar/restaurar, voltar de
-  // outra app no telemóvel) — atualiza logo, sem esperar pela pausa de 20s.
-  window.addEventListener('focus', refrescarDadosSilenciosamente);
+  // outra app no telemóvel) — atualiza logo, sem esperar pela pausa de
+  // 20s, e SEM depender do setTimeout do idleRefreshTimer (browsers
+  // suspendem/atrasam fortemente setInterval/setTimeout em separadores em
+  // segundo plano — "tab throttling"). Estes dois listeners disparam
+  // diretamente, à parte desse temporizador, mal a aba volte a ficar
+  // visível/em foco — e reiniciam também a contagem de inatividade, para
+  // não haver um 2º disparo do temporizador (atrasado, represado durante o
+  // tempo em segundo plano) logo a seguir a este.
+  window.addEventListener('focus', () => { refrescarDadosSilenciosamente(); resetIdleRefreshTimer(); });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') refrescarDadosSilenciosamente();
+    if (document.visibilityState === 'visible') { refrescarDadosSilenciosamente(); resetIdleRefreshTimer(); }
   });
   resetIdleRefreshTimer();
 }
@@ -18215,6 +18239,14 @@ async function startApp() {
   if (!activeUser) showUserLoginScreen(() => { refreshSidebarBadges(); });
   document.body.appendChild(buildSignature());
   document.body.appendChild(buildClock());
+  // Confirmação: setupRealtime() e setupSilentDataRefreshWatcher() arrancam
+  // aqui, no fim do arranque da Camada 1 (palavra-passe geral), SEM
+  // depender de activeUser — corre tanto com sessão iniciada (Camada 2)
+  // como sem (ecrã "Iniciar Sessão" ainda visível), e independentemente do
+  // perfil. É assim que Estafeta, Farmácia Boa Nova e Prestador de Serviço
+  // — sessões que ficam restauradas automaticamente por
+  // restaurarSessaoPersistente() nos postos fixos, sem PIN repetido — se
+  // mantêm sempre com dados frescos em segundo plano.
   setupRealtime();
   setupInactivityWatcher();
   setupSilentDataRefreshWatcher();
