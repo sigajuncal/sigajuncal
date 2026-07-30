@@ -7266,7 +7266,7 @@ function buildMensagemDiaBanner(onSaved) {
   // A chave da cache inclui o user_id: sem isso, depois de um utilizador ver
   // a mensagem, um colega que iniciasse sessão a seguir no mesmo posto nunca
   // mais via o destaque, porque a verificação ficava "saltada" para todos.
-  if (ativa && activeUser) {
+  if (ativa && activeUser && podeVerDashboard(activeUser)) {
     const cacheKey = `${activeUser.id}:${ativa.id}`;
     if (!MENSAGEM_LIDA_CACHE.has(cacheKey)) {
       dbMensagemJaLida(String(activeUser.id), ativa.id).then(jaLida => {
@@ -7294,24 +7294,29 @@ function carregarVistoPorMensagem(mensagemId, el) {
   }
   if (MENSAGEM_LEITORES_CACHE.has(mensagemId)) { aplicar(MENSAGEM_LEITORES_CACHE.get(mensagemId)); return; }
   dbFetchLeitoresMensagem(mensagemId).then(userIds => {
+    // Filtra sempre pelos utilizadores atuais com acesso real ao Dashboard
+    // — cobre tanto quem já não existe/foi eliminado, como leituras antigas
+    // gravadas para perfis sem acesso (Estafeta, Prestador de Serviço,
+    // Farmácia Boa Nova), de antes desta correção.
     const nomes = userIds
-      .map(id => { const u = (STATE.usuarios || []).find(x => String(x.id) === String(id)); return u ? (u.nomeCompleto || u.username).trim().split(/\s+/)[0] : null; })
-      .filter(Boolean);
+      .map(id => (STATE.usuarios || []).find(x => String(x.id) === String(id)))
+      .filter(u => podeVerDashboard(u))
+      .map(u => (u.nomeCompleto || u.username).trim().split(/\s+/)[0]);
     MENSAGEM_LEITORES_CACHE.set(mensagemId, nomes);
     aplicar(nomes);
   });
 }
-// Registo de leitura INCONDICIONAL — ao contrário da versão anterior (que só
-// disparava de dentro de buildMensagemDiaBanner, ou seja, só se a pessoa
-// chegasse a VISITAR a Página Inicial), esta função corre sozinha sempre
-// que uma sessão fica ativa (login manual OU sessão persistente restaurada
-// no arranque — ver chamadas em concluirLogin/restaurarSessaoPersistente),
-// SEM depender de nenhuma página estar montada. Um perfil como Estafeta ou
-// Farmácia Boa Nova, que nunca chega a passar pela Home, mesmo assim conta
-// como "visto" assim que tem sessão — exatamente como pedido.
+// Registo de leitura — corre sozinha sempre que uma sessão fica ativa
+// (login manual OU sessão persistente restaurada no arranque — ver
+// chamadas em concluirLogin/restaurarSessaoPersistente), SEM depender de
+// nenhuma página estar montada. Só regista, no entanto, para perfis com
+// acesso real ao Dashboard (ver podeVerDashboard) — Estafeta, Prestador de
+// Serviço e o perfil Farmácia Boa Nova NUNCA contam como "visto", mesmo
+// que tenham sessão ativa, porque nunca chegam a ver mesmo a Mensagem do
+// Dia (não têm acesso útil à Página Inicial).
 function registarLeituraMensagemDoDiaSeNecessario() {
   const ativa = mensagemDiaAtiva();
-  if (!ativa || !activeUser) return;
+  if (!ativa || !activeUser || !podeVerDashboard(activeUser)) return;
   const cacheKey = `${activeUser.id}:${ativa.id}`;
   if (MENSAGEM_LIDA_CACHE.has(cacheKey)) return;
   dbMensagemJaLida(String(activeUser.id), ativa.id).then(jaLida => {
@@ -13849,6 +13854,17 @@ function isPrestadorServico() { return !!activeUser && activeUser.perfilNivel ==
 // vê e só acede ao módulo Entregas — mas fixo na Farmácia Boa Nova, sem
 // nunca ver nem interagir com dados da Juncal.
 function isBoaNovaOperador() { return !!activeUser && activeUser.perfilNivel === 'Farmácia Boa Nova'; }
+// ---- Acesso ao Dashboard (Página Inicial) — usado pela Mensagem do Dia ----
+// Só os perfis "de balcão" da Juncal (Master, Básico, Administrador) têm
+// acesso real e útil ao Dashboard — Estafeta, Prestador de Serviço e o
+// perfil Farmácia Boa Nova nunca devem contar para o "Visto por" da
+// Mensagem do Dia, mesmo que a navegação técnica ainda os deixe passar
+// pela Página Inicial nalgum momento. Aceita um utilizador qualquer (não
+// só o da sessão atual), para poder filtrar também a lista de leitores já
+// gravados no Supabase.
+function podeVerDashboard(u) {
+  return !!u && u.perfilNivel !== 'Estafeta' && u.perfilNivel !== 'Prestador de Serviço' && u.perfilNivel !== 'Farmácia Boa Nova';
+}
 // ---- Permissões do módulo Financeiro (Dados Financeiros) ----
 // Leitura: qualquer perfil "de balcão" da Juncal (Master, Básico,
 // Administrador) — nunca Estafeta, Prestador de Serviço, nem o perfil
@@ -13858,7 +13874,7 @@ function isBoaNovaOperador() { return !!activeUser && activeUser.perfilNivel ===
 // funções RPC (ver script SQL) — esta verificação aqui é só a camada de
 // interface, nunca a única barreira.
 function podeVerFinanceiro() {
-  return !!activeUser && activeUser.perfilNivel !== 'Estafeta' && activeUser.perfilNivel !== 'Prestador de Serviço' && activeUser.perfilNivel !== 'Farmácia Boa Nova';
+  return podeVerDashboard(activeUser);
 }
 function podeEditarFinanceiro() {
   return !!activeUser && (activeUser.perfilNivel === 'Master' || activeUser.perfilNivel === 'Administrador');
