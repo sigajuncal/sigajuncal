@@ -818,10 +818,22 @@
     padding:10px 14px;margin:4px 0 14px;}
   .fin-liquido-preview{margin:0;font-size:14px;font-weight:800;color:var(--pharm-800);text-align:center;}
   .fin-chart-row{display:flex;align-items:flex-end;gap:10px;min-width:max-content;padding:0 4px;}
-  .fin-chart-col{display:flex;flex-direction:column;align-items:center;gap:6px;width:34px;height:100%;}
+  .fin-chart-col{display:flex;flex-direction:column;align-items:center;gap:6px;width:34px;height:100%;cursor:pointer;}
+  /* Slot de altura fixa reservado para o valor exato (só fica visível ao
+     clicar) — reservar sempre o mesmo espaço evita que as barras "saltem"
+     de tamanho quando se seleciona/desseleciona uma barra. */
+  .fin-chart-valor-slot{height:15px;width:100%;position:relative;flex-shrink:0;}
+  .fin-chart-valor{position:absolute;left:50%;top:0;transform:translateX(-50%);
+    font-size:10px;font-weight:800;color:#0f172a;white-space:nowrap;
+    background:#fff;padding:1px 5px;border-radius:4px;box-shadow:0 1px 4px rgba(0,0,0,.18);
+    opacity:0;pointer-events:none;transition:opacity .12s ease;z-index:2;}
+  .fin-chart-col-ativo .fin-chart-valor{opacity:1;}
   .fin-chart-bar-track{flex:1;width:100%;display:flex;align-items:flex-end;}
-  .fin-chart-bar{width:100%;border-radius:4px 4px 0 0;min-height:2px;transition:height .3s ease;}
+  .fin-chart-bar{width:100%;border-radius:4px 4px 0 0;min-height:2px;transition:height .3s ease,opacity .15s ease;}
+  .fin-chart-col:hover .fin-chart-bar{opacity:.85;}
+  .fin-chart-col-ativo .fin-chart-bar{opacity:1;outline:2px solid #0f172a;outline-offset:1px;}
   .fin-chart-label{font-size:9.5px;color:var(--pharm-500);white-space:nowrap;transform:rotate(0deg);}
+  .fin-chart-col-ativo .fin-chart-label{color:#0f172a;font-weight:700;}
 
   /* Entregas — ecrã de transição (escolha de farmácia) */
   .entrega-selector-grid{display:grid;grid-template-columns:1fr;gap:18px;max-width:520px;margin:32px 0 0;}
@@ -9711,16 +9723,41 @@ function financeiroTotalMensalReal(ano, mes, liquido) {
   return financeiroTotalMes(ano, mes, liquido ? 'valorLiquido' : 'valorBruto');
 }
 
+// Gráfico de barras "caseiro" (sem Chart.js/ApexCharts) usado no Financeiro.
+// Além do tooltip nativo ao passar o rato (atributo title, já existia),
+// cada barra passa a ser clicável: um clique fixa/mostra o valor exato por
+// cima da barra (como um pequeno popup), e destaca a barra selecionada;
+// clicar de novo na mesma barra esconde-o outra vez. Só uma barra fica
+// selecionada de cada vez.
 function buildFinanceiroBarraChart(itens, alturaPx) {
   const max = Math.max(1, ...itens.map(it => it.valor));
-  return h('div', { class: 'fin-chart-row', style: `height:${alturaPx}px;` }, itens.map(it =>
-    h('div', { class: 'fin-chart-col', title: `${it.rotulo}: ${financeiroFormatarEuro(it.valor)}` }, [
-      h('div', { class: 'fin-chart-bar-track' }, [
-        h('div', { class: 'fin-chart-bar', style: `height:${Math.max(2, (it.valor / max) * 100)}%;background:${it.cor};` }),
-      ]),
-      h('span', { class: 'fin-chart-label' }, it.rotulo),
-    ])
-  ));
+  let selecionado = null; // índice da barra com o valor fixo/visível
+
+  const wrap = h('div', { class: 'fin-chart-row', style: `height:${alturaPx}px;` });
+
+  function render() {
+    clear(wrap);
+    itens.forEach((it, i) => {
+      const ativo = selecionado === i;
+      const valorTexto = financeiroFormatarEuro(it.valor, 2);
+      const col = h('div', {
+        class: 'fin-chart-col' + (ativo ? ' fin-chart-col-ativo' : ''),
+        title: `${it.rotulo}: ${valorTexto}`,
+      }, [
+        h('div', { class: 'fin-chart-valor-slot' }, [
+          h('span', { class: 'fin-chart-valor' }, valorTexto),
+        ]),
+        h('div', { class: 'fin-chart-bar-track' }, [
+          h('div', { class: 'fin-chart-bar', style: `height:${Math.max(2, (it.valor / max) * 100)}%;background:${it.cor};` }),
+        ]),
+        h('span', { class: 'fin-chart-label' }, it.rotulo),
+      ]);
+      col.addEventListener('click', () => { selecionado = ativo ? null : i; render(); });
+      wrap.appendChild(col);
+    });
+  }
+  render();
+  return wrap;
 }
 
 function abrirModalDefinirMeta(anoDefault, mesDefault, onGuardado) {
