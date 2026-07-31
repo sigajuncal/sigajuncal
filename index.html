@@ -3036,7 +3036,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       selecionadas.clear();
       if (onSaved) onSaved();
       render();
-    }, { danger: estado === 'cancelada', confirmLabel: estado === 'confirmada' ? 'Concluir' : 'Cancelar Marcações' });
+    }, { danger: estado === 'cancelada', confirmLabel: estado === 'confirmada' ? 'Concluir' : 'Sim, Cancelar Marcações' });
   }
   function eliminarSelecionadas() {
     const lista = marcacoesSelecionadasLista();
@@ -3395,7 +3395,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       const updated = await dbUpdate('agendaMarcacoes', m.id, { estado: 'cancelada' });
       if (updated) { STATE.agendaMarcacoes = STATE.agendaMarcacoes.map(x => x.id === m.id ? updated : x); if (onSaved) onSaved(); render(); }
       else { showDbErrorToast('Não foi possível cancelar a vaga'); render(); }
-    }, { danger: true, confirmLabel: 'Cancelar Vaga' });
+    }, { danger: true, confirmLabel: 'Sim, Cancelar Vaga' });
   }
   function estadoClasseVaga(m) {
     if (m.estado === 'confirmada') return ' agenda-slot-confirmada';
@@ -4328,12 +4328,25 @@ const mapaTarefasSchema = [
   { name: 'substituto', label: 'Substituto', type: 'select', options: [], size: 'sm' },
   { name: 'observacoes', label: 'Observações', type: 'textarea', col: 2 },
 ];
+// Utilizadores "Ocultos/Teste" (coluna oculto=true em usuarios_app):
+// autenticam normalmente (findUsuario/STATE.usuarios continuam a incluí-los,
+// como qualquer outro utilizador ativo), mas ficam de fora de todas as
+// listas partilhadas com o resto da equipa — Mapa de Tarefas, Gaveta de
+// Recados, Formações, Atribuição de Entregas, "Visto por" da Mensagem do
+// Dia e Presença/Online. Continuam visíveis (e geríveis) na página de
+// Gestão de Utilizadores. EXCEÇÃO: o perfil Administrador (isAdministrador())
+// tem acesso total — vê-o em todas essas listas, pode enviar-lhe recados/
+// atribuir-lhe tarefas e ver o seu estado Online — usuarioVisivelParaAtual
+// é o ponto único que decide isto, usado em todos os pontos de filtro.
+function usuarioOculto(u) { return !!u && u.oculto === true; }
+function usuarioVisivelParaAtual(u) { return !usuarioOculto(u) || isAdministrador(); }
 // Só membros da equipa com perfil "de balcão" contam para os dropdowns de
 // Responsável/Substituto — Estafetas, Prestadores de Serviço e o perfil
 // Farmácia Boa Nova ficam de fora, tal como pedido, por não fazerem gestão
-// operacional geral da farmácia.
+// operacional geral da farmácia. Utilizadores Ocultos/Teste ficam de fora
+// também, exceto para o Administrador (ver usuarioVisivelParaAtual).
 function membrosElegiveisMapaTarefas() {
-  return ordenarUsuariosPorHierarquia((STATE.usuarios || []).filter(u => u.perfilNivel !== 'Estafeta' && u.perfilNivel !== 'Prestador de Serviço' && u.perfilNivel !== 'Farmácia Boa Nova'));
+  return ordenarUsuariosPorHierarquia((STATE.usuarios || []).filter(u => u.perfilNivel !== 'Estafeta' && u.perfilNivel !== 'Prestador de Serviço' && u.perfilNivel !== 'Farmácia Boa Nova' && usuarioVisivelParaAtual(u)));
 }
 
 // Formações — registo e acompanhamento de formações da equipa
@@ -5630,6 +5643,19 @@ const STATE = {
 function normalizarTexto(str) {
   return String(str == null ? '' : str).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 }
+// Converte texto livre (ex: nome de um cliente) num pedaço seguro para usar
+// dentro de um nome de ficheiro: remove acentos (mantendo a capitalização
+// original, ao contrário de normalizarTexto), troca qualquer sequência de
+// carateres não alfanuméricos por "_" e apara "_" a mais nas pontas. Nunca
+// devolve string vazia — cai em "Sem_Nome" para nunca gerar um nome de
+// ficheiro com um buraco (ex: "formulario_entrega__2026-07-31.pdf").
+function sanitizarNomeFicheiro(str) {
+  const limpo = String(str == null ? '' : str)
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return limpo || 'Sem_Nome';
+}
 function emptyRecord(schema) {
   const obj = {};
   schema.forEach(f => {
@@ -6350,7 +6376,7 @@ function confirmDialog(message, onConfirm, opts) {
   }
   document.addEventListener('keydown', onKeydown);
   const confirmBtn = h('button', { class: opts.danger ? 'btn btn-danger-solid' : 'btn btn-primary', onclick: confirmar }, opts.confirmLabel || 'Confirmar');
-  const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: cancelar }, 'Cancelar');
+  const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: cancelar }, opts.cancelLabel || 'Cancelar');
   const panel = h('div', { class: 'modal-panel confirm-panel' }, [
     h('p', { class: 'confirm-message' }, message),
     h('div', { class: 'form-actions' }, [confirmBtn, cancelBtn]),
@@ -7665,7 +7691,7 @@ function carregarVistoPorMensagem(mensagemId, el) {
     // Farmácia Boa Nova), de antes desta correção.
     const nomes = userIds
       .map(id => (STATE.usuarios || []).find(x => String(x.id) === String(id)))
-      .filter(u => podeVerDashboard(u))
+      .filter(u => podeVerDashboard(u) && usuarioVisivelParaAtual(u))
       .map(u => (u.nomeCompleto || u.username).trim().split(/\s+/)[0]);
     MENSAGEM_LEITORES_CACHE.set(mensagemId, nomes);
     aplicar(nomes);
@@ -9528,7 +9554,7 @@ function buildErrosPage(container, goTo) {
         activeTab = 'pending';
         rerender();
       } else showDbErrorToast('Não foi possível anular a correção');
-    }, { confirmLabel: 'Anular Correção' });
+    }, { confirmLabel: 'Sim, Anular Correção' });
   }
 
   function correct(id) {
@@ -11183,7 +11209,7 @@ function buildLembretesPage(container, goTo, embedded) {
         activeTab = 'pending';
         rerender();
       } else showDbErrorToast('Não foi possível anular a conclusão');
-    }, { confirmLabel: 'Anular Conclusão' });
+    }, { confirmLabel: 'Sim, Anular Conclusão' });
   }
 
   function visibleLembretes() {
@@ -11385,7 +11411,7 @@ function buildReclamacoesPage(container, goTo) {
         activeTab = 'pending';
         rerender();
       } else showDbErrorToast('Não foi possível anular a resolução');
-    }, { confirmLabel: 'Anular Resolução' });
+    }, { confirmLabel: 'Sim, Anular Resolução' });
   }
 
   function visibleReclamacoes() {
@@ -12155,7 +12181,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       if (houveConflito) await carregarMarcacoes(); // repõe a versão real de tudo, incl. o que colidiu
       if (onSaved) onSaved();
       render();
-    }, { danger: estado === 'cancelada', confirmLabel: estado === 'confirmada' ? 'Concluir' : 'Cancelar Marcações' });
+    }, { danger: estado === 'cancelada', confirmLabel: estado === 'confirmada' ? 'Concluir' : 'Sim, Cancelar Marcações' });
   }
   function eliminarSelecionadas() {
     const lista = marcacoesSelecionadasLista();
@@ -12281,7 +12307,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       const updated = await dbUpdateMarcacao(m.id, { estado: 'cancelada' }, m.updatedAt);
       if (updated) { marcacoes = marcacoes.map(x => x.id === m.id ? updated : x); if (onSaved) onSaved(); render(); }
       else { await carregarMarcacoes(); showDbErrorToast('Não foi possível cancelar a vaga'); }
-    }, { danger: true, confirmLabel: 'Cancelar Vaga' });
+    }, { danger: true, confirmLabel: 'Sim, Cancelar Vaga' });
   }
   async function toggleAviso(m) {
     async function aplicar() {
@@ -14788,7 +14814,7 @@ function buildDefinicoesPage(container, goTo) {
   }
 
   function buildTable() {
-    const list = ordenarUsuariosPorHierarquia(STATE.usuarios);
+    const list = ordenarUsuariosPorHierarquia((STATE.usuarios || []).filter(usuarioVisivelParaAtual));
     if (list.length === 0) return EmptyState('Ainda não há utilizadores registados.');
     const thead = h('thead', {}, h('tr', {}, ['', 'Nome Completo', 'Categoria Profissional', 'Nível de Perfil', 'Username', 'PIN'].map(t => h('th', {}, t))));
     const rows = list.map(u => {
@@ -14797,7 +14823,7 @@ function buildDefinicoesPage(container, goTo) {
       const checkboxCell = isMasterUser() ? buildSelectionCheckbox(u.id, selectedIds, toggleSelect) : h('td', {});
       const row = h('tr', { class: rowClass }, [
         checkboxCell,
-        h('td', { class: 'cell-strong' }, u.nomeCompleto || '—'),
+        h('td', { class: 'cell-strong' }, [u.nomeCompleto || '—', usuarioOculto(u) ? h('span', { class: 'badge-oculto', style: 'margin-left:6px;font-size:11px;font-weight:600;color:#8a6d00;background:#fff3c4;border-radius:4px;padding:1px 6px;', title: 'Utilizador Oculto/Teste — nunca aparece nas listas partilhadas com a equipa nem no estado Online.' }, 'Oculto') : null]),
         h('td', {}, u.categoriaProfissional || '—'),
         h('td', {}, u.perfilNivel || 'Basico'),
         h('td', {}, '********'),
@@ -14810,7 +14836,7 @@ function buildDefinicoesPage(container, goTo) {
 
   function build() {
     const wrap = h('div', { class: 'animate-in' });
-    wrap.appendChild(withBackButton(buildPageHeader('users', 'Utilizadores', 'Gestão de utilizadores, perfis e credenciais de acesso.', STATE.usuarios.length), goTo));
+    wrap.appendChild(withBackButton(buildPageHeader('users', 'Utilizadores', 'Gestão de utilizadores, perfis e credenciais de acesso.', (STATE.usuarios || []).filter(usuarioVisivelParaAtual).length), goTo));
 
     if (!isMasterUser()) {
       wrap.appendChild(h('p', { class: 'readonly-notice', style: 'margin-bottom:16px;' }, 'O seu perfil é Básico: pode consultar Nome Completo e Categoria Profissional, mas não pode ver, editar ou eliminar credenciais de acesso.'));
@@ -15044,7 +15070,7 @@ function buildMapa48hPage(container, goTo) {
         activeTab = 'pendentes';
         rerender();
       } else showDbErrorToast('Não foi possível anular a entrega');
-    }, { confirmLabel: 'Anular' });
+    }, { confirmLabel: 'Sim, devolver' });
   }
 
   function mapa48hFormSchema() {
@@ -15366,7 +15392,23 @@ function buildFormularioEntregaDoc(r) {
   return buildDocA4(kids, rodape, 'doc-a4-formulario-entrega');
 }
 function imprimirFormularioEntrega(r) {
-  imprimirDocumento(buildFormularioEntregaDoc(r), { titulo: `formulario_entrega_${todayISO()}` });
+  // Nome do ficheiro sugerido ao "Guardar como PDF": inclui o nome do
+  // cliente (sem acentos, espaços trocados por "_") e a data — formato
+  // formulario_entrega_Nome_Cliente_AAAA-MM-DD.pdf. Sem nome de cliente
+  // preenchido, cai em "Sem_Nome" em vez de deixar um "_" a mais no nome.
+  const nomeClienteFicheiro = sanitizarNomeFicheiro(r.nomeCliente);
+  imprimirDocumento(buildFormularioEntregaDoc(r), { titulo: `formulario_entrega_${nomeClienteFicheiro}_${todayISO()}.pdf` });
+}
+// Substitui o antigo botão fixo "Guardar e Imprimir Formulário" (removido
+// por redundante): depois de QUALQUER gravação com sucesso do Formulário de
+// Entrega — Adicionar registo, Guardar alterações OU Marcar como Entregue —
+// pergunta sempre se quer gerar/imprimir o formulário desta entrega, em vez
+// de obrigar a decidir isso antecipadamente com um botão à parte.
+function perguntarImprimirFormularioEntrega(registo) {
+  if (!registo) return;
+  confirmDialog('Deseja gerar/imprimir o formulário desta entrega?', () => {
+    imprimirFormularioEntrega(registo);
+  }, { confirmLabel: 'Sim, imprimir', cancelLabel: 'Não' });
 }
 
 function entregasPendentesPorFarmacia() {
@@ -16075,7 +16117,7 @@ function buildEntregasPage(container, goTo) {
 
   // Estafetas disponíveis para "Entregue por" — pré-seleciona o mais antigo
   // (id mais baixo = criado há mais tempo), mas o dropdown permite trocar.
-  function estafetasDisponiveis() { return ordenarUsuariosPorHierarquia((STATE.usuarios || []).filter(u => u.perfilNivel === 'Estafeta')); }
+  function estafetasDisponiveis() { return ordenarUsuariosPorHierarquia((STATE.usuarios || []).filter(u => u.perfilNivel === 'Estafeta' && usuarioVisivelParaAtual(u))); }
   function estafetaPredefinidoNome() {
     const lista = estafetasDisponiveis().slice().sort((a, b) => (a.id > b.id ? 1 : -1));
     return lista.length ? (lista[0].nomeCompleto || lista[0].username) : '';
@@ -16371,7 +16413,7 @@ function buildEntregasPage(container, goTo) {
     return overrides;
   }
 
-  async function submit(imprimirDepois) {
+  async function submit() {
     if (!String(draft.docReserva || '').trim()) {
       formError = 'Por favor, introduza o número do documento ou código de reserva.';
       rerender();
@@ -16429,7 +16471,7 @@ function buildEntregasPage(container, goTo) {
       // farmácia respetiva: entradas novas ficam sempre em Pendentes; ao
       // editar, segue o estado atual do registo guardado.
       activeTab = draft.estadoEntrega === 'Entregue' ? 'historico' : 'pendentes';
-      if (imprimirDepois && registoGuardado) imprimirFormularioEntrega(registoGuardado);
+      perguntarImprimirFormularioEntrega(registoGuardado);
     }
     rerender();
   }
@@ -16457,7 +16499,7 @@ function buildEntregasPage(container, goTo) {
         const patch = { estadoEntrega: 'Entregue', horaEntregaReal: new Date().toISOString() };
         if (marcarComoPago) patch.estadoPagamento = 'Pago';
         const updated = await dbUpdate('entregas', id, patch);
-        if (updated) { STATE.entregas = STATE.entregas.map(r => r.id === id ? updated : r); selectedIds = new Set([...selectedIds].filter(x => x !== id)); showForm = false; rerender(); }
+        if (updated) { STATE.entregas = STATE.entregas.map(r => r.id === id ? updated : r); selectedIds = new Set([...selectedIds].filter(x => x !== id)); showForm = false; rerender(); perguntarImprimirFormularioEntrega(updated); }
         else showDbErrorToast('Não foi possível marcar como entregue');
       });
       return;
@@ -16465,7 +16507,7 @@ function buildEntregasPage(container, goTo) {
     // Já estava "Pago" — segue diretamente, sem o popup de confirmação de pagamento.
     confirmDialog('Confirma que esta entrega já foi feita? Vai passar para o histórico desta farmácia.', async () => {
       const updated = await dbUpdate('entregas', id, { estadoEntrega: 'Entregue', horaEntregaReal: new Date().toISOString() });
-      if (updated) { STATE.entregas = STATE.entregas.map(r => r.id === id ? updated : r); selectedIds = new Set([...selectedIds].filter(x => x !== id)); showForm = false; rerender(); }
+      if (updated) { STATE.entregas = STATE.entregas.map(r => r.id === id ? updated : r); selectedIds = new Set([...selectedIds].filter(x => x !== id)); showForm = false; rerender(); perguntarImprimirFormularioEntrega(updated); }
       else showDbErrorToast('Não foi possível marcar como entregue');
     }, { confirmLabel: 'Marcar como Entregue' });
   }
@@ -16474,7 +16516,7 @@ function buildEntregasPage(container, goTo) {
       const updated = await dbUpdate('entregas', id, { estadoEntrega: 'Pendente', horaEntregaReal: null });
       if (updated) { STATE.entregas = STATE.entregas.map(r => r.id === id ? updated : r); showForm = false; activeTab = 'pendentes'; rerender(); }
       else showDbErrorToast('Não foi possível anular a entrega');
-    }, { confirmLabel: 'Anular' });
+    }, { confirmLabel: 'Sim, devolver' });
   }
   // Ação direta no badge de Pagamento da tabela — alterna Pago/Não Pago sem
   // abrir o formulário completo, só com uma confirmação rápida.
@@ -16676,12 +16718,6 @@ function buildEntregasPage(container, goTo) {
         onConclude: (editingId && draft.estadoEntrega !== 'Entregue') ? () => marcarEntregue(editingId) : null, concludeLabel: 'Marcar como Entregue',
         onRevert: (editingId && draft.estadoEntrega === 'Entregue') ? () => anularEntrega(editingId) : null, revertLabel: 'Anular Entrega',
       }));
-      const printFormBtn = h('button', {
-        class: 'btn btn-secondary', style: 'margin-bottom:24px;',
-        onclick: saving ? null : () => requireAuth(() => submit(true)),
-        disabled: saving ? 'disabled' : undefined,
-      }, [Icon('printer', { size: 14, strokeWidth: 2.2 }), ' Guardar e Imprimir Formulário']);
-      wrap.appendChild(printFormBtn);
     }
 
     const pendentesCount = STATE.entregas.filter(r => r.farmacia === farmaciaAtiva && r.estadoEntrega !== 'Entregue').length;
@@ -16805,7 +16841,7 @@ function buildRecolhasPage(container, goTo) {
       const updated = await dbUpdate('recolhas', id, { estado: 'Pendente' });
       if (updated) { STATE.recolhas = STATE.recolhas.map(r => r.id === id ? updated : r); showForm = false; activeTab = 'pendentes'; rerender(); }
       else showDbErrorToast('Não foi possível anular a recolha');
-    }, { confirmLabel: 'Anular' });
+    }, { confirmLabel: 'Sim, devolver' });
   }
 
   function visibleRecolhas() {
@@ -16959,7 +16995,7 @@ function buildTarefasPage(container, goTo) {
       const updated = await dbUpdate('tarefas', id, { estado: 'Pendente' });
       if (updated) { STATE.tarefas = STATE.tarefas.map(t => t.id === id ? updated : t); showForm = false; activeTab = 'pendentes'; rerender(); }
       else showDbErrorToast('Não foi possível anular a tarefa');
-    }, { confirmLabel: 'Anular' });
+    }, { confirmLabel: 'Sim, devolver' });
   }
 
   function visibleTarefas() {
@@ -17077,7 +17113,7 @@ function formatMinutosResumo(totalMin) {
 // carregamento filtra sempre eliminado = false).
 const PERFIS_ELEGIVEIS_FORMACAO = ['Master', 'Básico', 'Administrador'];
 function usuariosElegiveisFormacao() {
-  return ordenarUsuariosPorHierarquia((STATE.usuarios || []).filter(u => PERFIS_ELEGIVEIS_FORMACAO.includes(u.perfilNivel)));
+  return ordenarUsuariosPorHierarquia((STATE.usuarios || []).filter(u => PERFIS_ELEGIVEIS_FORMACAO.includes(u.perfilNivel) && usuarioVisivelParaAtual(u)));
 }
 // Seletor dinâmico de participantes (tags/checkboxes) — substitui a antiga
 // caixa de texto livre. Guarda-se como lista separada por vírgulas no mesmo
@@ -18323,6 +18359,10 @@ function iniciarPresenca() {
     if (STATE.page === 'home' || STATE.page === 'chat') render();
   });
   presenceChannel.subscribe(async (status) => {
+    // O utilizador Oculto/Teste continua a transmitir presença normalmente
+    // — precisa disso para o Administrador o poder ver online (regra 2). A
+    // invisibilidade para os restantes perfis é aplicada só do lado de
+    // quem vê, em buildUtilizadoresOnlineBadge (usuarioVisivelParaAtual).
     if (status === 'SUBSCRIBED') {
       await presenceChannel.track({ userId: activeUser.id, nome: activeUser.nomeCompleto || activeUser.username });
     }
@@ -18342,6 +18382,7 @@ function buildUtilizadoresOnlineBadge() {
     if (activeUser && String(u.userId) === String(activeUser.id)) return false;
     const registo = (STATE.usuarios || []).find(x => String(x.id) === String(u.userId));
     if (registo && registo.perfilNivel === 'Farmácia Boa Nova') return false;
+    if (!usuarioVisivelParaAtual(registo)) return false;
     return true;
   });
   if (!lista.length) return null;
