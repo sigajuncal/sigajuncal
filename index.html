@@ -1770,14 +1770,16 @@
   .gaveta-select-all-label{flex:1;text-align:left;font-size:12.5px;font-weight:700;color:var(--pharm-700);}
   .gaveta-select-all-count{flex-shrink:0;font-size:11px;font-weight:800;color:var(--pharm-500);
     background:var(--pharm-100);border-radius:999px;padding:2px 8px;}
-  /* Seletor de emojis por categorias — biblioteca alargada, com scroll
-     próprio para não empurrar o botão Enviar para fora da vista. */
-  .gaveta-emoji-picker{max-height:118px;overflow-y:auto;margin:8px 0;padding-right:2px;}
-  .chat-emoji-categoria{margin-bottom:6px;}
-  .chat-emoji-categoria:last-child{margin-bottom:0;}
-  .chat-emoji-categoria-titulo{font-size:9px;font-weight:800;text-transform:uppercase;
-    letter-spacing:.04em;color:var(--pharm-400);margin:0 0 3px;}
-  .gaveta-emoji-picker .chat-emoji-row{margin:0;}
+  /* Botão único de emoji junto ao campo de texto + popover flutuante com
+     grelha simples e contínua (sem categorias). */
+  .gaveta-composer-input-row{display:flex;align-items:flex-end;gap:8px;}
+  .gaveta-composer-input-row .textarea{flex:1;}
+  .gaveta-emoji-trigger-btn{flex-shrink:0;width:38px;height:38px;border-radius:10px;
+    border:1.5px solid var(--pharm-200);background:#fff;font-size:18px;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;transition:all .15s ease;}
+  .gaveta-emoji-trigger-btn:hover{background:var(--pharm-50);border-color:var(--pharm-300);}
+  .gaveta-emoji-popover{width:auto;max-width:min(260px,calc(100vw - 20px));padding:10px;}
+  .gaveta-emoji-popover-grid{display:flex;flex-wrap:wrap;gap:4px;}
   .gaveta-contacto-item.ativo{background:var(--pharm-100);border-color:var(--pharm-200);}
   .gaveta-main-col{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden;}
   .gaveta-main-col-empty{align-items:center;justify-content:center;color:var(--pharm-400);
@@ -5945,6 +5947,36 @@ function showObsPopover(anchor, text) {
     document.addEventListener('keydown', onPopoverKeydown);
   }, 0);
 }
+// Popover flutuante do botão único de emoji (Gaveta de Recados) — grelha
+// contínua e simples, sem categorias. Reaproveita o mesmo singleton
+// currentPopover/closePopover das Observações, por isso fecha sozinho ao
+// clicar fora, ao premir Escape, ou ao abrir qualquer outro popover.
+function showEmojiPopover(anchor, onPick) {
+  closePopover();
+  const grid = h('div', { class: 'gaveta-emoji-popover-grid' }, EMOJIS_GAVETA.map(e => {
+    const btn = h('button', { class: 'chat-emoji-btn', type: 'button', title: e }, e);
+    btn.addEventListener('click', (ev) => { ev.stopPropagation(); onPick(e); closePopover(); });
+    return btn;
+  }));
+  const pop = h('div', { class: 'obs-popover gaveta-emoji-popover' }, [grid]);
+  document.body.appendChild(pop);
+  const rect = anchor.getBoundingClientRect();
+  const popRect = pop.getBoundingClientRect();
+  let left = rect.left + rect.width / 2 - popRect.width / 2;
+  left = Math.max(10, Math.min(left, window.innerWidth - popRect.width - 10));
+  // Preferência: abrir para CIMA do botão (o composer vive no fundo da
+  // coluna principal, por isso normalmente não há espaço suficiente por
+  // baixo) — só cai para baixo se também não houver espaço em cima.
+  let top = rect.top - popRect.height - 8;
+  if (top < 10) top = rect.bottom + 8;
+  pop.style.left = left + 'px';
+  pop.style.top = Math.max(10, top) + 'px';
+  currentPopover = pop;
+  setTimeout(() => {
+    document.addEventListener('click', onPopoverDocClick);
+    document.addEventListener('keydown', onPopoverKeydown);
+  }, 0);
+}
 function ObsIndicator(text) {
   if (!text || !text.trim()) return h('span', { class: 'cell-muted' }, '—');
   const btn = h('button', { class: 'obs-btn', title: 'Ver observação', type: 'button' }, Icon('filetext', { size: 13 }));
@@ -8001,16 +8033,11 @@ function buildUltimaNotificacaoWidget() {
 // abrirThreadInicial (opcional): id de um colega — abre já a conversa
 // diretamente, sem passar pelo stream (usado pelo widget "Última
 // Notificação" e por outros atalhos que já sabem com quem é a conversa).
-// Biblioteca de emojis do seletor rápido da Gaveta de Recados — organizada
-// em categorias curtas para leitura rápida (Reações, Tarefas/Sinais,
-// Farmácia/Saúde, Estados), 32 no total. Definida a nível de módulo porque
-// é a mesma lista em qualquer conversa/modo de envio.
-const EMOJI_CATEGORIAS_GAVETA = [
-  { nome: 'Reações', emojis: ['😀', '😂', '👍', '🙏', '❤️', '🎉', '😮', '😢'] },
-  { nome: 'Tarefas / Sinais', emojis: ['📋', '✅', '⚠️', '🔴', '🟢', '📌', '🕒', '🔔'] },
-  { nome: 'Farmácia / Saúde', emojis: ['💊', '🩺', '🌡️', '💉', '🧴', '🚑', '❄️', '🧪'] },
-  { nome: 'Estados', emojis: ['🙋', '✋', '🚀', '📦', '🏠', '🚗', '⏳', '👀'] },
-];
+// Biblioteca de emojis do popover rápido da Gaveta de Recados — lista
+// única e contínua (sem categorias), focada em expressões/emoções, com só
+// o essencial de utilidade prática (✅ / ⚠️). Definida a nível de módulo
+// porque é a mesma lista em qualquer conversa/modo de envio.
+const EMOJIS_GAVETA = ['😊', '😀', '😂', '😅', '🤔', '😮', '😢', '😉', '🙂', '😴', '👍', '🙏', '❤️', '🎉', '👏', '✅', '⚠️'];
 function abrirModalGaveta(abrirThreadInicial) {
   if (!utilizadorAtualTemGaveta()) return;
   const overlay = h('div', { class: 'modal-overlay' });
@@ -8437,19 +8464,17 @@ function abrirModalGaveta(abrirThreadInicial) {
       if (activeUser) salvarRascunhoLocal(`gaveta_composer_${activeUser.id}_${threadComId}`, composerTexto);
     }, 400);
     composerInput.addEventListener('input', () => { composerTexto = composerInput.value; guardarRascunhoComposerDebounced(); });
-    // Seletor de emojis rápido — disponível em TODOS os modos de envio
-    // (conversa direta, "Toda a Equipa" e envio múltiplo). Biblioteca mais
-    // rica que o antigo Chat, organizada por categorias rápidas (Reações,
-    // Tarefas/Sinais, Farmácia/Saúde, Estados) — 32 emojis no total.
-    const emojiPicker = h('div', { class: 'gaveta-emoji-picker' }, EMOJI_CATEGORIAS_GAVETA.map(cat =>
-      h('div', { class: 'chat-emoji-categoria' }, [
-        h('p', { class: 'chat-emoji-categoria-titulo' }, cat.nome),
-        h('div', { class: 'chat-emoji-row' }, cat.emojis.map(e => {
-          const btn = h('button', { class: 'chat-emoji-btn', type: 'button', title: e }, e);
-          btn.addEventListener('click', () => { composerTexto += e; composerInput.value = composerTexto; composerInput.focus(); guardarRascunhoComposerDebounced(); });
-          return btn;
-        })),
-      ])));
+    // Botão único de emoji junto ao campo de texto — abre um popover
+    // flutuante simples (grelha contínua, sem categorias) em vez de mostrar
+    // sempre os emojis no corpo do formulário.
+    const emojiBtn = h('button', { class: 'gaveta-emoji-trigger-btn', type: 'button', title: 'Inserir emoji', 'aria-label': 'Inserir emoji' }, '🙂');
+    emojiBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showEmojiPopover(emojiBtn, (emoji) => {
+        composerTexto += emoji; composerInput.value = composerTexto; composerInput.focus(); guardarRascunhoComposerDebounced();
+      });
+    });
+    const composerInputRow = h('div', { class: 'gaveta-composer-input-row' }, [composerInput, emojiBtn]);
     const enviarBtn = h('button', { class: 'btn btn-primary', onclick: composerSaving ? null : () => requireAuth(enviarComposer), disabled: composerSaving ? 'disabled' : undefined },
       composerSaving ? 'A enviar…' : (tipoEnvio === 'tarefa' ? 'Enviar Tarefa' : 'Enviar Mensagem'));
 
@@ -8460,8 +8485,7 @@ function abrirModalGaveta(abrirThreadInicial) {
     const historicoWrap = h('div', { class: 'gaveta-main-historico' }, [historico]);
     const composer = h('div', { class: 'gaveta-main-composer' }, [
       h('div', { class: 'gaveta-tipo-envio' }, [tipoBtnMsg, tipoBtnTarefa]),
-      h('div', { class: 'field', style: 'margin-bottom:0;' }, [composerInput]),
-      emojiPicker,
+      h('div', { class: 'field', style: 'margin-bottom:0;' }, [composerInputRow]),
       composerError ? h('p', { class: 'form-error' }, composerError) : null,
       h('div', { class: 'form-actions', style: 'margin-top:8px;' }, [enviarBtn]),
     ]);
