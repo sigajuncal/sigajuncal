@@ -5784,8 +5784,14 @@ function toTitleCasePT(str) {
   return words.map((word, idx) => {
     const lower = word.toLocaleLowerCase('pt-PT');
     if (idx > 0 && PT_LOWERCASE_WORDS.has(lower)) return lower;
-    // suporta nomes compostos com hífen ou apóstrofo, ex: "jean-pierre", "d'ávila"
-    return lower.replace(/(^|[-'])([a-zà-öø-ÿ])/g, (m, sep, ch) => sep + ch.toLocaleUpperCase('pt-PT'));
+    // suporta nomes compostos com hífen ou apóstrofo (ex: "jean-pierre",
+    // "d'ávila") E letras a seguir a qualquer outro separador dentro da
+    // palavra — parênteses, aspas, etc. (ex: "cabelte (ribeirão)" ->
+    // "Cabelte (Ribeirão)"). Antes só reconhecia '-' e "'" como início de
+    // sub-palavra; um "(" fazia a letra seguinte ficar sempre minúscula,
+    // desfazendo silenciosamente qualquer capitalização manual do
+    // utilizador dentro de parênteses.
+    return lower.replace(/(^|[^a-zà-öø-ÿ])([a-zà-öø-ÿ])/g, (m, sep, ch) => sep + ch.toLocaleUpperCase('pt-PT'));
   }).join(' ');
 }
 // Capitaliza automaticamente a primeira letra de cada frase (início do texto,
@@ -16038,15 +16044,32 @@ function buildEmpresasParceirasPage(container, goTo, farmaciaAtiva) {
   container.appendChild(build());
 }
 
+// Memória do contexto onde o utilizador está dentro de Entregas — farmácia
+// ativa, separador (Pendentes/Histórico) e texto de pesquisa. buildEntregasPage
+// é reinstanciada do zero sempre que a página global é redesenhada (render()),
+// incluindo os renders SILENCIOSOS disparados em segundo plano por um evento
+// Realtime ou pelo temporizador automático (refrescarDadosSilenciosamente) —
+// sem esta memória a sobreviver fora da função, cada um desses renders
+// reiniciava `farmaciaAtiva` a null e devolvia Estafeta/Administrador ao
+// ecrã de seleção de farmácia (e todos os perfis perdiam o separador e a
+// pesquisa em que estavam), só porque chegaram dados novos, sem qualquer
+// ação do utilizador. Reposta a valores por omissão no logout (ver
+// manualLogout/clearSessionSilently) para a sessão seguinte — eventualmente
+// doutro colega, no mesmo dispositivo — não herdar o contexto de quem saiu.
+let entregasContextoMemorizado = { farmaciaAtiva: null, activeTab: 'pendentes', searchQuery: '' };
 function buildEntregasPage(container, goTo) {
   // Só Estafeta e Administrador escolhem entre as duas farmácias — todos os
   // restantes colaboradores entram direta e automaticamente na Juncal.
   // Só Estafeta e Administrador escolhem entre as duas farmácias — o perfil
   // Farmácia Boa Nova fica sempre fixo na Boa Nova; todos os restantes
   // colaboradores entram direta e automaticamente na Juncal.
-  let farmaciaAtiva = isBoaNovaOperador() ? 'Boa Nova' : ((isEstafeta() || isAdministrador()) ? null : 'Juncal');
-  let activeTab = 'pendentes'; // 'pendentes' | 'historico'
-  let searchQuery = '';
+  // farmaciaAtiva/activeTab/searchQuery arrancam a partir da memória (ver
+  // entregasContextoMemorizado acima) em vez de valores fixos — só assim um
+  // render silencioso em segundo plano não empurra o utilizador de volta ao
+  // ecrã de seleção nem lhe muda o separador/pesquisa debaixo das mãos.
+  let farmaciaAtiva = isBoaNovaOperador() ? 'Boa Nova' : ((isEstafeta() || isAdministrador()) ? entregasContextoMemorizado.farmaciaAtiva : 'Juncal');
+  let activeTab = entregasContextoMemorizado.activeTab; // 'pendentes' | 'historico'
+  let searchQuery = entregasContextoMemorizado.searchQuery;
   let showForm = false, editingId = null, draft = {}, formError = '', saving = false;
   let selectedIds = new Set();
 
@@ -16055,8 +16078,17 @@ function buildEntregasPage(container, goTo) {
   }, 400);
   function rerender() { guardarRascunhoEntregaDebounced(); comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
-  function trocarFarmacia(f) { farmaciaAtiva = f; activeTab = 'pendentes'; selectedIds = new Set(); searchQuery = ''; showForm = false; rerender(); setTimeout(verificarEntregasAtrasadasAuto, 500); }
-  function voltarSelecaoFarmacia() { if (isBoaNovaOperador()) return; farmaciaAtiva = null; showForm = false; selectedIds = new Set(); rerender(); }
+  function trocarFarmacia(f) {
+    farmaciaAtiva = f; activeTab = 'pendentes'; selectedIds = new Set(); searchQuery = ''; showForm = false;
+    entregasContextoMemorizado.farmaciaAtiva = f; entregasContextoMemorizado.activeTab = 'pendentes'; entregasContextoMemorizado.searchQuery = '';
+    rerender(); setTimeout(verificarEntregasAtrasadasAuto, 500);
+  }
+  function voltarSelecaoFarmacia() {
+    if (isBoaNovaOperador()) return;
+    farmaciaAtiva = null; showForm = false; selectedIds = new Set();
+    entregasContextoMemorizado.farmaciaAtiva = null;
+    rerender();
+  }
 
   // ---- Alerta de Entregas Pendentes Pós-Prazo (2h de tolerância) ----
   // Banner sempre visível no topo (calculado ao vivo a partir dos dados,
@@ -16089,7 +16121,9 @@ function buildEntregasPage(container, goTo) {
   }
   function abrirDetalhesEntregaAtrasada(r) {
     draft = Object.assign({}, r, { entregaEmpresaParceira: !!r.enderecoEmpresaParceiraId });
-    editingId = r.id; formError = ''; showForm = true; selectedIds = new Set(); activeTab = 'pendentes'; rerender();
+    editingId = r.id; formError = ''; showForm = true; selectedIds = new Set(); activeTab = 'pendentes';
+    entregasContextoMemorizado.activeTab = 'pendentes';
+    rerender();
   }
   function abrirPopupAtrasadas() {
     if (!farmaciaAtiva || popupAtrasadasAberto) return;
@@ -16471,6 +16505,7 @@ function buildEntregasPage(container, goTo) {
       // farmácia respetiva: entradas novas ficam sempre em Pendentes; ao
       // editar, segue o estado atual do registo guardado.
       activeTab = draft.estadoEntrega === 'Entregue' ? 'historico' : 'pendentes';
+      entregasContextoMemorizado.activeTab = activeTab;
       perguntarImprimirFormularioEntrega(registoGuardado);
     }
     rerender();
@@ -16514,7 +16549,7 @@ function buildEntregasPage(container, goTo) {
   function anularEntrega(id) {
     confirmDialog('Tem a certeza de que quer devolver esta entrega a Pendente?', async () => {
       const updated = await dbUpdate('entregas', id, { estadoEntrega: 'Pendente', horaEntregaReal: null });
-      if (updated) { STATE.entregas = STATE.entregas.map(r => r.id === id ? updated : r); showForm = false; activeTab = 'pendentes'; rerender(); }
+      if (updated) { STATE.entregas = STATE.entregas.map(r => r.id === id ? updated : r); showForm = false; activeTab = 'pendentes'; entregasContextoMemorizado.activeTab = 'pendentes'; rerender(); }
       else showDbErrorToast('Não foi possível anular a entrega');
     }, { confirmLabel: 'Sim, devolver' });
   }
@@ -16723,10 +16758,10 @@ function buildEntregasPage(container, goTo) {
     const pendentesCount = STATE.entregas.filter(r => r.farmacia === farmaciaAtiva && r.estadoEntrega !== 'Entregue').length;
     const historicoCount = STATE.entregas.filter(r => r.farmacia === farmaciaAtiva && r.estadoEntrega === 'Entregue').length;
     const tabsRow = h('div', { class: 'tabs-row', style: 'align-items:center;' }, [
-      h('button', { class: 'tab-btn tone-orange' + (activeTab === 'pendentes' ? ' active' : ''), onclick: () => { activeTab = 'pendentes'; selectedIds = new Set(); rerender(); } }, [
+      h('button', { class: 'tab-btn tone-orange' + (activeTab === 'pendentes' ? ' active' : ''), onclick: () => { activeTab = 'pendentes'; entregasContextoMemorizado.activeTab = 'pendentes'; selectedIds = new Set(); rerender(); } }, [
         Icon('truck', { size: 14 }), h('span', {}, 'Entregas Pendentes'), h('span', { class: 'tab-count' }, String(pendentesCount)),
       ]),
-      h('button', { class: 'tab-btn tone-green' + (activeTab === 'historico' ? ' active' : ''), onclick: () => { activeTab = 'historico'; selectedIds = new Set(); rerender(); } }, [
+      h('button', { class: 'tab-btn tone-green' + (activeTab === 'historico' ? ' active' : ''), onclick: () => { activeTab = 'historico'; entregasContextoMemorizado.activeTab = 'historico'; selectedIds = new Set(); rerender(); } }, [
         Icon('checkcircle', { size: 14 }), h('span', {}, 'Histórico'), h('span', { class: 'tab-count' }, String(historicoCount)),
       ]),
       h('button', { class: 'btn btn-secondary', style: 'margin-left:auto;', onclick: () => requireAuth(() => goTo('gestao-empresas-parceiras', { farmacia: farmaciaAtiva })) }, [Icon('settings', { size: 14, strokeWidth: 2.2 }), ' Gerir Empresas Parceiras']),
@@ -16738,7 +16773,7 @@ function buildEntregasPage(container, goTo) {
     const resultsContainer = h('div', {});
     function renderResults() { clear(resultsContainer); resultsContainer.appendChild(buildTable(visibleEntregas())); }
     const debouncedRenderResults = debounce(renderResults, 180);
-    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
+    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; entregasContextoMemorizado.searchQuery = searchQuery; debouncedRenderResults(); });
     wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
       h('div', { class: 'search-row' }, [h('div', { class: 'search-input-wrap' }, [h('span', { class: 'icon' }, Icon('search', { size: 15 })), searchInput])]),
     ]));
@@ -18976,6 +19011,12 @@ function manualLogout() {
     STATE.objetivosMensais = [];
     limparSessaoPersistente();
     pararPresenca();
+    // Fim de sessão explícito (ao contrário do timeout silencioso por
+    // inatividade): repõe a memória de farmácia/separador/pesquisa de
+    // Entregas, para o próximo login neste dispositivo — eventualmente de
+    // outro colega — começar sempre do zero, sem herdar o contexto de quem
+    // saiu.
+    entregasContextoMemorizado = { farmaciaAtiva: null, activeTab: 'pendentes', searchQuery: '' };
     if (resetPosologiaCalc) resetPosologiaCalc(); // fim de sessão → slider volta ao início
     render();
     resetInactivityTimer();
