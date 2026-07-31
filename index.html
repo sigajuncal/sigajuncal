@@ -16571,7 +16571,23 @@ function buildEntregasPage(container, goTo) {
     let list = STATE.entregas.filter(r => r.farmacia === farmaciaAtiva);
     list = list.filter(r => activeTab === 'historico' ? r.estadoEntrega === 'Entregue' : r.estadoEntrega !== 'Entregue');
     if (q) list = list.filter(r => [r.nomeCliente, r.morada, r.contacto].some(v => normalizarTexto(v).includes(q)));
-    return list.slice().sort((a, b) => (b.dataEntrega || '').localeCompare(a.dataEntrega || ''));
+    if (activeTab === 'historico') return list.slice().sort((a, b) => (b.dataEntrega || '').localeCompare(a.dataEntrega || ''));
+    // Pendentes: 1º critério — prazo-limite mais próximo primeiro (a entrega
+    // mais urgente no topo), usando a mesma "hora-limite efetiva" já usada
+    // no alerta de atrasadas (entregaLimiteTimestamp: Hora Limite Específica
+    // se definida, senão fim do Bloco Horário); sem prazo calculável, fica
+    // sempre no fim (Infinity), por não haver urgência a comparar. 2º
+    // critério de desempate, quando o prazo-limite é igual (ex: várias até
+    // às 16:00) — data/hora de criação por ordem crescente (mais antiga
+    // primeiro, `createdAt` do Supabase).
+    return list.slice().sort((a, b) => {
+      const limiteA = entregaLimiteTimestamp(a);
+      const limiteB = entregaLimiteTimestamp(b);
+      const tsA = limiteA ? limiteA.getTime() : Infinity;
+      const tsB = limiteB ? limiteB.getTime() : Infinity;
+      if (tsA !== tsB) return tsA - tsB;
+      return (a.createdAt || '').localeCompare(b.createdAt || '');
+    });
   }
 
   function buildTable(list) {
