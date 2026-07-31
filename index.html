@@ -1835,6 +1835,8 @@
   .toast-success{background:#059669;}
   .toast-info{background:var(--pharm-800);}
   .toast-closing{animation:toastOut .18s ease-in forwards;}
+  .toast-clicavel{cursor:pointer;}
+  .toast-clicavel:hover{filter:brightness(1.12);}
   @keyframes toastIn{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
   @keyframes toastOut{from{opacity:1;transform:translateY(0);}to{opacity:0;transform:translateY(8px);}}
   .toast-close{background:none;border:none;color:#fff;opacity:.8;cursor:pointer;padding:2px;
@@ -4901,8 +4903,10 @@ function verificarLembreteTarefasPendentes() {
   const texto = pendentes.length === 1
     ? 'Tens 1 tarefa por confirmar na Gaveta de Recados.'
     : `Tens ${pendentes.length} tarefas por confirmar na Gaveta de Recados.`;
-  dispararNotificacaoNativa('📋 Lembrete de tarefas pendentes', texto);
-  showToast(texto, 'info');
+  // Toast in-app sempre (Desktop e mobile); push nativo do sistema só em
+  // telemóvel/tablet — no Desktop fica só o toast, como já estava.
+  showToast(texto, 'info', { onClick: () => abrirModalGaveta() });
+  if (pushGavetaPermitidoNesteDispositivo()) dispararNotificacaoNativa('📋 Lembrete de tarefas pendentes', texto);
 }
 async function dbFetchOne(listKey, id) {
   if (!sb) return null;
@@ -5279,6 +5283,17 @@ function pedirPermissaoNotificacoes() {
     return resultado;
   }).catch(() => 'erro');
 }
+// Diferenciação por dispositivo para a Gaveta de Recados: no Desktop
+// (PC/Mac) os 3 eventos (nova mensagem, nova tarefa, tarefa concluída)
+// ficam só como toast in-app — sem interromper com uma notificação do
+// sistema. Em telemóvel/tablet (iPhone, Android, iPad — a mesma deteção já
+// usada para o convite de biometria) a push É reativada, para o alerta
+// chegar mesmo ao ecrã de bloqueio quando a pessoa está fora da app.
+// NUNCA gate a exceção de Entregas/Estafeta (handleNovaEntregaPendente) —
+// essa continua ativa em todas as plataformas, como sempre esteve.
+function pushGavetaPermitidoNesteDispositivo() {
+  return ehDispositivoMobileOuTablet();
+}
 function dispararNotificacaoNativa(titulo, corpo) {
   // Regra global por perfil: Prestador de Serviço nunca é notificado.
   if (isPrestadorServico()) return;
@@ -5401,7 +5416,9 @@ function handleNovaMensagemChat(msg) {
     atualizarIndicadoresChat();
     iniciarPiscarTitulo();
     tocarSomNotificacaoChat();
-    dispararNotificacaoNativa('SigaJuncal · Chat da equipa', 'Nova mensagem recebida — inicie sessão para ler.');
+    // Notificação push do sistema DESATIVADA aqui — o chat geral da equipa
+    // passou para o beepbeep, por isso este alerta deixou de fazer sentido
+    // (mesma redução de escopo aplicada à Gaveta de Recados).
     return;
   }
   if (String(msg.userId) === String(activeUser.id)) return; // nunca notifica a própria mensagem
@@ -5409,7 +5426,6 @@ function handleNovaMensagemChat(msg) {
   iniciarPiscarTitulo();
   if (STATE.page !== 'chat') {
     tocarSomNotificacaoChat();
-    dispararNotificacaoNativa(`Nova mensagem de ${msg.primeiroNome || 'colega'}`, msg.texto || '');
   }
 }
 
@@ -6287,10 +6303,11 @@ function getToastStack() {
   }
   return el;
 }
-function showToast(message, kind) {
+function showToast(message, kind, opts) {
   kind = kind || 'info'; // 'error' | 'success' | 'info'
+  opts = opts || {};
   const stack = getToastStack();
-  const toast = h('div', { class: `toast toast-${kind}` }, [
+  const toast = h('div', { class: `toast toast-${kind}` + (opts.onClick ? ' toast-clicavel' : '') }, [
     h('span', {}, message),
   ]);
   function dismiss() {
@@ -6298,7 +6315,17 @@ function showToast(message, kind) {
     toast.classList.add('toast-closing');
     setTimeout(() => toast.remove(), 180);
   }
-  const closeBtn = h('button', { class: 'toast-close', title: 'Fechar', 'aria-label': 'Fechar', onclick: dismiss }, Icon('x', { size: 13, strokeWidth: 2.4 }));
+  // Toast clicável — usado pelos alertas in-app da Gaveta de Recados (Nova
+  // Mensagem/Tarefa, Tarefa Concluída) para abrir logo a conversa/tarefa em
+  // causa, sem obrigar a ir procurá-la na Gaveta.
+  if (opts.onClick) {
+    toast.addEventListener('click', (e) => {
+      if (e.target.closest('.toast-close')) return;
+      opts.onClick();
+      dismiss();
+    });
+  }
+  const closeBtn = h('button', { class: 'toast-close', title: 'Fechar', 'aria-label': 'Fechar', onclick: (e) => { e.stopPropagation(); dismiss(); } }, Icon('x', { size: 13, strokeWidth: 2.4 }));
   toast.appendChild(closeBtn);
   stack.appendChild(toast);
   setTimeout(dismiss, kind === 'error' ? 6000 : 3500);
@@ -18217,22 +18244,43 @@ function setupRealtime() {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'gaveta_recados' }, async (payload) => {
       const anteriores = STATE.gavetaRecados || [];
       STATE.gavetaRecados = sanitizarSupabase(await dbFetchGavetaRecados());
-      // Aviso discreto (sem interromper ninguém) quando chega um recado
-      // novo dirigido a este utilizador — nunca para quem não tem gaveta.
+      // Aviso in-app (nunca push do sistema — ver nota abaixo) quando chega
+      // um recado novo dirigido a este utilizador — nunca para quem não
+      // tem gaveta.
       if (payload.eventType === 'INSERT' && payload.new && utilizadorAtualTemGaveta()) {
         const novo = sanitizarSupabase(rowToRecord(payload.new));
         if (String(novo.destinatarioId) === String(activeUser.id)) {
           const ehTarefa = (novo.tipo || 'mensagem') === 'tarefa';
-          dispararNotificacaoNativa(ehTarefa ? '📋 Nova tarefa na Gaveta' : '📥 Novo recado na Gaveta', novo.mensagem || '');
+          const remetenteNome = (() => {
+            const u = (STATE.usuarios || []).find(x => String(x.id) === String(novo.remetenteId));
+            return u ? (u.nomeCompleto || u.username) : 'Um colega';
+          })();
+          const trecho = String(novo.mensagem || '').slice(0, 60) + (String(novo.mensagem || '').length > 60 ? '…' : '');
+          // Notificações push do navegador/dispositivo (Notification API)
+          // foram DESATIVADAS no Desktop para mensagens/tarefas gerais da
+          // Gaveta — o chat geral da equipa passou para o beepbeep, por
+          // isso deixou de fazer sentido interromper com um alerta do
+          // sistema aí. Em telemóvel/tablet a push fica REATIVADA (ver
+          // pushGavetaPermitidoNesteDispositivo) — é o único sítio onde a
+          // pessoa pode estar mesmo fora da app (ecrã de bloqueio) quando
+          // lhe atribuem uma tarefa. O toast in-app fica sempre ativo em
+          // ambos os casos. A exceção de Entregas/Estafeta
+          // (handleNovaEntregaPendente) nunca depende deste gate — mantém-
+          // se ativa em todas as plataformas, como sempre esteve.
+          showToast(`${ehTarefa ? '📋' : '📥'} ${remetenteNome}: ${trecho}`, 'info', { onClick: () => abrirModalGaveta(novo.remetenteId) });
+          if (pushGavetaPermitidoNesteDispositivo()) {
+            dispararNotificacaoNativa(ehTarefa ? `📋 Nova tarefa de ${remetenteNome}` : `📥 Novo recado de ${remetenteNome}`, trecho);
+          }
           // Destaque temporário (pulse) na pílula do cabeçalho — chama a
           // atenção ao balcão sem interromper o que está a fazer.
           STATE.gavetaPulseAte = Date.now() + 3500;
           setTimeout(() => renderOuAdiarSeOcupado(), 3600);
         }
       }
-      // Notificação ao REMETENTE: quando um recado que EU enviei é marcado
+      // Aviso in-app ao REMETENTE: quando um recado que EU enviei é marcado
       // como Tratado/Conferido pelo destinatário, aviso-me com o nome de
-      // quem conferiu e um trecho da mensagem original.
+      // quem conferiu e um trecho da mensagem original — toast sempre;
+      // push nativo só em mobile/tablet (mesmo gate do bloco INSERT acima).
       if (payload.eventType === 'UPDATE' && payload.new && utilizadorAtualTemGaveta()) {
         const atualizado = sanitizarSupabase(rowToRecord(payload.new));
         const anterior = anteriores.find(r => r.id === atualizado.id);
@@ -18247,8 +18295,10 @@ function setupRealtime() {
           const textoAviso = ehTarefa
             ? `${nomeColega} confirmou a conclusão da tarefa: "${trecho}"`
             : `${nomeColega} conferiu/concluiu o teu recado: "${trecho}"`;
-          dispararNotificacaoNativa(ehTarefa ? '✅ Tarefa concluída' : '✅ Recado conferido', textoAviso);
-          showToast(textoAviso, 'success');
+          showToast(textoAviso, 'success', { onClick: () => abrirModalGaveta(atualizado.destinatarioId) });
+          if (pushGavetaPermitidoNesteDispositivo()) {
+            dispararNotificacaoNativa(ehTarefa ? '✅ Tarefa concluída' : '✅ Recado conferido', textoAviso);
+          }
           STATE.gavetaPulseAte = Date.now() + 3500;
           setTimeout(() => renderOuAdiarSeOcupado(), 3600);
         }
