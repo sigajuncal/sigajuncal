@@ -2991,7 +2991,7 @@ function agendaSobreposicoesPrimaCorpus(data, horaInicio, duracaoMin, excludeId)
   const novosHorarios = new Set(agendaHorariosOcupados(horaInicio, duracaoMin, 'prima_corpus'));
   return STATE.agendaMarcacoes.filter(m => {
     if (m.prestadorKey !== 'prima_corpus' || m.data !== data || m.id === excludeId) return false;
-    if (m.tipoLinha === 'vaga' && m.estado === 'cancelada') return false;
+    if (m.tipoLinha === 'vaga' && (m.estado === 'cancelada' || m.estado === 'faltou' || m.estado === 'cancelado')) return false;
     const horarios = agendaHorariosOcupados(m.hora, m.duracaoMin || 15, 'prima_corpus');
     return horarios.some(hh => novosHorarios.has(hh));
   });
@@ -3019,10 +3019,10 @@ function agendaDiaAberto(prestadorKey, dateISO) {
   return !!agendaDiaAbertoRegisto(prestadorKey, dateISO);
 }
 // "Fechar Dia" só é permitido quando não há nenhuma marcação ativa (vagas
-// bloqueadas não contam, e uma marcação com estado "cancelada" já não conta
-// como ativa).
+// bloqueadas não contam, e uma marcação com estado "cancelada"/"faltou"/
+// "cancelado" já não conta como ativa).
 function agendaDiaTemMarcacaoAtiva(prestadorKey, dateISO) {
-  return STATE.agendaMarcacoes.some(m => m.prestadorKey === prestadorKey && m.data === dateISO && m.tipoLinha !== 'bloqueado' && m.estado !== 'cancelada');
+  return STATE.agendaMarcacoes.some(m => m.prestadorKey === prestadorKey && m.data === dateISO && m.tipoLinha !== 'bloqueado' && m.estado !== 'cancelada' && m.estado !== 'faltou' && m.estado !== 'cancelado');
 }
 
 // Modal do "dia de serviço" de um prestador — grelha de vagas de 15 em 15
@@ -3058,16 +3058,22 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     const lista = marcacoesSelecionadasLista();
     if (!lista.length) return;
     const n = lista.length;
-    const verbo = estado === 'confirmada' ? 'concluir' : 'cancelar';
-    confirmDialog(`Tem a certeza que pretende ${verbo} ${n > 1 ? `as ${n} marcações selecionadas` : 'a marcação selecionada'}?`, async () => {
+    async function aplicar(estadoFinal) {
       for (const m of lista) {
-        const updated = await dbUpdate('agendaMarcacoes', m.id, { estado });
+        const updated = await dbUpdate('agendaMarcacoes', m.id, { estado: estadoFinal });
         if (updated) STATE.agendaMarcacoes = STATE.agendaMarcacoes.map(x => x.id === updated.id ? updated : x);
       }
       selecionadas.clear();
       if (onSaved) onSaved();
       render();
-    }, { danger: estado === 'cancelada', confirmLabel: estado === 'confirmada' ? 'Concluir' : 'Sim, Cancelar Marcações' });
+    }
+    // Cancelar pede sempre o motivo (Faltou vs Cancelou) antes de gravar —
+    // Concluir mantém a confirmação simples de sempre.
+    if (estado === 'cancelada') {
+      abrirEscolhaMotivoCancelamento(`${n > 1 ? `${n} marcações selecionadas` : 'Esta marcação'} — o que aconteceu?`, aplicar);
+      return;
+    }
+    confirmDialog(`Tem a certeza que pretende concluir ${n > 1 ? `as ${n} marcações selecionadas` : 'a marcação selecionada'}?`, () => aplicar(estado), { confirmLabel: 'Concluir' });
   }
   function eliminarSelecionadas() {
     const lista = marcacoesSelecionadasLista();
@@ -3430,12 +3436,14 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   }
   function estadoClasseVaga(m) {
     if (m.estado === 'confirmada') return ' agenda-slot-confirmada';
-    if (m.estado === 'cancelada') return ' agenda-slot-cancelada';
+    if (m.estado === 'cancelada' || m.estado === 'faltou' || m.estado === 'cancelado') return ' agenda-slot-cancelada';
     if (m.estado === 'concluida') return ' agenda-slot-concluida';
     return '';
   }
   function estadoSufixoVaga(m) {
     if (m.estado === 'confirmada') return ' · Confirmada';
+    if (m.estado === 'faltou') return ' · Faltou';
+    if (m.estado === 'cancelado') return ' · Cancelou';
     if (m.estado === 'cancelada') return ' · Cancelada';
     if (m.estado === 'concluida') return ' · Concluída';
     return '';
@@ -3750,7 +3758,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     return ordenarPorHora(marcacoesDoDia().filter(m => m.tipoLinha !== 'bloqueado'))
       .map(m => ({
         hora: normalizarHora(m.hora), nome: m.nomeCliente, contacto: m.contacto,
-        estado: (m.estado === 'confirmada' ? 'Confirmada' : (m.estado === 'cancelada' ? 'Cancelada' : 'Por confirmar')),
+        estado: (m.estado === 'confirmada' ? 'Confirmada' : m.estado === 'faltou' ? 'Faltou' : m.estado === 'cancelado' ? 'Cancelou' : (m.estado === 'cancelada' ? 'Cancelada' : 'Por confirmar')),
         observacoes: m.observacoes,
       }));
   }
@@ -4139,7 +4147,7 @@ function percentagemAvisosPendentesProximosDias() {
   limiteDate.setDate(limiteDate.getDate() + 2);
   const limiteISO = dateToISO(limiteDate);
   const proximas = (STATE.agendaMarcacoes || []).filter(m =>
-    m.tipoLinha === 'vaga' && m.estado !== 'cancelada' && String(m.nomeCliente || '').trim()
+    m.tipoLinha === 'vaga' && m.estado !== 'cancelada' && m.estado !== 'faltou' && m.estado !== 'cancelado' && String(m.nomeCliente || '').trim()
     && m.data >= hojeISO && m.data <= limiteISO
   );
   if (!proximas.length) return 0;
@@ -4192,7 +4200,7 @@ function agendaMarcacoesAtrasadas(prestadorKey, ignoradasIds) {
     .filter(m => m.prestadorKey === prestadorKey
       && m.tipoLinha !== 'bloqueado'
       && String(m.nomeCliente || '').trim()
-      && m.estado !== 'cancelada' && m.estado !== 'concluida'
+      && m.estado !== 'cancelada' && m.estado !== 'concluida' && m.estado !== 'faltou' && m.estado !== 'cancelado'
       && !(ignoradasIds && ignoradasIds.has(m.id))
       && (agora - agendaMarcacaoFimDate(m).getTime()) > AGENDA_ATRASO_LIMITE_MS)
     .sort((a, b) => (a.data + normalizarHora(a.hora)).localeCompare(b.data + normalizarHora(b.hora)));
@@ -4203,11 +4211,28 @@ async function agendaMarcarConcluida(m) {
   showDbErrorToast('Não foi possível marcar como concluída');
   return false;
 }
-async function agendaMarcarCanceladaAtrasada(m) {
-  const updated = await dbUpdate('agendaMarcacoes', m.id, { estado: 'cancelada' });
+// Genérica para os estados "de cancelamento" — 'faltou' (Cliente Faltou) ou
+// 'cancelado' (Cliente Cancelou), escolhidos em abrirEscolhaMotivoCancelamento.
+async function agendaMarcarComEstado(m, estado) {
+  const updated = await dbUpdate('agendaMarcacoes', m.id, { estado });
   if (updated) { STATE.agendaMarcacoes = STATE.agendaMarcacoes.map(x => x.id === m.id ? updated : x); return true; }
-  showDbErrorToast('Não foi possível cancelar');
+  showDbErrorToast('Não foi possível atualizar a marcação');
   return false;
+}
+// ---- Estado partilhado por prestador (fora do closure de buildAgendaPage)
+// para o popup "Marcações por Atualizar" sobreviver a um redesenho
+// completo da página — o que acontece sempre que o Realtime deteta
+// QUALQUER alteração em agenda_marcacoes, incluindo a que o próprio
+// clique "Concluída"/"Cancelada" acabou de fazer (ver setupRealtime).
+// Sem isto, cada redesenho recriava esta lógica do zero com um
+// `modalAberto=false` e uma lista de "ignoradas nesta sessão" vazia,
+// podendo reabrir/duplicar o popup com marcações já tratadas.
+const agendaAtrasadasEstadoPorPrestador = {};
+function agendaAtrasadasEstado(prestadorKey) {
+  if (!agendaAtrasadasEstadoPorPrestador[prestadorKey]) {
+    agendaAtrasadasEstadoPorPrestador[prestadorKey] = { modalAberto: false, ignoradas: new Set() };
+  }
+  return agendaAtrasadasEstadoPorPrestador[prestadorKey];
 }
 // Popup de "atualização rápida" — lista todas as marcações atrasadas deste
 // prestador, com toda a informação relevante e ação de 1 clique por linha.
@@ -4216,7 +4241,7 @@ async function agendaMarcarCanceladaAtrasada(m) {
 // mesmos enquanto estiver aberta.
 function abrirModalMarcacoesAtrasadas(itensIniciais, prestador, onFechar) {
   let itens = itensIniciais.slice();
-  const overlay = h('div', { class: 'modal-overlay' });
+  const overlay = h('div', { class: 'modal-overlay agenda-atrasadas-overlay' });
   function fechar() {
     document.removeEventListener('keydown', onKeydown);
     overlay.remove();
@@ -4240,10 +4265,12 @@ function abrirModalMarcacoesAtrasadas(itensIniciais, prestador, onFechar) {
         if (await agendaMarcarConcluida(m)) { itens = itens.filter(x => x.id !== m.id); renderLista(); }
         else { concluirBtn.disabled = false; cancelarBtn.disabled = false; }
       }));
-      cancelarBtn.addEventListener('click', () => requireAuth(async () => {
-        concluirBtn.disabled = true; cancelarBtn.disabled = true;
-        if (await agendaMarcarCanceladaAtrasada(m)) { itens = itens.filter(x => x.id !== m.id); renderLista(); }
-        else { concluirBtn.disabled = false; cancelarBtn.disabled = false; }
+      cancelarBtn.addEventListener('click', () => requireAuth(() => {
+        abrirEscolhaMotivoCancelamento(`Marcação de ${m.nomeCliente || 'sem nome'} — o que aconteceu?`, async (estado) => {
+          concluirBtn.disabled = true; cancelarBtn.disabled = true;
+          if (await agendaMarcarComEstado(m, estado)) { itens = itens.filter(x => x.id !== m.id); renderLista(); }
+          else { concluirBtn.disabled = false; cancelarBtn.disabled = false; }
+        });
       }));
       listaEl.appendChild(h('div', { class: 'card card-pad agenda-atrasada-card' }, [
         h('div', { style: 'display:flex;justify-content:space-between;gap:10px;margin-bottom:8px;' }, [
@@ -4309,17 +4336,20 @@ function buildAgendaPage(container, goTo, prestadorKey) {
   // incomodar enquanto a página não for reaberta. O temporizador para-se
   // sozinho assim que o `container` desta página sai do ecrã — nunca
   // continua a correr depois de se navegar para outra secção.
-  let modalAtrasadasAberto = false;
-  const ignoradasNestaSessao = new Set();
+  // O estado "modal aberto"/"ignoradas" vive FORA deste closure (ver
+  // agendaAtrasadasEstado) — sobrevive a qualquer redesenho completo da
+  // página que o Realtime dispare (inclusive por causa do próprio clique em
+  // Concluída/Cancelada), evitando reabrir ou duplicar este popup.
+  const estadoAtrasadas = agendaAtrasadasEstado(prestadorKey);
   function verificarMarcacoesAtrasadas() {
     if (!container.isConnected) { clearInterval(watcherAtrasadas); return; }
-    if (modalAtrasadasAberto) return;
-    const atrasadas = agendaMarcacoesAtrasadas(prestadorKey, ignoradasNestaSessao);
+    if (estadoAtrasadas.modalAberto || document.querySelector('.agenda-atrasadas-overlay')) return;
+    const atrasadas = agendaMarcacoesAtrasadas(prestadorKey, estadoAtrasadas.ignoradas);
     if (!atrasadas.length) return;
-    modalAtrasadasAberto = true;
+    estadoAtrasadas.modalAberto = true;
     abrirModalMarcacoesAtrasadas(atrasadas, prestador, (idsPorTratar) => {
-      idsPorTratar.forEach(id => ignoradasNestaSessao.add(id));
-      modalAtrasadasAberto = false;
+      idsPorTratar.forEach(id => estadoAtrasadas.ignoradas.add(id));
+      estadoAtrasadas.modalAberto = false;
     });
   }
   const watcherAtrasadas = setInterval(verificarMarcacoesAtrasadas, 60000);
@@ -6465,6 +6495,39 @@ function perguntaSimNaoDialog(mensagem, onResposta) {
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
 }
+// Escolha rápida do motivo ao cancelar uma marcação de Agenda — "Cliente
+// Faltou" (estado='faltou') vs "Cliente Cancelou" (estado='cancelado').
+// onEscolha(estado) só é chamado com uma escolha real; fechar sem escolher
+// (Escape/clique fora/"Voltar") não chama nada — ao contrário do Sim/Não
+// genérico, aqui não há uma opção "por defeito" segura para assumir.
+function abrirEscolhaMotivoCancelamento(mensagem, onEscolha) {
+  const overlay = h('div', { class: 'modal-overlay' });
+  let respondido = false;
+  function fechar() {
+    if (respondido) return;
+    document.removeEventListener('keydown', onKeydown);
+    overlay.remove();
+  }
+  function escolher(estado) {
+    if (respondido) return;
+    respondido = true;
+    fechar();
+    onEscolha(estado);
+  }
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) fechar(); });
+  function onKeydown(e) { if (e.key === 'Escape') fechar(); }
+  document.addEventListener('keydown', onKeydown);
+  const faltouBtn = h('button', { class: 'btn btn-secondary', style: 'flex:1;', onclick: () => escolher('faltou') }, 'Cliente Faltou');
+  const canceladoBtn = h('button', { class: 'btn btn-secondary', style: 'flex:1;color:var(--red);', onclick: () => escolher('cancelado') }, 'Cliente Cancelou');
+  const voltarBtn = h('button', { class: 'btn btn-secondary', onclick: fechar }, 'Voltar');
+  const panel = h('div', { class: 'modal-panel confirm-panel', style: 'max-width:380px;' }, [
+    h('p', { class: 'confirm-message' }, mensagem),
+    h('div', { style: 'display:flex;gap:8px;margin-top:4px;' }, [faltouBtn, canceladoBtn]),
+    h('div', { style: 'margin-top:8px;' }, [voltarBtn]),
+  ]);
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+}
 function confirmarRotaExcelDialog(onResposta) {
   const overlay = h('div', { class: 'modal-overlay' });
   function close() { document.removeEventListener('keydown', onKeydown); overlay.remove(); }
@@ -6889,7 +6952,17 @@ function buildRecordTable(schema, records, selectedIds, onToggleSelect, listKey,
       const c = schemaByName[name];
       let content;
       if (name === 'obs') content = ObsIndicator(buildDetalhesTexto(schema, r));
-      else if (name === 'fornecedor') { const v = resolveFornecedorExibicao(r, listKey); content = (v === '' || v === undefined || v === null) ? '—' : v; }
+      else if (name === 'fornecedor') {
+        let v = resolveFornecedorExibicao(r, listKey);
+        // Manipulados: a coluna já se chama "Farmácia" — repetir a palavra
+        // dentro do próprio valor ("Farmácia Clérigos") é redundante e
+        // polui a tabela; mostra só "Clérigos". Só afeta esta renderização
+        // — o valor gravado no registo e usado em orçamentos mantém-se
+        // intacto (ex: "Farmácia Clérigos" continua a ser a opção correta
+        // a escolher/gravar no formulário e nos orçamentos).
+        if (listKey === 'manipulados' && v) v = String(v).replace(/^Farmácia\s+/i, '');
+        content = (v === '' || v === undefined || v === null) ? '—' : v;
+      }
       else if (c.type === 'date') content = formatDate(r[name]);
       else if (name === 'pvp') content = r[name] ? `€ ${r[name]}` : '—';
       else content = (r[name] === '' || r[name] === undefined || r[name] === null) ? '—' : r[name];
@@ -7042,6 +7115,13 @@ function buildOrtopediaPage(container, goTo) {
     }
     const formatoInvalido = checkFieldFormats(draft, ortopediaSchema);
     if (formatoInvalido) { formError = formatoInvalido; rerender(); return; }
+    // Não deixa gravar um pedido "Em Orçamento" sem nenhuma farmácia/
+    // fornecedor pedido na Gestão de Orçamentos.
+    if (draft.estado === 'Em Orçamento' && categoriaTemOrcamentos(listKey) && orcamentosSelecionados(draft, listKey) === 0) {
+      formError = 'Selecione pelo menos uma farmácia para orçamento antes de guardar neste estado.';
+      rerender();
+      return;
+    }
     // Fora do produto "Meias de Compressão", Tipo/Cor/Biqueira/Medidas não
     // fazem sentido — e vice-versa para o Nome do Artigo — limpa o que não
     // se aplica para não deixar dados desatualizados escondidos no registo.
@@ -7266,6 +7346,14 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
     }
     const formatoInvalido = checkFieldFormats(draft, schema);
     if (formatoInvalido) { formError = formatoInvalido; rerender(); return; }
+    // Não deixa gravar um pedido "Em Orçamento" sem nenhuma farmácia/
+    // fornecedor pedido na Gestão de Orçamentos — evita registos "fantasma"
+    // que ficam Em Orçamento sem ninguém ter sido realmente contactado.
+    if (draft.estado === 'Em Orçamento' && categoriaTemOrcamentos(listKey) && orcamentosSelecionados(draft, listKey) === 0) {
+      formError = 'Selecione pelo menos uma farmácia para orçamento antes de guardar neste estado.';
+      rerender();
+      return;
+    }
     formError = '';
 
     // Automação/confirmação da Rota ao transitar o Estado para "Pedido" —
@@ -12743,11 +12831,10 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     const lista = marcacoesSelecionadasLista();
     if (!lista.length) return;
     const n = lista.length;
-    const verbo = estado === 'confirmada' ? 'concluir' : 'cancelar';
-    confirmDialog(`Tem a certeza que pretende ${verbo} ${n > 1 ? `as ${n} marcações selecionadas` : 'a marcação selecionada'}?`, async () => {
+    async function aplicar(estadoFinal) {
       let houveConflito = false;
       for (const m of lista) {
-        const updated = await dbUpdateMarcacao(m.id, { estado }, m.updatedAt);
+        const updated = await dbUpdateMarcacao(m.id, { estado: estadoFinal }, m.updatedAt);
         if (updated) marcacoes = marcacoes.map(x => x.id === updated.id ? updated : x);
         else houveConflito = true;
       }
@@ -12755,7 +12842,14 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       if (houveConflito) await carregarMarcacoes(); // repõe a versão real de tudo, incl. o que colidiu
       if (onSaved) onSaved();
       render();
-    }, { danger: estado === 'cancelada', confirmLabel: estado === 'confirmada' ? 'Concluir' : 'Sim, Cancelar Marcações' });
+    }
+    // Cancelar pede sempre o motivo (Faltou vs Cancelou) antes de gravar —
+    // Concluir mantém a confirmação simples de sempre.
+    if (estado === 'cancelada') {
+      abrirEscolhaMotivoCancelamento(`${n > 1 ? `${n} marcações selecionadas` : 'Esta marcação'} — o que aconteceu?`, aplicar);
+      return;
+    }
+    confirmDialog(`Tem a certeza que pretende concluir ${n > 1 ? `as ${n} marcações selecionadas` : 'a marcação selecionada'}?`, () => aplicar(estado), { confirmLabel: 'Concluir' });
   }
   function eliminarSelecionadas() {
     const lista = marcacoesSelecionadasLista();
@@ -12893,9 +12987,9 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     else await aplicar();
   }
   // "Fechar Dia" só é permitido quando não há nenhuma marcação ativa (vagas
-  // vazias/bloqueadas não contam, e uma marcação já cancelada também não).
+  // vazias/bloqueadas não contam, e uma marcação já cancelada/faltou/cancelado também não).
   function eventoTemMarcacaoAtiva() {
-    return marcacoes.some(m => m.tipoLinha !== 'bloqueado' && !vagaVazia(m) && m.estado !== 'cancelada');
+    return marcacoes.some(m => m.tipoLinha !== 'bloqueado' && !vagaVazia(m) && m.estado !== 'cancelada' && m.estado !== 'faltou' && m.estado !== 'cancelado');
   }
   function eliminarDia() {
     if (eventoTemMarcacaoAtiva()) {
@@ -12945,11 +13039,13 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
   }
   function estadoClasseVaga(m) {
     if (m.estado === 'confirmada') return ' agenda-slot-confirmada';
-    if (m.estado === 'cancelada') return ' agenda-slot-cancelada';
+    if (m.estado === 'cancelada' || m.estado === 'faltou' || m.estado === 'cancelado') return ' agenda-slot-cancelada';
     return '';
   }
   function estadoSufixoVaga(m) {
     if (m.estado === 'confirmada') return ' · Confirmada';
+    if (m.estado === 'faltou') return ' · Faltou';
+    if (m.estado === 'cancelado') return ' · Cancelou';
     if (m.estado === 'cancelada') return ' · Cancelada';
     return '';
   }
@@ -13130,7 +13226,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     return ordenarPorHora(marcacoes.filter(m => m.tipoLinha !== 'bloqueado'))
       .map(m => ({
         hora: normalizarHora(m.hora), nome: m.nomeCliente, contacto: m.contacto,
-        estado: (m.estado === 'confirmada' ? 'Confirmada' : (m.estado === 'cancelada' ? 'Cancelada' : 'Por confirmar')),
+        estado: (m.estado === 'confirmada' ? 'Confirmada' : m.estado === 'faltou' ? 'Faltou' : m.estado === 'cancelado' ? 'Cancelou' : (m.estado === 'cancelada' ? 'Cancelada' : 'Por confirmar')),
         observacoes: m.observacoes,
       }));
   }
