@@ -2195,6 +2195,20 @@ const LOGO_BOANOVA_DATA_URI = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAA9g
 ================================================================= */
 const RESPONSAVEIS = ['Adriano', 'Alexandra', 'Ana', 'André Seixas', 'André Sousa', 'Carina', 'Diogo', 'Emanuel', 'Hugo', 'Inês', 'Mickael', 'Joana Coelho', 'Joana Mendonça', 'João', 'Lúcia', 'Magda', 'Mariana', 'Paulo', 'Sofia', 'Vanessa', 'Vânia'];
 const ESTADOS = ['Em Orçamento', 'Pedido', 'Satisfeito', 'Resolvido', 'Cancelado'];
+// Estados de uma marcação de Agenda/Evento — usados no select "Estado" do
+// formulário de edição (buildAgendaDiaModal e buildEventoDiaModal), para
+// se poder alternar/reverter livremente entre qualquer um deles.
+// 'confirmada' fica incluído por completude (é gravado pelo botão rápido
+// "Confirmar" de cada vaga) mesmo não tendo sido pedido explicitamente —
+// omiti-lo deixaria uma marcação já confirmada sem opção correspondente
+// selecionada no dropdown ao ser editada.
+const ESTADOS_MARCACAO_OPCOES = [
+  { value: 'agendada', label: 'Pendente' },
+  { value: 'confirmada', label: 'Confirmada' },
+  { value: 'concluida', label: 'Concluída' },
+  { value: 'faltou', label: 'Cliente Faltou' },
+  { value: 'cancelada', label: 'Cliente Cancelou' },
+];
 const FORNECEDORES_MANIPULADOS = ['Guarani', 'Clérigos', 'Serpa Pinto'];
 
 const STATUS_CLASS = {
@@ -3084,6 +3098,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   // ---- Seleção de marcações (checkboxes) + Barra Inferior Flutuante ----
   let selecionadas = new Set();
   let barraSelecaoEl = null;
+  let perguntandoMotivo = false; // true enquanto a barra mostra Cliente Faltou/Cancelou/Voltar
   function toggleSelecaoMarcacao(id) {
     if (selecionadas.has(id)) selecionadas.delete(id); else selecionadas.add(id);
     sincronizarBarraSelecao(); // atualização leve: não reconstrói a grelha inteira
@@ -3092,6 +3107,18 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   function editarSelecionada() {
     const lista = marcacoesSelecionadasLista();
     if (lista.length === 1) { selecionadas.clear(); openEditarMarcacao(lista[0]); }
+  }
+  async function aplicarMotivoCancelamento(estadoFinal) {
+    const lista = marcacoesSelecionadasLista();
+    perguntandoMotivo = false;
+    if (!lista.length) { sincronizarBarraSelecao(); return; }
+    for (const m of lista) {
+      const updated = await dbUpdate('agendaMarcacoes', m.id, { estado: estadoFinal });
+      if (updated) STATE.agendaMarcacoes = STATE.agendaMarcacoes.map(x => x.id === updated.id ? updated : x);
+    }
+    selecionadas.clear();
+    if (onSaved) onSaved();
+    render();
   }
   function aplicarEstadoSelecionadas(estado) {
     const lista = marcacoesSelecionadasLista();
@@ -3107,9 +3134,11 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       render();
     }
     // Cancelar pede sempre o motivo (Faltou vs Cancelou) antes de gravar —
-    // Concluir mantém a confirmação simples de sempre.
+    // inline na própria barra flutuante, nunca num segundo modal-overlay
+    // (evita empilhar overlays). Concluir mantém a confirmação simples.
     if (estado === 'cancelada') {
-      abrirEscolhaMotivoCancelamento(`${n > 1 ? `${n} marcações selecionadas` : 'Esta marcação'} — o que aconteceu?`, aplicar);
+      perguntandoMotivo = true;
+      sincronizarBarraSelecao();
       return;
     }
     confirmDialog(`Tem a certeza que pretende concluir ${n > 1 ? `as ${n} marcações selecionadas` : 'a marcação selecionada'}?`, () => aplicar(estado), { confirmLabel: 'Concluir' });
@@ -3134,13 +3163,19 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     const idsValidos = new Set(marcacoesDoDia().map(m => m.id));
     [...selecionadas].forEach(id => { if (!idsValidos.has(id)) selecionadas.delete(id); });
     if (barraSelecaoEl) { barraSelecaoEl.remove(); barraSelecaoEl = null; }
-    if (isPast || showForm || selecionadas.size === 0) return;
-    barraSelecaoEl = buildBarraSelecaoMarcacoes(selecionadas.size, {
-      onEditar: editarSelecionada,
-      onConcluir: () => aplicarEstadoSelecionadas('concluida'),
-      onCancelar: () => aplicarEstadoSelecionadas('cancelada'),
-      onEliminar: eliminarSelecionadas,
-    });
+    if (isPast || showForm || selecionadas.size === 0) { perguntandoMotivo = false; return; }
+    barraSelecaoEl = perguntandoMotivo
+      ? buildBarraMotivoCancelamento(selecionadas.size, {
+          onFaltou: () => aplicarMotivoCancelamento('faltou'),
+          onCancelou: () => aplicarMotivoCancelamento('cancelada'),
+          onVoltar: () => { perguntandoMotivo = false; sincronizarBarraSelecao(); },
+        })
+      : buildBarraSelecaoMarcacoes(selecionadas.size, {
+          onEditar: editarSelecionada,
+          onConcluir: () => aplicarEstadoSelecionadas('concluida'),
+          onCancelar: () => aplicarEstadoSelecionadas('cancelada'),
+          onEliminar: eliminarSelecionadas,
+        });
     overlay.appendChild(barraSelecaoEl);
   }
 
@@ -3635,17 +3670,11 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     const avisoField = h('label', { class: 'checkbox-field' }, [avisoCb, h('span', {}, 'Aviso ao cliente')]);
 
     // Estado — só aparece a editar uma marcação já existente (nunca ao
-    // criar, que arranca sempre "agendada"). Permite reverter ou corrigir
-    // manualmente qualquer estado (ex: uma cancelada/faltou por engano).
+    // criar, que arranca sempre "agendada"/Pendente). Bem visível, para
+    // se poder reverter ou corrigir livremente qualquer estado (ex: uma
+    // cancelada/faltou por engano).
     let estadoSelect = null;
     if (formDraft.editId) {
-      const ESTADOS_MARCACAO_OPCOES = [
-        { value: 'agendada', label: 'Por Confirmar' },
-        { value: 'confirmada', label: 'Confirmada' },
-        { value: 'concluida', label: 'Concluída' },
-        { value: 'faltou', label: 'Cliente Faltou' },
-        { value: 'cancelada', label: 'Cancelada' },
-      ];
       estadoSelect = h('select', { class: 'select' }, ESTADOS_MARCACAO_OPCOES.map(o => h('option', { value: o.value, selected: (formDraft.estado || 'agendada') === o.value ? 'selected' : undefined }, o.label)));
       estadoSelect.value = formDraft.estado || 'agendada';
       estadoSelect.addEventListener('change', () => { formDraft.estado = estadoSelect.value; });
@@ -3653,11 +3682,11 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
 
     campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Nome do Cliente *'), nomeInput]));
     campos.push(h('div', { class: 'field field-sm' }, [h('label', {}, 'Contacto *'), contactoInput]));
+    if (estadoSelect) {
+      campos.push(h('div', { class: 'field field-sm' }, [h('label', {}, 'Estado *'), estadoSelect]));
+    }
     campos.push(avisoField);
     campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Observações'), obsInput]));
-    if (estadoSelect) {
-      campos.push(h('div', { class: 'field field-sm' }, [h('label', {}, 'Estado'), estadoSelect]));
-    }
     campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Responsável pela Marcação'), responsavelInput]));
     if (ultimaAtualizacaoInput) {
       campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Última Atualização Por'), ultimaAtualizacaoInput]));
@@ -4295,10 +4324,8 @@ async function agendaMarcarConcluida(m) {
   return false;
 }
 // Genérica para os estados "de desfecho" — 'faltou' (Cliente Faltou) ou
-// 'cancelada' (Cliente Cancelou), escolhidos em abrirEscolhaMotivoCancelamento.
-// ('cancelado' — sem 'a' — só é reconhecido nos filtros/estilos como
-// equivalente legado, para não deixar por tratar um eventual registo
-// gravado com esse valor antes desta padronização; nunca é escrito de novo.)
+// 'cancelada' (Cliente Cancelou), escolhidos na barra/cartão inline de
+// motivo (ver buildBarraMotivoCancelamento e perguntandoMotivoIds).
 async function agendaMarcarComEstado(m, estado) {
   const updated = await dbUpdate('agendaMarcacoes', m.id, { estado });
   if (updated) { STATE.agendaMarcacoes = STATE.agendaMarcacoes.map(x => x.id === m.id ? updated : x); return true; }
@@ -4338,26 +4365,41 @@ function abrirModalMarcacoesAtrasadas(itensIniciais, prestador, onFechar) {
   overlay.addEventListener('click', (e) => { if (e.target === overlay) fechar(); });
 
   const listaEl = h('div', {});
+  const perguntandoMotivoIds = new Set(); // ids cujo cartão está a mostrar Faltou/Cancelou/Voltar inline
   function renderLista() {
     clear(listaEl);
     if (!itens.length) { fechar(); return; }
     itens.forEach(m => {
       const fim = agendaMarcacaoFimDate(m);
       const horaFimTxt = `${pad2(fim.getHours())}:${pad2(fim.getMinutes())}`;
-      const concluirBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12.5px;padding:7px 12px;' }, '✓ Concluída');
-      const cancelarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12.5px;padding:7px 12px;color:var(--red);' }, '✕ Cancelada');
-      concluirBtn.addEventListener('click', () => requireAuth(async () => {
-        concluirBtn.disabled = true; cancelarBtn.disabled = true;
-        if (await agendaMarcarConcluida(m)) { itens = itens.filter(x => x.id !== m.id); renderLista(); }
-        else { concluirBtn.disabled = false; cancelarBtn.disabled = false; }
-      }));
-      cancelarBtn.addEventListener('click', () => requireAuth(() => {
-        abrirEscolhaMotivoCancelamento(`Marcação de ${m.nomeCliente || 'sem nome'} — o que aconteceu?`, async (estado) => {
+      let acoesEl;
+      if (perguntandoMotivoIds.has(m.id)) {
+        const faltouBtn = h('button', { class: 'btn btn-secondary', style: 'flex:1;font-size:12.5px;padding:7px 8px;' }, 'Cliente Faltou');
+        const cancelouBtn = h('button', { class: 'btn btn-secondary', style: 'flex:1;font-size:12.5px;padding:7px 8px;color:var(--red);' }, 'Cliente Cancelou');
+        const voltarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12.5px;padding:7px 10px;' }, 'Voltar');
+        async function aplicarMotivo(estado) {
+          faltouBtn.disabled = true; cancelouBtn.disabled = true; voltarBtn.disabled = true;
+          if (await agendaMarcarComEstado(m, estado)) { itens = itens.filter(x => x.id !== m.id); perguntandoMotivoIds.delete(m.id); renderLista(); }
+          else { faltouBtn.disabled = false; cancelouBtn.disabled = false; voltarBtn.disabled = false; }
+        }
+        faltouBtn.addEventListener('click', () => requireAuth(() => aplicarMotivo('faltou')));
+        cancelouBtn.addEventListener('click', () => requireAuth(() => aplicarMotivo('cancelada')));
+        voltarBtn.addEventListener('click', () => { perguntandoMotivoIds.delete(m.id); renderLista(); });
+        acoesEl = h('div', { style: 'display:flex;gap:8px;' }, [faltouBtn, cancelouBtn, voltarBtn]);
+      } else {
+        const concluirBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12.5px;padding:7px 12px;' }, '✓ Concluída');
+        const cancelarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12.5px;padding:7px 12px;color:var(--red);' }, '✕ Cancelada');
+        concluirBtn.addEventListener('click', () => requireAuth(async () => {
           concluirBtn.disabled = true; cancelarBtn.disabled = true;
-          if (await agendaMarcarComEstado(m, estado)) { itens = itens.filter(x => x.id !== m.id); renderLista(); }
+          if (await agendaMarcarConcluida(m)) { itens = itens.filter(x => x.id !== m.id); renderLista(); }
           else { concluirBtn.disabled = false; cancelarBtn.disabled = false; }
-        });
-      }));
+        }));
+        // Perguntar o motivo (Faltou/Cancelou) fica INLINE no próprio
+        // cartão — nunca abre um segundo modal-overlay por cima deste
+        // popup (essa pilha de overlays podia deixar a interface presa).
+        cancelarBtn.addEventListener('click', () => requireAuth(() => { perguntandoMotivoIds.add(m.id); renderLista(); }));
+        acoesEl = h('div', { style: 'display:flex;gap:8px;' }, [concluirBtn, cancelarBtn]);
+      }
       listaEl.appendChild(h('div', { class: 'card card-pad agenda-atrasada-card' }, [
         h('div', { style: 'display:flex;justify-content:space-between;gap:10px;margin-bottom:8px;' }, [
           h('p', { class: 'cell-strong', style: 'margin:0;' }, m.nomeCliente || '—'),
@@ -4366,7 +4408,7 @@ function abrirModalMarcacoesAtrasadas(itensIniciais, prestador, onFechar) {
         h('p', { class: 'cell-muted', style: 'margin:0 0 3px;font-size:12.5px;' }, `📞 ${m.contacto || '—'}`),
         h('p', { class: 'cell-muted', style: 'margin:0 0 3px;font-size:12.5px;' }, `${m.tipoConsulta || 'Consulta/Serviço'} · ${prestador.nome}`),
         m.observacoes ? h('p', { class: 'cell-muted', style: 'margin:0 0 8px;font-size:12.5px;font-style:italic;' }, `"${m.observacoes}"`) : h('div', { style: 'margin-bottom:8px;' }),
-        h('div', { style: 'display:flex;gap:8px;' }, [concluirBtn, cancelarBtn]),
+        acoesEl,
       ]));
     });
   }
@@ -6310,6 +6352,23 @@ function buildBarraSelecaoMarcacoes(count, acoes) {
     editBtn, concluirBtn, cancelarBtn, eliminarBtn,
   ]);
 }
+// Escolha do motivo ao cancelar (Cliente Faltou vs Cliente Cancelou) —
+// SEM abrir um novo modal-overlay por cima do que já estiver aberto (a
+// barra de seleção já vive dentro do overlay/modal do dia). Substitui
+// inline os botões da própria barra por 3 alternativas; "Voltar" só
+// repõe a barra normal, sem gravar nada. Evitar empilhar overlays elimina
+// a classe de bug em que um segundo overlay bloqueava toda a interface
+// (o fecho de um deles podia deixar o outro sem forma de ser fechado).
+function buildBarraMotivoCancelamento(count, acoes) {
+  const plural = count > 1 ? `${count} marcações` : 'Esta marcação';
+  const faltouBtn = h('button', { class: 'btn btn-secondary', style: 'flex:1;font-size:13px;', onclick: () => requireAuth(acoes.onFaltou) }, 'Cliente Faltou');
+  const cancelouBtn = h('button', { class: 'btn btn-secondary', style: 'flex:1;font-size:13px;color:var(--red);', onclick: () => requireAuth(acoes.onCancelou) }, 'Cliente Cancelou');
+  const voltarBtn = h('button', { class: 'btn-fab tone-blue', title: 'Voltar', 'aria-label': 'Voltar', onclick: acoes.onVoltar }, Icon('arrowleft', { size: 18, strokeWidth: 2.4 }));
+  return h('div', { class: 'bottom-action-bar barra-selecao-marcacoes barra-motivo-cancelamento' }, [
+    h('span', { class: 'barra-selecao-contagem' }, `${plural} — o que aconteceu?`),
+    faltouBtn, cancelouBtn, voltarBtn,
+  ]);
+}
 function buildField(field, draft) {
   const colClass = field.col === 2 ? ' span2' : (field.size ? ' field-' + field.size : '');
   if (field.type === 'checkbox') {
@@ -6656,39 +6715,13 @@ function perguntaSimNaoDialog(mensagem, onResposta) {
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
 }
-// Escolha rápida do motivo ao cancelar uma marcação de Agenda — "Cliente
-// Faltou" (estado='faltou') vs "Cliente Cancelou" (estado='cancelada').
-// onEscolha(estado) só é chamado com uma escolha real; fechar sem escolher
-// (Escape/clique fora/"Voltar") não chama nada — ao contrário do Sim/Não
-// genérico, aqui não há uma opção "por defeito" segura para assumir.
-function abrirEscolhaMotivoCancelamento(mensagem, onEscolha) {
-  const overlay = h('div', { class: 'modal-overlay' });
-  let respondido = false;
-  function fechar() {
-    if (respondido) return;
-    document.removeEventListener('keydown', onKeydown);
-    overlay.remove();
-  }
-  function escolher(estado) {
-    if (respondido) return;
-    respondido = true;
-    fechar();
-    onEscolha(estado);
-  }
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) fechar(); });
-  function onKeydown(e) { if (e.key === 'Escape') fechar(); }
-  document.addEventListener('keydown', onKeydown);
-  const faltouBtn = h('button', { class: 'btn btn-secondary', style: 'flex:1;', onclick: () => escolher('faltou') }, 'Cliente Faltou');
-  const canceladoBtn = h('button', { class: 'btn btn-secondary', style: 'flex:1;color:var(--red);', onclick: () => escolher('cancelada') }, 'Cliente Cancelou');
-  const voltarBtn = h('button', { class: 'btn btn-secondary', onclick: fechar }, 'Voltar');
-  const panel = h('div', { class: 'modal-panel confirm-panel', style: 'max-width:380px;' }, [
-    h('p', { class: 'confirm-message' }, mensagem),
-    h('div', { style: 'display:flex;gap:8px;margin-top:4px;' }, [faltouBtn, canceladoBtn]),
-    h('div', { style: 'margin-top:8px;' }, [voltarBtn]),
-  ]);
-  overlay.appendChild(panel);
-  document.body.appendChild(overlay);
-}
+// A escolha de motivo ao cancelar (Cliente Faltou vs Cliente Cancelou)
+// deixou de usar um modal-overlay próprio empilhado por cima de outro
+// (ver histórico: causava bloqueios de interface quando aberto a partir
+// de dentro de outro popup/modal já aberto). Agora resolve-se sempre
+// inline, dentro do próprio overlay/painel que já estava aberto — ver
+// buildBarraMotivoCancelamento (barra flutuante de seleção, Agenda e
+// Eventos) e o estado "perguntandoMotivoIds" em abrirModalMarcacoesAtrasadas.
 function confirmarRotaExcelDialog(onResposta) {
   const overlay = h('div', { class: 'modal-overlay' });
   function close() { document.removeEventListener('keydown', onKeydown); overlay.remove(); }
@@ -13356,6 +13389,22 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     const lista = marcacoesSelecionadasLista();
     if (lista.length === 1) { selecionadas.clear(); abrirEditarMarcacao(lista[0], slotsDoGrupoDe(lista[0])); }
   }
+  let perguntandoMotivo = false; // true enquanto a barra mostra Cliente Faltou/Cancelou/Voltar
+  async function aplicarMotivoCancelamento(estadoFinal) {
+    const lista = marcacoesSelecionadasLista();
+    perguntandoMotivo = false;
+    if (!lista.length) { sincronizarBarraSelecaoEventos(); return; }
+    let houveConflito = false;
+    for (const m of lista) {
+      const updated = await dbUpdateMarcacao(m.id, { estado: estadoFinal }, m.updatedAt);
+      if (updated) marcacoes = marcacoes.map(x => x.id === updated.id ? updated : x);
+      else houveConflito = true;
+    }
+    selecionadas.clear();
+    if (houveConflito) await carregarMarcacoes();
+    if (onSaved) onSaved();
+    render();
+  }
   function aplicarEstadoSelecionadas(estado) {
     const lista = marcacoesSelecionadasLista();
     if (!lista.length) return;
@@ -13373,9 +13422,11 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       render();
     }
     // Cancelar pede sempre o motivo (Faltou vs Cancelou) antes de gravar —
-    // Concluir mantém a confirmação simples de sempre.
+    // inline na própria barra flutuante, nunca num segundo modal-overlay
+    // (evita empilhar overlays). Concluir mantém a confirmação simples.
     if (estado === 'cancelada') {
-      abrirEscolhaMotivoCancelamento(`${n > 1 ? `${n} marcações selecionadas` : 'Esta marcação'} — o que aconteceu?`, aplicar);
+      perguntandoMotivo = true;
+      sincronizarBarraSelecaoEventos();
       return;
     }
     confirmDialog(`Tem a certeza que pretende concluir ${n > 1 ? `as ${n} marcações selecionadas` : 'a marcação selecionada'}?`, () => aplicar(estado), { confirmLabel: 'Concluir' });
@@ -13401,13 +13452,19 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     const idsValidos = new Set(marcacoes.map(m => m.id));
     [...selecionadas].forEach(id => { if (!idsValidos.has(id)) selecionadas.delete(id); });
     if (barraSelecaoEl) { barraSelecaoEl.remove(); barraSelecaoEl = null; }
-    if (isPast || showForm || selecionadas.size === 0) return;
-    barraSelecaoEl = buildBarraSelecaoMarcacoes(selecionadas.size, {
-      onEditar: editarSelecionada,
-      onConcluir: () => aplicarEstadoSelecionadas('concluida'),
-      onCancelar: () => aplicarEstadoSelecionadas('cancelada'),
-      onEliminar: eliminarSelecionadas,
-    });
+    if (isPast || showForm || selecionadas.size === 0) { perguntandoMotivo = false; return; }
+    barraSelecaoEl = perguntandoMotivo
+      ? buildBarraMotivoCancelamento(selecionadas.size, {
+          onFaltou: () => aplicarMotivoCancelamento('faltou'),
+          onCancelou: () => aplicarMotivoCancelamento('cancelada'),
+          onVoltar: () => { perguntandoMotivo = false; sincronizarBarraSelecaoEventos(); },
+        })
+      : buildBarraSelecaoMarcacoes(selecionadas.size, {
+          onEditar: editarSelecionada,
+          onConcluir: () => aplicarEstadoSelecionadas('concluida'),
+          onCancelar: () => aplicarEstadoSelecionadas('cancelada'),
+          onEliminar: eliminarSelecionadas,
+        });
     overlay.appendChild(barraSelecaoEl);
   }
   function abrirNovaMarcacao(grupo, hora, vagaExistente) {
@@ -13422,7 +13479,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
   // campos pré-preenchidos (utente, telefone, notas — e hora, se encaixe).
   function abrirEditarMarcacao(m, slotsPadrao) {
     const ehEncaixe = !slotsPadrao.includes(m.hora);
-    formDraft = { hora: m.hora, nomeCliente: m.nomeCliente || '', nFicha: m.nFicha || '', contacto: m.contacto || '', observacoes: m.observacoes || '', aviso: !!m.aviso };
+    formDraft = { hora: m.hora, nomeCliente: m.nomeCliente || '', nFicha: m.nFicha || '', contacto: m.contacto || '', observacoes: m.observacoes || '', aviso: !!m.aviso, estado: m.estado || 'agendada' };
     formError = ''; showForm = { grupo: m.grupoVaga, hora: m.hora, encaixe: ehEncaixe, vagaId: m.id, editar: true }; render();
   }
   function cancelForm() { showForm = false; formError = ''; render(); }
@@ -13446,9 +13503,10 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       nomeCliente: toTitleCasePT(formDraft.nomeCliente), nFicha: formDraft.nFicha || '', contacto: formDraft.contacto || '',
       observacoes: formDraft.observacoes || '', aviso: !!formDraft.aviso, responsavel: currentUserName(),
     };
-    // Edição de uma marcação já existente: o estado atual (agendada /
-    // confirmada / cancelada) nunca é reposto para "agendada".
-    if (showForm.editar) delete payload.estado;
+    // Edição de uma marcação já existente: grava o Estado escolhido no
+    // próprio formulário (ver campo "Estado" mais abaixo) — deixa de ficar
+    // sempre preso ao estado com que a marcação foi criada.
+    if (showForm.editar) payload.estado = formDraft.estado || 'agendada';
     // Se já existe uma vaga pré-criada vazia para esta hora, atualiza-a em
     // vez de inserir outra linha — evita duplicar o slot na base de dados.
     const created = showForm.vagaId
@@ -13615,9 +13673,21 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     const avisoCb = h('input', { type: 'checkbox', checked: !!formDraft.aviso });
     avisoCb.addEventListener('change', () => { formDraft.aviso = avisoCb.checked; });
 
+    // Estado — só aparece a editar uma marcação já existente (nunca ao
+    // criar). Bem visível, para se poder reverter/corrigir livremente.
+    let estadoSelect = null;
+    if (showForm.editar) {
+      estadoSelect = h('select', { class: 'select' }, ESTADOS_MARCACAO_OPCOES.map(o => h('option', { value: o.value, selected: (formDraft.estado || 'agendada') === o.value ? 'selected' : undefined }, o.label)));
+      estadoSelect.value = formDraft.estado || 'agendada';
+      estadoSelect.addEventListener('change', () => { formDraft.estado = estadoSelect.value; });
+    }
+
     campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Nome do Cliente *'), nomeInput]));
     campos.push(h('div', { class: 'field field-xs' }, [h('label', {}, 'Nº Ficha'), fichaInput]));
     campos.push(h('div', { class: 'field field-sm' }, [h('label', {}, 'Contacto *'), contactoInput]));
+    if (estadoSelect) {
+      campos.push(h('div', { class: 'field field-sm' }, [h('label', {}, 'Estado *'), estadoSelect]));
+    }
     campos.push(h('label', { class: 'checkbox-field' }, [avisoCb, h('span', {}, 'Aviso ao cliente')]));
     campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Observações'), obsInput]));
 
