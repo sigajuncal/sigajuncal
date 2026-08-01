@@ -3186,6 +3186,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       editId: m.id, hora: m.hora, tipoConsulta: m.tipoConsulta || '',
       duracaoManual: m.duracaoMin || agendaDuracaoManualDefault(prestadorKey), nomeCliente: m.nomeCliente || '', contacto: m.contacto || '',
       aviso: !!m.aviso, observacoes: m.observacoes || '', responsavel: m.responsavel || currentUserName(), ultimaAtualizacaoPor: m.ultimaAtualizacaoPor || '', forcarEncaixe: false,
+      estado: m.estado || 'agendada',
     };
     formError = ''; showForm = ehEncaixe ? 'encaixe' : 'nova'; render();
   }
@@ -3322,9 +3323,12 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     // editável à mão no formulário (ambos ficam desativados).
     if (formDraft.editId) payload.ultimaAtualizacaoPor = currentUserName();
     else payload.responsavel = currentUserName();
-    // Edição de marcação existente: atualiza o registo em vez de criar
-    // outro — o estado (agendada/confirmada/cancelada) mantém-se intacto.
-    if (formDraft.editId) delete payload.estado;
+    // Edição de marcação existente: atualiza o registo, incluindo o Estado
+    // caso tenha sido alterado no próprio formulário (ver campo "Estado"
+    // em buildForm) — deixa de ficar "trancado" ao valor com que a
+    // marcação foi criada, para se poder reverter cancelamentos/faltas
+    // por engano ou corrigir o estado manualmente.
+    if (formDraft.editId) payload.estado = formDraft.estado || 'agendada';
     const created = formDraft.editId
       ? await dbUpdate('agendaMarcacoes', formDraft.editId, payload)
       : await dbInsert('agendaMarcacoes', payload);
@@ -3630,10 +3634,30 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     avisoCb.addEventListener('change', () => { formDraft.aviso = avisoCb.checked; });
     const avisoField = h('label', { class: 'checkbox-field' }, [avisoCb, h('span', {}, 'Aviso ao cliente')]);
 
+    // Estado — só aparece a editar uma marcação já existente (nunca ao
+    // criar, que arranca sempre "agendada"). Permite reverter ou corrigir
+    // manualmente qualquer estado (ex: uma cancelada/faltou por engano).
+    let estadoSelect = null;
+    if (formDraft.editId) {
+      const ESTADOS_MARCACAO_OPCOES = [
+        { value: 'agendada', label: 'Por Confirmar' },
+        { value: 'confirmada', label: 'Confirmada' },
+        { value: 'concluida', label: 'Concluída' },
+        { value: 'faltou', label: 'Cliente Faltou' },
+        { value: 'cancelada', label: 'Cancelada' },
+      ];
+      estadoSelect = h('select', { class: 'select' }, ESTADOS_MARCACAO_OPCOES.map(o => h('option', { value: o.value, selected: (formDraft.estado || 'agendada') === o.value ? 'selected' : undefined }, o.label)));
+      estadoSelect.value = formDraft.estado || 'agendada';
+      estadoSelect.addEventListener('change', () => { formDraft.estado = estadoSelect.value; });
+    }
+
     campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Nome do Cliente *'), nomeInput]));
     campos.push(h('div', { class: 'field field-sm' }, [h('label', {}, 'Contacto *'), contactoInput]));
     campos.push(avisoField);
     campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Observações'), obsInput]));
+    if (estadoSelect) {
+      campos.push(h('div', { class: 'field field-sm' }, [h('label', {}, 'Estado'), estadoSelect]));
+    }
     campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Responsável pela Marcação'), responsavelInput]));
     if (ultimaAtualizacaoInput) {
       campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Última Atualização Por'), ultimaAtualizacaoInput]));
@@ -4112,7 +4136,14 @@ function buildNotaRapidaWidget(modulo, titulo, opts) {
     if (!owner) { loading = false; renderLista(); return; }
     setStatus('A carregar…');
     const resultado = await dbFetchNotaUtilizador(owner, modulo);
-    topicos = (resultado.ok && resultado.nota && Array.isArray(resultado.nota.topicos)) ? resultado.nota.topicos : [];
+    // O registo é gravado com a lista de tópicos no campo "texto" (ver
+    // dbUpsertNotaUtilizador/gravar abaixo) — por isso tem de ser lida
+    // também a partir de "texto", nunca de "topicos" (essa propriedade
+    // nunca existe no registo devolvido pelo Supabase). Ler o campo
+    // errado fazia esta lista voltar sempre vazia a cada recarregamento
+    // — incluindo o refresh silencioso periódico — apagando na prática
+    // qualquer tópico pouco depois de ser gravado.
+    topicos = (resultado.ok && resultado.nota && Array.isArray(resultado.nota.texto)) ? resultado.nota.texto : [];
     loading = false;
     setStatus('');
     renderLista();
