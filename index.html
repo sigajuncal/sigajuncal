@@ -6681,19 +6681,19 @@ function buildBarraPesquisaEstadoSetor(records, schema, searchQuery, statusFilte
 // setor — apenas as 4 medidas da Ortopedia, que já são dobradas dentro da
 // coluna Observações (buildDetalhesTexto) em vez de ficarem como colunas
 // quase sempre vazias para as restantes categorias de pedidos.
-// "responsavel" fica de fora da tabela por pedido explícito — o mesmo
-// critério aplicado às Marcações da Agenda (visível/editável no
-// formulário, mas sem ocupar espaço nas listagens/grelhas do dia a dia).
-const TABLE_HIDE = new Set(['medidaTornozelo', 'medidaBarrigaPerna', 'medidaCoxa', 'medidaAlturaPerna', 'responsavel', 'ultimaAtualizacaoPor']);
-// Características da Ortopedia (Tipo, Cor, Biqueira, Fornecedor) — em vez
-// de 4 colunas próprias, quase sempre vazias para artigos que não são
-// Meias de Compressão, ficam reunidas num único ícone popover na tabela,
-// tal como já acontece com as Observações.
+// "responsavel" (quem registou o pedido) é sempre visível nas tabelas de
+// Pedidos — só os campos de medidas (só usados no popover de detalhe) e
+// "Última Atualização Por" (só relevante no formulário) ficam de fora.
+const TABLE_HIDE = new Set(['medidaTornozelo', 'medidaBarrigaPerna', 'medidaCoxa', 'medidaAlturaPerna', 'ultimaAtualizacaoPor']);
+// Características da Ortopedia (Tipo, Cor, Biqueira) — em vez de 3 colunas
+// próprias, quase sempre vazias para artigos que não são Meias de
+// Compressão, ficam reunidas num único ícone popover na tabela, tal como já
+// acontece com as Observações. "Fornecedor" tem coluna própria (ver
+// ORTOPEDIA_TABLE_ORDER), por isso já não entra aqui dentro.
 const CARACTERISTICAS_ORTOPEDIA_FIELDS = [
   { name: 'tipo', label: 'Tipo' },
   { name: 'cor', label: 'Cor' },
   { name: 'biqueira', label: 'Biqueira' },
-  { name: 'fornecedor', label: 'Fornecedor' },
 ];
 function buildCaracteristicasTexto(r) {
   return CARACTERISTICAS_ORTOPEDIA_FIELDS
@@ -6701,36 +6701,70 @@ function buildCaracteristicasTexto(r) {
     .map(c => `${c.label}: ${r[c.name]}`)
     .join('\n');
 }
+// Ordem fixa e própria das colunas da tabela de Ortopedia — pedida
+// explicitamente, não deriva do schema (que continua a controlar só a
+// ordem dos campos no formulário de Novo/Editar Registo). Os dois nomes
+// especiais ('__caracteristicas__'/'__cotacoes__') são colunas virtuais,
+// resolvidas à parte, tal como já acontecia antes para as restantes
+// categorias. "__cotacoes__" só entra de facto se a categoria tiver Gestão
+// de Orçamentos (sempre o caso na Ortopedia, mas o filtro abaixo protege
+// mesmo assim).
+const ORTOPEDIA_TABLE_ORDER = [
+  'nome', 'estado', 'numCliente', 'contacto', 'data', 'responsavel', 'fornecedor', 'previsao',
+  'produto', '__caracteristicas__', 'descricaoArtigo', 'pvp', 'aviso', 'obs', '__cotacoes__',
+];
+// Fornecedor/Farmácia efetivamente a exibir: se a categoria tem Gestão de
+// Orçamentos e já há um orçamento aprovado, esse manda sempre sobre o
+// campo Fornecedor/Farmácia gravado no registo — cobre registos onde a
+// aprovação (feita em memória no formulário) ainda não tenha chegado a
+// ficar gravada nesse campo. Sem orçamento aprovado, mostra o valor tal
+// como está gravado no registo (pedido direto ou ainda em orçamento).
+function resolveFornecedorExibicao(r, listKey) {
+  if (categoriaTemOrcamentos(listKey)) {
+    const max = orcamentoMaxSlots(listKey);
+    const aprovado = parseInt(r.orcamentoAprovado, 10);
+    if (aprovado >= 1 && aprovado <= max) {
+      return r[`orcamento${aprovado}Fornecedor`] || orcamentoLinhaLabel(listKey, aprovado);
+    }
+  }
+  return r.fornecedor;
+}
 function buildRecordTable(schema, records, selectedIds, onToggleSelect, listKey, tableOpts) {
   if (records.length === 0) {
     return EmptyState('Sem registos para mostrar. Adiciona o primeiro pedido pela barra de ações abaixo.');
   }
-  const cols = schema.filter(f => !TABLE_HIDE.has(f.name));
-  // Reordenação SÓ da tabela — nunca do array `schema` em si, que continua a
-  // controlar a ordem dos campos no formulário de Novo/Editar Registo. O
-  // Estado passa para logo a seguir ao Nome do Utente/Cliente, para ficar
-  // visível sem scroll horizontal e permitir a alteração rápida do estado
-  // junto da identificação do utente/cliente — pedido para todas as
-  // categorias de Pedidos (Manipulados, Ortopedia, Ervanária, Veterinária,
-  // Outros Fornecedores), já que todas partilham esta mesma função de tabela.
-  const estadoIdx = cols.findIndex(f => f.name === 'estado');
-  if (estadoIdx > 1) {
-    const [estadoCol] = cols.splice(estadoIdx, 1);
-    cols.splice(1, 0, estadoCol);
-  }
-  // Só a Ortopedia tem Tipo/Cor/Biqueira/Fornecedor a dobrar numa coluna
-  // "Características" — "fornecedor" existe também noutras categorias
-  // (ex: "Farmácia" em Manipulados) com um papel central, por isso esta
-  // filtragem é sempre condicionada ao setor, nunca ao nome do campo
-  // sozinho, para não esconder essa coluna nos restantes setores.
   const isOrtopedia = listKey === 'ortopedia';
-  const nomesCaracteristicas = new Set(CARACTERISTICAS_ORTOPEDIA_FIELDS.map(c => c.name));
-  const colsVisiveis = isOrtopedia ? cols.filter(f => !nomesCaracteristicas.has(f.name)) : cols;
   const temOrcamentos = listKey && categoriaTemOrcamentos(listKey);
   const opts = tableOpts || {};
-  const headers = ['', ...colsVisiveis.map(c => c.name === 'obs' ? 'Obs.' : c.label)];
-  if (isOrtopedia) headers.push('Características');
-  if (temOrcamentos) headers.push('Cotações');
+  const schemaByName = {};
+  schema.forEach(f => { schemaByName[f.name] = f; });
+
+  // ---- Ordem das colunas ----
+  // Ortopedia segue sempre a ordem fixa própria (ORTOPEDIA_TABLE_ORDER). As
+  // restantes categorias continuam a seguir a ordem do schema, só com o
+  // Estado sempre movido para logo a seguir ao Nome do Utente/Cliente, para
+  // ficar visível sem scroll horizontal — pedido para todas as categorias
+  // de Pedidos, já que todas partilham esta mesma função de tabela.
+  let colEntries;
+  if (isOrtopedia) {
+    colEntries = ORTOPEDIA_TABLE_ORDER.filter(name => (name === '__caracteristicas__') || (name === '__cotacoes__' ? temOrcamentos : (schemaByName[name] && !TABLE_HIDE.has(name))));
+  } else {
+    const cols = schema.filter(f => !TABLE_HIDE.has(f.name));
+    const estadoIdx = cols.findIndex(f => f.name === 'estado');
+    if (estadoIdx > 1) {
+      const [estadoCol] = cols.splice(estadoIdx, 1);
+      cols.splice(1, 0, estadoCol);
+    }
+    colEntries = cols.map(f => f.name);
+    if (temOrcamentos) colEntries.push('__cotacoes__');
+  }
+
+  const headers = ['', ...colEntries.map(name => {
+    if (name === '__caracteristicas__') return 'Características';
+    if (name === '__cotacoes__') return 'Cotações';
+    if (name === 'responsavel') return 'Responsável';
+    return name === 'obs' ? 'Obs.' : schemaByName[name].label;
+  })];
   const thead = h('thead', {}, h('tr', {}, headers.map(t => h('th', {}, t))));
 
   async function gravarCampo(r, patch) {
@@ -6771,13 +6805,21 @@ function buildRecordTable(schema, records, selectedIds, onToggleSelect, listKey,
 
   const tbody = h('tbody', {}, records.map(r => {
     const cells = [buildSelectionCheckbox(r.id, selectedIds, onToggleSelect)];
-    cells.push(...colsVisiveis.map(c => {
+    cells.push(...colEntries.map(name => {
+      if (name === '__caracteristicas__') {
+        const textoCaracteristicas = buildCaracteristicasTexto(r);
+        return h('td', {}, textoCaracteristicas ? ObsIndicator(textoCaracteristicas) : h('span', { class: 'cell-muted' }, '—'));
+      }
+      if (name === '__cotacoes__') {
+        const tone = orcamentoStatusTone(r, listKey);
+        return h('td', {}, h('span', { class: `badge-cotacao tone-${tone}` }, orcamentoStatusLabel(r, listKey)));
+      }
       // Edição inline permitida SEMPRE (sem modo de edição à parte) só em
       // Estado (dropdown), Aviso (sino) e Rota (carro) — grava-se de imediato
       // ao alterar. Todos os restantes campos ficam estáticos na linha; a
       // edição detalhada faz-se sempre via seleção + botão Editar global.
-      if (c.name === 'estado') return buildEstadoCell(r);
-      if (c.name === 'aviso') {
+      if (name === 'estado') return buildEstadoCell(r);
+      if (name === 'aviso') {
         const btn = h('button', { class: 'aviso-tag aviso-toggle' + (r.aviso ? ' aviso-ativo' : ' aviso-inativo'), title: r.aviso ? 'Utente avisado — clicar para desmarcar' : 'Utente não avisado — clicar para marcar' },
           Icon(r.aviso ? 'bell' : 'bellOff', { size: 16, strokeWidth: 2.2 }));
         btn.addEventListener('click', (e) => {
@@ -6789,28 +6831,21 @@ function buildRecordTable(schema, records, selectedIds, onToggleSelect, listKey,
         });
         return h('td', {}, btn);
       }
-      if (c.name === 'rota') {
+      if (name === 'rota') {
         const btn = h('button', { class: 'rota-tag rota-toggle' + (r.rota ? ' rota-ativa' : ' rota-inativa'), title: r.rota ? 'Já incluído no ficheiro de rotas — clicar para desmarcar' : 'Ainda não incluído no ficheiro de rotas — clicar para marcar' },
           Icon('truck', { size: 16, strokeWidth: 2.2 }));
         btn.addEventListener('click', (e) => { e.stopPropagation(); requireAuth(() => gravarCampo(r, { rota: !r.rota })); });
         return h('td', {}, btn);
       }
+      const c = schemaByName[name];
       let content;
-      if (c.name === 'obs') content = ObsIndicator(buildDetalhesTexto(schema, r));
-      else if (c.type === 'date') content = formatDate(r[c.name]);
-      else if (c.name === 'pvp') content = r[c.name] ? `€ ${r[c.name]}` : '—';
-      else content = (r[c.name] === '' || r[c.name] === undefined || r[c.name] === null) ? '—' : r[c.name];
+      if (name === 'obs') content = ObsIndicator(buildDetalhesTexto(schema, r));
+      else if (name === 'fornecedor') { const v = resolveFornecedorExibicao(r, listKey); content = (v === '' || v === undefined || v === null) ? '—' : v; }
+      else if (c.type === 'date') content = formatDate(r[name]);
+      else if (name === 'pvp') content = r[name] ? `€ ${r[name]}` : '—';
+      else content = (r[name] === '' || r[name] === undefined || r[name] === null) ? '—' : r[name];
       return h('td', {}, content);
     }));
-
-    if (isOrtopedia) {
-      const textoCaracteristicas = buildCaracteristicasTexto(r);
-      cells.push(h('td', {}, textoCaracteristicas ? ObsIndicator(textoCaracteristicas) : h('span', { class: 'cell-muted' }, '—')));
-    }
-    if (temOrcamentos) {
-      const tone = orcamentoStatusTone(r, listKey);
-      cells.push(h('td', {}, h('span', { class: `badge-cotacao tone-${tone}` }, orcamentoStatusLabel(r, listKey))));
-    }
 
     const selected = selectedIds.has(r.id);
     const row = h('tr', { class: rowClassForEstado(r.estado) + ' selectable-row' + (selected ? ' row-selected' : '') }, cells);
