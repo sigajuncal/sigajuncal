@@ -2728,6 +2728,12 @@ const orcamentosSchema = [
 // Desafios da Farmácia — campanhas e objetivos de vendas
 const desafiosSchema = [
   { name: 'tipoPremio', label: 'Tipo de Prémio', type: 'select', options: ['Coletivo', 'Individual'], size: 'sm' },
+  // Colaborador Premiado: só faz sentido (e só aparece no formulário,
+  // ver desafiosFieldOverrides) quando tipoPremio === 'Individual'. Vive
+  // no schema para o dbUpdate/dbInsert genéricos o gravarem como
+  // qualquer outro campo — a limpeza ao mudar de tipo é feita à parte
+  // (buildTipoPremioFieldDesafios + reforço em submit()).
+  { name: 'colaboradorId', label: 'Colaborador Premiado', type: 'select', options: [], size: 'sm' },
   { name: 'tituloDesafio', label: 'Título do Prémio', type: 'text', col: 2 },
   { name: 'marcaLaboratorio', label: 'Marca / Laboratório', type: 'text', size: 'sm' },
   { name: 'objetivo', label: 'Objetivo / Regras', type: 'textarea', col: 2 },
@@ -5093,6 +5099,29 @@ async function dbUpdate(listKey, id, patch) {
           // vez de mostrar um erro para uma gravação que na verdade correu bem.
           const aplicouMesmo = Object.keys(patchFinal).every(k => JSON.stringify(fresco[k]) === JSON.stringify(patchFinal[k]));
           if (aplicouMesmo) return fresco;
+          // Auto-recuperação de UMA tentativa: o motivo mais comum de aqui
+          // chegarmos com o lock otimista ativo NÃO é um colega a editar o
+          // mesmo registo ao mesmo tempo (raro), mas sim o nosso próprio
+          // updated_at local ter ficado desatualizado (ex: uma gravação
+          // anterior nesta mesma sessão que pareceu falhar por rede mas na
+          // verdade chegou ao servidor, ou uma sincronização em segundo
+          // plano). Como patchFinal só contém os campos que ESTA edição
+          // mudou, repetir o UPDATE agora com o updated_at fresco do
+          // servidor como novo lock é seguro — nunca sobrepõe outros
+          // campos que um colega possa ter alterado entretanto. Só se este
+          // segundo pedido também falhar por lock é que se assume mesmo um
+          // conflito real e se mostra o erro ao utilizador.
+          if (usaLockOtimista && fresco.updatedAt && fresco.updatedAt !== atual.updatedAt) {
+            try {
+              const rowRetry = recordToRow(limparCamposSoUI(listKey, patchFinal));
+              const { data: dataRetry, error: errorRetry } = await comAutoLimpezaDeColunas(listKey, rowRetry, (row) =>
+                sb.from(TABLES[listKey]).update(row).eq('id', id).eq('updated_at', fresco.updatedAt).select().single());
+              if (!errorRetry && dataRetry) {
+                marcarConexao(true);
+                return rowToRecord(dataRetry);
+              }
+            } catch (_) { /* cai para a mensagem de conflito abaixo */ }
+          }
           lastDbError = usaLockOtimista
             ? 'Este registo foi atualizado por outro posto de trabalho. Os dados foram recarregados com a versão mais recente para sua verificação.'
             : 'Não foi possível confirmar a gravação deste registo. Os dados foram recarregados com a versão mais recente do servidor — verifique e tente novamente.';
@@ -13802,6 +13831,7 @@ function checkDesafioRequired(d) {
   if (!String(d.tituloDesafio || '').trim()) missing.push('Título do Prémio');
   if (!String(d.dataInicio || '').trim()) missing.push('Data de Início');
   if (!String(d.dataFim || '').trim()) missing.push('Data de Fim');
+  if (d.tipoPremio === 'Individual' && !String(d.colaboradorId || '').trim()) missing.push('Colaborador Premiado');
   return missing;
 }
 function desafioAtivo(d) {
@@ -13817,7 +13847,7 @@ function buildDesafiosPage(container, goTo, embedded) {
 
   function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
 
-  function openNew() { draft = { tipoPremio: 'Coletivo', tituloDesafio: '', marcaLaboratorio: '', objetivo: '', premioIncentivo: '', dataInicio: todayISO(), dataFim: '', concluido: false }; editingId = null; formError = ''; showForm = true; rerender(); }
+  function openNew() { draft = { tipoPremio: 'Coletivo', colaboradorId: null, tituloDesafio: '', marcaLaboratorio: '', objetivo: '', premioIncentivo: '', dataInicio: todayISO(), dataFim: '', concluido: false }; editingId = null; formError = ''; showForm = true; rerender(); }
   function openEditSelected() {
     if (selectedIds.size !== 1) return;
     const d = STATE.desafios.find(x => x.id === [...selectedIds][0]);
@@ -13827,6 +13857,42 @@ function buildDesafiosPage(container, goTo, embedded) {
   function cancel() { formError = ''; showForm = false; rerender(); }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
 
+  // Campo Tipo de Prémio com higienização: mudar para "Coletivo" limpa
+  // sempre o colaborador atribuído (nunca fica um prémio coletivo com um
+  // colaborador "fantasma" preso de uma edição anterior); mudar para
+  // "Individual" só liberta o campo Colaborador Premiado, sem escolher
+  // nenhum automaticamente — o utilizador tem de o definir.
+  function buildTipoPremioFieldDesafios(f, draft) {
+    const opts = f.options;
+    if (!draft.tipoPremio) draft.tipoPremio = opts[0];
+    const control = h('select', { class: 'select' }, opts.map(o =>
+      h('option', { value: o, selected: draft.tipoPremio === o ? 'selected' : undefined }, o)));
+    control.value = draft.tipoPremio;
+    control.addEventListener('change', () => {
+      draft.tipoPremio = control.value;
+      if (draft.tipoPremio !== 'Individual') draft.colaboradorId = null;
+      rerender();
+    });
+    return h('div', { class: 'field' + (f.size ? ' field-' + f.size : '') }, [h('label', {}, f.label), control]);
+  }
+  // Só aparece (e só grava) quando tipoPremio === 'Individual'; nos
+  // restantes casos fica oculto — colaboradorId já foi limpo pelo campo
+  // acima, não precisa de mais nada aqui.
+  function buildColaboradorPremioField(f, draft) {
+    if (draft.tipoPremio !== 'Individual') return h('div', { style: 'display:none;' });
+    const colaboradores = membrosElegiveisMapaTarefas();
+    const control = h('select', { class: 'select' }, [
+      h('option', { value: '' }, 'Escolher colaborador...'),
+      ...colaboradores.map(u => h('option', { value: String(u.id), selected: String(draft.colaboradorId) === String(u.id) ? 'selected' : undefined }, u.nomeCompleto || u.username)),
+    ]);
+    control.value = draft.colaboradorId || '';
+    control.addEventListener('change', () => { draft.colaboradorId = control.value; });
+    return h('div', { class: 'field' + (f.size ? ' field-' + f.size : '') }, [h('label', {}, f.label), control]);
+  }
+  function desafiosFieldOverrides() {
+    return { tipoPremio: buildTipoPremioFieldDesafios, colaboradorId: buildColaboradorPremioField };
+  }
+
   async function submit() {
     const missing = checkDesafioRequired(draft);
     if (missing.length) {
@@ -13835,6 +13901,11 @@ function buildDesafiosPage(container, goTo, embedded) {
       return;
     }
     formError = '';
+    // Higienização final de segurança: garante SEMPRE que um prémio
+    // Coletivo nunca vai para o servidor com um colaborador_id preso de
+    // um estado anterior (Individual), mesmo que por algum motivo o
+    // campo do formulário não tenha disparado a limpeza a tempo.
+    if (draft.tipoPremio !== 'Individual') draft.colaboradorId = null;
     draft.responsavel = currentUserName();
     saving = true; rerender();
     // Fallback gracioso de esquema: se a tabela dos Prémios no Supabase não
@@ -13900,6 +13971,9 @@ function buildDesafiosPage(container, goTo, embedded) {
         if (dias > 0) diasTexto = `${dias} dia${dias === 1 ? '' : 's'} restante${dias === 1 ? '' : 's'}`;
         else if (dias === 0) diasTexto = 'Termina hoje';
       }
+      const colaboradorPremiado = d.tipoPremio === 'Individual' && d.colaboradorId
+        ? (STATE.usuarios || []).find(u => String(u.id) === String(d.colaboradorId))
+        : null;
       const tipoBadge = h('span', { class: 'badge ' + (d.tipoPremio === 'Individual' ? 'badge-blue' : 'badge-purple') }, d.tipoPremio === 'Individual' ? '👤 Individual' : '👥 Coletivo');
       const estadoBadge = ativo ? h('span', { class: 'badge badge-orange' }, 'ATIVO') : h('span', { class: 'badge badge-green' }, d.concluido ? 'CONCLUÍDO' : 'TERMINADO');
       const cb = buildSelectionCheckbox(d.id, selectedIds, toggleSelect);
@@ -13910,6 +13984,7 @@ function buildDesafiosPage(container, goTo, embedded) {
         ]),
         h('h3', { class: 'dash-card-title', style: 'margin:0 0 4px;' }, d.tituloDesafio || '—'),
         d.marcaLaboratorio ? h('p', { class: 'cell-muted', style: 'font-size:12px;font-weight:700;margin:0 0 8px;' }, d.marcaLaboratorio) : null,
+        colaboradorPremiado ? h('p', { class: 'cell-muted', style: 'font-size:12px;font-weight:700;margin:0 0 8px;' }, `👤 ${colaboradorPremiado.nomeCompleto || colaboradorPremiado.username}`) : null,
         d.objetivo ? h('p', { style: 'font-size:13px;margin:0 0 8px;line-height:1.5;' }, d.objetivo) : null,
         d.premioIncentivo ? h('p', { style: 'font-size:13px;font-weight:700;color:var(--pharm-700);margin:0 0 10px;' }, `🎁 ${d.premioIncentivo}`) : null,
         h('div', { style: 'display:flex;justify-content:space-between;align-items:center;font-size:11.5px;color:var(--pharm-500);margin-top:auto;padding-top:8px;' }, [
@@ -13930,6 +14005,7 @@ function buildDesafiosPage(container, goTo, embedded) {
     if (showForm) {
       wrap.appendChild(buildRecordForm(desafiosSchema, draft, {
         editing: !!editingId, onSubmit: submit, onCancel: cancel, errorMessage: formError, saving,
+        fieldOverrides: desafiosFieldOverrides(),
       }));
     }
 
