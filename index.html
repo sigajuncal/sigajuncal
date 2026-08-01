@@ -1584,9 +1584,6 @@
      principal. */
   .agenda-slot-continuacao{background:#eff6ff;border-left:3px solid var(--blue-bd);opacity:.85;}
   .agenda-slot-continuacao .agenda-slot-label{font-style:italic;}
-  .agenda-slot-confirmada{background:#dcfce7 !important;}
-  .agenda-slot-confirmada .agenda-slot-label{color:#15803d;}
-  .agenda-slot-confirmada .agenda-slot-nome{color:#15803d !important;}
   .agenda-slot-cancelada{background:#fee2e2 !important;}
   .agenda-slot-cancelada .agenda-slot-label{color:#b91c1c;text-decoration:line-through;}
   .agenda-slot-cancelada .agenda-slot-nome{color:#b91c1c !important;text-decoration:line-through;}
@@ -4071,14 +4068,37 @@ async function dbFetchNotaUtilizador(userId, modulo) {
     return { ok: true, nota: data ? rowToRecord(data) : null };
   } catch (e) { console.error('[Supabase] erro de rede ao ler nota:', formatarErroSeguro(e)); return { ok: false, nota: null }; }
 }
+// Extrai a lista de tópicos de um registo lido do Supabase — tolerante a
+// "texto" vir como array (caso normal, coluna jsonb) OU como string JSON
+// (caso a coluna seja "text" em vez de "jsonb" — o Postgres/PostgREST
+// aceita perfeitamente gravar aqui uma string já serializada). Nunca
+// assume um único formato de coluna, para não voltar a interpretar mal
+// um registo que realmente foi gravado com sucesso.
+function notaExtrairTopicos(nota) {
+  if (!nota) return [];
+  const v = nota.texto;
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string' && v.trim()) {
+    try { const parsed = JSON.parse(v); return Array.isArray(parsed) ? parsed : []; } catch (e) { return []; }
+  }
+  return [];
+}
 async function dbUpsertNotaUtilizador(userId, modulo, texto) {
-  if (!sb) return false;
+  if (!sb) return { ok: false, nota: null };
+  const rowBase = recordToRow({ userId, modulo, texto, updatedAt: new Date().toISOString() });
   try {
-    const payload = recordToRow({ userId, modulo, texto, updatedAt: new Date().toISOString() });
-    const { error } = await sb.from('notas_utilizador').upsert(payload, { onConflict: 'user_id,modulo' });
-    if (error) { console.error('[Supabase] erro ao guardar nota:', error.message); return false; }
-    return true;
-  } catch (e) { console.error('[Supabase] erro de rede ao guardar nota:', formatarErroSeguro(e)); return false; }
+    // comAutoLimpezaDeColunas: se alguma destas colunas (ex: updated_at)
+    // não existir mesmo na tabela "notas_utilizador", aprende isso e
+    // tenta de novo sem ela, em vez de falhar a gravação toda por causa
+    // de um único campo secundário em falta.
+    const { data, error } = await comAutoLimpezaDeColunas('notasUtilizador', rowBase,
+      (row) => sb.from('notas_utilizador').upsert(row, { onConflict: 'user_id,modulo' }).select().maybeSingle());
+    if (error) { console.error('[Supabase] erro ao guardar nota:', error.message); return { ok: false, nota: null }; }
+    // O upsert devolveu sem erro — sucesso imediato, independentemente de
+    // "data" vir preenchido (algumas políticas RLS de escrita não
+    // devolvem a linha mesmo quando a gravação foi bem sucedida).
+    return { ok: true, nota: data ? rowToRecord(data) : null };
+  } catch (e) { console.error('[Supabase] erro de rede ao guardar nota:', formatarErroSeguro(e)); return { ok: false, nota: null }; }
 }
 /* ---- Dicionário de CNP (dicionario_cnp) — associa CNP/Código a um nome de
    produto, para o campo "Produto" dos Erros de Stock se autopreencher assim
@@ -4152,14 +4172,7 @@ function buildNotaRapidaWidget(modulo, titulo, opts) {
     if (!owner) { loading = false; renderLista(); return; }
     setStatus('A carregar…');
     const resultado = await dbFetchNotaUtilizador(owner, modulo);
-    // O registo é gravado com a lista de tópicos no campo "texto" (ver
-    // dbUpsertNotaUtilizador/gravar abaixo) — por isso tem de ser lida
-    // também a partir de "texto", nunca de "topicos" (essa propriedade
-    // nunca existe no registo devolvido pelo Supabase). Ler o campo
-    // errado fazia esta lista voltar sempre vazia a cada recarregamento
-    // — incluindo o refresh silencioso periódico — apagando na prática
-    // qualquer tópico pouco depois de ser gravado.
-    topicos = (resultado.ok && resultado.nota && Array.isArray(resultado.nota.texto)) ? resultado.nota.texto : [];
+    topicos = resultado.ok ? notaExtrairTopicos(resultado.nota) : [];
     loading = false;
     setStatus('');
     renderLista();
@@ -4167,8 +4180,8 @@ function buildNotaRapidaWidget(modulo, titulo, opts) {
   async function gravar() {
     const owner = ownerId();
     if (!owner) return;
-    const ok = await dbUpsertNotaUtilizador(owner, modulo, topicos);
-    setStatus(ok ? '' : 'Não foi possível sincronizar — tente novamente.');
+    const resultado = await dbUpsertNotaUtilizador(owner, modulo, topicos);
+    setStatus(resultado.ok ? '' : 'Não foi possível sincronizar — tente novamente.');
   }
   function adicionarTopico(valorBruto) {
     const limpo = String(valorBruto || '').trim().slice(0, NOTA_TOPICO_MAX_CHARS);
