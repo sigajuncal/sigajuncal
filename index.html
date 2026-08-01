@@ -2197,14 +2197,11 @@ const RESPONSAVEIS = ['Adriano', 'Alexandra', 'Ana', 'André Seixas', 'André So
 const ESTADOS = ['Em Orçamento', 'Pedido', 'Satisfeito', 'Resolvido', 'Cancelado'];
 // Estados de uma marcação de Agenda/Evento — usados no select "Estado" do
 // formulário de edição (buildAgendaDiaModal e buildEventoDiaModal), para
-// se poder alternar/reverter livremente entre qualquer um deles.
-// 'confirmada' fica incluído por completude (é gravado pelo botão rápido
-// "Confirmar" de cada vaga) mesmo não tendo sido pedido explicitamente —
-// omiti-lo deixaria uma marcação já confirmada sem opção correspondente
-// selecionada no dropdown ao ser editada.
+// se poder alternar/reverter livremente entre qualquer um deles. Não
+// existe um estado "Confirmada" distinto neste fluxo — só Pendente e os
+// 3 estados terminais.
 const ESTADOS_MARCACAO_OPCOES = [
   { value: 'agendada', label: 'Pendente' },
-  { value: 'confirmada', label: 'Confirmada' },
   { value: 'concluida', label: 'Concluída' },
   { value: 'faltou', label: 'Cliente Faltou' },
   { value: 'cancelada', label: 'Cliente Cancelou' },
@@ -3496,14 +3493,6 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       else showDbErrorToast('Não foi possível eliminar a vaga extra');
     }, { danger: true, confirmLabel: 'Eliminar' });
   }
-  function confirmarMarcacao(m) {
-    const respTxt = m.responsavel ? ` (Responsável: ${m.responsavel})` : '';
-    confirmDialog(`Tem a certeza que pretende confirmar esta vaga${respTxt}?`, async () => {
-      const updated = await dbUpdate('agendaMarcacoes', m.id, { estado: 'confirmada' });
-      if (updated) { STATE.agendaMarcacoes = STATE.agendaMarcacoes.map(x => x.id === m.id ? updated : x); if (onSaved) onSaved(); render(); }
-      else { showDbErrorToast('Não foi possível confirmar a vaga'); render(); } // em conflito, dbUpdate já repôs a versão real — só falta redesenhar
-    }, { confirmLabel: 'Confirmar' });
-  }
   function cancelarMarcacao(m) {
     const respTxt = m.responsavel ? ` (Responsável: ${m.responsavel})` : '';
     confirmDialog(`Tem a certeza que pretende cancelar esta vaga${respTxt}?`, async () => {
@@ -3513,13 +3502,11 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     }, { danger: true, confirmLabel: 'Sim, Cancelar Vaga' });
   }
   function estadoClasseVaga(m) {
-    if (m.estado === 'confirmada') return ' agenda-slot-confirmada';
     if (m.estado === 'cancelada' || m.estado === 'faltou' || m.estado === 'cancelado') return ' agenda-slot-cancelada';
     if (m.estado === 'concluida') return ' agenda-slot-concluida';
     return '';
   }
   function estadoSufixoVaga(m) {
-    if (m.estado === 'confirmada') return ' · Confirmada';
     if (m.estado === 'faltou') return ' · Faltou';
     if (m.estado === 'cancelado') return ' · Cancelou';
     if (m.estado === 'cancelada') return ' · Cancelada';
@@ -3850,7 +3837,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     return ordenarPorHora(marcacoesDoDia().filter(m => m.tipoLinha !== 'bloqueado'))
       .map(m => ({
         hora: normalizarHora(m.hora), nome: m.nomeCliente, contacto: m.contacto,
-        estado: (m.estado === 'confirmada' ? 'Confirmada' : m.estado === 'concluida' ? 'Concluída' : m.estado === 'faltou' ? 'Faltou' : m.estado === 'cancelado' ? 'Cancelou' : (m.estado === 'cancelada' ? 'Cancelada' : 'Por confirmar')),
+        estado: (m.estado === 'concluida' ? 'Concluída' : m.estado === 'faltou' ? 'Faltou' : m.estado === 'cancelado' ? 'Cancelou' : (m.estado === 'cancelada' ? 'Cancelada' : 'Pendente')),
         observacoes: m.observacoes,
       }));
   }
@@ -13550,13 +13537,6 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       else showDbErrorToast('Não foi possível eliminar a marcação');
     }, { danger: true, confirmLabel: 'Eliminar' });
   }
-  function confirmarMarcacao(m) {
-    confirmDialog('Tem a certeza que pretende confirmar esta vaga?', async () => {
-      const updated = await dbUpdateMarcacao(m.id, { estado: 'confirmada' }, m.updatedAt);
-      if (updated) { marcacoes = marcacoes.map(x => x.id === m.id ? updated : x); if (onSaved) onSaved(); render(); }
-      else { await carregarMarcacoes(); showDbErrorToast('Não foi possível confirmar a vaga'); }
-    }, { confirmLabel: 'Confirmar' });
-  }
   function cancelarMarcacao(m) {
     confirmDialog('Tem a certeza que pretende cancelar esta vaga?', async () => {
       const updated = await dbUpdateMarcacao(m.id, { estado: 'cancelada' }, m.updatedAt);
@@ -13625,13 +13605,11 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     return !m || (m.tipoLinha !== 'bloqueado' && !String(m.nomeCliente || '').trim() && !String(m.contacto || '').trim());
   }
   function estadoClasseVaga(m) {
-    if (m.estado === 'confirmada') return ' agenda-slot-confirmada';
     if (m.estado === 'cancelada' || m.estado === 'faltou' || m.estado === 'cancelado') return ' agenda-slot-cancelada';
     if (m.estado === 'concluida') return ' agenda-slot-concluida';
     return '';
   }
   function estadoSufixoVaga(m) {
-    if (m.estado === 'confirmada') return ' · Confirmada';
     if (m.estado === 'faltou') return ' · Faltou';
     if (m.estado === 'cancelado') return ' · Cancelou';
     if (m.estado === 'cancelada') return ' · Cancelada';
@@ -13827,7 +13805,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     return ordenarPorHora(marcacoes.filter(m => m.tipoLinha !== 'bloqueado'))
       .map(m => ({
         hora: normalizarHora(m.hora), nome: m.nomeCliente, contacto: m.contacto,
-        estado: (m.estado === 'confirmada' ? 'Confirmada' : m.estado === 'concluida' ? 'Concluída' : m.estado === 'faltou' ? 'Faltou' : m.estado === 'cancelado' ? 'Cancelou' : (m.estado === 'cancelada' ? 'Cancelada' : 'Por confirmar')),
+        estado: (m.estado === 'concluida' ? 'Concluída' : m.estado === 'faltou' ? 'Faltou' : m.estado === 'cancelado' ? 'Cancelou' : (m.estado === 'cancelada' ? 'Cancelada' : 'Pendente')),
         observacoes: m.observacoes,
       }));
   }
