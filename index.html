@@ -886,6 +886,11 @@
      900px, como o resto da app. */
   .fin-grid-2col{display:grid;grid-template-columns:1fr;gap:18px;align-items:start;margin-bottom:24px;}
   @media (min-width:900px){.fin-grid-2col{grid-template-columns:1fr 1fr;}}
+  /* Coluna lateral do topo do Financeiro (navegador de Mês/Ano + Mês
+     Analisado + Projeção Anual) — empilhados verticalmente, emparelhados
+     ao lado do cartão único de Consulta e Registo. */
+  .fin-lado-stack{display:flex;flex-direction:column;gap:14px;}
+  .fin-lado-stack .fin-mes-nav{margin:0;}
   /* Linha de comparativo "vs. X: (valor €) ▲ 12.3%" — o valor de
      referência entre parêntesis fica em tom discreto, e só a
      percentagem (com seta) fica em destaque/cor. */
@@ -904,8 +909,8 @@
   .fin-mes-nav{display:flex;align-items:center;justify-content:center;gap:14px;margin:14px 0 18px;}
   .fin-mes-nav-label{min-width:150px;text-align:center;font-size:15px;font-weight:800;color:var(--pharm-900);}
   .fin-mes-nav-hoje{font-size:11.5px;color:var(--pharm-600);text-decoration:underline;background:none;border:none;cursor:pointer;padding:0;margin-left:4px;}
-  .fin-chart-row{display:flex;align-items:flex-end;gap:10px;min-width:max-content;padding:0 4px;}
-  .fin-chart-col{display:flex;flex-direction:column;align-items:center;gap:6px;width:34px;height:100%;cursor:pointer;}
+  .fin-chart-row{display:flex;align-items:flex-end;gap:6px;width:100%;padding:0 4px;}
+  .fin-chart-col{display:flex;flex-direction:column;align-items:center;gap:6px;flex:1 1 0;min-width:0;height:100%;cursor:pointer;}
   /* Slot de altura fixa reservado para o valor exato (só fica visível ao
      clicar) — reservar sempre o mesmo espaço evita que as barras "saltem"
      de tamanho quando se seleciona/desseleciona uma barra. */
@@ -919,7 +924,15 @@
   .fin-chart-bar{width:100%;border-radius:4px 4px 0 0;min-height:2px;transition:height .3s ease,opacity .15s ease;}
   .fin-chart-col:hover .fin-chart-bar{opacity:.85;}
   .fin-chart-col-ativo .fin-chart-bar{opacity:1;outline:2px solid #0f172a;outline-offset:1px;}
-  .fin-chart-label{font-size:9.5px;color:var(--pharm-500);white-space:nowrap;transform:rotate(0deg);}
+  .fin-chart-label{font-size:9.5px;color:var(--pharm-500);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;text-align:center;}
+  /* Barra de aviso discreta e não intrusiva para dias de Faturação em
+     falta (só Diretor Técnico/Master ou Administrador) — substitui o
+     antigo popup bloqueante. */
+  .fin-alerta-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;
+    background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:9px 14px;
+    margin:0 0 16px;font-size:12.5px;color:#92400e;}
+  .fin-alerta-bar-texto{display:flex;align-items:center;gap:8px;}
+  .fin-alerta-bar-texto svg{flex-shrink:0;color:#d97706;}
   .fin-chart-col-ativo .fin-chart-label{color:#0f172a;font-weight:700;}
 
   /* Entregas — ecrã de transição (escolha de farmácia) */
@@ -11136,7 +11149,7 @@ function abrirModalDefinirMetaAnual(anoDefault, onGuardado) {
 // (Entidades/Crédito) e Ajustes de Controlo de Caixa (Mov. de Caixa/
 // Trocas, gravados só para consulta — não entram na Faturação Total).
 // Fórmula: Faturação Total = Valor de Caixa + Entidades + Crédito. ----
-function abrirModalRegistarFaturacao(onGuardado) {
+function abrirModalRegistarFaturacao(onGuardado, dataInicial) {
   if (!podeEditarFinanceiro()) { showToast('Sem permissão para alterar dados financeiros.', 'error'); return; }
   const overlay = h('div', { class: 'modal-overlay' });
   function close() { document.removeEventListener('keydown', onKeydown); overlay.remove(); }
@@ -11145,7 +11158,7 @@ function abrirModalRegistarFaturacao(onGuardado) {
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 
   const dataInput = h('input', { class: 'input', type: 'date', max: todayISO() });
-  dataInput.value = ontemISO();
+  dataInput.value = dataInicial || ontemISO();
   // Recebimentos de Balcão — compõem o Valor de Caixa.
   const numerarioInput = h('input', { class: 'input', type: 'number', step: '0.01', placeholder: '0.00', autofocus: 'autofocus' });
   const bancoInput = h('input', { class: 'input', type: 'number', step: '0.01', placeholder: '0.00' });
@@ -11160,6 +11173,12 @@ function abrirModalRegistarFaturacao(onGuardado) {
   const totalPreview = h('p', { class: 'fin-comp-linha', style: 'margin-top:4px;' }, '');
   const errorEl = h('p', { class: 'form-error' }, '');
   errorEl.style.display = 'none';
+  // Título e botão de Guardar mudam consoante o dia escolhido já ter (ou
+  // não) um registo manual gravado — permite corrigir qualquer dia
+  // passado de forma limpa, sempre pela mesma RPC/UPSERT
+  // (rpc_financeiro_guardar_dia), sem duplicar formulário.
+  const tituloEl = h('p', { class: 'modal-title', style: 'margin:0;' }, '');
+  const guardarBtn = h('button', { class: 'btn btn-primary' }, '');
 
   function atualizarPreview() {
     const numerario = parseFloat(numerarioInput.value) || 0;
@@ -11189,18 +11208,20 @@ function abrirModalRegistarFaturacao(onGuardado) {
     creditoInput.value = existente ? (existente.credito || '') : '';
     movCaixaInput.value = existente ? (existente.movCaixa || '') : '';
     trocasInput.value = existente ? (existente.trocas || '') : '';
+    tituloEl.textContent = existente ? 'Editar Registo do Dia' : 'Registar Faturação do Dia';
+    guardarBtn.textContent = existente ? 'Guardar Alterações' : 'Guardar Faturação';
     atualizarPreview();
   }
   dataInput.addEventListener('change', carregarValoresExistentes);
   carregarValoresExistentes();
 
-  const guardarBtn = h('button', { class: 'btn btn-primary', onclick: null }, 'Guardar Faturação');
   guardarBtn.addEventListener('click', () => requireAuth(async () => {
     if (!dataInput.value) {
       errorEl.textContent = 'Por favor, indique a Data.';
       errorEl.style.display = ''; return;
     }
     errorEl.style.display = 'none';
+    const textoOriginalBtn = guardarBtn.textContent;
     guardarBtn.disabled = true; guardarBtn.textContent = 'A guardar…';
     const campos = {
       numerario: parseFloat(numerarioInput.value) || 0,
@@ -11213,13 +11234,13 @@ function abrirModalRegistarFaturacao(onGuardado) {
     };
     const resultado = await financeiroGuardarDia(dataInput.value, campos);
     if (resultado) { close(); onGuardado(); }
-    else { guardarBtn.disabled = false; guardarBtn.textContent = 'Guardar Faturação'; showDbErrorToast('Não foi possível guardar a faturação do dia'); }
+    else { guardarBtn.disabled = false; guardarBtn.textContent = textoOriginalBtn; showDbErrorToast('Não foi possível guardar a faturação do dia'); }
   }));
   const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: close }, 'Cancelar');
 
   const panel = h('div', { class: 'modal-panel', style: 'max-width:420px;' }, [
     h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;' }, [
-      h('p', { class: 'modal-title', style: 'margin:0;' }, 'Registar Faturação do Dia'),
+      tituloEl,
       h('button', { class: 'close-btn', onclick: close, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
     ]),
     h('div', { class: 'field' }, [h('label', {}, 'Data'), dataInput,
@@ -11254,10 +11275,65 @@ function abrirModalRegistarFaturacao(onGuardado) {
   setTimeout(() => numerarioInput.focus(), 60);
 }
 
-// ---- Pesquisa de Data Específica — escolhe qualquer dia e mostra o
-// Valor de Caixa desse dia mais os 3 comparativos pedidos. ----
-function buildFinanceiroPesquisaCard() {
+// ---- Verificação de Faturação em Falta (só Master/Administrador — ver
+// podeEditarFinanceiro) — percorre os dias anteriores a partir de ontem,
+// à procura de dias sem NENHUM valor de Faturação conhecido
+// (financeiroFaturacaoDoDia === null), quer venha de um registo manual
+// no Supabase, quer do histórico incorporado (HISTORICO_CAIXA_DIARIO).
+// Um dia com dado do histórico NÃO é "em falta" — só fica em falta a
+// partir do primeiro dia sem qualquer valor (tipicamente logo a seguir
+// ao fim do histórico incorporado). Pára assim que encontra um dia já
+// coberto, ou ao fim de LIMITE_DIAS_VERIFICACAO_FATURACAO dias, para
+// não sinalizar anos de dias legados nem tentar adivinhar dias de
+// farmácia encerrada.
+const LIMITE_DIAS_VERIFICACAO_FATURACAO = 10;
+function financeiroDiasEmFaltaRecentes() {
+  const out = [];
+  let d = ontemISO();
+  for (let i = 0; i < LIMITE_DIAS_VERIFICACAO_FATURACAO; i++) {
+    if (d < '2024-01-01') break;
+    if (financeiroFaturacaoDoDia(d) !== null) break;
+    out.push(d);
+    d = financeiroDiaAnterior(d);
+  }
+  return out;
+}
+// Barra de aviso discreta ao abrir o Módulo Financeiro — só para quem
+// pode editar Faturação (Diretor Técnico/Master ou Administrador).
+// Substitui o antigo popup bloqueante: fica logo abaixo dos botões
+// principais de topo, indica o total de dias em falta, e tem um botão
+// rápido que abre o modal de registo já com a data mais recente em
+// falta pré-preenchida (o próprio modal permite depois mudar a data
+// para tratar outros dias pendentes).
+function buildFinanceiroAlertaDiasEmFaltaBar(diasEmFalta, onGuardado) {
+  if (!diasEmFalta || !diasEmFalta.length) return null;
+  const maisRecente = diasEmFalta[0];
+  const texto = diasEmFalta.length === 1
+    ? `1 dia sem faturação registada (${formatDate(maisRecente)}).`
+    : `${diasEmFalta.length} dias sem faturação registada — o mais recente é ${formatDate(maisRecente)}.`;
+
+  const preencherBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 10px;white-space:nowrap;' }, 'Preencher Dias Pendentes');
+  preencherBtn.addEventListener('click', () => requireAuth(() => abrirModalRegistarFaturacao(onGuardado, maisRecente)));
+
+  return h('div', { class: 'fin-alerta-bar' }, [
+    h('div', { class: 'fin-alerta-bar-texto' }, [
+      Icon('alert', { size: 15, strokeWidth: 2.2 }),
+      h('span', {}, texto),
+    ]),
+    preencherBtn,
+  ]);
+}
+
+// ---- Cartão único de Consulta e Registo — fusão do antigo cartão
+// "Faturação de Ontem" com a "Pesquisa de Data Específica": por defeito
+// mostra o dia de ontem, mas o seletor de data permite consultar (ou
+// corrigir) qualquer outro dia. O botão de ação é dinâmico — "Registar
+// Faturação desta Data" se o dia ainda não tiver registo manual, ou
+// "Editar Registo do Dia" se já existir (upsert via
+// rpc_financeiro_guardar_dia em ambos os casos). ----
+function buildFinanceiroPesquisaCard(onGuardadoGlobal) {
   let dataEscolhida = ontemISO();
+  const podeEditar = podeEditarFinanceiro();
 
   const card = h('div', { class: 'card fin-card-compact' });
 
@@ -11271,8 +11347,13 @@ function buildFinanceiroPesquisaCard() {
     const compDiaAnt = financeiroComparar(dataEscolhida, financeiroDiaAnterior(dataEscolhida));
     const compMesAnt = financeiroComparar(dataEscolhida, financeiroMesmaDataMesAnterior(dataEscolhida));
     const compAnoAnt = financeiroComparar(dataEscolhida, financeiroDiaHomologoAnoAnterior(dataEscolhida));
+
+    const jaTemRegisto = !!financeiroRegistoDoDia(dataEscolhida);
+    const registarBtn = podeEditar ? h('button', { class: 'btn btn-secondary', style: 'margin-top:10px;font-size:12.5px;' }, [Icon('pencil', { size: 12 }), jaTemRegisto ? ' Editar Registo do Dia' : ' Registar Faturação desta Data']) : null;
+    if (registarBtn) registarBtn.addEventListener('click', () => requireAuth(() => abrirModalRegistarFaturacao(() => { render(); if (onGuardadoGlobal) onGuardadoGlobal(); }, dataEscolhida)));
+
     const resultado = valorDoDia === null
-      ? h('p', { class: 'cell-muted', style: 'margin:10px 0 0;' }, 'Sem dados de Valor de Caixa para este dia (dia futuro, ou farmácia encerrada nessa data).')
+      ? h('div', {}, [h('p', { class: 'cell-muted', style: 'margin:10px 0 0;' }, 'Sem dados de Valor de Caixa para este dia (dia futuro, ou farmácia encerrada nessa data).'), registarBtn])
       : h('div', {}, [
           h('p', { class: 'fin-kpi-label', style: 'margin-top:12px;' }, `Faturação Real — ${formatDate(dataEscolhida)}`),
           h('p', { class: 'fin-kpi-valor' }, financeiroFormatarEuro(valorDoDia, 2)),
@@ -11281,10 +11362,11 @@ function buildFinanceiroPesquisaCard() {
             buildLinhaComparativa('Mesma Data — Mês Anterior', compMesAnt.ref, compMesAnt.pct),
             buildLinhaComparativa('Dia Homólogo — Ano Anterior', compAnoAnt.ref, compAnoAnt.pct),
           ]),
+          registarBtn,
         ]);
 
-    card.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:0 0 4px;' }, 'Pesquisa de Data Específica'));
-    card.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, 'Escolha qualquer dia de 2024, 2025 ou 2026 para consultar a Faturação Real (Valor Caixa + Entidades + Crédito).'));
+    card.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:0 0 4px;' }, 'Faturação — Consulta e Registo'));
+    card.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, 'Mostra por defeito o dia de ontem — escolha outra data para consultar ou corrigir um registo (2024, 2025 ou 2026).'));
     card.appendChild(h('div', { class: 'field', style: 'max-width:220px;margin-bottom:0;' }, [h('label', {}, 'Data'), dataInput]));
     card.appendChild(resultado);
   }
@@ -11292,8 +11374,10 @@ function buildFinanceiroPesquisaCard() {
   return card;
 }
 
-// ---- Gráfico: Evolução Mensal Homóloga 2025 vs 2026 — card irmão da
-// Pesquisa de Data Específica na grelha de 2 colunas. ----
+// ---- Gráfico: Evolução Mensal Homóloga 2025 vs 2026 — cartão em
+// full-width no fundo da página do Financeiro; as barras usam largura
+// flexível (ver .fin-chart-col) para caberem sempre na largura total do
+// cartão, sem precisar de scroll horizontal. ----
 function buildFinanceiroEvolucaoCard() {
   const anoAtual = new Date().getFullYear();
   const anoAnterior = anoAtual - 1;
@@ -11305,7 +11389,7 @@ function buildFinanceiroEvolucaoCard() {
     if (vAnt) itensEvolucao.push({ rotulo: `${nome.slice(0, 3)} '${String(anoAnterior).slice(2)}`, valor: vAnt, cor: '#94a3b8' });
     if (vAtual) itensEvolucao.push({ rotulo: `${nome.slice(0, 3)} '${String(anoAtual).slice(2)}`, valor: vAtual, cor: '#3b82f6' });
   });
-  return h('div', { class: 'card fin-card-compact', style: 'overflow-x:auto;' }, [
+  return h('div', { class: 'card fin-card-compact', style: 'margin-bottom:18px;' }, [
     h('h3', { class: 'dash-card-title', style: 'margin:0 0 4px;' }, `Evolução Mensal Homóloga — ${anoAnterior} vs ${anoAtual}`),
     h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, 'Total de Faturação Real por mês.'),
     itensEvolucao.length ? buildFinanceiroBarraChart(itensEvolucao, 180) : h('p', { class: 'cell-muted' }, 'Sem dados para mostrar.'),
@@ -11565,38 +11649,26 @@ function buildFinanceiroPage(container, goTo) {
   function irParaMesAtual() { anoSel = anoAtualReal; mesSel = mesAtualReal; rerender(); }
 
   function build() {
-    const ontem = ontemISO();
-
     const wrap = h('div', { class: 'animate-in' });
     wrap.appendChild(withBackButton(buildPageHeader('fileDollar', 'Financeiro', 'Faturação diária (Valor Caixa + Entidades + Crédito) — registo, pesquisa e comparativos.', undefined), goTo));
 
-    const registarBtn = podeEditar ? h('button', { class: 'btn btn-primary', style: 'margin:14px 8px 18px 0;' }, [Icon('plus', { size: 14 }), ' Registar Faturação do Dia']) : null;
-    if (registarBtn) registarBtn.addEventListener('click', () => requireAuth(() => abrirModalRegistarFaturacao(rerender)));
+    // ---- Botões de topo — o registo/edição de um dia concreto passou a
+    // viver só no cartão "Faturação — Consulta e Registo" (ver abaixo),
+    // para não duplicar a ação em dois sítios da página. ----
     const csvBtn = h('button', { class: 'btn btn-secondary', style: 'margin:14px 8px 18px 0;font-size:12.5px;' }, [Icon('download', { size: 13 }), ' Exportar CSV']);
     csvBtn.addEventListener('click', () => requireAuth(abrirModalExportarCSV));
     const pdfBtn = h('button', { class: 'btn btn-secondary', style: 'margin:14px 0 18px;font-size:12.5px;' }, [Icon('printer', { size: 13 }), ' Gerar Relatório PDF']);
     pdfBtn.addEventListener('click', () => requireAuth(abrirModalRelatorioPDF));
-    wrap.appendChild(h('div', {}, [registarBtn, csvBtn, pdfBtn].filter(Boolean)));
+    wrap.appendChild(h('div', {}, [csvBtn, pdfBtn]));
 
-    // ---- Cartão 1: Faturação de Ontem — sempre o dia real de ontem,
-    // independente do Mês Analisado escolhido no navegador abaixo. ----
-    const valorOntem = financeiroFaturacaoDoDia(ontem);
-    const [anoOntem, mesOntem] = ontem.split('-').map(Number);
-    const compDiaAnterior = financeiroComparar(ontem, financeiroDiaAnterior(ontem));
-    const mediaMesDeOntem = financeiroMediaDiariaMes(anoOntem, mesOntem);
-    const pctVsMediaMes = (valorOntem !== null && mediaMesDeOntem > 0) ? ((valorOntem - mediaMesDeOntem) / mediaMesDeOntem) * 100 : null;
-    const mediaAnoAtual = financeiroMediaDiariaAno(anoOntem, ontem);
-    const pctVsMediaAno = (valorOntem !== null && mediaAnoAtual > 0) ? ((valorOntem - mediaAnoAtual) / mediaAnoAtual) * 100 : null;
-    const compHomologo = financeiroComparar(ontem, financeiroDiaHomologoAnoAnterior(ontem));
-
-    const cardOntem = h('div', { class: 'card fin-card-compact fin-kpi-card' }, [
-      h('p', { class: 'fin-kpi-label' }, 'Faturação de Ontem'),
-      h('p', { class: 'fin-kpi-valor' }, valorOntem !== null ? financeiroFormatarEuro(valorOntem, 2) : '—'),
-      buildLinhaComparativa('vs. Dia Anterior', compDiaAnterior.ref, compDiaAnterior.pct),
-      buildLinhaComparativa('vs. Média do Mês', mediaMesDeOntem || null, pctVsMediaMes),
-      buildLinhaComparativa(`vs. Média do Ano ${anoOntem}`, mediaAnoAtual || null, pctVsMediaAno),
-      buildLinhaComparativa(`vs. Homólogo ${anoOntem - 1}`, compHomologo.ref, compHomologo.pct),
-    ]);
+    // ---- Barra de alerta discreta para dias em falta — só visível para
+    // quem pode editar Faturação (Diretor Técnico/Master ou
+    // Administrador), substitui o antigo popup bloqueante. ----
+    if (podeEditar) {
+      const diasEmFalta = financeiroDiasEmFaltaRecentes();
+      const barraAlerta = buildFinanceiroAlertaDiasEmFaltaBar(diasEmFalta, rerender);
+      if (barraAlerta) wrap.appendChild(barraAlerta);
+    }
 
     // ---- Cartão 2: Mês Analisado — controlado pelo navegador de Mês/Ano
     // (mesSel/anoSel), nunca fixo ao mês real de hoje. Para um mês já
@@ -11665,10 +11737,8 @@ function buildFinanceiroPage(container, goTo) {
         : h('p', { class: 'fin-comp-linha' }, [h('span', { class: 'fin-comp-rotulo' }, 'Objetivo Anual: '), h('span', { class: 'fin-comp-ref' }, 'Sem Objetivo definido — clique no lápis para definir.')]),
     ]);
 
-    wrap.appendChild(h('div', { class: 'dash-grid', style: 'grid-template-columns:repeat(auto-fit,minmax(230px,1fr));margin-bottom:6px;' }, [cardOntem]));
-
     // ---- Navegador de Mês/Ano — controla os cartões "Mês Analisado" e
-    // "Projeção Anual" logo abaixo. ----
+    // "Projeção Anual" logo a seguir. ----
     const noMesAtual = anoSel === anoAtualReal && mesSel === mesAtualReal;
     const prevBtn = h('button', { class: 'btn-fab-sm tone-blue', title: 'Mês anterior', 'aria-label': 'Mês anterior' }, Icon('arrowleft', { size: 15, strokeWidth: 2.4 }));
     prevBtn.addEventListener('click', irParaMesAnterior);
@@ -11680,16 +11750,23 @@ function buildFinanceiroPage(container, goTo) {
       !noMesAtual ? h('button', { class: 'fin-mes-nav-hoje' }, 'Mês Atual') : null,
     ]);
     if (!noMesAtual) labelNav.querySelector('.fin-mes-nav-hoje').addEventListener('click', irParaMesAtual);
-    wrap.appendChild(h('div', { class: 'fin-mes-nav' }, [prevBtn, labelNav, nextBtn]));
+    const navMesAno = h('div', { class: 'fin-mes-nav', style: 'margin:0 0 14px;' }, [prevBtn, labelNav, nextBtn]);
 
-    wrap.appendChild(h('div', { class: 'dash-grid', style: 'grid-template-columns:repeat(auto-fit,minmax(230px,1fr));margin-bottom:18px;' }, [cardMesAnalisado, cardProjecaoAnual]));
-
-    // ---- Pesquisa de Data Específica + Evolução Mensal Homóloga, lado a
-    // lado em desktop (empilhados em ecrãs pequenos) ----
+    // ---- Grelha de topo em 2 colunas equilibradas: cartão único de
+    // Consulta e Registo à esquerda (fusão do antigo "Faturação de
+    // Ontem" com a Pesquisa de Data Específica), emparelhado à direita
+    // com o navegador de Mês/Ano + Mês Analisado + Projeção Anual
+    // empilhados — sem espaços em branco, sem repetição de botões de
+    // registo. ----
+    const painelDireita = h('div', { class: 'fin-lado-stack' }, [navMesAno, cardMesAnalisado, cardProjecaoAnual]);
     wrap.appendChild(h('div', { class: 'fin-grid-2col' }, [
-      buildFinanceiroPesquisaCard(),
-      buildFinanceiroEvolucaoCard(),
+      buildFinanceiroPesquisaCard(rerender),
+      painelDireita,
     ]));
+
+    // ---- Evolução Mensal Homóloga — gráfico anual em full-width no
+    // fundo, sem scroll horizontal. ----
+    wrap.appendChild(buildFinanceiroEvolucaoCard());
 
     // ---- Últimos registos manuais ----
     const recentes = (STATE.financeiro || []).slice().sort((a, b) => (b.data || '').localeCompare(a.data || '')).slice(0, 10);
