@@ -1016,6 +1016,27 @@
   .badge-orange{background:var(--orange-bg);color:var(--orange);border:1px solid var(--orange-bd);}
   .badge-green{background:var(--green-bg);color:var(--green);border:1px solid var(--green-bd);}
   .badge-red{background:var(--red-bg);color:var(--red);border:1px solid var(--red-bd);}
+  .badge-teal{background:#f0fdfa;color:#0d9488;border:1px solid #99f6e4;}
+  .badge-pink{background:#fdf2f8;color:#db2777;border:1px solid #fbcfe8;}
+  .badge-indigo{background:#eef2ff;color:#4f46e5;border:1px solid #c7d2fe;}
+  .badge-amber{background:#fffbeb;color:#b45309;border:1px solid #fde68a;}
+  /* Mapa de Tarefas — grelha única (sem cabeçalhos repetidos por
+     categoria): table-layout fixed + colgroup dá colunas de largura fixa
+     e alinhada; título/observações truncam com reticências (o title
+     nativo mostra o texto completo ao passar o rato). */
+  .mapa-tarefas-table{table-layout:fixed;width:100%;}
+  .mapa-tarefas-table td, .mapa-tarefas-table th{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .categoria-filtro-row{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 18px;}
+  .categoria-filtro-chip{display:inline-flex;align-items:center;gap:6px;padding:6px 13px;border-radius:999px;
+    font-size:12px;font-weight:700;border:1px solid var(--pharm-200);background:#fff;color:var(--pharm-600);
+    cursor:pointer;transition:all .12s ease;}
+  .categoria-filtro-chip:hover{background:var(--pharm-50);}
+  .categoria-filtro-chip.ativo{background:var(--pharm-700);border-color:var(--pharm-700);color:#fff;}
+  .categoria-filtro-chip .tab-count{font-size:10.5px;opacity:.85;}
+  /* Espaço no fundo da página para a barra de ações flutuante nunca tapar
+     o último registo da lista (Mapa de Tarefas e qualquer página futura
+     que precise do mesmo respiro). */
+  .espaco-barra-flutuante{height:76px;}
   .aviso-tag{display:inline-flex;align-items:center;justify-content:center;}
   .aviso-tag.aviso-inativo{color:var(--pharm-300);}
   .aviso-tag.aviso-ativo{color:#ca8a04;}
@@ -2662,10 +2683,15 @@ const errosSchema = [
   { name: 'obs', label: 'Observações', type: 'textarea', col: 2 },
 ];
 
-// Lembretes: a Data de criação é automática (não faz parte do formulário)
+// Lembretes: a Data de criação é automática (não faz parte do formulário).
+// Só "info" e "data" continuam no schema genérico (usado para a validação
+// de campo obrigatório) — os campos novos de repetição/hora/âmbito vivem
+// só no formulário próprio (buildLembreteFormCustom), sem precisar de
+// entrar aqui: dbInsert/dbUpdate gravam sempre tudo o que estiver no draft,
+// schema ou não.
 const lembretesSchema = [
   { name: 'info', label: 'Informação / Tarefa', type: 'textarea', col: 2, maxLength: 200 },
-  { name: 'data', label: 'Alerta para (Data)', type: 'date', size: 'xs' },
+  { name: 'data', label: 'Data de Início', type: 'date', size: 'xs' },
 ];
 
 // Reclamações: produtos devolvidos/reclamados por clientes ao balcão
@@ -4398,6 +4424,13 @@ const MAPA_TAREFAS_CATEGORIAS = [
   'Receituário', 'Fornecedores', 'Stocks', 'Campanhas / Divulgação',
   'Organização', 'Parcerias / Serviços', 'Gestão', 'Intranet', 'SigaJuncal',
 ];
+// Uma cor de badge por categoria — só para identificação visual rápida na
+// grelha única (ver buildTabelaUnificada em buildMapaTarefasPage).
+const MAPA_TAREFAS_CATEGORIA_TONE = {
+  'Receituário': 'blue', 'Fornecedores': 'purple', 'Stocks': 'orange',
+  'Campanhas / Divulgação': 'pink', 'Organização': 'teal', 'Parcerias / Serviços': 'green',
+  'Gestão': 'red', 'Intranet': 'indigo', 'SigaJuncal': 'amber',
+};
 const mapaTarefasSchema = [
   { name: 'categoria', label: 'Categoria', type: 'select', options: MAPA_TAREFAS_CATEGORIAS, size: 'sm' },
   { name: 'titulo', label: 'Título / Nome da Tarefa', type: 'text', col: 2 },
@@ -5040,18 +5073,33 @@ async function dbUpdate(listKey, id, patch) {
         return atual ? Object.assign({}, atual, patchFinal) : null;
       }
       // PGRST116 = .single() não encontrou NENHUMA linha a corresponder ao
-      // filtro — com o lock otimista ativo, isto só acontece quando outro
-      // posto já alterou (e gravou) este registo entretanto: gravar por
-      // cima seria cego e destruiria o trabalho do colega. Em vez disso,
-      // recarrega-se a versão real do servidor para o STATE e devolve-se
-      // null — o formulário que chamou fica a saber que falhou (pelo
-      // mecanismo habitual de erro) e o utilizador é avisado com uma
-      // mensagem clara e amigável.
-      if (usaLockOtimista && error.code === 'PGRST116') {
+      // filtro. Com o lock otimista ativo, isto normalmente é porque outro
+      // posto já alterou (e gravou) este registo entretanto. Mas pode
+      // também acontecer em QUALQUER tabela (com ou sem lock otimista)
+      // quando o próprio UPDATE teve sucesso mas o SELECT() de confirmação
+      // que se segue não "vê" a linha — ex: uma política de RLS que já não
+      // inclui a linha com o novo valor gravado (fica famoso o erro cru
+      // "Cannot coerce the result to a single JSON object" a aparecer no
+      // ecrã, sem contexto nenhum). Em vez de assumir logo que falhou,
+      // vai-se sempre buscar a versão real ao servidor e decide-se a
+      // partir dela.
+      if (error.code === 'PGRST116') {
         const fresco = await dbFetchOne(listKey, id);
-        if (fresco) STATE[listKey] = (STATE[listKey] || []).map(r => (r.id === id ? fresco : r));
-        lastDbError = 'Este registo foi atualizado por outro posto de trabalho. Os dados foram recarregados com a versão mais recente para sua verificação.';
-        showToast(lastDbError, 'error');
+        if (fresco) {
+          STATE[listKey] = (STATE[listKey] || []).map(r => (r.id === id ? fresco : r));
+          // Se os campos que se tentou gravar já batem certo no servidor,
+          // o UPDATE afinal teve sucesso — só a confirmação por .single()
+          // é que falhou; devolve o registo fresco como sucesso normal, em
+          // vez de mostrar um erro para uma gravação que na verdade correu bem.
+          const aplicouMesmo = Object.keys(patchFinal).every(k => JSON.stringify(fresco[k]) === JSON.stringify(patchFinal[k]));
+          if (aplicouMesmo) return fresco;
+          lastDbError = usaLockOtimista
+            ? 'Este registo foi atualizado por outro posto de trabalho. Os dados foram recarregados com a versão mais recente para sua verificação.'
+            : 'Não foi possível confirmar a gravação deste registo. Os dados foram recarregados com a versão mais recente do servidor — verifique e tente novamente.';
+          showToast(lastDbError, 'error');
+          return null;
+        }
+        lastDbError = 'Não foi possível confirmar a gravação deste registo. Tente novamente.';
         return null;
       }
       lastDbError = error.message; console.error(`[Supabase] erro ao atualizar ${listKey}#${id}:`, error.message); return null;
@@ -5548,8 +5596,20 @@ async function dbUpdateMarcacao(id, patch, updatedAtEsperado) {
     if (updatedAtEsperado) query = query.eq('updated_at', updatedAtEsperado);
     const { data, error } = await query.select().single();
     if (error) {
-      if (updatedAtEsperado && error.code === 'PGRST116') {
-        lastDbError = 'Este registo foi atualizado por outro posto de trabalho. Os dados foram recarregados com a versão mais recente para sua verificação.';
+      // PGRST116 = .single() sem linhas — mesmo sem lock otimista, pode
+      // acontecer o UPDATE ter tido sucesso mas o SELECT() de confirmação
+      // não "ver" a linha (ex: RLS). Confirma-se sempre com uma releitura
+      // antes de mostrar o erro cru do Postgrest ao utilizador.
+      if (error.code === 'PGRST116') {
+        const { data: frescoDireto } = await sb.from('eventos_marcacoes').select('*').eq('id', id).maybeSingle().catch(() => ({ data: null }));
+        const registoFresco = frescoDireto ? rowToRecord(frescoDireto) : null;
+        if (registoFresco) {
+          const aplicouMesmo = Object.keys(patch).every(k => JSON.stringify(registoFresco[k]) === JSON.stringify(patch[k]));
+          if (aplicouMesmo) return registoFresco;
+        }
+        lastDbError = updatedAtEsperado
+          ? 'Este registo foi atualizado por outro posto de trabalho. Os dados foram recarregados com a versão mais recente para sua verificação.'
+          : 'Não foi possível confirmar a gravação deste registo. Tente novamente.';
         showToast(lastDbError, 'error');
         return null;
       }
@@ -8118,17 +8178,20 @@ function buildChatPage(container, goTo) {
   scrollToBottom();
 }
 
-// Lembretes pessoais do utilizador com sessão ativa — conta os pendentes e
-// separa os urgentes (data de hoje ou já ultrapassada, ainda não
-// concluídos), para o sino de notificação da Página Inicial.
+// Lembretes visíveis para o utilizador com sessão ativa — pessoais +
+// de Equipa (visíveis para todos) — conta os pendentes e separa os
+// urgentes (via lembreteEhUrgente, já preparado para repetição), para o
+// sino de notificação da Página Inicial.
 function contarLembretesPendentesDoUtilizador() {
   if (!activeUser) return { total: 0, urgentes: [] };
-  const hoje = todayISO();
-  const meus = STATE.lembretes.filter(r => (r.userId !== null && r.userId !== undefined)
-    ? String(r.userId) === String(activeUser.id)
-    : r.responsavel === (activeUser.nomeCompleto || activeUser.username));
+  const meus = STATE.lembretes.filter(r => {
+    if (r.ambito === 'Equipa') return true;
+    return (r.userId !== null && r.userId !== undefined)
+      ? String(r.userId) === String(activeUser.id)
+      : r.responsavel === (activeUser.nomeCompleto || activeUser.username);
+  });
   const pendentes = meus.filter(r => r.estado !== 'Concluído');
-  const urgentes = pendentes.filter(r => r.data && r.data <= hoje);
+  const urgentes = pendentes.filter(r => lembreteEhUrgente(r));
   return { total: pendentes.length, urgentes };
 }
 // Sino de notificação junto à saudação da Home — badge com a contagem total
@@ -8141,7 +8204,7 @@ function buildLembretesBellHome() {
   const btn = h('button', {
     class: 'lembretes-bell-btn' + (inativa ? ' lembretes-bell-inativa' : '') + (urgentes.length ? ' lembretes-bell-piscar' : ''),
     title: urgentes.length ? `${urgentes.length} lembrete(s) urgente(s)!` : (inativa ? 'Os teus Lembretes' : `${total} lembrete(s) pendente(s)`),
-    'aria-label': 'Lembretes pessoais',
+    'aria-label': 'Lembretes',
   }, [
     Icon('bell', { size: 18, strokeWidth: 2.2 }),
     inativa ? null : h('span', { class: 'lembretes-bell-badge' }, String(total)),
@@ -8174,8 +8237,8 @@ function abrirModalLembretesUrgentes() {
     });
     return h('div', { class: 'lembrete-urgente-row' }, [
       h('div', { style: 'flex:1;min-width:0;' }, [
-        h('p', { class: 'cell-strong', style: 'margin:0 0 2px;' }, r.info || '—'),
-        h('p', { class: 'cell-muted', style: 'margin:0;font-size:11.5px;' }, `Criado em: ${formatDateOnlyFromISO(r.createdAt)} · Alerta para: ${formatDate(r.data)}`),
+        h('p', { class: 'cell-strong', style: 'margin:0 0 2px;' }, [r.info || '—', r.ambito === 'Equipa' ? h('span', { class: 'badge badge-blue', style: 'margin-left:6px;font-size:9.5px;padding:2px 6px;' }, 'Equipa') : null]),
+        h('p', { class: 'cell-muted', style: 'margin:0;font-size:11.5px;' }, `Alerta para: ${formatDate(r.data)}${r.todoDia === false && r.hora ? ' · ' + r.hora : ''}${lembreteRepeticaoTexto(r) !== 'Não se repete' ? ' · ' + lembreteRepeticaoTexto(r) : ''}`),
       ]),
       concluirBtn,
     ]);
@@ -11807,17 +11870,135 @@ function buildCalculadorasPage(container, goTo) {
 /* =================================================================
    LEMBRETES
 ================================================================= */
+/* -----------------------------------------------------------------------
+   MOTOR DE REPETIÇÃO DOS LEMBRETES — estilo Google Calendar (Não se repete
+   / Todos os dias / Todas as semanas / Todos os meses / Todos os anos /
+   Personalizado, com "Termina: Nunca / Numa data"). Um lembrete continua a
+   ter um único registo/estado na base de dados (sem histórico por
+   ocorrência) — "Concluído" marca a série toda como resolvida, tal como já
+   acontecia antes desta reformulação; para uma reunião recorrente que
+   nunca deve "desaparecer" ao concluir, o mais simples é não a marcar como
+   concluída e deixá-la voltar a soar sozinha na próxima ocorrência.
+----------------------------------------------------------------------- */
+const LEMBRETE_REP_PRESETS = {
+  'Todos os dias': { unidade: 'dias', intervalo: 1 },
+  'Todas as semanas': { unidade: 'semanas', intervalo: 1 },
+  'Todos os meses': { unidade: 'meses', intervalo: 1 },
+  'Todos os anos': { unidade: 'anos', intervalo: 1 },
+};
+// Normaliza o padrão de repetição de um lembrete para {unidade, intervalo}
+// — ou null se for um lembrete único ("Não se repete"/sem valor).
+function lembreteRepeticaoInfo(l) {
+  const rep = l.repeticao || 'Não se repete';
+  if (rep === 'Não se repete' || !rep) return null;
+  if (rep === 'Personalizado') {
+    const unidades = ['dias', 'semanas', 'meses', 'anos'];
+    const unidade = unidades.includes(l.repUnidade) ? l.repUnidade : 'dias';
+    const intervalo = Math.max(1, parseInt(l.repIntervalo, 10) || 1);
+    return { unidade, intervalo };
+  }
+  return LEMBRETE_REP_PRESETS[rep] || null;
+}
+// A série já terminou nesta data (repFimTipo="Numa data" já ultrapassado)?
+function lembreteSerieTerminouEm(l, dataISO) {
+  return l.repFimTipo === 'Numa data' && l.repFimData && l.repFimData < dataISO;
+}
+// A data-alvo coincide com uma ocorrência do padrão de repetição, a contar
+// da data de início? (mesma unidade/intervalo — meses e anos exigem o
+// mesmo dia do mês/data, tal como o Google Calendar faz por defeito.)
+function lembreteDataBateComPadrao(dataInicioISO, dataAlvoISO, info) {
+  if (dataAlvoISO < dataInicioISO) return false;
+  const di = new Date(dataInicioISO + 'T00:00:00');
+  const da = new Date(dataAlvoISO + 'T00:00:00');
+  if (info.unidade === 'dias') {
+    const diffDias = Math.round((da - di) / 86400000);
+    return diffDias % info.intervalo === 0;
+  }
+  if (info.unidade === 'semanas') {
+    const diffDias = Math.round((da - di) / 86400000);
+    return diffDias % (7 * info.intervalo) === 0;
+  }
+  if (info.unidade === 'meses') {
+    if (da.getDate() !== di.getDate()) return false;
+    const diffMeses = (da.getFullYear() - di.getFullYear()) * 12 + (da.getMonth() - di.getMonth());
+    return diffMeses >= 0 && diffMeses % info.intervalo === 0;
+  }
+  if (info.unidade === 'anos') {
+    if (da.getDate() !== di.getDate() || da.getMonth() !== di.getMonth()) return false;
+    const diffAnos = da.getFullYear() - di.getFullYear();
+    return diffAnos >= 0 && diffAnos % info.intervalo === 0;
+  }
+  return false;
+}
+// Este lembrete está "urgente" HOJE — para o sino/popup de urgentes? Um
+// lembrete único (sem repetição) mantém o comportamento original: fica
+// urgente assim que chega a data e continua até ser concluído, mesmo que
+// já tenha passado. Um lembrete recorrente só fica urgente no PRÓPRIO dia
+// em que cai uma ocorrência (não acumula em atraso dias que passaram sem
+// ninguém reparar, para não inundar o sino de avisos antigos).
+function lembreteEhUrgente(l, hojeISO) {
+  const hoje = hojeISO || todayISO();
+  if (l.estado === 'Concluído' || !l.data) return false;
+  const info = lembreteRepeticaoInfo(l);
+  if (!info) return l.data <= hoje;
+  if (lembreteSerieTerminouEm(l, hoje)) return false;
+  return lembreteDataBateComPadrao(l.data, hoje, info);
+}
+// Texto da próxima ocorrência (para a coluna "Alerta para" na tabela) —
+// varre dia a dia a partir de hoje (ou da própria data de início, se ainda
+// não tiver começado) até encontrar a próxima batida do padrão, com um
+// limite de segurança de 10 anos para nunca ficar preso num ciclo infinito.
+function lembreteProximaOcorrenciaTexto(l) {
+  if (!l.data) return '—';
+  const info = lembreteRepeticaoInfo(l);
+  if (!info) return formatDate(l.data);
+  const hoje = todayISO();
+  if (lembreteSerieTerminouEm(l, hoje) || lembreteSerieTerminouEm(l, l.data)) return `${formatDate(l.data)} (terminado)`;
+  let cursor = l.data > hoje ? l.data : hoje;
+  for (let i = 0; i < 3660; i++) {
+    if (lembreteSerieTerminouEm(l, cursor)) return `${formatDate(l.data)} (terminado)`;
+    if (lembreteDataBateComPadrao(l.data, cursor, info)) return formatDate(cursor);
+    cursor = dateToISO(new Date(new Date(cursor + 'T00:00:00').getTime() + 86400000));
+  }
+  return formatDate(l.data);
+}
+// Rótulo curto e legível do padrão de repetição, para a tabela/lista.
+function lembreteRepeticaoTexto(l) {
+  const rep = l.repeticao || 'Não se repete';
+  if (rep === 'Não se repete' || !rep) return 'Não se repete';
+  if (rep !== 'Personalizado') return rep;
+  const info = lembreteRepeticaoInfo(l);
+  const unidadeSingular = { dias: 'dia', semanas: 'semana', meses: 'mês', anos: 'ano' }[info.unidade];
+  return `A cada ${info.intervalo} ${info.intervalo === 1 ? unidadeSingular : info.unidade}`;
+}
+
 function buildLembretesPage(container, goTo, embedded) {
-  let showForm = false, editingId = null, draft = emptyRecord(lembretesSchema);
+  let showForm = false, editingId = null, draft = criarRascunhoLembreteVazio();
   let searchQuery = '';
   let activeTab = 'pending';
   let formError = '';
   let saving = false;
   let selectedIds = new Set();
 
+  function criarRascunhoLembreteVazio() {
+    return { info: '', data: todayISO(), todoDia: true, hora: '', repeticao: 'Não se repete', repIntervalo: 1, repUnidade: 'dias', repFimTipo: 'Nunca', repFimData: '', ambito: 'Pessoal' };
+  }
+  // Preenche os campos novos com omissão segura em registos antigos
+  // (criados antes desta reformulação, sem nenhum destes campos gravado).
+  function normalizarLembreteParaEdicao(r) {
+    return Object.assign(criarRascunhoLembreteVazio(), r, {
+      todoDia: r.todoDia === false ? false : true,
+      repeticao: r.repeticao || 'Não se repete',
+      repIntervalo: r.repIntervalo || 1,
+      repUnidade: r.repUnidade || 'dias',
+      repFimTipo: r.repFimTipo || 'Nunca',
+      ambito: r.ambito || 'Pessoal',
+    });
+  }
+
   function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
-  function openNew() { draft = emptyRecord(lembretesSchema); editingId = null; formError = ''; showForm = true; rerender(); }
-  function openEdit(r) { draft = Object.assign({}, r); editingId = r.id; formError = ''; showForm = true; rerender(); }
+  function openNew() { draft = criarRascunhoLembreteVazio(); editingId = null; formError = ''; showForm = true; rerender(); }
+  function openEdit(r) { draft = normalizarLembreteParaEdicao(r); editingId = r.id; formError = ''; showForm = true; rerender(); }
   function openEditSelected() {
     if (selectedIds.size !== 1) return;
     const r = STATE.lembretes.find(x => x.id === [...selectedIds][0]);
@@ -11831,8 +12012,30 @@ function buildLembretesPage(container, goTo, embedded) {
       rerender();
       return;
     }
+    if (!draft.todoDia && !/^\d{2}:\d{2}$/.test(String(draft.hora || ''))) {
+      formError = 'Indique a Hora (ou ative "Todo o dia").';
+      rerender();
+      return;
+    }
+    if (draft.repeticao === 'Personalizado' && (!draft.repIntervalo || parseInt(draft.repIntervalo, 10) < 1)) {
+      formError = 'Indique um intervalo de repetição válido (mínimo 1).';
+      rerender();
+      return;
+    }
+    if (draft.repeticao !== 'Não se repete' && draft.repFimTipo === 'Numa data' && !draft.repFimData) {
+      formError = 'Indique a data em que a repetição termina, ou escolha "Nunca".';
+      rerender();
+      return;
+    }
     formError = '';
     draft.responsavel = currentUserName();
+    // Campos irrelevantes ficam sempre limpos ao gravar — nunca fica lixo
+    // escondido de uma escolha anterior (ex: Hora com "Todo o dia" ativo,
+    // ou intervalo/unidade personalizados depois de voltar a "Não se repete").
+    if (draft.todoDia) draft.hora = '';
+    if (draft.repeticao !== 'Personalizado') { draft.repIntervalo = 1; draft.repUnidade = 'dias'; }
+    if (draft.repeticao === 'Não se repete') { draft.repFimTipo = 'Nunca'; draft.repFimData = ''; }
+    if (draft.repFimTipo !== 'Numa data') draft.repFimData = '';
     normalizeNameFields(draft);
     saving = true; rerender();
     if (editingId) {
@@ -11840,10 +12043,11 @@ function buildLembretesPage(container, goTo, embedded) {
       if (updated) STATE.lembretes = STATE.lembretes.map(r => r.id === editingId ? updated : r);
       else formError = `Não foi possível guardar as alterações. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
     } else {
-      // Lembretes passam a ser pessoais — cada registo fica associado ao ID
-      // de quem o criou, para só aparecer para essa pessoa.
-      const payload = Object.assign({ data: todayISO(), estado: 'Pendente', userId: activeUser ? activeUser.id : null }, draft);
-      if (!draft.data) payload.data = todayISO();
+      // Lembrete Pessoal: fica associado ao ID de quem o criou, para só
+      // aparecer para essa pessoa. Lembrete de Equipa: visível para todos
+      // (ver visibleLembretes/contarLembretesPendentesDoUtilizador) — o
+      // userId mantém-se sempre gravado (identifica sempre quem criou).
+      const payload = Object.assign({ estado: 'Pendente', userId: activeUser ? activeUser.id : null }, draft);
       const created = await dbInsert('lembretes', payload);
       if (created) STATE.lembretes = [created, ...STATE.lembretes];
       else formError = `Não foi possível adicionar o lembrete. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
@@ -11890,18 +12094,20 @@ function buildLembretesPage(container, goTo, embedded) {
     }, { confirmLabel: 'Sim, Anular Conclusão' });
   }
 
+  // Pessoal: só os do próprio utilizador. Equipa: visível para todos.
+  // Registos antigos (sem userId gravado, de antes desta reformulação)
+  // continuam a aparecer para quem os criou, comparando pelo nome em
+  // "responsavel" — para não fazer desaparecer lembretes já existentes.
+  function lembreteEhMeuOuDaEquipa(r) {
+    if (r.ambito === 'Equipa') return true;
+    if (!activeUser) return true;
+    return (r.userId !== null && r.userId !== undefined)
+      ? String(r.userId) === String(activeUser.id)
+      : r.responsavel === (activeUser.nomeCompleto || activeUser.username);
+  }
   function visibleLembretes() {
     const q = normalizarTexto(searchQuery).trim();
-    let list = STATE.lembretes;
-    // Lembretes pessoais: só os do próprio utilizador. Registos antigos,
-    // criados antes desta reformulação (sem userId gravado), continuam a
-    // aparecer para quem os criou, comparando pelo nome guardado em
-    // "responsavel" — para não fazer desaparecer lembretes já existentes.
-    if (activeUser) {
-      list = list.filter(r => (r.userId !== null && r.userId !== undefined)
-        ? String(r.userId) === String(activeUser.id)
-        : r.responsavel === (activeUser.nomeCompleto || activeUser.username));
-    }
+    let list = STATE.lembretes.filter(lembreteEhMeuOuDaEquipa);
     if (q) list = list.filter(r => [r.responsavel, r.info].some(v => normalizarTexto(v).includes(q)));
     list = activeTab === 'resolved' ? list.filter(r => r.estado === 'Concluído') : list.filter(r => r.estado !== 'Concluído');
     return list.slice().sort((a, b) => (b.data || '').localeCompare(a.data || ''));
@@ -11914,7 +12120,7 @@ function buildLembretesPage(container, goTo, embedded) {
         : (mode === 'resolved' ? 'Ainda não há lembretes concluídos.' : 'Sem lembretes pendentes. Tudo em dia!');
       return EmptyState(msg);
     }
-    const thead = h('thead', {}, h('tr', {}, ['', 'Criado em', 'Alerta para', 'Responsável', 'Informação / Tarefa', 'Estado'].map(t => h('th', {}, t))));
+    const thead = h('thead', {}, h('tr', {}, ['', 'Âmbito', 'Alerta para', 'Repetição', 'Responsável', 'Informação / Tarefa', 'Estado'].map(t => h('th', {}, t))));
     const tbody = h('tbody', {}, list.map(r => {
       const pendente = mode !== 'resolved';
       let estadoBadge;
@@ -11924,13 +12130,18 @@ function buildLembretesPage(container, goTo, embedded) {
       } else {
         estadoBadge = h('span', { class: 'badge badge-green' }, 'CONCLUÍDO');
       }
+      const ambitoBadge = r.ambito === 'Equipa'
+        ? h('span', { class: 'badge badge-blue', title: 'Visível para toda a equipa' }, [Icon('users', { size: 11, strokeWidth: 2.4 }), ' Equipa'])
+        : h('span', { class: 'cell-muted', style: 'font-size:11.5px;' }, 'Pessoal');
+      const alertaTexto = r.todoDia === false && r.hora ? `${lembreteProximaOcorrenciaTexto(r)} · ${r.hora}` : lembreteProximaOcorrenciaTexto(r);
       const selected = selectedIds.has(r.id);
       const row = h('tr', { class: 'selectable-row' + (pendente ? '' : ' row-resolved') + (selected ? ' row-selected' : '') }, [
         buildSelectionCheckbox(r.id, selectedIds, toggleSelect),
-        h('td', { class: 'cell-muted' }, formatDateOnlyFromISO(r.createdAt)),
-        h('td', {}, formatDate(r.data)),
+        h('td', {}, ambitoBadge),
+        h('td', {}, alertaTexto),
+        h('td', { class: 'cell-muted' }, lembreteRepeticaoTexto(r)),
         h('td', { class: 'cell-strong' }, r.responsavel || '—'),
-        h('td', { style: 'white-space:normal;max-width:460px;' }, r.info || '—'),
+        h('td', { style: 'white-space:normal;max-width:380px;' }, r.info || '—'),
         h('td', {}, estadoBadge),
       ]);
       return row;
@@ -11938,32 +12149,109 @@ function buildLembretesPage(container, goTo, embedded) {
     return h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', {}, [thead, tbody])));
   }
 
+  // ---- Formulário próprio (não usa buildRecordForm) — precisa de mostrar/
+  // esconder campos consoante outras escolhas (Todo o dia → Hora;
+  // Repetição → Personalizado/Termina), o que o formulário genérico
+  // orientado a schema não suporta bem. ----
+  function buildLembreteFormCustom() {
+    const infoInput = h('textarea', { class: 'input', maxlength: '200', rows: '3' });
+    infoInput.value = draft.info || '';
+    infoInput.addEventListener('input', () => { draft.info = infoInput.value; });
+
+    const dataInput = h('input', { class: 'input', type: 'date' });
+    dataInput.value = draft.data || todayISO();
+    dataInput.addEventListener('change', () => { draft.data = dataInput.value; });
+
+    const todoDiaCb = h('input', { type: 'checkbox', checked: draft.todoDia !== false });
+    todoDiaCb.addEventListener('change', () => { draft.todoDia = todoDiaCb.checked; rerender(); });
+    const todoDiaField = h('label', { class: 'checkbox-field' }, [todoDiaCb, h('span', {}, 'Todo o dia')]);
+
+    const horaInput = h('input', { class: 'input', type: 'time' });
+    horaInput.value = draft.hora || '';
+    horaInput.addEventListener('change', () => { draft.hora = horaInput.value; });
+
+    const repeticaoOpcoes = ['Não se repete', 'Todos os dias', 'Todas as semanas', 'Todos os meses', 'Todos os anos', 'Personalizado'];
+    const repeticaoSelect = h('select', { class: 'select' }, repeticaoOpcoes.map(o => h('option', { value: o, selected: (draft.repeticao || 'Não se repete') === o ? 'selected' : undefined }, o === 'Personalizado' ? 'Personalizado…' : o)));
+    repeticaoSelect.value = draft.repeticao || 'Não se repete';
+    repeticaoSelect.addEventListener('change', () => { draft.repeticao = repeticaoSelect.value; rerender(); });
+
+    const repIntervaloInput = h('input', { class: 'input', type: 'number', min: '1', step: '1' });
+    repIntervaloInput.value = String(draft.repIntervalo || 1);
+    repIntervaloInput.addEventListener('input', () => { draft.repIntervalo = repIntervaloInput.value; });
+    const repUnidadeSelect = h('select', { class: 'select' }, ['dias', 'semanas', 'meses', 'anos'].map(u => h('option', { value: u, selected: (draft.repUnidade || 'dias') === u ? 'selected' : undefined }, u)));
+    repUnidadeSelect.value = draft.repUnidade || 'dias';
+    repUnidadeSelect.addEventListener('change', () => { draft.repUnidade = repUnidadeSelect.value; });
+
+    const repFimNuncaRadio = h('input', { type: 'radio', name: 'rep-fim', checked: (draft.repFimTipo || 'Nunca') === 'Nunca' ? 'checked' : undefined });
+    const repFimDataRadio = h('input', { type: 'radio', name: 'rep-fim', checked: draft.repFimTipo === 'Numa data' ? 'checked' : undefined });
+    const repFimDataInput = h('input', { class: 'input', type: 'date' });
+    repFimDataInput.value = draft.repFimData || '';
+    repFimDataInput.addEventListener('change', () => { draft.repFimData = repFimDataInput.value; });
+    repFimNuncaRadio.addEventListener('change', () => { if (repFimNuncaRadio.checked) { draft.repFimTipo = 'Nunca'; rerender(); } });
+    repFimDataRadio.addEventListener('change', () => { if (repFimDataRadio.checked) { draft.repFimTipo = 'Numa data'; rerender(); } });
+
+    const ambitoOpcoes = [
+      { valor: 'Pessoal', desc: 'Visível apenas para si.' },
+      { valor: 'Equipa', desc: 'Visível para toda a equipa, na Página Inicial.' },
+    ];
+    const ambitoSelect = h('select', { class: 'select' }, ambitoOpcoes.map(o => h('option', { value: o.valor, selected: (draft.ambito || 'Pessoal') === o.valor ? 'selected' : undefined }, o.valor === 'Pessoal' ? 'Lembrete Pessoal' : 'Lembrete de Equipa')));
+    ambitoSelect.value = draft.ambito || 'Pessoal';
+    ambitoSelect.addEventListener('change', () => { draft.ambito = ambitoSelect.value; rerender(); });
+    const ambitoHelper = h('p', { class: 'field-helper-text' }, (ambitoOpcoes.find(o => o.valor === (draft.ambito || 'Pessoal')) || ambitoOpcoes[0]).desc);
+
+    const camposRepeticao = [];
+    if (draft.repeticao === 'Personalizado') {
+      camposRepeticao.push(h('div', { class: 'form-grid', style: 'margin-top:8px;' }, [
+        h('div', { class: 'field field-xs' }, [h('label', {}, 'A cada'), repIntervaloInput]),
+        h('div', { class: 'field field-sm' }, [h('label', {}, 'Unidade'), repUnidadeSelect]),
+      ]));
+    }
+    if ((draft.repeticao || 'Não se repete') !== 'Não se repete') {
+      camposRepeticao.push(h('div', { class: 'field', style: 'margin-top:8px;' }, [
+        h('label', {}, 'Termina'),
+        h('div', { style: 'display:flex;align-items:center;gap:16px;flex-wrap:wrap;' }, [
+          h('label', { class: 'checkbox-field', style: 'margin:0;' }, [repFimNuncaRadio, h('span', {}, 'Nunca')]),
+          h('label', { class: 'checkbox-field', style: 'margin:0;' }, [repFimDataRadio, h('span', {}, 'Numa data')]),
+          draft.repFimTipo === 'Numa data' ? repFimDataInput : null,
+        ]),
+      ]));
+    }
+
+    const submitBtn = h('button', { class: 'btn btn-primary', onclick: saving ? null : () => requireAuth(submit), disabled: saving ? 'disabled' : undefined }, saving ? 'A guardar…' : (editingId ? 'Guardar alterações' : 'Adicionar registo'));
+    const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: cancel }, 'Cancelar');
+    const actionsRow = [submitBtn, cancelBtn];
+    if (editingId && draft.estado !== 'Concluído') {
+      actionsRow.push(h('button', { class: 'btn-revert', style: 'color:#16a34a;border-color:#bbf7d0;background:#f0fdf4;', onclick: () => requireAuth(() => conclude(editingId)) }, [Icon('check', { size: 15, strokeWidth: 2.4 }), ' Marcar como Concluído']));
+    }
+    if (editingId && draft.estado === 'Concluído') {
+      actionsRow.push(h('button', { class: 'btn-revert', onclick: () => requireAuth(() => unconclude(editingId)) }, [Icon('undo', { size: 15, strokeWidth: 2.2 }), ' Anular Conclusão']));
+    }
+
+    return h('div', { class: 'card card-pad animate-in', style: 'margin-bottom:24px;' }, [
+      h('h3', { class: 'page-eyebrow', style: 'margin-bottom:14px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, editingId ? 'Editar registo' : 'Novo registo'),
+      h('div', { class: 'form-grid' }, [
+        h('div', { class: 'field span2' }, [h('label', {}, 'Informação / Tarefa'), infoInput]),
+        h('div', { class: 'field field-sm' }, [h('label', {}, 'Data'), dataInput]),
+        h('div', { class: 'field field-sm', style: 'justify-content:flex-end;' }, [h('label', {}, ' '), todoDiaField]),
+        !draft.todoDia ? h('div', { class: 'field field-sm' }, [h('label', {}, 'Hora'), horaInput]) : null,
+        h('div', { class: 'field span2' }, [h('label', {}, 'Repetição'), repeticaoSelect, ...camposRepeticao]),
+        h('div', { class: 'field span2' }, [h('label', {}, 'Âmbito'), ambitoSelect, ambitoHelper]),
+      ]),
+      formError ? h('p', { class: 'form-error' }, formError) : null,
+      h('div', { class: 'form-actions' }, actionsRow),
+    ]);
+  }
+
   function build() {
     const wrap = h('div', { class: 'animate-in' });
-    // Contagens sempre calculadas só sobre os lembretes do próprio
-    // utilizador (mesmo critério de visibleLembretes) — para nunca mostrar
-    // números que incluam lembretes de outros colegas.
-    const meusLembretes = activeUser
-      ? STATE.lembretes.filter(r => (r.userId !== null && r.userId !== undefined)
-        ? String(r.userId) === String(activeUser.id)
-        : r.responsavel === (activeUser.nomeCompleto || activeUser.username))
-      : STATE.lembretes;
+    const meusLembretes = STATE.lembretes.filter(lembreteEhMeuOuDaEquipa);
     const pendingCount = meusLembretes.filter(r => r.estado !== 'Concluído').length;
     const resolvedCount = meusLembretes.filter(r => r.estado === 'Concluído').length;
     if (!embedded) {
-      wrap.appendChild(withBackButton(buildPageHeader('bell', 'Lembretes', 'A tua lista pessoal de lembretes e notas de trabalho.', meusLembretes.length), goTo));
+      wrap.appendChild(withBackButton(buildPageHeader('bell', 'Lembretes', 'Lembretes pessoais e de equipa, com repetição.', meusLembretes.length), goTo));
     }
 
-    if (showForm) {
-      const pendenteAgora = editingId && draft.estado !== 'Concluído';
-      wrap.appendChild(buildRecordForm(lembretesSchema, draft, {
-        editing: !!editingId, onSubmit: submit, onCancel: cancel,
-        errorMessage: formError, saving,
-        onConclude: (editingId && pendenteAgora) ? () => conclude(editingId) : null, concludeLabel: 'Marcar como Concluído',
-        onRevert: (editingId && draft.estado === 'Concluído') ? () => unconclude(editingId) : null, revertLabel: 'Anular Conclusão',
-        onDelete: null,
-      }));
-    }
+    if (showForm) wrap.appendChild(buildLembreteFormCustom());
 
     const tabsRow = h('div', { class: 'tabs-row' }, [
       h('button', { class: 'tab-btn tone-orange' + (activeTab === 'pending' ? ' active' : ''), onclick: () => { activeTab = 'pending'; selectedIds = new Set(); rerender(); } }, [
@@ -16377,6 +16665,7 @@ function buildMapaTarefasPage(container, goTo) {
   let formError = '';
   let saving = false;
   let selectedIds = new Set();
+  let activeCategoria = 'Todas';
 
   function podeEditar() { return isMasterUser(); }
   function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
@@ -16471,42 +16760,67 @@ function buildMapaTarefasPage(container, goTo) {
     });
   }
 
-  function buildCategoriaSection(categoria) {
-    const itens = STATE.mapaTarefas
-      .filter(r => r.categoria === categoria)
-      .sort((a, b) => String(a.titulo || '').localeCompare(String(b.titulo || '')));
+  // Grelha única (não 9 tabelas separadas) — Categoria passa a ser a
+  // primeira coluna (badge colorido), ordenada por Categoria → Título.
+  // activeCategoria ('Todas' ou uma das MAPA_TAREFAS_CATEGORIAS) filtra
+  // sem precisar de repetir cabeçalhos por secção.
+  function itensFiltrados() {
+    let itens = STATE.mapaTarefas.slice();
+    if (activeCategoria !== 'Todas') itens = itens.filter(r => r.categoria === activeCategoria);
+    return itens.sort((a, b) => String(a.categoria || '').localeCompare(String(b.categoria || '')) || String(a.titulo || '').localeCompare(String(b.titulo || '')));
+  }
 
-    const header = h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin:22px 0 10px;' }, [
-      h('h3', { class: 'dash-card-title', style: 'margin:0;' }, `${categoria} (${itens.length})`),
-    ]);
+  function buildFiltroCategorias() {
+    const contagens = {};
+    STATE.mapaTarefas.forEach(r => { contagens[r.categoria] = (contagens[r.categoria] || 0) + 1; });
+    const opcoes = ['Todas', ...MAPA_TAREFAS_CATEGORIAS];
+    return h('div', { class: 'categoria-filtro-row' }, opcoes.map(cat => {
+      const n = cat === 'Todas' ? STATE.mapaTarefas.length : (contagens[cat] || 0);
+      const chip = h('button', { class: 'categoria-filtro-chip' + (activeCategoria === cat ? ' ativo' : '') }, [
+        h('span', {}, cat), h('span', { class: 'tab-count' }, `(${n})`),
+      ]);
+      chip.addEventListener('click', () => { activeCategoria = cat; selectedIds = new Set(); rerender(); });
+      return chip;
+    }));
+  }
 
+  function buildTabelaUnificada() {
+    const itens = itensFiltrados();
     if (!itens.length) {
-      return h('div', {}, [header, h('p', { class: 'cell-muted', style: 'margin:0 0 8px;' }, 'Sem tarefas nesta categoria.')]);
+      return EmptyState(activeCategoria === 'Todas' ? 'Ainda não há tarefas no Mapa.' : `Sem tarefas em "${activeCategoria}".`);
     }
-
-    const cabecalho = podeEditar()
-      ? ['', 'Título', 'Responsável', 'Substituto', 'Observações']
-      : ['Título', 'Responsável', 'Substituto', 'Observações'];
+    const editar = podeEditar();
+    const cabecalho = editar
+      ? ['', 'Categoria', 'Título', 'Responsável', 'Substituto', 'Observações']
+      : ['Categoria', 'Título', 'Responsável', 'Substituto', 'Observações'];
+    // Larguras fixas e alinhadas — sempre as mesmas em toda a grelha,
+    // porque agora só há UMA tabela (deixou de haver 9 a decidir sozinhas).
+    const larguras = editar
+      ? ['4%', '14%', '22%', '15%', '15%', '30%']
+      : ['14%', '24%', '17%', '17%', '28%'];
+    const colgroup = h('colgroup', {}, larguras.map(w => h('col', { style: `width:${w};` })));
     const thead = h('thead', {}, h('tr', {}, cabecalho.map(t => h('th', {}, t))));
     const tbody = h('tbody', {}, itens.map(r => {
       const selected = selectedIds.has(r.id);
+      const tone = MAPA_TAREFAS_CATEGORIA_TONE[r.categoria] || 'blue';
       const linhaCelulas = [
-        h('td', { class: 'cell-strong' }, r.titulo || '—'),
-        h('td', {}, r.responsavel || '—'),
-        h('td', {}, (r.substituto && r.substituto !== '—') ? r.substituto : '—'),
-        h('td', { class: 'cell-muted' }, r.observacoes || '—'),
+        h('td', {}, h('span', { class: `badge badge-${tone}` }, r.categoria || '—')),
+        h('td', { class: 'cell-strong', title: r.titulo || '' }, r.titulo || '—'),
+        h('td', { title: r.responsavel || '' }, r.responsavel || '—'),
+        h('td', { title: (r.substituto && r.substituto !== '—') ? r.substituto : '' }, (r.substituto && r.substituto !== '—') ? r.substituto : '—'),
+        h('td', { class: 'cell-muted', title: r.observacoes || '' }, r.observacoes || '—'),
       ];
-      if (podeEditar()) {
+      if (editar) {
         const cb = h('input', { type: 'checkbox', checked: selected });
         cb.addEventListener('click', (e) => e.stopPropagation());
         cb.addEventListener('change', () => toggleSelect(r.id));
         linhaCelulas.unshift(h('td', {}, cb));
       }
-      const row = h('tr', { class: podeEditar() ? 'selectable-row' + (selected ? ' row-selected' : '') : undefined }, linhaCelulas);
-      if (podeEditar()) row.addEventListener('click', () => toggleSelect(r.id));
+      const row = h('tr', { class: editar ? 'selectable-row' + (selected ? ' row-selected' : '') : undefined }, linhaCelulas);
+      if (editar) row.addEventListener('click', () => toggleSelect(r.id));
       return row;
     }));
-    return h('div', {}, [header, h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', {}, [thead, tbody])))]);
+    return h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', { class: 'mapa-tarefas-table' }, [colgroup, thead, tbody])));
   }
 
   function build() {
@@ -16539,7 +16853,10 @@ function buildMapaTarefasPage(container, goTo) {
       return wrap;
     }
 
-    MAPA_TAREFAS_CATEGORIAS.forEach(cat => wrap.appendChild(buildCategoriaSection(cat)));
+    wrap.appendChild(buildFiltroCategorias());
+    wrap.appendChild(buildTabelaUnificada());
+    // Nunca deixa a barra de ações flutuante tapar o último registo.
+    wrap.appendChild(h('div', { class: 'espaco-barra-flutuante' }));
 
     // Mesma Barra de Ações Inferior usada em Manipulados/Pedidos e restantes
     // módulos — em vez do botão flutuante próprio que este ecrã tinha antes.
