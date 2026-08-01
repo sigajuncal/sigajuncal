@@ -2728,12 +2728,6 @@ const orcamentosSchema = [
 // Desafios da Farmácia — campanhas e objetivos de vendas
 const desafiosSchema = [
   { name: 'tipoPremio', label: 'Tipo de Prémio', type: 'select', options: ['Coletivo', 'Individual'], size: 'sm' },
-  // Colaborador Premiado: só faz sentido (e só aparece no formulário,
-  // ver desafiosFieldOverrides) quando tipoPremio === 'Individual'. Vive
-  // no schema para o dbUpdate/dbInsert genéricos o gravarem como
-  // qualquer outro campo — a limpeza ao mudar de tipo é feita à parte
-  // (buildTipoPremioFieldDesafios + reforço em submit()).
-  { name: 'colaboradorId', label: 'Colaborador Premiado', type: 'select', options: [], size: 'sm' },
   { name: 'tituloDesafio', label: 'Título do Prémio', type: 'text', col: 2 },
   { name: 'marcaLaboratorio', label: 'Marca / Laboratório', type: 'text', size: 'sm' },
   { name: 'objetivo', label: 'Objetivo / Regras', type: 'textarea', col: 2 },
@@ -4879,13 +4873,17 @@ async function dbPermanentDelete(listKey, id) {
 // servidor.
 const CAMPOS_SO_UI_POR_TABELA = {
   entregas: ['entregaEmpresaParceira'],
-  // valorLiquido é uma coluna GERADA no Postgres (valor_bruto - valor_trocas,
-  // calculada sempre pelo próprio Supabase) — nunca pode ser enviada num
-  // INSERT/UPDATE, senão o Postgres rejeita com erro. É "só de leitura",
-  // mesmo sendo um dado de negócio real (ao contrário de entregaEmpresaParceira
-  // acima, que é puramente estado de UI) — a razão da exclusão é diferente,
-  // mas o mecanismo para a aplicar é exatamente o mesmo.
-  financeiro: ['valorLiquido'],
+  // valorCaixa e faturacaoTotal são colunas GERADAS no Postgres
+  // (numerario+banco+cheque, e numerario+banco+cheque+entidades+credito,
+  // respetivamente — calculadas sempre pelo próprio Supabase) — nunca
+  // podem ser enviadas num INSERT/UPDATE, senão o Postgres rejeita com
+  // erro. São "só de leitura", mesmo sendo dados de negócio reais (ao
+  // contrário de entregaEmpresaParceira acima, que é puramente estado de
+  // UI) — a razão da exclusão é diferente, mas o mecanismo é o mesmo. Na
+  // prática o módulo Financeiro grava sempre via RPC dedicado
+  // (financeiroGuardarDia), nunca pelo dbInsert/dbUpdate genérico — esta
+  // entrada fica como rede de segurança caso isso alguma vez mude.
+  financeiro: ['valorCaixa', 'faturacaoTotal'],
 };
 function limparCamposSoUI(listKey, record) {
   const remover = CAMPOS_SO_UI_POR_TABELA[listKey];
@@ -10682,44 +10680,59 @@ function financeiroFormatarEuro(v, casas) {
 function financeiroRegistoDoDia(dataISO) {
   return (STATE.financeiro || []).find(r => r.data === dataISO);
 }
-// Faturação Real de UM dia — (Valor de Caixa + Entidades) - Trocas entre
-// Farmácias — a única fonte de verdade usada em todo o módulo (pesquisa,
-// cartões, gráfico, exportações). Prioriza sempre um registo manual sobre
-// o histórico incorporado da mesma data — nesse caso soma valorBruto
-// (Valor de Caixa, gravado tal e qual) com valorTrocas (que no registo
-// guarda a DIFERENÇA líquida Entidades - Trocas, já com a dedução feita
-// no formulário — ver abrirModalRegistarFaturacao). Devolve null quando
-// não há qualquer valor conhecido para esse dia (dia futuro, ou farmácia
-// fechada — ex: 25 de dezembro).
-// NOTA sobre o histórico incorporado: os PDFs "Totais de Caixa" nunca
-// tiveram uma coluna de Trocas entre Farmácias, por isso os 942 dias em
-// HISTORICO_CAIXA_DIARIO continuam a refletir só Caixa + Entidades, sem
-// qualquer dedução — não há como reconstruir essa dedução retroativamente
-// sem uma fonte de dados própria (ex: relatório do Sifarma). Só os dias
-// registados manualmente a partir de agora aplicam a dedução de Trocas.
+// Faturação Total de UM dia = Valor de Caixa (Numerário+Banco+Cheque) +
+// Entidades + Crédito — fórmula canónica alinhada com os relatórios
+// "Totais de Caixa" do 4Digital (Resumo_Caixa24-26.pdf) e os mapas
+// mensais do grupo (FACTURAÇÃO_GRUPO.xlsx). Movimentos de Caixa e Trocas
+// são campos de controlo/ajuste, gravados para consulta mas NÃO entram
+// nesta fórmula. Prioriza sempre um registo manual sobre o histórico
+// incorporado da mesma data. Devolve null quando não há qualquer valor
+// conhecido para esse dia (dia futuro, ou farmácia fechada — ex: 25 de
+// dezembro).
+// NOTA sobre o histórico incorporado: HISTORICO_CAIXA_DIARIO (942 dias de
+// 2024-2026, extraído dos PDFs "Totais de Caixa" antes desta granularidade
+// existir) continua a refletir só Caixa + Entidades — só os dias
+// registados manualmente a partir de agora têm a granularidade completa
+// (Numerário/Banco/Cheque/Entidades/Crédito/Mov.Caixa/Trocas).
 function financeiroFaturacaoDoDia(dataISO) {
   const registo = financeiroRegistoDoDia(dataISO);
-  if (registo && registo.valorBruto !== '' && registo.valorBruto !== undefined && registo.valorBruto !== null) {
-    return (parseFloat(registo.valorBruto) || 0) + (parseFloat(registo.valorTrocas) || 0);
+  if (registo && registo.numerario !== '' && registo.numerario !== undefined && registo.numerario !== null) {
+    const numerario = parseFloat(registo.numerario) || 0;
+    const banco = parseFloat(registo.banco) || 0;
+    const cheque = parseFloat(registo.cheque) || 0;
+    const entidades = parseFloat(registo.entidades) || 0;
+    const credito = parseFloat(registo.credito) || 0;
+    return numerario + banco + cheque + entidades + credito;
   }
   if (Object.prototype.hasOwnProperty.call(HISTORICO_CAIXA_DIARIO, dataISO)) return HISTORICO_CAIXA_DIARIO[dataISO];
   return null;
 }
+// Valor de Caixa (Numerário+Banco+Cheque) de um registo manual — mostrado
+// à parte da Faturação Total na tabela de "Últimos Registos Manuais",
+// para se distinguir sempre o que entrou fisicamente na caixa do que é
+// faturação a terceiros/crédito.
+function financeiroValorCaixaRegisto(registo) {
+  if (!registo) return 0;
+  return (parseFloat(registo.numerario) || 0) + (parseFloat(registo.banco) || 0) + (parseFloat(registo.cheque) || 0);
+}
 // UPSERT via RPC segura (rpc_financeiro_guardar_dia) — a tabela
-// faturacao_diaria deixa de aceitar INSERT/UPDATE diretos da app (ver
-// script SQL de RLS); a função valida no servidor que quem chama é mesmo
-// Master antes de gravar. Os dois parâmetros já existentes do RPC
-// (p_valor_bruto/p_valor_trocas) continuam a chamar-se assim do lado do
-// servidor, mas do lado da app passam a guardar: p_valor_bruto = Valor de
-// Caixa (tal e qual); p_valor_trocas = Entidades - Trocas entre Farmácias
-// (a diferença líquida já calculada em abrirModalRegistarFaturacao).
-async function financeiroGuardarDia(dataISO, valorCaixa, entidadesMenosTrocas) {
+// faturacao_diaria continua a não aceitar INSERT/UPDATE diretos da app
+// (ver script SQL de RLS); a função valida no servidor que quem chama é
+// mesmo Master antes de gravar. RPC expandido (2026-08-01) para a
+// granularidade real do relatório "Totais de Caixa" do 4Digital — os 7
+// campos vão cada um para a sua própria coluna, sem combinações/dedução
+// nenhuma feita do lado da app; valor_caixa e faturacao_total são colunas
+// GERADAS no Postgres (ver SQL fornecido). REQUER correr a nova versão do
+// RPC no Supabase (substitui a assinatura anterior de 2 parâmetros).
+async function financeiroGuardarDia(dataISO, campos) {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível (verifique se o CDN do Supabase carregou).'; return null; }
   if (!activeUser || !activeUserPin) { lastDbError = 'Sessão inválida — inicie sessão novamente.'; return null; }
   try {
     const { data, error } = await sb.rpc('rpc_financeiro_guardar_dia', {
-      p_username: activeUser.username, p_pin: activeUserPin,
-      p_data: dataISO, p_valor_bruto: valorCaixa, p_valor_trocas: entidadesMenosTrocas || 0,
+      p_username: activeUser.username, p_pin: activeUserPin, p_data: dataISO,
+      p_numerario: campos.numerario || 0, p_banco: campos.banco || 0, p_cheque: campos.cheque || 0,
+      p_entidades: campos.entidades || 0, p_credito: campos.credito || 0,
+      p_mov_caixa: campos.movCaixa || 0, p_trocas: campos.trocas || 0,
       p_registado_por: currentUserName(),
     });
     if (error) { if (erroDeRede(error)) marcarConexao(false); lastDbError = error.message; console.error('[Supabase] erro ao guardar faturação do dia:', error.message); return null; }
@@ -11085,9 +11098,12 @@ function abrirModalDefinirMetaAnual(anoDefault, onGuardado) {
   setTimeout(() => metaInput.focus(), 60);
 }
 
-// ---- Formulário "Registar Faturação do Dia" — Data (por defeito
-// ontem), Valor de Caixa (€) e Entidades (€); o valor guardado e usado
-// em todas as métricas é sempre a soma dos dois. ----
+// ---- Formulário "Registar Faturação do Dia" — granularidade alinhada
+// com o relatório "Totais de Caixa" do 4Digital: Recebimentos de Balcão
+// (Numerário/Banco/Cheque → Valor de Caixa), Faturação a Terceiros
+// (Entidades/Crédito) e Ajustes de Controlo de Caixa (Mov. de Caixa/
+// Trocas, gravados só para consulta — não entram na Faturação Total).
+// Fórmula: Faturação Total = Valor de Caixa + Entidades + Crédito. ----
 function abrirModalRegistarFaturacao(onGuardado) {
   if (!podeEditarFinanceiro()) { showToast('Sem permissão para alterar dados financeiros.', 'error'); return; }
   const overlay = h('div', { class: 'modal-overlay' });
@@ -11098,38 +11114,49 @@ function abrirModalRegistarFaturacao(onGuardado) {
 
   const dataInput = h('input', { class: 'input', type: 'date', max: todayISO() });
   dataInput.value = ontemISO();
-  const caixaInput = h('input', { class: 'input', type: 'number', step: '0.01', min: '0', placeholder: '0.00', autofocus: 'autofocus' });
-  const entidadesInput = h('input', { class: 'input', type: 'number', step: '0.01', min: '0', placeholder: '0.00' });
-  const trocasInput = h('input', { class: 'input', type: 'number', step: '0.01', min: '0', placeholder: '0.00' });
-  const totalPreview = h('p', { class: 'fin-comp-linha', style: 'margin-top:8px;' }, '');
+  // Recebimentos de Balcão — compõem o Valor de Caixa.
+  const numerarioInput = h('input', { class: 'input', type: 'number', step: '0.01', placeholder: '0.00', autofocus: 'autofocus' });
+  const bancoInput = h('input', { class: 'input', type: 'number', step: '0.01', placeholder: '0.00' });
+  const chequeInput = h('input', { class: 'input', type: 'number', step: '0.01', placeholder: '0.00' });
+  // Faturação a Terceiros / Diferida — entra na Faturação Total, mas não no Valor de Caixa.
+  const entidadesInput = h('input', { class: 'input', type: 'number', step: '0.01', placeholder: '0.00' });
+  const creditoInput = h('input', { class: 'input', type: 'number', step: '0.01', placeholder: '0.00' });
+  // Ajustes e Controlo de Caixa — só consulta, não entram na fórmula.
+  const movCaixaInput = h('input', { class: 'input', type: 'number', step: '0.01', placeholder: '0.00' });
+  const trocasInput = h('input', { class: 'input', type: 'number', step: '0.01', placeholder: '0.00' });
+  const caixaPreview = h('p', { class: 'fin-comp-linha' }, '');
+  const totalPreview = h('p', { class: 'fin-comp-linha', style: 'margin-top:4px;' }, '');
   const errorEl = h('p', { class: 'form-error' }, '');
   errorEl.style.display = 'none';
 
   function atualizarPreview() {
-    const caixa = parseFloat(caixaInput.value) || 0;
+    const numerario = parseFloat(numerarioInput.value) || 0;
+    const banco = parseFloat(bancoInput.value) || 0;
+    const cheque = parseFloat(chequeInput.value) || 0;
     const entidades = parseFloat(entidadesInput.value) || 0;
-    const trocas = parseFloat(trocasInput.value) || 0;
+    const credito = parseFloat(creditoInput.value) || 0;
+    const valorCaixa = numerario + banco + cheque;
+    clear(caixaPreview);
+    caixaPreview.appendChild(h('span', { class: 'fin-comp-rotulo' }, 'Valor Caixa (Numerário+Banco+Cheque): '));
+    caixaPreview.appendChild(h('span', {}, financeiroFormatarEuro(valorCaixa, 2)));
     clear(totalPreview);
-    totalPreview.appendChild(h('span', { class: 'fin-comp-rotulo' }, 'Faturação Líquida Calculada: '));
-    totalPreview.appendChild(h('span', { class: 'fin-kpi-valor', style: 'font-size:15px;' }, financeiroFormatarEuro(caixa + entidades - trocas, 2)));
+    totalPreview.appendChild(h('span', { class: 'fin-comp-rotulo' }, 'Faturação Total Calculada: '));
+    totalPreview.appendChild(h('span', { class: 'fin-kpi-valor', style: 'font-size:15px;' }, financeiroFormatarEuro(valorCaixa + entidades + credito, 2)));
   }
-  caixaInput.addEventListener('input', atualizarPreview);
-  entidadesInput.addEventListener('input', atualizarPreview);
-  trocasInput.addEventListener('input', atualizarPreview);
+  [numerarioInput, bancoInput, chequeInput, entidadesInput, creditoInput].forEach(inp => inp.addEventListener('input', atualizarPreview));
 
   // Só pré-preenche a partir de um registo manual já existente para o
-  // dia — o histórico incorporado (HISTORICO_CAIXA_DIARIO) não separa
-  // Caixa/Entidades/Trocas, por isso não dá para repor os 3 campos a
-  // partir dele. Num registo manual já gravado, o Valor de Caixa é
-  // sempre recuperado tal e qual (é o único gravado à parte); Entidades
-  // e Trocas ficam gravados só como diferença líquida (Entidades -
-  // Trocas) — ao reabrir para editar, essa diferença volta para o campo
-  // Entidades e o campo Trocas fica a zeros, mantendo o mesmo total.
+  // dia — o histórico incorporado (HISTORICO_CAIXA_DIARIO) não tem esta
+  // granularidade, por isso não dá para repor os 7 campos a partir dele.
   function carregarValoresExistentes() {
     const existente = financeiroRegistoDoDia(dataInput.value);
-    caixaInput.value = existente ? (existente.valorBruto || '') : '';
-    entidadesInput.value = existente ? (existente.valorTrocas || '') : '';
-    trocasInput.value = '';
+    numerarioInput.value = existente ? (existente.numerario || '') : '';
+    bancoInput.value = existente ? (existente.banco || '') : '';
+    chequeInput.value = existente ? (existente.cheque || '') : '';
+    entidadesInput.value = existente ? (existente.entidades || '') : '';
+    creditoInput.value = existente ? (existente.credito || '') : '';
+    movCaixaInput.value = existente ? (existente.movCaixa || '') : '';
+    trocasInput.value = existente ? (existente.trocas || '') : '';
     atualizarPreview();
   }
   dataInput.addEventListener('change', carregarValoresExistentes);
@@ -11137,44 +11164,62 @@ function abrirModalRegistarFaturacao(onGuardado) {
 
   const guardarBtn = h('button', { class: 'btn btn-primary', onclick: null }, 'Guardar Faturação');
   guardarBtn.addEventListener('click', () => requireAuth(async () => {
-    const caixa = parseFloat(caixaInput.value);
-    const entidades = parseFloat(entidadesInput.value) || 0;
-    const trocas = parseFloat(trocasInput.value) || 0;
-    if (!dataInput.value || isNaN(caixa) || caixa < 0 || entidades < 0 || trocas < 0) {
-      errorEl.textContent = 'Por favor, indique a Data e o Valor de Caixa (€).';
+    if (!dataInput.value) {
+      errorEl.textContent = 'Por favor, indique a Data.';
       errorEl.style.display = ''; return;
     }
     errorEl.style.display = 'none';
     guardarBtn.disabled = true; guardarBtn.textContent = 'A guardar…';
-    // O RPC só tem 2 parâmetros de valor — o Valor de Caixa grava-se tal
-    // e qual, e Entidades/Trocas ficam combinados na diferença líquida
-    // (Entidades - Trocas), que é exatamente o que financeiroFaturacaoDoDia
-    // já soma ao Valor de Caixa. O total final não muda com esta divisão.
-    const resultado = await financeiroGuardarDia(dataInput.value, caixa, entidades - trocas);
+    const campos = {
+      numerario: parseFloat(numerarioInput.value) || 0,
+      banco: parseFloat(bancoInput.value) || 0,
+      cheque: parseFloat(chequeInput.value) || 0,
+      entidades: parseFloat(entidadesInput.value) || 0,
+      credito: parseFloat(creditoInput.value) || 0,
+      movCaixa: parseFloat(movCaixaInput.value) || 0,
+      trocas: parseFloat(trocasInput.value) || 0,
+    };
+    const resultado = await financeiroGuardarDia(dataInput.value, campos);
     if (resultado) { close(); onGuardado(); }
     else { guardarBtn.disabled = false; guardarBtn.textContent = 'Guardar Faturação'; showDbErrorToast('Não foi possível guardar a faturação do dia'); }
   }));
   const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: close }, 'Cancelar');
 
-  const panel = h('div', { class: 'modal-panel', style: 'max-width:360px;' }, [
+  const panel = h('div', { class: 'modal-panel', style: 'max-width:420px;' }, [
     h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;' }, [
       h('p', { class: 'modal-title', style: 'margin:0;' }, 'Registar Faturação do Dia'),
       h('button', { class: 'close-btn', onclick: close, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
     ]),
     h('div', { class: 'field' }, [h('label', {}, 'Data'), dataInput,
       h('p', { class: 'field-helper-text' }, 'Por defeito, o dia de ontem — pode escolher qualquer outro dia para corrigir ou completar um registo.')]),
-    h('div', { class: 'field' }, [h('label', {}, 'Valor de Caixa (€)'), caixaInput]),
-    h('div', { class: 'field' }, [h('label', {}, 'Entidades (€)'), entidadesInput,
-      h('p', { class: 'field-helper-text' }, 'Faturação a terceiros/comparticipações — opcional, assume 0.')]),
-    h('div', { class: 'field' }, [h('label', {}, 'Trocas entre Farmácias (€)'), trocasInput,
-      h('p', { class: 'field-helper-text' }, 'Subtraído ao total — opcional, assume 0.')]),
+    h('p', { class: 'page-eyebrow', style: 'margin:14px 0 6px;font-size:12px;' }, 'Recebimentos de Balcão (Valor Caixa)'),
+    h('div', { class: 'form-grid' }, [
+      h('div', { class: 'field field-sm' }, [h('label', {}, 'Numerário (€)'), numerarioInput]),
+      h('div', { class: 'field field-sm' }, [h('label', {}, 'Banco / TPA (€)'), bancoInput]),
+      h('div', { class: 'field field-sm' }, [h('label', {}, 'Cheque (€)'), chequeInput]),
+    ]),
+    caixaPreview,
+    h('p', { class: 'page-eyebrow', style: 'margin:14px 0 6px;font-size:12px;' }, 'Faturação a Terceiros / Diferida'),
+    h('div', { class: 'form-grid' }, [
+      h('div', { class: 'field field-sm' }, [h('label', {}, 'Entidades (€)'), entidadesInput,
+        h('p', { class: 'field-helper-text' }, 'Comparticipações — SNS, ADSE, Seguradoras.')]),
+      h('div', { class: 'field field-sm' }, [h('label', {}, 'Vendas a Crédito (€)'), creditoInput,
+        h('p', { class: 'field-helper-text' }, 'Contas correntes de clientes/empresas.')]),
+    ]),
+    h('p', { class: 'page-eyebrow', style: 'margin:14px 0 6px;font-size:12px;' }, 'Ajustes e Controlo de Caixa (só consulta)'),
+    h('div', { class: 'form-grid' }, [
+      h('div', { class: 'field field-sm' }, [h('label', {}, 'Movimentos de Caixa (€)'), movCaixaInput,
+        h('p', { class: 'field-helper-text' }, 'Entradas/saídas manuais, trocos de fundo — não entra na Faturação Total.')]),
+      h('div', { class: 'field field-sm' }, [h('label', {}, 'Valor das Trocas (€)'), trocasInput,
+        h('p', { class: 'field-helper-text' }, 'Devoluções/trocas de produtos — não entra na Faturação Total.')]),
+    ]),
     totalPreview,
     errorEl,
     h('div', { class: 'form-actions' }, [guardarBtn, cancelBtn]),
   ]);
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
-  setTimeout(() => caixaInput.focus(), 60);
+  setTimeout(() => numerarioInput.focus(), 60);
 }
 
 // ---- Pesquisa de Data Específica — escolhe qualquer dia e mostra o
@@ -11610,12 +11655,13 @@ function buildFinanceiroPage(container, goTo) {
       wrap.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:0 0 10px;' }, 'Últimos Registos Manuais'));
       wrap.appendChild(h('div', { class: 'table-wrap card' }, [
         h('table', {}, [
-          h('thead', {}, h('tr', {}, ['Data', 'Valor de Caixa', 'Entidades − Trocas', 'Faturação Real', 'Registado por'].map(t => h('th', {}, t)))),
+          h('thead', {}, h('tr', {}, ['Data', 'Valor Caixa', 'Entidades', 'Crédito', 'Faturação Total', 'Registado por'].map(t => h('th', {}, t)))),
           h('tbody', {}, recentes.map(r => h('tr', {}, [
             h('td', {}, formatDate(r.data)),
-            h('td', {}, financeiroFormatarEuro(r.valorBruto, 2)),
-            h('td', {}, financeiroFormatarEuro(r.valorTrocas, 2)),
-            h('td', { class: 'cell-strong' }, financeiroFormatarEuro((parseFloat(r.valorBruto) || 0) + (parseFloat(r.valorTrocas) || 0), 2)),
+            h('td', {}, financeiroFormatarEuro(financeiroValorCaixaRegisto(r), 2)),
+            h('td', {}, financeiroFormatarEuro(r.entidades, 2)),
+            h('td', {}, financeiroFormatarEuro(r.credito, 2)),
+            h('td', { class: 'cell-strong' }, financeiroFormatarEuro(financeiroValorCaixaRegisto(r) + (parseFloat(r.entidades) || 0) + (parseFloat(r.credito) || 0), 2)),
             h('td', {}, r.registadoPor || '—'),
           ]))),
         ]),
@@ -13831,7 +13877,6 @@ function checkDesafioRequired(d) {
   if (!String(d.tituloDesafio || '').trim()) missing.push('Título do Prémio');
   if (!String(d.dataInicio || '').trim()) missing.push('Data de Início');
   if (!String(d.dataFim || '').trim()) missing.push('Data de Fim');
-  if (d.tipoPremio === 'Individual' && !String(d.colaboradorId || '').trim()) missing.push('Colaborador Premiado');
   return missing;
 }
 function desafioAtivo(d) {
@@ -13847,7 +13892,7 @@ function buildDesafiosPage(container, goTo, embedded) {
 
   function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
 
-  function openNew() { draft = { tipoPremio: 'Coletivo', colaboradorId: null, tituloDesafio: '', marcaLaboratorio: '', objetivo: '', premioIncentivo: '', dataInicio: todayISO(), dataFim: '', concluido: false }; editingId = null; formError = ''; showForm = true; rerender(); }
+  function openNew() { draft = { tipoPremio: 'Coletivo', tituloDesafio: '', marcaLaboratorio: '', objetivo: '', premioIncentivo: '', dataInicio: todayISO(), dataFim: '', concluido: false }; editingId = null; formError = ''; showForm = true; rerender(); }
   function openEditSelected() {
     if (selectedIds.size !== 1) return;
     const d = STATE.desafios.find(x => x.id === [...selectedIds][0]);
@@ -13857,42 +13902,6 @@ function buildDesafiosPage(container, goTo, embedded) {
   function cancel() { formError = ''; showForm = false; rerender(); }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
 
-  // Campo Tipo de Prémio com higienização: mudar para "Coletivo" limpa
-  // sempre o colaborador atribuído (nunca fica um prémio coletivo com um
-  // colaborador "fantasma" preso de uma edição anterior); mudar para
-  // "Individual" só liberta o campo Colaborador Premiado, sem escolher
-  // nenhum automaticamente — o utilizador tem de o definir.
-  function buildTipoPremioFieldDesafios(f, draft) {
-    const opts = f.options;
-    if (!draft.tipoPremio) draft.tipoPremio = opts[0];
-    const control = h('select', { class: 'select' }, opts.map(o =>
-      h('option', { value: o, selected: draft.tipoPremio === o ? 'selected' : undefined }, o)));
-    control.value = draft.tipoPremio;
-    control.addEventListener('change', () => {
-      draft.tipoPremio = control.value;
-      if (draft.tipoPremio !== 'Individual') draft.colaboradorId = null;
-      rerender();
-    });
-    return h('div', { class: 'field' + (f.size ? ' field-' + f.size : '') }, [h('label', {}, f.label), control]);
-  }
-  // Só aparece (e só grava) quando tipoPremio === 'Individual'; nos
-  // restantes casos fica oculto — colaboradorId já foi limpo pelo campo
-  // acima, não precisa de mais nada aqui.
-  function buildColaboradorPremioField(f, draft) {
-    if (draft.tipoPremio !== 'Individual') return h('div', { style: 'display:none;' });
-    const colaboradores = membrosElegiveisMapaTarefas();
-    const control = h('select', { class: 'select' }, [
-      h('option', { value: '' }, 'Escolher colaborador...'),
-      ...colaboradores.map(u => h('option', { value: String(u.id), selected: String(draft.colaboradorId) === String(u.id) ? 'selected' : undefined }, u.nomeCompleto || u.username)),
-    ]);
-    control.value = draft.colaboradorId || '';
-    control.addEventListener('change', () => { draft.colaboradorId = control.value; });
-    return h('div', { class: 'field' + (f.size ? ' field-' + f.size : '') }, [h('label', {}, f.label), control]);
-  }
-  function desafiosFieldOverrides() {
-    return { tipoPremio: buildTipoPremioFieldDesafios, colaboradorId: buildColaboradorPremioField };
-  }
-
   async function submit() {
     const missing = checkDesafioRequired(draft);
     if (missing.length) {
@@ -13901,11 +13910,6 @@ function buildDesafiosPage(container, goTo, embedded) {
       return;
     }
     formError = '';
-    // Higienização final de segurança: garante SEMPRE que um prémio
-    // Coletivo nunca vai para o servidor com um colaborador_id preso de
-    // um estado anterior (Individual), mesmo que por algum motivo o
-    // campo do formulário não tenha disparado a limpeza a tempo.
-    if (draft.tipoPremio !== 'Individual') draft.colaboradorId = null;
     draft.responsavel = currentUserName();
     saving = true; rerender();
     // Fallback gracioso de esquema: se a tabela dos Prémios no Supabase não
@@ -13971,9 +13975,6 @@ function buildDesafiosPage(container, goTo, embedded) {
         if (dias > 0) diasTexto = `${dias} dia${dias === 1 ? '' : 's'} restante${dias === 1 ? '' : 's'}`;
         else if (dias === 0) diasTexto = 'Termina hoje';
       }
-      const colaboradorPremiado = d.tipoPremio === 'Individual' && d.colaboradorId
-        ? (STATE.usuarios || []).find(u => String(u.id) === String(d.colaboradorId))
-        : null;
       const tipoBadge = h('span', { class: 'badge ' + (d.tipoPremio === 'Individual' ? 'badge-blue' : 'badge-purple') }, d.tipoPremio === 'Individual' ? '👤 Individual' : '👥 Coletivo');
       const estadoBadge = ativo ? h('span', { class: 'badge badge-orange' }, 'ATIVO') : h('span', { class: 'badge badge-green' }, d.concluido ? 'CONCLUÍDO' : 'TERMINADO');
       const cb = buildSelectionCheckbox(d.id, selectedIds, toggleSelect);
@@ -13984,7 +13985,6 @@ function buildDesafiosPage(container, goTo, embedded) {
         ]),
         h('h3', { class: 'dash-card-title', style: 'margin:0 0 4px;' }, d.tituloDesafio || '—'),
         d.marcaLaboratorio ? h('p', { class: 'cell-muted', style: 'font-size:12px;font-weight:700;margin:0 0 8px;' }, d.marcaLaboratorio) : null,
-        colaboradorPremiado ? h('p', { class: 'cell-muted', style: 'font-size:12px;font-weight:700;margin:0 0 8px;' }, `👤 ${colaboradorPremiado.nomeCompleto || colaboradorPremiado.username}`) : null,
         d.objetivo ? h('p', { style: 'font-size:13px;margin:0 0 8px;line-height:1.5;' }, d.objetivo) : null,
         d.premioIncentivo ? h('p', { style: 'font-size:13px;font-weight:700;color:var(--pharm-700);margin:0 0 10px;' }, `🎁 ${d.premioIncentivo}`) : null,
         h('div', { style: 'display:flex;justify-content:space-between;align-items:center;font-size:11.5px;color:var(--pharm-500);margin-top:auto;padding-top:8px;' }, [
@@ -14005,7 +14005,6 @@ function buildDesafiosPage(container, goTo, embedded) {
     if (showForm) {
       wrap.appendChild(buildRecordForm(desafiosSchema, draft, {
         editing: !!editingId, onSubmit: submit, onCancel: cancel, errorMessage: formError, saving,
-        fieldOverrides: desafiosFieldOverrides(),
       }));
     }
 
