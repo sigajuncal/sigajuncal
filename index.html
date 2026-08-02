@@ -4988,6 +4988,12 @@ const CAMPOS_SO_UI_POR_TABELA = {
   // (financeiroGuardarDia), nunca pelo dbInsert/dbUpdate genérico — esta
   // entrada fica como rede de segurança caso isso alguma vez mude.
   financeiro: ['valorCaixa', 'faturacaoTotal'],
+  // desafios (Prémios): nem "tipo"/"tipo_premio" nem "marca_laboratorio"/
+  // "marca" existem na tabela real "farmacia_desafios" — ambos ficam
+  // gravados dentro do próprio campo "objetivo" (Objetivo/Regras), com um
+  // marcador discreto no início (ver desafioObjetivoComMarcadores /
+  // desafioExtrairDeMarcadores), nunca como colunas à parte.
+  desafios: ['tipoPremio', 'marcaLaboratorio'],
 };
 function limparCamposSoUI(listKey, record) {
   const remover = CAMPOS_SO_UI_POR_TABELA[listKey];
@@ -12363,7 +12369,10 @@ function lembreteProximaOcorrenciaTexto(l) {
   let cursor = l.data > hoje ? l.data : hoje;
   for (let i = 0; i < 3660; i++) {
     if (lembreteSerieTerminouEm(l, cursor)) return `${formatDate(l.data)} (terminado)`;
-    if (lembreteDataBateComPadrao(l.data, cursor, info)) return formatDate(cursor);
+    // Salta ocorrências já concluídas (ver historico) — sem isto, uma
+    // ocorrência de hoje já concluída continuava a aparecer como "a
+    // próxima" nesta coluna, mesmo já não estando pendente.
+    if (lembreteDataBateComPadrao(l.data, cursor, info) && !lembreteJaConcluidoNestaData(l, cursor)) return formatDate(cursor);
     cursor = dateToISO(new Date(new Date(cursor + 'T00:00:00').getTime() + 86400000));
   }
   return formatDate(l.data);
@@ -12569,6 +12578,26 @@ function buildLembretesPage(container, goTo, embedded) {
     list = activeTab === 'resolved' ? list.filter(r => r.estado === 'Concluído') : list.filter(r => r.estado !== 'Concluído');
     return list.slice().sort((a, b) => (b.data || '').localeCompare(a.data || ''));
   }
+  // Histórico de Concluídos = lembretes ÚNICOS já Concluídos em definitivo
+  // (estado='Concluído') + uma linha por CADA ocorrência já concluída de
+  // um lembrete RECORRENTE (guardadas em l.historico — o lembrete em si
+  // nunca fica com estado='Concluído', continua ativo para a recorrência
+  // seguinte; ver lembretePayloadConcluir). Cada linha sabe a data exata em
+  // que essa ocorrência específica foi concluída.
+  function historicoLinhas() {
+    const q = normalizarTexto(searchQuery).trim();
+    const meus = STATE.lembretes.filter(lembreteEhMeuOuDaEquipa);
+    const linhas = [];
+    meus.forEach(r => {
+      if (r.estado === 'Concluído') linhas.push({ tipo: 'final', lembrete: r, quando: r.data });
+      if (Array.isArray(r.historico)) {
+        r.historico.forEach(h => { if (h && h.data) linhas.push({ tipo: 'ocorrencia', lembrete: r, quando: h.data, concluidoPor: h.por }); });
+      }
+    });
+    let filtradas = linhas;
+    if (q) filtradas = filtradas.filter(l => [l.lembrete.responsavel, l.lembrete.info].some(v => normalizarTexto(v).includes(q)));
+    return filtradas.sort((a, b) => (b.quando || '').localeCompare(a.quando || ''));
+  }
 
   function buildTable(list, mode) {
     if (list.length === 0) {
@@ -12606,9 +12635,42 @@ function buildLembretesPage(container, goTo, embedded) {
     return h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', {}, [thead, tbody])));
   }
 
-  // ---- Formulário próprio (não usa buildRecordForm) — precisa de mostrar/
-  // esconder campos consoante outras escolhas (Todo o dia → Hora;
-  // Repetição → Personalizado/Termina), o que o formulário genérico
+  // Tabela do separador "Histórico de Concluídos" — recebe as linhas de
+  // historicoLinhas() (mistura de lembretes únicos Concluídos e ocorrências
+  // individuais de recorrentes). Só as linhas "final" (lembrete único
+  // mesmo Concluído) são selecionáveis — uma ocorrência isolada não é um
+  // registo à parte na BD, não faz sentido selecioná-la para Anular
+  // Conclusão/Eliminar.
+  function buildHistoricoTable(linhas) {
+    if (linhas.length === 0) {
+      const msg = searchQuery ? 'Nenhum resultado para essa pesquisa.' : 'Ainda não há lembretes concluídos.';
+      return EmptyState(msg);
+    }
+    const thead = h('thead', {}, h('tr', {}, ['', 'Âmbito', 'Concluído em', 'Repetição', 'Responsável', 'Informação / Tarefa', 'Estado'].map(t => h('th', {}, t))));
+    const tbody = h('tbody', {}, linhas.map(l => {
+      const r = l.lembrete;
+      const selecionavel = l.tipo === 'final';
+      const selected = selecionavel && selectedIds.has(r.id);
+      const cb = selecionavel ? buildSelectionCheckbox(r.id, selectedIds, toggleSelect) : h('span', {});
+      const ambitoBadge = r.ambito === 'Equipa'
+        ? h('span', { class: 'badge badge-blue', title: 'Visível para toda a equipa' }, [Icon('users', { size: 11, strokeWidth: 2.4 }), ' Equipa'])
+        : h('span', { class: 'cell-muted', style: 'font-size:11.5px;' }, 'Pessoal');
+      const estadoBadge = l.tipo === 'final'
+        ? h('span', { class: 'badge badge-green' }, 'CONCLUÍDO')
+        : h('span', { class: 'badge badge-green', title: 'Ocorrência concluída — o lembrete continua ativo para a próxima data da recorrência' }, 'OCORRÊNCIA CONCLUÍDA');
+      const row = h('tr', { class: 'row-resolved' + (selected ? ' row-selected' : '') }, [
+        h('td', {}, cb),
+        h('td', {}, ambitoBadge),
+        h('td', {}, formatDate(l.quando)),
+        h('td', { class: 'cell-muted' }, lembreteRepeticaoTexto(r)),
+        h('td', { class: 'cell-strong' }, r.responsavel || '—'),
+        h('td', { style: 'white-space:normal;max-width:380px;' }, r.info || '—'),
+        h('td', {}, estadoBadge),
+      ]);
+      return row;
+    }));
+    return h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', {}, [thead, tbody])));
+  }
   // orientado a schema não suporta bem. ----
   function buildLembreteFormCustom() {
     const infoInput = h('textarea', { class: 'input', maxlength: '200', rows: '3' });
@@ -12742,7 +12804,7 @@ function buildLembretesPage(container, goTo, embedded) {
     const wrap = h('div', { class: 'animate-in' });
     const meusLembretes = STATE.lembretes.filter(lembreteEhMeuOuDaEquipa);
     const pendingCount = meusLembretes.filter(r => r.estado !== 'Concluído').length;
-    const resolvedCount = meusLembretes.filter(r => r.estado === 'Concluído').length;
+    const resolvedCount = historicoLinhas().length;
     if (!embedded) {
       wrap.appendChild(withBackButton(buildPageHeader('bell', 'Lembretes', 'Lembretes pessoais e de equipa, com repetição.', meusLembretes.length), goTo));
     }
@@ -12764,10 +12826,16 @@ function buildLembretesPage(container, goTo, embedded) {
     const resultsCount = h('p', { class: 'results-count' }, '');
     const resultsContainer = h('div', {});
     function renderResults() {
-      const list = visibleLembretes();
-      resultsCount.textContent = `${list.length} resultado${list.length === 1 ? '' : 's'} encontrado${list.length === 1 ? '' : 's'}`;
       clear(resultsContainer);
-      resultsContainer.appendChild(buildTable(list, activeTab === 'resolved' ? 'resolved' : 'pending'));
+      if (activeTab === 'resolved') {
+        const linhas = historicoLinhas();
+        resultsCount.textContent = `${linhas.length} resultado${linhas.length === 1 ? '' : 's'} encontrado${linhas.length === 1 ? '' : 's'}`;
+        resultsContainer.appendChild(buildHistoricoTable(linhas));
+      } else {
+        const list = visibleLembretes();
+        resultsCount.textContent = `${list.length} resultado${list.length === 1 ? '' : 's'} encontrado${list.length === 1 ? '' : 's'}`;
+        resultsContainer.appendChild(buildTable(list, 'pending'));
+      }
     }
     const debouncedRenderResults = debounce(renderResults, 180);
     searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
@@ -14346,12 +14414,10 @@ function buildDesafiosPage(container, goTo, embedded) {
     if (selectedIds.size !== 1) return;
     const d = STATE.desafios.find(x => x.id === [...selectedIds][0]);
     if (!d) return;
-    // Alguns registos podem ter vindo da BD só com "tipo" (nome alternativo
-    // da coluna — ver gravarComFallback em submit()) em vez de
-    // "tipoPremio", que é o nome que o formulário/schema usa sempre. Sem
-    // isto, o select do Tipo abria sempre em branco/no valor por defeito
-    // ("Coletivo"), mesmo editando um prémio Individual.
-    draft = Object.assign({}, d, { tipoPremio: normalizarValorTipoPremio(d.tipoPremio || d.tipo) });
+    // d.tipoPremio, d.marcaLaboratorio e d.objetivo já vêm sempre limpos e
+    // corretos do STATE — normalizarTipoPremioDesafios() já os extraiu dos
+    // marcadores gravados dentro do Objetivo/Regras (ver mais abaixo).
+    draft = Object.assign({}, d);
     editingId = d.id; formError = ''; showForm = true; rerender();
   }
   function cancel() { formError = ''; showForm = false; rerender(); }
@@ -14367,58 +14433,24 @@ function buildDesafiosPage(container, goTo, embedded) {
     formError = '';
     draft.responsavel = currentUserName();
     saving = true; rerender();
-    // Fallback gracioso de esquema: se a tabela dos Prémios no Supabase não
-    // tiver a coluna marca_laboratorio (erro "Could not find the
-    // 'marca_laboratorio' column"), tenta-se de novo com o valor na coluna
-    // alternativa "marca" — e, em último recurso, sem o campo (anexando a
-    // marca ao Objetivo/Regras para nunca se perder informação).
-    async function gravarComFallback(operacao) {
-      let resultado = await operacao(draft);
-      // O Tipo de Prémio (Coletivo/Individual) tem um risco parecido, mas
-      // mais traiçoeiro: se a coluna real na tabela não se chamar
-      // "tipo_premio" (ex: for só "tipo"), o mecanismo de auto-limpeza de
-      // colunas (comAutoLimpezaDeColunas) deteta "coluna em falta", remove-a
-      // sozinho do pedido e tenta de novo SEM ela — a gravação "tem
-      // sucesso" na mesma, só que o Tipo nunca chega a mudar no servidor,
-      // revertendo sempre ao valor antigo assim que a linha é relida. Por
-      // isso não basta confiar em "resultado" vir preenchido: confirma-se
-      // sempre que o Tipo devolvido é mesmo o que se pretendia gravar
-      // (comparação por .toLowerCase() — só a capitalização pode divergir
-      // sem deixar de ser o mesmo valor), e se não for, tenta-se
-      // explicitamente a coluna alternativa "tipo".
-      const bateCerto = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
-      if (resultado && !bateCerto(resultado.tipoPremio, draft.tipoPremio)) {
-        const comTipoAlt = Object.assign({}, draft); delete comTipoAlt.tipoPremio;
-        comTipoAlt.tipo = draft.tipoPremio;
-        const resultado2 = await operacao(comTipoAlt);
-        if (resultado2 && bateCerto(resultado2.tipo, draft.tipoPremio)) {
-          // Confirmado: a tabela usa "tipo". Devolve o registo sempre com
-          // "tipoPremio" preenchido a partir daí (na capitalização correta
-          // do schema, nunca o valor cru da BD) — é o nome usado no resto
-          // deste módulo (badges, filtros, etc.), nunca "tipo" sozinho.
-          resultado = Object.assign({}, resultado2, { tipoPremio: draft.tipoPremio });
-        } else {
-          // Nenhuma das duas tentativas confirmou o Tipo pretendido — nunca
-          // se aceita silenciosamente um resultado que não bate certo (isso
-          // é precisamente o que mascarava a reversão antes desta correção).
-          resultado = null;
-        }
-      }
-      if (resultado || !/marca_laboratorio/i.test(lastDbError || '')) return resultado;
-      const semML = Object.assign({}, draft); delete semML.marcaLaboratorio;
-      const comMarca = Object.assign({}, semML, { marca: draft.marcaLaboratorio || '' });
-      resultado = await operacao(comMarca);
-      if (resultado || !/'?marca'?/i.test(lastDbError || '')) return resultado;
-      if (draft.marcaLaboratorio) semML.objetivo = `[Marca/Lab: ${draft.marcaLaboratorio}] ${semML.objetivo || ''}`.trim();
-      return operacao(semML);
-    }
+    // Nem "tipo"/"tipo_premio" nem "marca_laboratorio"/"marca" existem como
+    // colunas em "farmacia_desafios" (esquema real confirmado 2026-08-02) —
+    // este módulo é só informativo para a equipa, por isso os dois ficam
+    // gravados dentro do próprio Objetivo/Regras, com um marcador discreto
+    // no início (ver desafioObjetivoComMarcadores). Nunca aparecem esses
+    // marcadores ao utilizador — são sempre removidos assim que o registo
+    // volta a entrar no STATE (normalizarTipoPremioDesafios), tanto no
+    // formulário de edição como no card do Dashboard.
+    const payload = Object.assign({}, draft, {
+      objetivo: desafioObjetivoComMarcadores(draft.objetivo, draft.tipoPremio, draft.marcaLaboratorio),
+    });
     if (editingId) {
-      const updated = await gravarComFallback(d => dbUpdate('desafios', editingId, d));
-      if (updated) STATE.desafios = STATE.desafios.map(r => r.id === editingId ? updated : r);
+      const updated = await dbUpdate('desafios', editingId, payload);
+      if (updated) STATE.desafios = STATE.desafios.map(r => r.id === editingId ? Object.assign(updated, desafioExtrairDeMarcadores(updated.objetivo)) : r);
       else formError = `Não foi possível guardar as alterações. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
     } else {
-      const created = await gravarComFallback(d => dbInsert('desafios', d));
-      if (created) STATE.desafios = [created, ...STATE.desafios];
+      const created = await dbInsert('desafios', payload);
+      if (created) STATE.desafios = [Object.assign(created, desafioExtrairDeMarcadores(created.objetivo)), ...STATE.desafios];
       else formError = `Não foi possível criar o prémio. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
     }
     saving = false;
@@ -19828,28 +19860,38 @@ function buildLoadingScreen() {
   ]);
 }
 
-// Prémios (desafios): a coluna do Tipo pode chamar-se "tipo_premio" ou só
-// "tipo" consoante a tabela real no Supabase (ver gravarComFallback em
-// buildDesafiosPage) — normaliza sempre para "tipoPremio" logo que os dados
-// entram no STATE (arranque E Realtime, ver setupRealtime), para todo o
-// resto do módulo (badges, filtros, contagens do Dashboard) poder confiar
-// sempre no mesmo nome de campo, seja qual for a coluna real. Normaliza
-// também a CAPITALIZAÇÃO (ex: 'individual' na BD → 'Individual'), para toda
-// a app poder continuar a comparar sempre com 'Individual'/'Coletivo'
-// exatos (as opções do schema), nunca precisando de comparação insensível
-// a maiúsculas em cada sítio que usa este campo.
-function normalizarValorTipoPremio(v) {
-  const s = String(v || '').trim().toLowerCase();
-  if (s === 'individual') return 'Individual';
-  if (s === 'coletivo' || s === 'colectivo') return 'Coletivo';
-  return v || 'Coletivo';
+// Prémios (desafios): esquema real de "farmacia_desafios" confirmado em
+// 2026-08-02 (information_schema.columns) — NÃO existe nenhuma coluna
+// "tipo"/"tipo_premio" nem "marca_laboratorio"/"marca". Módulo puramente
+// informativo (sem qualquer associação a colaboradores/IDs): o Tipo
+// (Coletivo/Individual) e a Marca/Laboratório ficam gravados dentro do
+// próprio campo "objetivo" (Objetivo/Regras), com um marcador discreto no
+// início — nunca visível ao utilizador, sempre removido assim que o
+// registo entra no STATE (normalizarTipoPremioDesafios, chamada no
+// arranque, no Realtime, e logo a seguir a cada gravação em
+// buildDesafiosPage), para a tabela/card do Dashboard/formulário de edição
+// mostrarem sempre só o texto limpo que a pessoa escreveu.
+const DESAFIO_TIPO_MARCADOR_RE = /^\[\[TIPO:(INDIVIDUAL|COLETIVO)\]\]\s*/i;
+const DESAFIO_MARCA_MARCADOR_RE = /^\[Marca\/Lab:\s*([^\]]*)\]\s*/i;
+function desafioExtrairDeMarcadores(objetivoBruto) {
+  let texto = String(objetivoBruto || '');
+  const mTipo = DESAFIO_TIPO_MARCADOR_RE.exec(texto);
+  const tipoPremio = mTipo && mTipo[1].toUpperCase() === 'INDIVIDUAL' ? 'Individual' : 'Coletivo';
+  texto = texto.replace(DESAFIO_TIPO_MARCADOR_RE, '');
+  const mMarca = DESAFIO_MARCA_MARCADOR_RE.exec(texto);
+  const marcaLaboratorio = mMarca ? mMarca[1].trim() : '';
+  texto = texto.replace(DESAFIO_MARCA_MARCADOR_RE, '').trim();
+  return { objetivo: texto, tipoPremio, marcaLaboratorio };
+}
+function desafioObjetivoComMarcadores(objetivoLimpo, tipoPremio, marcaLaboratorio) {
+  const tipoTag = tipoPremio === 'Individual' ? '[[TIPO:INDIVIDUAL]]' : '[[TIPO:COLETIVO]]';
+  const marcaTexto = String(marcaLaboratorio || '').trim();
+  const marcaTag = marcaTexto ? `[Marca/Lab: ${marcaTexto}]` : '';
+  return [tipoTag, marcaTag, String(objetivoLimpo || '').trim()].filter(Boolean).join(' ');
 }
 function normalizarTipoPremioDesafios() {
   if (!STATE.desafios) return;
-  STATE.desafios.forEach(r => {
-    if (!r.tipoPremio && r.tipo) r.tipoPremio = r.tipo;
-    r.tipoPremio = normalizarValorTipoPremio(r.tipoPremio);
-  });
+  STATE.desafios.forEach(r => { Object.assign(r, desafioExtrairDeMarcadores(r.objetivo)); });
 }
 async function loadAllData() {
   // Rede de segurança final do arranque: mesmo que uma falha inesperada
