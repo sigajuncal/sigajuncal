@@ -1653,17 +1653,23 @@
   .gaveta-pill-pulse{animation:gavetaPillPulse 1.1s ease-in-out 3;}
   /* ---- Widget "Última Notificação" — barra discreta na Home que
      substituiu o antigo botão da Gaveta junto à saudação; a Gaveta em si
-     passou a viver na sidebar. ---- */
-  .ultima-notif-btn{display:flex;align-items:center;gap:8px;width:100%;max-width:480px;
-    margin-top:10px;padding:8px 12px;border-radius:10px;border:1px solid var(--pharm-200);
+     passou a viver na sidebar. Só aparece quando há mesmo algo recente e
+     por tratar (ver ultimaNotificacaoDoUtilizador) — daí não haver mais
+     estado "vazia": sem notificação, o widget nem chega a ser desenhado. ---- */
+  .ultima-notif-wrap{display:flex;align-items:stretch;gap:6px;width:100%;max-width:480px;margin-top:10px;}
+  .ultima-notif-btn{display:flex;align-items:center;gap:8px;flex:1;min-width:0;
+    padding:8px 12px;border-radius:10px;border:1px solid var(--pharm-200);
     background:#fff;color:var(--pharm-600);font-size:12px;font-weight:600;cursor:pointer;
     text-align:left;transition:all .15s ease;}
   .ultima-notif-btn:hover{background:var(--pharm-50);border-color:var(--pharm-300);}
-  .ultima-notif-btn.vazia{color:var(--pharm-400);font-style:italic;}
   .ultima-notif-btn.tem-nova{border-color:#fca5a5;background:#fef2f2;color:#b91c1c;}
   .ultima-notif-btn.tem-nova:hover{background:#fee2e2;}
   .ultima-notif-texto{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .ultima-notif-hora{flex-shrink:0;font-size:10.5px;font-weight:700;opacity:.7;white-space:nowrap;}
+  .ultima-notif-fechar{flex-shrink:0;width:30px;border-radius:10px;border:1px solid var(--pharm-200);
+    background:#fff;color:var(--pharm-400);cursor:pointer;display:flex;align-items:center;justify-content:center;
+    transition:all .15s ease;}
+  .ultima-notif-fechar:hover{background:var(--pharm-50);color:var(--pharm-600);border-color:var(--pharm-300);}
   /* ---- Reestruturação: Gaveta como Chat Privado + Tarefas ---- */
   .gaveta-contacto-item{display:flex;align-items:center;gap:11px;padding:10px 11px;border-radius:11px;
     cursor:pointer;transition:background .12s ease;border:1px solid transparent;}
@@ -8336,36 +8342,69 @@ function buildLembretesBellHome() {
   });
   return btn;
 }
+// Enquanto o popup "Lembretes Urgentes" estiver aberto, esta variável
+// aponta para a função que lhe recalcula e redesenha a lista a partir do
+// STATE atual — chamada também pelo Realtime (ver setupRealtime, tabela
+// 'lembretes') sempre que outro posto/dispositivo altera ou elimina um
+// lembrete, para o popup nunca mostrar algo já eliminado ou já concluído
+// entretanto por essa via. Fica a null sempre que o popup está fechado.
+let lembretesUrgentesPopupAtualizar = null;
 // Popup rápido dos lembretes urgentes — cada um com um botão para "Concluir
-// / Dar por resolvido", que atualiza logo o estado e faz o sino parar de
-// piscar assim que não sobrar nenhum urgente.
+// / Dar por resolvido", que atualiza logo o estado e remove só essa linha
+// (sem fechar o popup todo), e faz o sino por trás parar de piscar assim
+// que não sobrar nenhum urgente — mesmo com o popup ainda aberto.
 function abrirModalLembretesUrgentes() {
-  const { urgentes } = contarLembretesPendentesDoUtilizador();
   const overlay = h('div', { class: 'modal-overlay' });
-  function close() { document.removeEventListener('keydown', onKeydown); overlay.remove(); }
+  function close() {
+    lembretesUrgentesPopupAtualizar = null;
+    document.removeEventListener('keydown', onKeydown);
+    overlay.remove();
+  }
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
   function onKeydown(e) { if (e.key === 'Escape') close(); }
   document.addEventListener('keydown', onKeydown);
-  const linhas = urgentes.length ? urgentes.map(r => {
-    const concluirBtn = h('button', { class: 'btn btn-primary', style: 'padding:6px 12px;font-size:12px;flex-shrink:0;' }, 'Concluir');
-    concluirBtn.addEventListener('click', async () => {
-      const updated = await dbUpdate('lembretes', r.id, { estado: 'Concluído' });
-      if (updated) { STATE.lembretes = STATE.lembretes.map(x => x.id === r.id ? updated : x); close(); render(); }
-      else showDbErrorToast('Não foi possível concluir o lembrete');
+  const linhasWrap = h('div', { style: 'display:flex;flex-direction:column;gap:8px;max-height:340px;overflow-y:auto;' });
+  function renderLinhas() {
+    // Recalcula sempre a partir do STATE atual — nunca de uma lista presa
+    // ao momento em que o popup abriu — para refletir de imediato qualquer
+    // lembrete entretanto eliminado, concluído, ou uma nova ocorrência que
+    // tenha passado a ser urgente (ex: chegada da meia-noite).
+    const { urgentes } = contarLembretesPendentesDoUtilizador();
+    clear(linhasWrap);
+    if (!urgentes.length) {
+      linhasWrap.appendChild(h('p', { class: 'cell-muted' }, 'Sem lembretes urgentes por agora.'));
+      return;
+    }
+    urgentes.forEach(r => {
+      const concluirBtn = h('button', { class: 'btn btn-primary', style: 'padding:6px 12px;font-size:12px;flex-shrink:0;' }, 'Concluir');
+      concluirBtn.addEventListener('click', () => requireAuth(async () => {
+        concluirBtn.disabled = true;
+        const updated = await dbUpdate('lembretes', r.id, lembretePayloadConcluir(r));
+        if (updated) {
+          STATE.lembretes = STATE.lembretes.map(x => x.id === r.id ? updated : x);
+          // Atualiza o sino/badge por trás do popup já, sem fechar nada —
+          // o overlay é um filho direto de <body>, à parte da árvore que
+          // render() gere, por isso sobrevive sem problema a este redesenho.
+          renderOuAdiarSeOcupado();
+          renderLinhas(); // remove logo esta linha da lista do próprio popup
+        } else { concluirBtn.disabled = false; showDbErrorToast('Não foi possível concluir o lembrete'); }
+      }));
+      linhasWrap.appendChild(h('div', { class: 'lembrete-urgente-row' }, [
+        h('div', { style: 'flex:1;min-width:0;' }, [
+          h('p', { class: 'cell-strong', style: 'margin:0 0 2px;' }, [r.info || '—', r.ambito === 'Equipa' ? h('span', { class: 'badge badge-blue', style: 'margin-left:6px;font-size:9.5px;padding:2px 6px;' }, 'Equipa') : null]),
+          h('p', { class: 'cell-muted', style: 'margin:0;font-size:11.5px;' }, `Alerta para: ${formatDate(r.data)}${r.todoDia === false && r.hora ? ' · ' + r.hora : ''}${lembreteRepeticaoTexto(r) !== 'Não se repete' ? ' · ' + lembreteRepeticaoTexto(r) : ''}`),
+        ]),
+        concluirBtn,
+      ]));
     });
-    return h('div', { class: 'lembrete-urgente-row' }, [
-      h('div', { style: 'flex:1;min-width:0;' }, [
-        h('p', { class: 'cell-strong', style: 'margin:0 0 2px;' }, [r.info || '—', r.ambito === 'Equipa' ? h('span', { class: 'badge badge-blue', style: 'margin-left:6px;font-size:9.5px;padding:2px 6px;' }, 'Equipa') : null]),
-        h('p', { class: 'cell-muted', style: 'margin:0;font-size:11.5px;' }, `Alerta para: ${formatDate(r.data)}${r.todoDia === false && r.hora ? ' · ' + r.hora : ''}${lembreteRepeticaoTexto(r) !== 'Não se repete' ? ' · ' + lembreteRepeticaoTexto(r) : ''}`),
-      ]),
-      concluirBtn,
-    ]);
-  }) : [h('p', { class: 'cell-muted' }, 'Sem lembretes urgentes por agora.')];
+  }
+  lembretesUrgentesPopupAtualizar = renderLinhas;
+  renderLinhas();
   const verTodosBtn = h('button', { class: 'btn btn-secondary', onclick: () => { close(); STATE.navFrom = STATE.page; STATE.page = 'lembretes'; STATE.sidebarOpen = false; render(); } }, 'Ver Todos os Lembretes');
   const closeBtn = h('button', { class: 'btn btn-secondary', onclick: close }, 'Fechar');
   const panel = h('div', { class: 'modal-panel confirm-panel' }, [
     h('p', { class: 'modal-title', style: 'margin-bottom:12px;' }, '🔔 Lembretes Urgentes'),
-    h('div', { style: 'display:flex;flex-direction:column;gap:8px;max-height:340px;overflow-y:auto;' }, linhas),
+    linhasWrap,
     h('div', { class: 'form-actions', style: 'margin-top:14px;' }, [verTodosBtn, closeBtn]),
   ]);
   overlay.appendChild(panel);
@@ -8403,62 +8442,92 @@ function buildGavetaBtnHome() {
   btn.addEventListener('click', () => abrirModalGaveta());
   return btn;
 }
+// Guarda, por utilizador, qual foi a última notificação da Gaveta já vista/
+// descartada no widget da Home — em localStorage, para sobreviver a
+// recarregamentos da página. Uma vez descartada (clique no botão ✕, ou ao
+// abrir a conversa/tarefa a partir daqui), essa notificação nunca mais
+// volta a aparecer no widget, mesmo que continue "recente".
+const ULTIMA_NOTIF_DESCARTADA_KEY_PREFIXO = 'sigaJuncalUltimaNotifDescartada_';
+function ultimaNotifDescartadaKey() { return activeUser ? ULTIMA_NOTIF_DESCARTADA_KEY_PREFIXO + activeUser.username : null; }
+function ultimaNotificacaoIdUnico(item) { return `${item.tipoEvento}:${item.r.id}`; }
+function ultimaNotifFoiDescartada(item) {
+  const key = ultimaNotifDescartadaKey();
+  if (!key) return false;
+  try { return window.localStorage.getItem(key) === ultimaNotificacaoIdUnico(item); } catch (e) { return false; }
+}
+function descartarUltimaNotificacao(item) {
+  const key = ultimaNotifDescartadaKey();
+  if (!key) return;
+  try { window.localStorage.setItem(key, ultimaNotificacaoIdUnico(item)); } catch (e) { /* localStorage indisponível — só não persiste entre recarregamentos */ }
+}
 // Notificação mais recente relevante para o utilizador — usada pelo widget
 // discreto "Última Notificação" que substituiu o botão antigo da Gaveta
 // junto à saudação da Home. Considera dois tipos de evento, cada um com o
-// seu timestamp de referência: (a) qualquer recado recebido (mensagem ou
-// tarefa), ordenado pela data de criação; (b) uma tarefa que EU criei e que
-// o destinatário já confirmou como concluída, ordenado pela data de
-// conclusão. Devolve sempre o mais recente dos dois tipos combinados.
+// seu timestamp de referência: (a) um recado RECEBIDO ainda não lido/
+// pendente (mensagem por ler, ou tarefa por confirmar); (b) uma tarefa que
+// EU criei e que o destinatário já confirmou como concluída. Só entram
+// candidatos das últimas 24 horas, e nunca um já descartado pelo próprio
+// utilizador (ver descartarUltimaNotificacao) — sem isto, um recado de dias
+// atrás e já tratado ficava exibido no topo da Home para sempre.
 function ultimaNotificacaoDoUtilizador() {
   if (!utilizadorAtualTemGaveta()) return null;
   const todas = STATE.gavetaRecados || [];
+  const agora = Date.now();
+  const DENTRO_24H_MS = 24 * 60 * 60 * 1000;
+  const dentroDas24h = (iso) => {
+    const t = iso ? new Date(iso).getTime() : NaN;
+    return Number.isFinite(t) && agora - t >= 0 && agora - t <= DENTRO_24H_MS;
+  };
   const recebidas = todas
-    .filter(r => String(r.destinatarioId) === String(activeUser.id))
+    .filter(r => String(r.destinatarioId) === String(activeUser.id) && !r.tratado && dentroDas24h(r.createdAt))
     .map(r => ({ r, quando: r.createdAt || '', tipoEvento: 'recebida' }));
   const concluidasPorOutros = todas
-    .filter(r => String(r.remetenteId) === String(activeUser.id) && (r.tipo || 'mensagem') === 'tarefa' && r.tratado && r.tratadoEm)
+    .filter(r => String(r.remetenteId) === String(activeUser.id) && (r.tipo || 'mensagem') === 'tarefa' && r.tratado && r.tratadoEm && dentroDas24h(r.tratadoEm))
     .map(r => ({ r, quando: r.tratadoEm || '', tipoEvento: 'concluida' }));
-  const combinadas = [...recebidas, ...concluidasPorOutros].sort((a, b) => (b.quando || '').localeCompare(a.quando || ''));
+  const combinadas = [...recebidas, ...concluidasPorOutros]
+    .filter(item => !ultimaNotifFoiDescartada(item))
+    .sort((a, b) => (b.quando || '').localeCompare(a.quando || ''));
   return combinadas[0] || null;
 }
 // Widget discreto "Última Notificação" — substitui o antigo botão/ícone da
 // Gaveta junto à saudação da Home (a Gaveta em si passou a viver na sidebar,
-// ver NAV_SECTIONS). Mostra só a notificação mais recente, numa barra fina
-// e clicável que abre diretamente a conversa/tarefa em causa.
+// ver NAV_SECTIONS). Só aparece quando há mesmo uma notificação recente e
+// por tratar (ver ultimaNotificacaoDoUtilizador) — SEM isso, desaparece por
+// completo do topo da Home (devolve null), em vez de mostrar uma barra
+// vazia tipo "Sem notificações novas".
 function buildUltimaNotificacaoWidget() {
   if (!utilizadorAtualTemGaveta()) return null;
   const ultima = ultimaNotificacaoDoUtilizador();
-  const btn = h('button', { class: 'ultima-notif-btn' + (ultima ? '' : ' vazia'), type: 'button', title: 'Abrir a Gaveta de Recados', 'aria-label': 'Última notificação' });
-  if (!ultima) {
-    btn.appendChild(Icon('inbox', { size: 14, strokeWidth: 2.2 }));
-    btn.appendChild(h('span', { class: 'ultima-notif-texto' }, 'Sem notificações novas na Gaveta de Recados.'));
-  } else {
-    const { r, tipoEvento } = ultima;
-    const ehTarefa = (r.tipo || 'mensagem') === 'tarefa';
-    const outroId = tipoEvento === 'recebida' ? r.remetenteId : r.destinatarioId;
-    const outroNome = (() => {
-      const u = (STATE.usuarios || []).find(x => String(x.id) === String(outroId));
-      return u ? (u.nomeCompleto || u.username) : 'Um colega';
-    })();
-    const naoLida = tipoEvento === 'recebida' && !r.tratado;
-    let prefixo;
-    if (tipoEvento === 'concluida') prefixo = `✅ ${outroNome} concluiu: `;
-    else if (ehTarefa) prefixo = `📋 ${outroNome}: `;
-    else prefixo = `💬 ${outroNome}: `;
-    const trecho = String(r.mensagem || '').slice(0, 70) + (String(r.mensagem || '').length > 70 ? '…' : '');
-    btn.appendChild(Icon(naoLida ? 'bell' : 'inbox', { size: 14, strokeWidth: 2.2 }));
-    btn.appendChild(h('span', { class: 'ultima-notif-texto' }, [
-      h('strong', {}, prefixo), trecho,
-    ]));
-    btn.appendChild(h('span', { class: 'ultima-notif-hora' }, formatDateTime(tipoEvento === 'concluida' ? r.tratadoEm : r.createdAt)));
-    if (naoLida) btn.classList.add('tem-nova');
-  }
+  if (!ultima) return null;
+  const { r, tipoEvento } = ultima;
+  const ehTarefa = (r.tipo || 'mensagem') === 'tarefa';
+  const outroId = tipoEvento === 'recebida' ? r.remetenteId : r.destinatarioId;
+  const outroNome = (() => {
+    const u = (STATE.usuarios || []).find(x => String(x.id) === String(outroId));
+    return u ? (u.nomeCompleto || u.username) : 'Um colega';
+  })();
+  const naoLida = tipoEvento === 'recebida' && !r.tratado;
+  let prefixo;
+  if (tipoEvento === 'concluida') prefixo = `✅ ${outroNome} concluiu: `;
+  else if (ehTarefa) prefixo = `📋 ${outroNome}: `;
+  else prefixo = `💬 ${outroNome}: `;
+  const trecho = String(r.mensagem || '').slice(0, 70) + (String(r.mensagem || '').length > 70 ? '…' : '');
+  const btn = h('button', { class: 'ultima-notif-btn' + (naoLida ? ' tem-nova' : ''), type: 'button', title: 'Abrir a Gaveta de Recados', 'aria-label': 'Última notificação' }, [
+    Icon(naoLida ? 'bell' : 'inbox', { size: 14, strokeWidth: 2.2 }),
+    h('span', { class: 'ultima-notif-texto' }, [h('strong', {}, prefixo), trecho]),
+    h('span', { class: 'ultima-notif-hora' }, formatDateTime(tipoEvento === 'concluida' ? r.tratadoEm : r.createdAt)),
+  ]);
   btn.addEventListener('click', () => requireAuth(() => {
-    if (ultima) { const outroId = ultima.tipoEvento === 'recebida' ? ultima.r.remetenteId : ultima.r.destinatarioId; abrirModalGaveta(outroId); }
-    else abrirModalGaveta();
+    descartarUltimaNotificacao(ultima); // ao abrir a conversa/tarefa, conta como vista — não volta a aparecer aqui
+    abrirModalGaveta(outroId);
   }));
-  return btn;
+  const fecharBtn = h('button', { class: 'ultima-notif-fechar', type: 'button', title: 'Dispensar esta notificação', 'aria-label': 'Fechar' }, Icon('x', { size: 12, strokeWidth: 2.4 }));
+  fecharBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    descartarUltimaNotificacao(ultima);
+    renderOuAdiarSeOcupado();
+  });
+  return h('div', { class: 'ultima-notif-wrap' }, [btn, fecharBtn]);
 }
 // Fluxo único: 'stream' (pesquisa + filtros Tudo/Pendentes/Concluídas,
 // mistura conversas e tarefas numa só lista, sem separadores de UI) e
@@ -12144,22 +12213,63 @@ const LEMBRETE_REP_PRESETS = {
   'Todos os meses': { unidade: 'meses', intervalo: 1 },
   'Todos os anos': { unidade: 'anos', intervalo: 1 },
 };
-// Normaliza o padrão de repetição de um lembrete para {unidade, intervalo}
-// — ou null se for um lembrete único ("Não se repete"/sem valor).
+// Normaliza o padrão de repetição de um lembrete — ou null se for um
+// lembrete único ("Não se repete"/sem valor). Devolve sempre um objeto com
+// "tipo" a identificar qual dos 3 formatos de padrão está em causa:
+// - 'intervalo': {unidade, intervalo} — o comportamento original (dias/
+//   semanas/meses/anos a contar da data de início, incl. Personalizado).
+// - 'semanalDias': {dias:[0-6]} — repete-se em dias da semana específicos
+//   (0=Domingo..6=Sábado, o mesmo que Date.getDay()).
+// - 'mensalNotavel': {mensalTipo:'primeiro'|'ultimo'|'fixo', dia} — repete-se
+//   no 1º dia do mês, no último dia do mês (calculado dinamicamente consoante
+//   o mês tiver 28/29/30/31 dias), ou num dia fixo do mês.
 function lembreteRepeticaoInfo(l) {
   const rep = l.repeticao || 'Não se repete';
   if (rep === 'Não se repete' || !rep) return null;
+  if (rep === 'Semanal (dias específicos)') {
+    const dias = Array.isArray(l.repDiasSemana) ? l.repDiasSemana.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n <= 6) : [];
+    if (!dias.length) return null; // sem nenhum dia escolhido, não há padrão válido
+    return { tipo: 'semanalDias', dias };
+  }
+  if (rep === 'Mensal (dia notável)') {
+    const mensalTipo = ['primeiro', 'ultimo', 'fixo'].includes(l.repMensalTipo) ? l.repMensalTipo : 'primeiro';
+    const dia = mensalTipo === 'fixo' ? Math.min(31, Math.max(1, parseInt(l.repMensalDia, 10) || 1)) : null;
+    if (mensalTipo === 'fixo' && !dia) return null;
+    return { tipo: 'mensalNotavel', mensalTipo, dia };
+  }
   if (rep === 'Personalizado') {
     const unidades = ['dias', 'semanas', 'meses', 'anos'];
     const unidade = unidades.includes(l.repUnidade) ? l.repUnidade : 'dias';
     const intervalo = Math.max(1, parseInt(l.repIntervalo, 10) || 1);
-    return { unidade, intervalo };
+    return { tipo: 'intervalo', unidade, intervalo };
   }
-  return LEMBRETE_REP_PRESETS[rep] || null;
+  const preset = LEMBRETE_REP_PRESETS[rep];
+  return preset ? Object.assign({ tipo: 'intervalo' }, preset) : null;
 }
 // A série já terminou nesta data (repFimTipo="Numa data" já ultrapassado)?
 function lembreteSerieTerminouEm(l, dataISO) {
   return l.repFimTipo === 'Numa data' && l.repFimData && l.repFimData < dataISO;
+}
+// A ocorrência de uma data específica já foi marcada como concluída? (ver
+// histórico de conclusões, gravado no próprio registo em `l.historico` —
+// só relevante para lembretes recorrentes, que nunca ficam com
+// estado='Concluído' permanentemente; ver conclude() em buildLembretesPage.)
+function lembreteJaConcluidoNestaData(l, dataISO) {
+  return Array.isArray(l.historico) && l.historico.some(h => h && h.data === dataISO);
+}
+// Payload a enviar ao dbUpdate para "concluir" um lembrete — usado tanto no
+// popup de urgentes da Página Inicial como na página de Lembretes. Um
+// lembrete recorrente NUNCA passa a estado='Concluído' (isso desativaria a
+// série inteira para sempre — ver lembreteEhUrgente); só regista esta
+// ocorrência no histórico, e a próxima data da recorrência volta a ficar
+// urgente sozinha, sem qualquer ação manual. Um lembrete único fica
+// mesmo Concluído em definitivo.
+function lembretePayloadConcluir(r) {
+  const hoje = todayISO();
+  const historicoAtual = Array.isArray(r.historico) ? r.historico : [];
+  const entrada = { data: hoje, em: new Date().toISOString(), por: currentUserName() || '' };
+  const historico = [entrada, ...historicoAtual].slice(0, 200);
+  return lembreteRepeticaoInfo(r) ? { historico } : { estado: 'Concluído', historico };
 }
 // A data-alvo coincide com uma ocorrência do padrão de repetição, a contar
 // da data de início? (mesma unidade/intervalo — meses e anos exigem o
@@ -12168,6 +12278,18 @@ function lembreteDataBateComPadrao(dataInicioISO, dataAlvoISO, info) {
   if (dataAlvoISO < dataInicioISO) return false;
   const di = new Date(dataInicioISO + 'T00:00:00');
   const da = new Date(dataAlvoISO + 'T00:00:00');
+  if (info.tipo === 'semanalDias') {
+    return info.dias.includes(da.getDay());
+  }
+  if (info.tipo === 'mensalNotavel') {
+    const ultimoDiaDoMes = new Date(da.getFullYear(), da.getMonth() + 1, 0).getDate(); // calculado dinamicamente: 28/29/30/31 consoante o mês
+    if (info.mensalTipo === 'primeiro') return da.getDate() === 1;
+    if (info.mensalTipo === 'ultimo') return da.getDate() === ultimoDiaDoMes;
+    // 'fixo': em meses mais curtos que não cheguem a esse dia (ex: dia 31
+    // em fevereiro), a ocorrência cai no último dia desse mês, para a
+    // recorrência nunca "saltar" um mês inteiro sem disparar nenhuma vez.
+    return da.getDate() === Math.min(info.dia, ultimoDiaDoMes);
+  }
   if (info.unidade === 'dias') {
     const diffDias = Math.round((da - di) / 86400000);
     return diffDias % info.intervalo === 0;
@@ -12200,6 +12322,7 @@ function lembreteEhUrgente(l, hojeISO) {
   const info = lembreteRepeticaoInfo(l);
   if (!info) return l.data <= hoje;
   if (lembreteSerieTerminouEm(l, hoje)) return false;
+  if (lembreteJaConcluidoNestaData(l, hoje)) return false; // ocorrência de hoje já tratada — só volta a ficar urgente na próxima data da recorrência
   return lembreteDataBateComPadrao(l.data, hoje, info);
 }
 // Texto da próxima ocorrência (para a coluna "Alerta para" na tabela) —
@@ -12224,6 +12347,20 @@ function lembreteProximaOcorrenciaTexto(l) {
 function lembreteRepeticaoTexto(l) {
   const rep = l.repeticao || 'Não se repete';
   if (rep === 'Não se repete' || !rep) return 'Não se repete';
+  if (rep === 'Semanal (dias específicos)') {
+    const info = lembreteRepeticaoInfo(l);
+    if (!info) return rep;
+    const nomes = { 0: 'Dom', 1: 'Seg', 2: 'Ter', 3: 'Qua', 4: 'Qui', 5: 'Sex', 6: 'Sáb' };
+    const ordem = [1, 2, 3, 4, 5, 6, 0]; // Seg..Dom, ordem de leitura natural
+    return 'Às ' + ordem.filter(d => info.dias.includes(d)).map(d => nomes[d]).join(', ');
+  }
+  if (rep === 'Mensal (dia notável)') {
+    const info = lembreteRepeticaoInfo(l);
+    if (!info) return rep;
+    if (info.mensalTipo === 'primeiro') return 'Mensalmente: 1º dia do mês';
+    if (info.mensalTipo === 'ultimo') return 'Mensalmente: último dia do mês';
+    return `Mensalmente: dia ${info.dia}`;
+  }
   if (rep !== 'Personalizado') return rep;
   const info = lembreteRepeticaoInfo(l);
   const unidadeSingular = { dias: 'dia', semanas: 'semana', meses: 'mês', anos: 'ano' }[info.unidade];
@@ -12239,7 +12376,7 @@ function buildLembretesPage(container, goTo, embedded) {
   let selectedIds = new Set();
 
   function criarRascunhoLembreteVazio() {
-    return { info: '', data: todayISO(), todoDia: true, hora: '', repeticao: 'Não se repete', repIntervalo: 1, repUnidade: 'dias', repFimTipo: 'Nunca', repFimData: '', ambito: 'Pessoal' };
+    return { info: '', data: todayISO(), todoDia: true, hora: '', repeticao: 'Não se repete', repIntervalo: 1, repUnidade: 'dias', repDiasSemana: [], repMensalTipo: 'primeiro', repMensalDia: '', repFimTipo: 'Nunca', repFimData: '', ambito: 'Pessoal' };
   }
   // Preenche os campos novos com omissão segura em registos antigos
   // (criados antes desta reformulação, sem nenhum destes campos gravado).
@@ -12249,6 +12386,9 @@ function buildLembretesPage(container, goTo, embedded) {
       repeticao: r.repeticao || 'Não se repete',
       repIntervalo: r.repIntervalo || 1,
       repUnidade: r.repUnidade || 'dias',
+      repDiasSemana: Array.isArray(r.repDiasSemana) ? r.repDiasSemana : [],
+      repMensalTipo: ['primeiro', 'ultimo', 'fixo'].includes(r.repMensalTipo) ? r.repMensalTipo : 'primeiro',
+      repMensalDia: r.repMensalDia || '',
       repFimTipo: r.repFimTipo || 'Nunca',
       ambito: r.ambito || 'Pessoal',
     });
@@ -12280,6 +12420,19 @@ function buildLembretesPage(container, goTo, embedded) {
       rerender();
       return;
     }
+    if (draft.repeticao === 'Semanal (dias específicos)' && (!Array.isArray(draft.repDiasSemana) || !draft.repDiasSemana.length)) {
+      formError = 'Escolha pelo menos um dia da semana.';
+      rerender();
+      return;
+    }
+    if (draft.repeticao === 'Mensal (dia notável)' && draft.repMensalTipo === 'fixo') {
+      const dia = parseInt(draft.repMensalDia, 10);
+      if (!dia || dia < 1 || dia > 31) {
+        formError = 'Indique um dia do mês válido (1 a 31).';
+        rerender();
+        return;
+      }
+    }
     if (draft.repeticao !== 'Não se repete' && draft.repFimTipo === 'Numa data' && !draft.repFimData) {
       formError = 'Indique a data em que a repetição termina, ou escolha "Nunca".';
       rerender();
@@ -12292,6 +12445,9 @@ function buildLembretesPage(container, goTo, embedded) {
     // ou intervalo/unidade personalizados depois de voltar a "Não se repete").
     if (draft.todoDia) draft.hora = '';
     if (draft.repeticao !== 'Personalizado') { draft.repIntervalo = 1; draft.repUnidade = 'dias'; }
+    if (draft.repeticao !== 'Semanal (dias específicos)') draft.repDiasSemana = [];
+    if (draft.repeticao !== 'Mensal (dia notável)') { draft.repMensalTipo = 'primeiro'; draft.repMensalDia = ''; }
+    else if (draft.repMensalTipo !== 'fixo') draft.repMensalDia = '';
     if (draft.repeticao === 'Não se repete') { draft.repFimTipo = 'Nunca'; draft.repFimData = ''; }
     if (draft.repFimTipo !== 'Numa data') draft.repFimData = '';
     normalizeNameFields(draft);
@@ -12329,13 +12485,19 @@ function buildLembretesPage(container, goTo, embedded) {
     }, { danger: true, confirmLabel: 'Eliminar' });
   }
   function conclude(id) {
-    confirmDialog('Tem a certeza de que quer marcar este lembrete como concluído?', async () => {
-      const updated = await dbUpdate('lembretes', id, { estado: 'Concluído' });
+    const r = STATE.lembretes.find(x => x.id === id);
+    if (!r) return;
+    const recorrente = !!lembreteRepeticaoInfo(r);
+    const mensagem = recorrente
+      ? 'Marcar esta ocorrência como concluída? O lembrete mantém-se ativo — só volta a ficar urgente na próxima data da recorrência.'
+      : 'Tem a certeza de que quer marcar este lembrete como concluído?';
+    confirmDialog(mensagem, async () => {
+      const updated = await dbUpdate('lembretes', id, lembretePayloadConcluir(r));
       if (updated) {
-        STATE.lembretes = STATE.lembretes.map(r => r.id === id ? updated : r);
+        STATE.lembretes = STATE.lembretes.map(x => x.id === id ? updated : x);
         selectedIds = new Set([...selectedIds].filter(x => x !== id));
         showForm = false;
-        activeTab = 'resolved';
+        if (!recorrente) activeTab = 'resolved';
         rerender();
       } else showDbErrorToast('Não foi possível concluir o lembrete');
     }, { confirmLabel: 'Concluir' });
@@ -12350,6 +12512,18 @@ function buildLembretesPage(container, goTo, embedded) {
         rerender();
       } else showDbErrorToast('Não foi possível anular a conclusão');
     }, { confirmLabel: 'Sim, Anular Conclusão' });
+  }
+
+  function eliminarLembrete(id) {
+    confirmDialog('ATENÇÃO: Tem a certeza de que quer eliminar permanentemente este lembrete? Esta ação não pode ser desfeita!', async () => {
+      const apagados = await bulkHardDelete('lembretes', [id]);
+      if (apagados.has(id)) {
+        STATE.lembretes = STATE.lembretes.filter(r => r.id !== id);
+        selectedIds = new Set([...selectedIds].filter(x => x !== id));
+        showForm = false;
+        rerender();
+      } else showDbErrorToast('Não foi possível eliminar o lembrete');
+    }, { danger: true, confirmLabel: 'Eliminar' });
   }
 
   // Pessoal: só os do próprio utilizador. Equipa: visível para todos.
@@ -12428,7 +12602,7 @@ function buildLembretesPage(container, goTo, embedded) {
     horaInput.value = draft.hora || '';
     horaInput.addEventListener('change', () => { draft.hora = horaInput.value; });
 
-    const repeticaoOpcoes = ['Não se repete', 'Todos os dias', 'Todas as semanas', 'Todos os meses', 'Todos os anos', 'Personalizado'];
+    const repeticaoOpcoes = ['Não se repete', 'Todos os dias', 'Todas as semanas', 'Todos os meses', 'Todos os anos', 'Semanal (dias específicos)', 'Mensal (dia notável)', 'Personalizado'];
     const repeticaoSelect = h('select', { class: 'select' }, repeticaoOpcoes.map(o => h('option', { value: o, selected: (draft.repeticao || 'Não se repete') === o ? 'selected' : undefined }, o === 'Personalizado' ? 'Personalizado…' : o)));
     repeticaoSelect.value = draft.repeticao || 'Não se repete';
     repeticaoSelect.addEventListener('change', () => { draft.repeticao = repeticaoSelect.value; rerender(); });
@@ -12439,6 +12613,36 @@ function buildLembretesPage(container, goTo, embedded) {
     const repUnidadeSelect = h('select', { class: 'select' }, ['dias', 'semanas', 'meses', 'anos'].map(u => h('option', { value: u, selected: (draft.repUnidade || 'dias') === u ? 'selected' : undefined }, u)));
     repUnidadeSelect.value = draft.repUnidade || 'dias';
     repUnidadeSelect.addEventListener('change', () => { draft.repUnidade = repUnidadeSelect.value; });
+
+    // Semanal por dias específicos — checkboxes Seg..Dom (guardados como
+    // índices 0-6, 0=Domingo, o mesmo que Date.getDay() usa).
+    const DIAS_SEMANA_LABELS = [{ v: 1, l: 'Seg' }, { v: 2, l: 'Ter' }, { v: 3, l: 'Qua' }, { v: 4, l: 'Qui' }, { v: 5, l: 'Sex' }, { v: 6, l: 'Sáb' }, { v: 0, l: 'Dom' }];
+    if (!Array.isArray(draft.repDiasSemana)) draft.repDiasSemana = [];
+    const diasSemanaField = h('div', { style: 'display:flex;gap:4px;flex-wrap:wrap;margin-top:6px;' }, DIAS_SEMANA_LABELS.map(d => {
+      const ativo = draft.repDiasSemana.includes(d.v);
+      const btn = h('button', { type: 'button', class: 'btn btn-secondary' + (ativo ? ' active' : ''), style: `padding:6px 10px;font-size:12.5px;${ativo ? 'background:var(--pharm-700);color:#fff;border-color:var(--pharm-700);' : ''}` }, d.l);
+      btn.addEventListener('click', () => {
+        draft.repDiasSemana = draft.repDiasSemana.includes(d.v) ? draft.repDiasSemana.filter(x => x !== d.v) : [...draft.repDiasSemana, d.v];
+        rerender();
+      });
+      return btn;
+    }));
+
+    // Mensal por dia notável — Primeiro dia / Último dia / Dia fixo.
+    if (!['primeiro', 'ultimo', 'fixo'].includes(draft.repMensalTipo)) draft.repMensalTipo = 'primeiro';
+    const MENSAL_TIPO_OPCOES = [{ v: 'primeiro', l: 'Primeiro dia do mês' }, { v: 'ultimo', l: 'Último dia do mês' }, { v: 'fixo', l: 'Dia fixo do mês' }];
+    const mensalTipoRadios = MENSAL_TIPO_OPCOES.map(o => {
+      const radio = h('input', { type: 'radio', name: 'rep-mensal-tipo', checked: draft.repMensalTipo === o.v ? 'checked' : undefined });
+      radio.addEventListener('change', () => { if (radio.checked) { draft.repMensalTipo = o.v; rerender(); } });
+      return h('label', { class: 'checkbox-field', style: 'margin:0;' }, [radio, h('span', {}, o.l)]);
+    });
+    const repMensalDiaInput = h('input', { class: 'input', type: 'number', min: '1', max: '31', step: '1', style: 'width:80px;' });
+    repMensalDiaInput.value = String(draft.repMensalDia || 15);
+    repMensalDiaInput.addEventListener('input', () => { draft.repMensalDia = repMensalDiaInput.value; });
+    const mensalField = h('div', { style: 'margin-top:6px;' }, [
+      h('div', { style: 'display:flex;align-items:center;gap:14px;flex-wrap:wrap;' }, mensalTipoRadios),
+      draft.repMensalTipo === 'fixo' ? h('div', { style: 'margin-top:8px;display:flex;align-items:center;gap:8px;' }, [h('span', { class: 'cell-muted', style: 'font-size:12.5px;' }, 'Todo o dia'), repMensalDiaInput, h('span', { class: 'cell-muted', style: 'font-size:12.5px;' }, 'de cada mês (em meses mais curtos, cai no último dia)')]) : null,
+    ]);
 
     const repFimNuncaRadio = h('input', { type: 'radio', name: 'rep-fim', checked: (draft.repFimTipo || 'Nunca') === 'Nunca' ? 'checked' : undefined });
     const repFimDataRadio = h('input', { type: 'radio', name: 'rep-fim', checked: draft.repFimTipo === 'Numa data' ? 'checked' : undefined });
@@ -12464,6 +12668,12 @@ function buildLembretesPage(container, goTo, embedded) {
         h('div', { class: 'field field-sm' }, [h('label', {}, 'Unidade'), repUnidadeSelect]),
       ]));
     }
+    if (draft.repeticao === 'Semanal (dias específicos)') {
+      camposRepeticao.push(h('div', {}, [h('label', {}, 'Repete-se em'), diasSemanaField]));
+    }
+    if (draft.repeticao === 'Mensal (dia notável)') {
+      camposRepeticao.push(mensalField);
+    }
     if ((draft.repeticao || 'Não se repete') !== 'Não se repete') {
       camposRepeticao.push(h('div', { class: 'field', style: 'margin-top:8px;' }, [
         h('label', {}, 'Termina'),
@@ -12483,6 +12693,9 @@ function buildLembretesPage(container, goTo, embedded) {
     }
     if (editingId && draft.estado === 'Concluído') {
       actionsRow.push(h('button', { class: 'btn-revert', onclick: () => requireAuth(() => unconclude(editingId)) }, [Icon('undo', { size: 15, strokeWidth: 2.2 }), ' Anular Conclusão']));
+    }
+    if (editingId) {
+      actionsRow.push(h('button', { class: 'btn-revert', style: 'color:var(--red);border-color:#fecaca;background:#fef2f2;', onclick: () => requireAuth(() => eliminarLembrete(editingId)) }, [Icon('trash', { size: 15, strokeWidth: 2.2 }), ' Eliminar Lembrete']));
     }
 
     return h('div', { class: 'card card-pad animate-in', style: 'margin-bottom:24px;' }, [
@@ -14108,7 +14321,13 @@ function buildDesafiosPage(container, goTo, embedded) {
     if (selectedIds.size !== 1) return;
     const d = STATE.desafios.find(x => x.id === [...selectedIds][0]);
     if (!d) return;
-    draft = Object.assign({}, d); editingId = d.id; formError = ''; showForm = true; rerender();
+    // Alguns registos podem ter vindo da BD só com "tipo" (nome alternativo
+    // da coluna — ver gravarComFallback em submit()) em vez de
+    // "tipoPremio", que é o nome que o formulário/schema usa sempre. Sem
+    // isto, o select do Tipo abria sempre em branco/no valor por defeito
+    // ("Coletivo"), mesmo editando um prémio Individual.
+    draft = Object.assign({ tipoPremio: d.tipoPremio || d.tipo || 'Coletivo' }, d);
+    editingId = d.id; formError = ''; showForm = true; rerender();
   }
   function cancel() { formError = ''; showForm = false; rerender(); }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
@@ -14130,6 +14349,29 @@ function buildDesafiosPage(container, goTo, embedded) {
     // marca ao Objetivo/Regras para nunca se perder informação).
     async function gravarComFallback(operacao) {
       let resultado = await operacao(draft);
+      // O Tipo de Prémio (Coletivo/Individual) tem um risco parecido, mas
+      // mais traiçoeiro: se a coluna real na tabela não se chamar
+      // "tipo_premio" (ex: for só "tipo"), o mecanismo de auto-limpeza de
+      // colunas (comAutoLimpezaDeColunas) deteta "coluna em falta", remove-a
+      // sozinho do pedido e tenta de novo SEM ela — a gravação "tem
+      // sucesso" na mesma, só que o Tipo nunca chega a mudar no servidor,
+      // revertendo sempre ao valor antigo assim que a linha é relida. Por
+      // isso não basta confiar em "resultado" vir preenchido: confirma-se
+      // sempre que o Tipo devolvido é mesmo o que se pretendia gravar, e
+      // se não for, tenta-se explicitamente a coluna alternativa "tipo".
+      if (resultado && resultado.tipoPremio !== draft.tipoPremio) {
+        const comTipoAlt = Object.assign({}, draft); delete comTipoAlt.tipoPremio;
+        comTipoAlt.tipo = draft.tipoPremio;
+        const resultado2 = await operacao(comTipoAlt);
+        if (resultado2 && resultado2.tipo === draft.tipoPremio) {
+          // Confirmado: a tabela usa "tipo". Devolve o registo sempre com
+          // "tipoPremio" preenchido a partir daí — é o nome usado no resto
+          // deste módulo (badges, filtros, etc.), nunca "tipo" sozinho.
+          resultado = Object.assign({}, resultado2, { tipoPremio: resultado2.tipo });
+        } else if (resultado2) {
+          resultado = resultado2; // pelo menos não perdeu o resto das alterações
+        }
+      }
       if (resultado || !/marca_laboratorio/i.test(lastDbError || '')) return resultado;
       const semML = Object.assign({}, draft); delete semML.marcaLaboratorio;
       const comMarca = Object.assign({}, semML, { marca: draft.marcaLaboratorio || '' });
@@ -14905,6 +15147,7 @@ async function gravarOuAtualizarDocumento(editingId, registo) {
 }
 
 /* ---- Declaração de Despesas Mensal ---- */
+const DECLARACAO_DESPESAS_NOTA_AJUSTE = 'Nota: o valor indicado deve corresponder ao custo proporcional estimado para 1 mês de tratamento (ex.: se a embalagem tem 60 comprimidos e a posologia é 1/dia, indicar metade do valor da embalagem).';
 function buildDeclaracaoDespesasPage(container, goTo) {
   if (!podeEmitirDocumentos()) { buildDocumentosAcessoNegado(container, goTo); return; }
 
@@ -14948,14 +15191,17 @@ function buildDeclaracaoDespesasPage(container, goTo) {
       return buildListaMultiPaginaDoc({
         cabecalho,
         colunas: [
-          { label: 'Medicamento / Produto', width: '75%', align: 'left', nowrap: true },
-          { label: 'Preço (€)', width: '25%', align: 'right' },
+          { label: 'Medicamento / Produto', width: '65%', align: 'left', nowrap: true },
+          { label: 'Preço Ajustado / Mês (€)', width: '35%', align: 'right' },
         ],
         linhas: linhasValidas.map(it => [it.nome || '—', (parseFloat(String(it.preco).replace(',', '.')) || 0).toFixed(2).replace('.', ',')]),
         linhasPrimeira: 30,
         linhasResto: 40,
         linhaTotalFinal: ['TOTAL', `${totalStr} €`],
-        rodapeFinal: buildDocRodape(dataEmissaoISO),
+        rodapeFinal: h('div', {}, [
+          h('p', { class: 'doc-aviso-legal-texto', style: 'margin:0 0 10px;' }, DECLARACAO_DESPESAS_NOTA_AJUSTE),
+          buildDocRodape(dataEmissaoISO),
+        ]),
       });
     }
     const kids = cabecalho.slice();
@@ -14966,9 +15212,10 @@ function buildDeclaracaoDespesasPage(container, goTo) {
       ]));
       linhasNode.push(h('tr', { class: 'doc-table-total' }, [h('td', {}, 'TOTAL'), h('td', {}, `${totalStr} €`)]));
       kids.push(h('table', { class: 'doc-table' }, [
-        h('thead', {}, h('tr', {}, [h('th', {}, 'Medicamento / Produto'), h('th', {}, 'Preço (€)')])),
+        h('thead', {}, h('tr', {}, [h('th', {}, 'Medicamento / Produto'), h('th', {}, 'Preço Ajustado / Mês (€)')])),
         h('tbody', {}, linhasNode),
       ]));
+      kids.push(h('p', { class: 'doc-aviso-legal-texto', style: 'margin:8px 0 0;' }, DECLARACAO_DESPESAS_NOTA_AJUSTE));
     }
     return buildDocA4(kids, buildDocRodape(dataEmissaoISO));
   }
@@ -15062,7 +15309,7 @@ function buildDeclaracaoDespesasPage(container, goTo) {
         const nomeProdInput = h('input', { class: 'input doc-item-nome', placeholder: 'Nome do Produto', maxlength: '150' });
         nomeProdInput.value = it.nome;
         nomeProdInput.addEventListener('input', () => { it.nome = nomeProdInput.value; });
-        const precoInput = h('input', { class: 'input doc-item-preco', type: 'number', step: '0.01', min: '0', placeholder: 'Preço €' });
+        const precoInput = h('input', { class: 'input doc-item-preco', type: 'number', step: '0.01', min: '0', placeholder: 'Preço Ajustado / Mês (€)' });
         precoInput.value = it.preco;
         precoInput.addEventListener('keydown', (e) => { if (e.key === '-') e.preventDefault(); });
         precoInput.addEventListener('input', () => {
@@ -15075,7 +15322,8 @@ function buildDeclaracaoDespesasPage(container, goTo) {
       });
       const addBtn = h('button', { class: 'btn btn-secondary', onclick: () => { draft.itens.push({ cnp: '', nome: '', preco: '' }); rerender(); } }, [Icon('plus', { size: 14 }), ' Adicionar Produto']);
       const totalLabel = h('p', { class: 'login-sub', style: 'text-align:right;font-weight:800;margin-top:10px;' }, `Total: ${calcularTotal().toFixed(2).replace('.', ',')} €`);
-      formChildren.push(h('div', { style: 'margin-top:14px;' }, [...linhasEl, addBtn, totalLabel]));
+      const notaAjuste = h('p', { class: 'field-helper-text', style: 'margin-top:8px;' }, DECLARACAO_DESPESAS_NOTA_AJUSTE);
+      formChildren.push(h('div', { style: 'margin-top:14px;' }, [...linhasEl, addBtn, notaAjuste, totalLabel]));
     }
     wrap.appendChild(h('div', { class: 'card card-pad' }, formChildren));
 
@@ -19284,7 +19532,17 @@ function renderInterno() {
     STATE.page = 'entregas';
   }
 
-  function goTo(key, preset) { STATE.navFrom = STATE.page; STATE.page = key; STATE.sidebarOpen = false; STATE.consultaPreset = preset || null; render(); }
+  function goTo(key, preset) {
+    const mudouDePagina = STATE.page !== key;
+    STATE.navFrom = STATE.page; STATE.page = key; STATE.sidebarOpen = false; STATE.consultaPreset = preset || null; render();
+    // Atualização pontual e silenciosa ao trocar de módulo — é o que
+    // substitui o antigo polling por inatividade numa sessão ativa (ver
+    // resetIdleRefreshTimer). refrescarDadosSilenciosamente() já tem as
+    // suas próprias blindagens (nunca repete a menos de 15s, nunca
+    // interrompe um formulário em uso), por isso é seguro chamar sempre
+    // que a página muda, mesmo em navegação rápida.
+    if (mudouDePagina) refrescarDadosSilenciosamente();
+  }
   function toggleSidebar(open) { STATE.sidebarOpen = open; render(); }
 
   const shell = h('div', { class: 'app-shell' });
@@ -19501,6 +19759,15 @@ function buildLoadingScreen() {
   ]);
 }
 
+// Prémios (desafios): a coluna do Tipo pode chamar-se "tipo_premio" ou só
+// "tipo" consoante a tabela real no Supabase (ver gravarComFallback em
+// buildDesafiosPage) — normaliza sempre para "tipoPremio" logo que os dados
+// entram no STATE (arranque E Realtime, ver setupRealtime), para todo o
+// resto do módulo (badges, filtros, contagens do Dashboard) poder confiar
+// sempre no mesmo nome de campo, seja qual for a coluna real.
+function normalizarTipoPremioDesafios() {
+  if (STATE.desafios) STATE.desafios.forEach(r => { if (!r.tipoPremio && r.tipo) r.tipoPremio = r.tipo; });
+}
 async function loadAllData() {
   // Rede de segurança final do arranque: mesmo que uma falha inesperada
   // (ex: uma exceção nunca prevista escapar a alguma função individual)
@@ -19523,6 +19790,7 @@ async function loadAllData() {
     // no STATE — garante blindagem total, mesmo que algum dia uma função de
     // leitura nova seja adicionada sem essa sanitização embutida.
     keys.forEach((k, i) => { STATE[k] = sanitizarSupabase(results[i]); });
+    normalizarTipoPremioDesafios();
     await carregarDadosFinanceirosSeAutorizado();
     STATE.mensagemDia = sanitizarSupabase(await dbFetchMensagemDia());
     await dbCleanupOldChatMessages();
@@ -19599,6 +19867,8 @@ function setupRealtime() {
         // aberto neste posto — os dados nunca ficam desatualizados; só o
         // redesenho do ecrã é que pode ficar em espera (ver renderOuAdiarSeOcupado).
         STATE[listKey] = sanitizarSupabase(await dbFetchAll(listKey));
+        if (listKey === 'desafios') normalizarTipoPremioDesafios();
+        if (listKey === 'lembretes' && lembretesUrgentesPopupAtualizar) lembretesUrgentesPopupAtualizar();
         // Timestamp da última atualização de dados com sucesso — alimenta o
         // indicador discreto "Atualizado há X min" na Página Inicial.
         STATE.ultimaAtualizacaoEm = new Date().toISOString();
@@ -20314,6 +20584,7 @@ function clearSessionSilently() {
   STATE.financeiro = [];
   STATE.objetivosMensais = [];
   pararPresenca();
+  resetIdleRefreshTimer(); // sem sessão a partir de agora — arranca o temporizador de standby (5 min)
   // Fim de sessão: o slider da Calculadora de Posologia volta ao valor inicial.
   if (resetPosologiaCalc) resetPosologiaCalc();
   atualizarIndicadoresChat();
@@ -20333,6 +20604,7 @@ function manualLogout() {
     STATE.objetivosMensais = [];
     limparSessaoPersistente();
     pararPresenca();
+    resetIdleRefreshTimer(); // sem sessão a partir de agora — arranca o temporizador de standby (5 min)
     // Fim de sessão explícito (ao contrário do timeout silencioso por
     // inatividade): repõe a memória de farmácia/separador/pesquisa de
     // Entregas, para o próximo login neste dispositivo — eventualmente de
@@ -20369,7 +20641,12 @@ function setupInactivityWatcher() {
 ----------------------------------------------------------------------- */
 let ultimoRefreshSilenciosoEm = 0;
 const REFRESH_SILENCIOSO_MIN_INTERVALO_MS = 15000; // nunca repete a menos de 15s de distância
-const IDLE_REFRESH_MS = 20000; // ~20s sem interação = pequena pausa
+// Standby (SEM sessão ativa) — o único caso em que ainda faz sentido um
+// temporizador de inatividade puro: um ecrã de login/apresentação parado
+// não tem "módulos" para trocar nem formulários para proteger. 5 minutos,
+// não 20 segundos — não há necessidade de dados frescos ao segundo num
+// ecrã que ninguém está a usar ativamente.
+const IDLE_REFRESH_STANDBY_MS = 5 * 60 * 1000;
 // Nunca dois pedidos ao mesmo tempo: o intervalo mínimo de 15s acima já
 // evita a maioria das sobreposições, mas sozinho não chega numa rede lenta
 // (um loadAllData() que demore mais de 15s a responder deixaria um 2º
@@ -20398,10 +20675,24 @@ async function refrescarDadosSilenciosamente() {
     refreshSilenciosoEmCurso = false;
   }
 }
+// Com SESSÃO ATIVA já não há temporizador de inatividade nenhum — o "piscar"
+// de ecrã constante vinha precisamente daqui (recarregava tudo e voltava a
+// desenhar o ecrã inteiro sempre que a pessoa ficava só 20s sem tocar no
+// rato/teclado, o que acontece a toda a hora só a ler um ecrã). Uma sessão
+// ativa só volta a sincronizar em momentos pontuais e justificados: ao
+// trocar de módulo (ver goTo, dentro de render()), ao voltar à aba/app
+// (focus/visibilitychange, já tratados à parte — nunca dependem deste
+// temporizador), e imediatamente a seguir ao login (concluirLogin).
+// SEM sessão (ecrã de login/apresentação, "standby"), mantém-se um
+// temporizador simples de 5 em 5 minutos — não há formulários a proteger
+// nem módulos para trocar, por isso o disparo por inatividade ainda faz
+// sentido aqui, só que muito mais espaçado.
 let idleRefreshTimer = null;
 function resetIdleRefreshTimer() {
   if (idleRefreshTimer) clearTimeout(idleRefreshTimer);
-  idleRefreshTimer = setTimeout(() => { refrescarDadosSilenciosamente(); resetIdleRefreshTimer(); }, IDLE_REFRESH_MS);
+  idleRefreshTimer = null;
+  if (activeUser) return; // sessão ativa: sem polling por inatividade
+  idleRefreshTimer = setTimeout(() => { refrescarDadosSilenciosamente(); resetIdleRefreshTimer(); }, IDLE_REFRESH_STANDBY_MS);
 }
 function setupSilentDataRefreshWatcher() {
   ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'].forEach(evt => {
