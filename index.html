@@ -4948,8 +4948,20 @@ async function dbFetchDeleted(listKey) {
 async function dbPermanentDelete(listKey, id) {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível.'; return false; }
   try {
-    const { error } = await sb.from(TABLES[listKey]).delete().eq('id', id);
+    // .select() no fim é essencial: sem RLS a bloquear, error=null MESMO
+    // que 0 linhas tenham sido apagadas (ex: RLS impede este perfil de
+    // eliminar da tabela, ou o id já não existe) — o Supabase não reporta
+    // isso como erro por defeito. Sem o .select() para confirmar quantas
+    // linhas vieram mesmo devolvidas, a app assumia sempre sucesso e
+    // removia o registo do ecrã, só para ele "voltar" ao recarregar os
+    // dados a seguir, porque nunca tinha sido eliminado a sério.
+    const { data, error } = await sb.from(TABLES[listKey]).delete().eq('id', id).select();
     if (error) { lastDbError = error.message; console.error(`[Supabase] erro ao eliminar definitivamente ${listKey}#${id}:`, error.message); return false; }
+    if (!data || !data.length) {
+      lastDbError = 'O registo não foi eliminado (pode já ter sido eliminado, ou não tem permissão — verifique as políticas RLS desta tabela).';
+      console.error(`[Supabase] eliminação de ${listKey}#${id} não afetou nenhuma linha — provável bloqueio de RLS.`);
+      return false;
+    }
     return true;
   } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error(`[Supabase] erro de rede ao eliminar definitivamente ${listKey}#${id}:`, formatarErroSeguro(e)); return false; }
 }
@@ -5020,6 +5032,14 @@ function removerColunasAprendidas(listKey, row) {
 async function comAutoLimpezaDeColunas(listKey, row, fn) {
   let tentativas = 0;
   let rowAtual = removerColunasAprendidas(listKey, row);
+  // Se JÁ à partida (colunas aprendidas em falta de tentativas anteriores)
+  // não sobra nenhum campo para enviar, nem vale a pena chamar o Supabase:
+  // um UPDATE/INSERT vazio, nalgumas tabelas, "sucede" sem alterar nada —
+  // um falso positivo perigoso (a interface mostra sucesso, mas o valor
+  // nunca muda no servidor, revertendo assim que os dados são recarregados).
+  if (row && Object.keys(row).length > 0 && Object.keys(rowAtual).length === 0) {
+    return { data: null, error: { message: `Nenhum dos campos enviados corresponde a uma coluna existente em "${TABLES[listKey] || listKey}".` } };
+  }
   while (true) {
     const resultado = await fn(rowAtual);
     const coluna = resultado.error ? extrairColunaEmFalta(resultado.error.message) : null;
@@ -5028,6 +5048,9 @@ async function comAutoLimpezaDeColunas(listKey, row, fn) {
     set.add(coluna);
     console.warn(`[Supabase] coluna "${coluna}" não existe em "${TABLES[listKey] || listKey}" — removida automaticamente e a tentar de novo.`);
     rowAtual = removerColunasAprendidas(listKey, row);
+    if (Object.keys(rowAtual).length === 0) {
+      return { data: null, error: { message: `Nenhum dos campos enviados corresponde a uma coluna existente em "${TABLES[listKey] || listKey}".` } };
+    }
     tentativas += 1;
   }
 }
@@ -5195,14 +5218,7 @@ async function dbUpdate(listKey, id, patch) {
           const colunasEmFalta = CAMPOS_APRENDIDOS_EM_FALTA[listKey];
           const camposRealmenteEnviados = Object.keys(patchFinal).filter(k => !colunasEmFalta || !colunasEmFalta.has(camelToSnake(k)));
           const aplicouMesmo = camposRealmenteEnviados.every(k => JSON.stringify(fresco[k]) === JSON.stringify(patchFinal[k]));
-          // Prémios (desafios): módulo tolerante — o formulário nem sempre
-          // mapeia 1:1 para todas as colunas da tabela (ex: marca/marca_
-          // laboratorio, campos ainda por alinhar), o que produzia
-          // divergências residuais na comparação estrita mesmo com a
-          // gravação a correr bem no servidor. Aqui basta o registo ter
-          // sido confirmado no servidor (sem erro de rede/RLS) para se
-          // considerar sucesso — sem exigir correspondência campo-a-campo.
-          if (aplicouMesmo || listKey === 'desafios') return fresco;
+          if (aplicouMesmo) return fresco;
           // Auto-recuperação de UMA tentativa: o motivo mais comum de aqui
           // chegarmos com o lock otimista ativo NÃO é um colega a editar o
           // mesmo registo ao mesmo tempo (raro), mas sim o nosso próprio
@@ -6204,13 +6220,16 @@ function buildBottomActionBar(opts) {
   }, Icon('pencil', { size: 19, strokeWidth: 2.3 }));
   const children = [addBtn, editBtn];
   // opts.onConclude (opcional): botão de conclusão/correção rápida — só
-  // aparece nos módulos que o definem, e só fica ativo com exatamente 1
-  // registo selecionado (a mesma regra do Editar).
+  // aparece nos módulos que o definem. Por defeito só fica ativo com
+  // exatamente 1 registo selecionado (a mesma regra do Editar); módulos que
+  // suportam concluir VÁRIOS de uma vez (ex: Objetivos) passam
+  // opts.concludeBulk:true para usar a mesma regra do Eliminar (1 ou mais).
   if (opts.onConclude) {
+    const podeConcluir = opts.concludeBulk ? canBulk : canEdit;
     const concludeBtn = h('button', {
-      class: 'btn-fab tone-green', onclick: canEdit ? () => requireAuth(opts.onConclude) : null,
-      title: canEdit ? (opts.concludeLabel || 'Concluir selecionado') : 'Selecione apenas 1 registo', 'aria-label': opts.concludeLabel || 'Concluir selecionado',
-      disabled: canEdit ? undefined : 'disabled',
+      class: 'btn-fab tone-green', onclick: podeConcluir ? () => requireAuth(opts.onConclude) : null,
+      title: podeConcluir ? (opts.concludeLabel || 'Concluir selecionado') : (opts.concludeBulk ? 'Selecione pelo menos 1 registo' : 'Selecione apenas 1 registo'), 'aria-label': opts.concludeLabel || 'Concluir selecionado',
+      disabled: podeConcluir ? undefined : 'disabled',
     }, Icon(opts.concludeIcon || 'check', { size: 19, strokeWidth: 2.6 }));
     children.push(concludeBtn);
   }
@@ -6395,7 +6414,13 @@ function buildField(field, draft) {
       currentVal = opts[0];
       draft[field.name] = currentVal;
     }
-    control = h('select', { class: 'select' }, opts.map((o, i) => h('option', { value: o, selected: currentVal === o ? 'selected' : undefined }, labels[i] || o)));
+    // Comparação sempre por .toLowerCase(): o valor gravado na BD pode não
+    // bater certo em maiúsculas/minúsculas com as opções do schema (ex:
+    // 'individual' vs 'Individual') sem deixar de ser semanticamente o
+    // mesmo valor — sem isto, o dropdown abria sempre na 1ª opção por
+    // defeito em vez de mostrar o valor real gravado.
+    const currentValLower = String(currentVal).toLowerCase();
+    control = h('select', { class: 'select' }, opts.map((o, i) => h('option', { value: o, selected: currentValLower === String(o).toLowerCase() ? 'selected' : undefined }, labels[i] || o)));
     control.value = currentVal;
     control.addEventListener('change', () => { draft[field.name] = control.value; if (field.onChange) field.onChange(); });
   } else if (field.type === 'combo') {
@@ -14326,7 +14351,7 @@ function buildDesafiosPage(container, goTo, embedded) {
     // "tipoPremio", que é o nome que o formulário/schema usa sempre. Sem
     // isto, o select do Tipo abria sempre em branco/no valor por defeito
     // ("Coletivo"), mesmo editando um prémio Individual.
-    draft = Object.assign({ tipoPremio: d.tipoPremio || d.tipo || 'Coletivo' }, d);
+    draft = Object.assign({}, d, { tipoPremio: normalizarValorTipoPremio(d.tipoPremio || d.tipo) });
     editingId = d.id; formError = ''; showForm = true; rerender();
   }
   function cancel() { formError = ''; showForm = false; rerender(); }
@@ -14357,19 +14382,26 @@ function buildDesafiosPage(container, goTo, embedded) {
       // sucesso" na mesma, só que o Tipo nunca chega a mudar no servidor,
       // revertendo sempre ao valor antigo assim que a linha é relida. Por
       // isso não basta confiar em "resultado" vir preenchido: confirma-se
-      // sempre que o Tipo devolvido é mesmo o que se pretendia gravar, e
-      // se não for, tenta-se explicitamente a coluna alternativa "tipo".
-      if (resultado && resultado.tipoPremio !== draft.tipoPremio) {
+      // sempre que o Tipo devolvido é mesmo o que se pretendia gravar
+      // (comparação por .toLowerCase() — só a capitalização pode divergir
+      // sem deixar de ser o mesmo valor), e se não for, tenta-se
+      // explicitamente a coluna alternativa "tipo".
+      const bateCerto = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+      if (resultado && !bateCerto(resultado.tipoPremio, draft.tipoPremio)) {
         const comTipoAlt = Object.assign({}, draft); delete comTipoAlt.tipoPremio;
         comTipoAlt.tipo = draft.tipoPremio;
         const resultado2 = await operacao(comTipoAlt);
-        if (resultado2 && resultado2.tipo === draft.tipoPremio) {
+        if (resultado2 && bateCerto(resultado2.tipo, draft.tipoPremio)) {
           // Confirmado: a tabela usa "tipo". Devolve o registo sempre com
-          // "tipoPremio" preenchido a partir daí — é o nome usado no resto
+          // "tipoPremio" preenchido a partir daí (na capitalização correta
+          // do schema, nunca o valor cru da BD) — é o nome usado no resto
           // deste módulo (badges, filtros, etc.), nunca "tipo" sozinho.
-          resultado = Object.assign({}, resultado2, { tipoPremio: resultado2.tipo });
-        } else if (resultado2) {
-          resultado = resultado2; // pelo menos não perdeu o resto das alterações
+          resultado = Object.assign({}, resultado2, { tipoPremio: draft.tipoPremio });
+        } else {
+          // Nenhuma das duas tentativas confirmou o Tipo pretendido — nunca
+          // se aceita silenciosamente um resultado que não bate certo (isso
+          // é precisamente o que mascarava a reversão antes desta correção).
+          resultado = null;
         }
       }
       if (resultado || !/marca_laboratorio/i.test(lastDbError || '')) return resultado;
@@ -14576,6 +14608,36 @@ function buildObjetivosPage(container, goTo, embedded) {
       rerender();
     }, { danger: true, confirmLabel: 'Eliminar' });
   }
+  // Concluir = ativo:'Não' — objetivoAtivo() já trata isso como "fora dos
+  // Ativos", passando sozinho a aparecer em Histórico de Objetivos. Não há
+  // Realtime extra a configurar: 'objetivos' já está coberto pela
+  // subscrição genérica (setupRealtime), por isso qualquer alteração chega
+  // e sincroniza a todos os postos ligados sem recarregar nada à mão.
+  function concluirUm(id) {
+    confirmDialog('Tem a certeza que pretende marcar este objetivo como concluído? Passa para o Histórico de Objetivos.', async () => {
+      const updated = await dbUpdate('objetivos', id, { ativo: 'Não' });
+      if (updated) {
+        STATE.objetivos = STATE.objetivos.map(r => r.id === id ? updated : r);
+        showForm = false;
+        activeTab = 'historico';
+        rerender();
+      } else showDbErrorToast('Não foi possível concluir o objetivo');
+    }, { confirmLabel: 'Concluir' });
+  }
+  function concluirSelecionados() {
+    const ids = [...selectedIds].filter(id => { const o = STATE.objetivos.find(x => x.id === id); return o && objetivoAtivo(o); });
+    if (!ids.length) return;
+    const plural = ids.length > 1;
+    confirmDialog(`Tem a certeza que pretende concluir ${plural ? `os ${ids.length} objetivos selecionados` : 'o objetivo selecionado'}? ${plural ? 'Passam' : 'Passa'} para o Histórico de Objetivos.`, async () => {
+      const updates = await Promise.all(ids.map(id => dbUpdate('objetivos', id, { ativo: 'Não' })));
+      STATE.objetivos = STATE.objetivos.map(r => { const idx = ids.indexOf(r.id); return (idx >= 0 && updates[idx]) ? updates[idx] : r; });
+      const falhas = updates.filter(u => !u).length;
+      selectedIds = new Set();
+      if (falhas) showDbErrorToast(falhas === 1 ? 'Não foi possível concluir 1 dos objetivos selecionados' : `Não foi possível concluir ${falhas} dos objetivos selecionados`);
+      activeTab = 'historico';
+      rerender();
+    }, { confirmLabel: 'Concluir' });
+  }
 
   function visibleObjetivos() {
     const q = normalizarTexto(searchQuery).trim();
@@ -14679,6 +14741,10 @@ function buildObjetivosPage(container, goTo, embedded) {
       class: 'btn btn-primary', onclick: saving ? null : () => requireAuth(submit), disabled: saving ? 'disabled' : undefined,
     }, saving ? 'A guardar…' : (editingId ? 'Guardar alterações' : 'Adicionar objetivo'));
     const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: cancel }, 'Cancelar');
+    const actionsRow = [submitBtn, cancelBtn];
+    if (editingId && objetivoAtivo(draft)) {
+      actionsRow.push(h('button', { class: 'btn-revert', style: 'color:#16a34a;border-color:#bbf7d0;background:#f0fdf4;', onclick: () => requireAuth(() => concluirUm(editingId)) }, [Icon('check', { size: 15, strokeWidth: 2.4 }), ' Marcar como Concluído']));
+    }
     const children = [
       h('h3', { class: 'page-eyebrow', style: 'margin-bottom:14px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, editingId ? 'Editar Objetivo' : 'Novo Objetivo'),
       grid,
@@ -14688,7 +14754,7 @@ function buildObjetivosPage(container, goTo, embedded) {
       ]),
     ];
     if (formError) children.push(h('p', { class: 'form-error' }, formError));
-    children.push(h('div', { class: 'form-actions' }, [submitBtn, cancelBtn]));
+    children.push(h('div', { class: 'form-actions' }, actionsRow));
     return h('div', { class: 'card card-pad animate-in', style: 'margin-bottom:24px;' }, children);
   }
 
@@ -14731,6 +14797,9 @@ function buildObjetivosPage(container, goTo, embedded) {
         onAdd: openNew,
         onEdit: openEditSelected,
         onDelete: removeSelected,
+        onConclude: activeTab === 'ativos' ? concluirSelecionados : null,
+        concludeLabel: 'Concluir Selecionados',
+        concludeBulk: true,
       }));
     }
     return wrap;
@@ -19764,9 +19833,23 @@ function buildLoadingScreen() {
 // buildDesafiosPage) — normaliza sempre para "tipoPremio" logo que os dados
 // entram no STATE (arranque E Realtime, ver setupRealtime), para todo o
 // resto do módulo (badges, filtros, contagens do Dashboard) poder confiar
-// sempre no mesmo nome de campo, seja qual for a coluna real.
+// sempre no mesmo nome de campo, seja qual for a coluna real. Normaliza
+// também a CAPITALIZAÇÃO (ex: 'individual' na BD → 'Individual'), para toda
+// a app poder continuar a comparar sempre com 'Individual'/'Coletivo'
+// exatos (as opções do schema), nunca precisando de comparação insensível
+// a maiúsculas em cada sítio que usa este campo.
+function normalizarValorTipoPremio(v) {
+  const s = String(v || '').trim().toLowerCase();
+  if (s === 'individual') return 'Individual';
+  if (s === 'coletivo' || s === 'colectivo') return 'Coletivo';
+  return v || 'Coletivo';
+}
 function normalizarTipoPremioDesafios() {
-  if (STATE.desafios) STATE.desafios.forEach(r => { if (!r.tipoPremio && r.tipo) r.tipoPremio = r.tipo; });
+  if (!STATE.desafios) return;
+  STATE.desafios.forEach(r => {
+    if (!r.tipoPremio && r.tipo) r.tipoPremio = r.tipo;
+    r.tipoPremio = normalizarValorTipoPremio(r.tipoPremio);
+  });
 }
 async function loadAllData() {
   // Rede de segurança final do arranque: mesmo que uma falha inesperada
