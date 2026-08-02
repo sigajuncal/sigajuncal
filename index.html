@@ -771,9 +771,27 @@
      cor de texto e fundo — combinado com color-scheme:light acima, é o
      que evita o texto invisível quando o sistema está em Modo Escuro. */
   datalist,
-  .input::-webkit-list-button,
-  .input::-webkit-calendar-picker-indicator{color:#1e293b;background:#ffffff;}
+  .input::-webkit-list-button{color:#1e293b;background:#ffffff;}
   option{color:#1e293b !important;background:#ffffff !important;}
+  /* Ícone do calendário (date picker) em <input type="date"> — visível e
+     clicável em qualquer browser/dispositivo. Reserva sempre espaço à
+     direita para o ícone nunca ficar espremido/cortado contra a margem do
+     campo, e nunca herda um fundo opaco: era isso (um bloco branco sólido
+     por cima do próprio desenho do ícone) que o apagava visualmente contra
+     o fundo branco do campo — com color-scheme:light (já definido acima em
+     .input) o WebKit/Blink já desenham o ícone escuro sozinhos, sem
+     precisar de cor forçada. cursor:pointer torna claro que é clicável;
+     padding define uma área de toque confortável em ecrãs táteis. */
+  .input[type="date"]{padding-right:34px;}
+  .input::-webkit-calendar-picker-indicator{
+    opacity:1;background:transparent;cursor:pointer;
+    padding:5px;margin-right:-2px;
+    -webkit-appearance:auto;appearance:auto;
+  }
+  .input::-webkit-calendar-picker-indicator:hover{opacity:.65;}
+  /* Firefox: o campo de data nativo já inclui o próprio botão de calendário
+     sem pseudo-elemento dedicado — só precisa de não ficar cortado. */
+  @-moz-document url-prefix(){ .input[type="date"]{padding-right:12px;} }
   .checkbox-field{display:flex;align-items:center;gap:8px;padding-top:23px;cursor:pointer;user-select:none;
     grid-column:span 6;white-space:nowrap;}
   .checkbox-field input{width:16px;height:16px;accent-color:var(--pharm-600);cursor:pointer;flex-shrink:0;}
@@ -6011,6 +6029,25 @@ function lerRascunhoLocal(chave) {
 }
 function limparRascunhoLocal(chave) {
   try { window.localStorage.removeItem('sigajuncal_rascunho_' + chave); } catch (e) { /* ignora */ }
+}
+// Variante de lerRascunhoLocal com uma janela de idade máxima mais apertada
+// que as 24h genéricas — usada em Entregas, onde um rascunho com mais de
+// algumas horas provavelmente já traz uma Data/Bloco Horário ultrapassados
+// (ver "Este bloco já expirou...") e, num posto de conta partilhada
+// (Farmácia Boa Nova, sem login individual), pode mesmo pertencer a um
+// colega de um turno anterior — restaurar isso automaticamente confunde
+// mais do que ajuda. Passado esse limite, o rascunho é tratado como lixo e
+// apagado (nunca fica para trás a assombrar a próxima vez que o formulário
+// abrir).
+function lerRascunhoLocalRecente(chave, maxIdadeMs) {
+  try {
+    const bruto = window.localStorage.getItem('sigajuncal_rascunho_' + chave);
+    if (!bruto) return null;
+    const obj = JSON.parse(bruto);
+    if (!obj || !obj.dados) return null;
+    if ((Date.now() - (obj.em || 0)) > maxIdadeMs) { limparRascunhoLocal(chave); return null; }
+    return obj.dados;
+  } catch (e) { return null; }
 }
 // Considera "vazio" um rascunho de Entregas cujos únicos campos preenchidos
 // são os automáticos (farmácia, data, registadoPor) — não vale a pena
@@ -17713,18 +17750,26 @@ function buildEmpresasParceirasPage(container, goTo, farmaciaAtiva) {
 }
 
 // Memória do contexto onde o utilizador está dentro de Entregas — farmácia
-// ativa, separador (Pendentes/Histórico) e texto de pesquisa. buildEntregasPage
-// é reinstanciada do zero sempre que a página global é redesenhada (render()),
-// incluindo os renders SILENCIOSOS disparados em segundo plano por um evento
-// Realtime ou pelo temporizador automático (refrescarDadosSilenciosamente) —
-// sem esta memória a sobreviver fora da função, cada um desses renders
-// reiniciava `farmaciaAtiva` a null e devolvia Estafeta/Administrador ao
-// ecrã de seleção de farmácia (e todos os perfis perdiam o separador e a
-// pesquisa em que estavam), só porque chegaram dados novos, sem qualquer
-// ação do utilizador. Reposta a valores por omissão no logout (ver
-// manualLogout/clearSessionSilently) para a sessão seguinte — eventualmente
-// doutro colega, no mesmo dispositivo — não herdar o contexto de quem saiu.
-let entregasContextoMemorizado = { farmaciaAtiva: null, activeTab: 'pendentes', searchQuery: '' };
+// ativa, separador (Pendentes/Histórico), texto de pesquisa e, desde
+// 2026-08-02, também o FORMULÁRIO ABERTO (showForm/editingId/draft).
+// buildEntregasPage é reinstanciada do zero sempre que a página global é
+// redesenhada (render()), incluindo os renders SILENCIOSOS disparados em
+// segundo plano por um evento Realtime ou pelo temporizador automático
+// (refrescarDadosSilenciosamente) — sem esta memória a sobreviver fora da
+// função, cada um desses renders reiniciava `farmaciaAtiva` a null e
+// devolvia Estafeta/Administrador ao ecrã de seleção de farmácia (e todos
+// os perfis perdiam o separador e a pesquisa em que estavam), só porque
+// chegaram dados novos, sem qualquer ação do utilizador. Guardar também o
+// formulário aberto resolve a mesma falha para quem está a meio do
+// preenchimento de uma "Nova Entrega"/edição: uiEstaOcupada() já protege a
+// maior parte dos casos (modal aberto, campo com foco há poucos segundos),
+// mas um utilizador parado a pensar durante mais tempo sem tocar em nada
+// deixava de contar como "ocupado" e via o formulário fechar-se sozinho por
+// baixo das mãos assim que chegasse um render em segundo plano. Reposta a
+// valores por omissão no logout (ver manualLogout/clearSessionSilently)
+// para a sessão seguinte — eventualmente doutro colega, no mesmo
+// dispositivo — não herdar o contexto (nem o formulário) de quem saiu.
+let entregasContextoMemorizado = { farmaciaAtiva: null, activeTab: 'pendentes', searchQuery: '', showForm: false, editingId: null, draft: null };
 function buildEntregasPage(container, goTo) {
   // Só Estafeta e Administrador escolhem entre as duas farmácias — todos os
   // restantes colaboradores entram direta e automaticamente na Juncal.
@@ -17738,7 +17783,14 @@ function buildEntregasPage(container, goTo) {
   let farmaciaAtiva = isBoaNovaOperador() ? 'Boa Nova' : ((isEstafeta() || isAdministrador()) ? entregasContextoMemorizado.farmaciaAtiva : 'Juncal');
   let activeTab = entregasContextoMemorizado.activeTab; // 'pendentes' | 'historico'
   let searchQuery = entregasContextoMemorizado.searchQuery;
-  let showForm = false, editingId = null, draft = {}, formError = '', saving = false;
+  // Idem para o formulário: retoma exatamente onde estava (aberto/fechado,
+  // em edição ou não, com o que já ia preenchido) em vez de reiniciar a
+  // 'false'/'{}' a cada nova instanciação desta função por um render em
+  // segundo plano.
+  let showForm = entregasContextoMemorizado.showForm || false;
+  let editingId = entregasContextoMemorizado.editingId || null;
+  let draft = entregasContextoMemorizado.draft ? Object.assign({}, entregasContextoMemorizado.draft) : {};
+  let formError = '', saving = false;
   let selectedIds = new Set();
 
   // Isola o rascunho de "Nova Entrega" por utilizador + farmácia — nunca só
@@ -17751,7 +17803,17 @@ function buildEntregasPage(container, goTo) {
   const guardarRascunhoEntregaDebounced = debounce(() => {
     if (showForm && !editingId && farmaciaAtiva) salvarRascunhoLocal(rascunhoChaveEntregaNova(), draft);
   }, 400);
-  function rerender() { guardarRascunhoEntregaDebounced(); comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() {
+    guardarRascunhoEntregaDebounced();
+    // Mantém a memória do módulo sempre alinhada com o estado atual do
+    // formulário — é isto que permite a uma reinstanciação desta função,
+    // disparada por um render em segundo plano, retomar exatamente onde o
+    // utilizador estava (ver entregasContextoMemorizado acima).
+    entregasContextoMemorizado.showForm = showForm;
+    entregasContextoMemorizado.editingId = editingId;
+    entregasContextoMemorizado.draft = showForm ? draft : null;
+    comScrollPreservado(() => { clear(container); container.appendChild(build()); });
+  }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
   function trocarFarmacia(f) {
     farmaciaAtiva = f; activeTab = 'pendentes'; selectedIds = new Set(); searchQuery = ''; showForm = false;
@@ -17870,7 +17932,12 @@ function buildEntregasPage(container, goTo) {
     // "quem está a registar"), evitando qualquer vazamento de estado entre
     // utilizadores mesmo que um rascunho antigo (de antes desta correção)
     // ainda exista em localStorage.
-    const rascunho = lerRascunhoLocal(rascunhoChaveEntregaNova());
+    // Janela apertada de 2h (em vez das 24h genéricas de lerRascunhoLocal) —
+    // ver lerRascunhoLocalRecente acima. Um rascunho mais velho do que isto
+    // é apagado em silêncio, sem restaurar e sem toast: mais provável ser
+    // lixo de um turno anterior (sobretudo na Boa Nova, conta partilhada)
+    // do que algo que a pessoa à frente do ecrã ainda queira retomar.
+    const rascunho = lerRascunhoLocalRecente(rascunhoChaveEntregaNova(), 2 * 60 * 60 * 1000);
     if (rascunho && rascunhoEntregaTemConteudo(rascunho)) {
       draft = Object.assign(draft, rascunho, { farmacia: farmaciaAtiva, registadoPor: draft.registadoPor });
       showToast('Rascunho anterior restaurado automaticamente.', 'success');
@@ -17887,7 +17954,17 @@ function buildEntregasPage(container, goTo) {
     draft = Object.assign({}, r, { entregaEmpresaParceira: !!r.enderecoEmpresaParceiraId });
     editingId = r.id; formError = ''; showForm = true; rerender();
   }
-  function cancel() { formError = ''; showForm = false; rerender(); }
+  function cancel() {
+    // Cancelar/Descartar é uma decisão explícita do utilizador: ao
+    // contrário de um erro de rede ou de a sessão expirar a meio (onde o
+    // rascunho continua a servir de rede de segurança), aqui o rascunho é
+    // limpo de imediato — nunca reaparece para reabrir com dados de um
+    // preenchimento que a própria pessoa decidiu descartar, nem, no caso de
+    // contas partilhadas (Farmácia Boa Nova), para o próximo colega a usar
+    // o mesmo posto.
+    if (!editingId) limparRascunhoLocal(rascunhoChaveEntregaNova());
+    formError = ''; showForm = false; rerender();
+  }
 
   // Dropdown do Bloco Horário reage à Data: em Sábado fixa-se automaticamente
   // em "Sábado (14H - 18H)" e bloqueiam-se as restantes opções; em qualquer
@@ -18154,13 +18231,17 @@ function buildEntregasPage(container, goTo) {
     // Atualização Por: gravado de novo em CADA edição.
     if (!editingId) {
       draft.responsavel = currentUserName();
-      // Reforço defensivo: nunca deixar "Responsável pela Entrega" em
-      // branco a gravar — cobre tanto criações novas (já vinha preenchido
-      // desde openNew) como o caso raro de a coluna ainda não existir.
-      // NUNCA para a Boa Nova: aí o campo é manual e já é obrigatório (ver
-      // checkEntregaRequired) — substituir por currentUserName() (o nome
-      // da conta genérica partilhada) anularia o propósito do campo.
-      if (farmaciaAtiva !== 'Boa Nova' && !String(draft.registadoPor || '').trim()) draft.registadoPor = currentUserName();
+      // "Responsável pela Entrega" (registadoPor) é sempre recalculado aqui,
+      // no momento da submissão — nunca fica preso a quem tinha sessão
+      // ativa quando o formulário foi ABERTO (openNew()). Isto cobre o caso
+      // de a sessão mudar a meio do preenchimento (ex: bloqueio automático
+      // por inatividade seguido de outro colega a autenticar-se — ver
+      // clearSessionSilently, que nunca fecha o formulário) sem deixar o
+      // registo associado à pessoa errada. NUNCA para a Boa Nova: aí o
+      // campo é manual e já é obrigatório (ver checkEntregaRequired) —
+      // substituir por currentUserName() (o nome da conta genérica
+      // partilhada) anularia o propósito do campo.
+      if (farmaciaAtiva !== 'Boa Nova') draft.registadoPor = currentUserName();
     } else {
       draft.ultimaAtualizacaoPor = currentUserName();
     }
@@ -20763,7 +20844,7 @@ function manualLogout() {
     // Entregas, para o próximo login neste dispositivo — eventualmente de
     // outro colega — começar sempre do zero, sem herdar o contexto de quem
     // saiu.
-    entregasContextoMemorizado = { farmaciaAtiva: null, activeTab: 'pendentes', searchQuery: '' };
+    entregasContextoMemorizado = { farmaciaAtiva: null, activeTab: 'pendentes', searchQuery: '', showForm: false, editingId: null, draft: null };
     if (resetPosologiaCalc) resetPosologiaCalc(); // fim de sessão → slider volta ao início
     render();
     resetInactivityTimer();
