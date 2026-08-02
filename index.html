@@ -8349,26 +8349,28 @@ function contarLembretesPendentesDoUtilizador() {
   const urgentes = pendentes.filter(r => lembreteEhUrgente(r));
   return { total: pendentes.length, urgentes };
 }
-// Sino de notificação junto à saudação da Home — badge com a contagem total
-// de pendentes; fica A PISCAR (classe .lembretes-bell-piscar) só quando há
-// pelo menos um urgente (data de hoje ou ultrapassada).
+// Sino de notificação junto à saudação da Home — badge com a contagem de
+// URGENTES (vencidos ou do próprio dia — nunca lembretes agendados para o
+// futuro, mesmo que "ativos"/pendentes em geral); fica A PISCAR
+// (classe .lembretes-bell-piscar) sempre que o badge aparece, já que os
+// dois só existem juntos agora.
 function buildLembretesBellHome() {
   if (!activeUser) return null;
   const { total, urgentes } = contarLembretesPendentesDoUtilizador();
-  const inativa = total === 0;
+  const inativa = urgentes.length === 0;
   const btn = h('button', {
-    class: 'lembretes-bell-btn' + (inativa ? ' lembretes-bell-inativa' : '') + (urgentes.length ? ' lembretes-bell-piscar' : ''),
-    title: urgentes.length ? `${urgentes.length} lembrete(s) urgente(s)!` : (inativa ? 'Os teus Lembretes' : `${total} lembrete(s) pendente(s)`),
+    class: 'lembretes-bell-btn' + (inativa ? ' lembretes-bell-inativa' : ' lembretes-bell-piscar'),
+    title: urgentes.length ? `${urgentes.length} lembrete(s) urgente(s)!` : (total > 0 ? `${total} lembrete(s) ativo(s) — nenhum vencido hoje` : 'Os teus Lembretes'),
     'aria-label': 'Lembretes',
   }, [
     Icon('bell', { size: 18, strokeWidth: 2.2 }),
-    inativa ? null : h('span', { class: 'lembretes-bell-badge' }, String(total)),
+    inativa ? null : h('span', { class: 'lembretes-bell-badge' }, String(urgentes.length)),
   ]);
-  // Sem nada pendente, a campainha funciona como atalho direto para a
-  // área de Lembretes; havendo pendentes, abre logo o popup dos urgentes
-  // (ou, se nenhum for urgente ainda, também serve de atalho ao módulo).
+  // Sem nada urgente, a campainha funciona como atalho direto para a área
+  // de Lembretes (mesmo havendo ativos futuros); havendo urgentes, abre
+  // logo o popup.
   btn.addEventListener('click', () => {
-    if (total > 0 && urgentes.length > 0) abrirModalLembretesUrgentes();
+    if (urgentes.length > 0) abrirModalLembretesUrgentes();
     else { STATE.navFrom = STATE.page; STATE.page = 'lembretes'; STATE.sidebarOpen = false; render(); }
   });
   return btn;
@@ -12611,7 +12613,15 @@ function buildLembretesPage(container, goTo, embedded) {
       const pendente = mode !== 'resolved';
       let estadoBadge;
       if (pendente) {
-        estadoBadge = h('span', { class: 'badge badge-orange estado-badge-clicavel', title: 'Clicar para marcar como concluído' }, 'PENDENTE');
+        // Vencido/Pendente (laranja) só quando a data de alerta já chegou
+        // (hoje ou ultrapassada) — a mesma lógica já usada pela sineta do
+        // Dashboard (lembreteEhUrgente). Um lembrete agendado para o
+        // futuro mostra-se "Agendado" (azul, neutro), nunca Pendente.
+        if (lembreteEhUrgente(r)) {
+          estadoBadge = h('span', { class: 'badge badge-orange estado-badge-clicavel', title: 'Clicar para marcar como concluído' }, 'PENDENTE');
+        } else {
+          estadoBadge = h('span', { class: 'badge badge-blue estado-badge-clicavel', title: 'Clicar para marcar como concluído' }, 'AGENDADO');
+        }
         estadoBadge.addEventListener('click', (e) => { e.stopPropagation(); requireAuth(() => conclude(r.id)); });
       } else {
         estadoBadge = h('span', { class: 'badge badge-green' }, 'CONCLUÍDO');
@@ -12813,7 +12823,7 @@ function buildLembretesPage(container, goTo, embedded) {
 
     const tabsRow = h('div', { class: 'tabs-row' }, [
       h('button', { class: 'tab-btn tone-orange' + (activeTab === 'pending' ? ' active' : ''), onclick: () => { activeTab = 'pending'; selectedIds = new Set(); rerender(); } }, [
-        Icon('bell', { size: 14 }), h('span', {}, 'Lembretes Pendentes'), h('span', { class: 'tab-count' }, String(pendingCount)),
+        Icon('bell', { size: 14 }), h('span', {}, 'Lembretes Ativos'), h('span', { class: 'tab-count' }, String(pendingCount)),
       ]),
       h('button', { class: 'tab-btn tone-green' + (activeTab === 'resolved' ? ' active' : ''), onclick: () => { activeTab = 'resolved'; selectedIds = new Set(); rerender(); } }, [
         Icon('checkcircle', { size: 14 }), h('span', {}, 'Histórico de Concluídos'), h('span', { class: 'tab-count' }, String(resolvedCount)),
