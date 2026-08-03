@@ -3501,7 +3501,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     saving = true; render();
     const payload = {
       prestadorKey, data: dateISO, hora: formDraft.hora, duracaoMin,
-      tipoConsulta: formDraft.tipoConsulta || '', nomeCliente: formDraft.nomeCliente,
+      tipoConsulta: formDraft.tipoConsulta || '', nomeCliente: formatarNomeUtente(formDraft.nomeCliente),
       contacto: formDraft.contacto || '', aviso: !!formDraft.aviso, observacoes: formDraft.observacoes || '',
       tipoLinha: 'vaga', estado: 'agendada',
     };
@@ -3669,6 +3669,42 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     if (m.estado === 'concluida') return ' · Concluída';
     return '';
   }
+  // Reaproveitar Vaga: só faz sentido para uma marcação Cancelada/Faltou
+  // cujo horário ainda não chegou — cancelar/faltar num horário de HOJE já
+  // passado não deve oferecer "reaproveitar" (a vaga já não existe na
+  // prática). `isPast` (acima) só cobre o dia inteiro; aqui compara-se
+  // também a HORA exata quando o dia em vista é hoje.
+  function horaAindaNaoChegou(horaStr) {
+    const hojeStr = todayISO();
+    if (dateISO > hojeStr) return true;
+    if (dateISO < hojeStr) return false;
+    const agora = new Date();
+    const horaAgoraStr = `${pad2(agora.getHours())}:${pad2(agora.getMinutes())}`;
+    return normalizarHora(horaStr) > horaAgoraStr;
+  }
+  function vagaCanceladaOuFaltou(m) {
+    return m.estado === 'cancelada' || m.estado === 'faltou' || m.estado === 'cancelado';
+  }
+  // Abre logo o formulário de Nova Marcação (ou Encaixe, se o horário não
+  // fizer parte da grelha normal) já com Data (é a própria dateISO deste
+  // modal), Hora de Início, Duração (= Hora de Fim) e Serviço herdados da
+  // vaga cancelada/faltada — só falta pesquisar/inserir o novo utente e
+  // guardar. Nome/contacto/observações da marcação antiga NUNCA são
+  // copiados (é um utente novo); o registo antigo mantém-se intacto no
+  // histórico, isto cria sempre uma marcação nova.
+  function reaproveitarVagaCancelada(m) {
+    const ehEncaixe = !agendaSlotsPara(prestadorKey).includes(m.hora);
+    formDraft = {
+      hora: m.hora, tipoConsulta: m.tipoConsulta || '', duracaoManual: m.duracaoMin || agendaDuracaoManualDefault(prestadorKey),
+      nomeCliente: '', contacto: '', aviso: false, observacoes: '', responsavel: currentUserName(), forcarEncaixe: false,
+    };
+    formError = ''; showForm = ehEncaixe ? 'encaixe' : 'nova'; render();
+  }
+  function buildReaproveitarVagaBtn(m) {
+    const btn = h('button', { class: 'btn-fab-sm tone-green', title: 'Reaproveitar Vaga — marcar novo utente neste horário', 'aria-label': 'Reaproveitar Vaga' }, Icon('undo', { size: 12, strokeWidth: 2.2 }));
+    btn.addEventListener('click', () => requireAuth(() => reaproveitarVagaCancelada(m)));
+    return btn;
+  }
   async function toggleAviso(m) {
     async function aplicar() {
       const updated = await dbUpdate('agendaMarcacoes', m.id, { aviso: !m.aviso });
@@ -3823,7 +3859,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       estadoSelect.addEventListener('change', () => { formDraft.estado = estadoSelect.value; });
     }
 
-    campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Nome do Cliente *'), nomeInput]));
+    campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Nome do Cliente *'), nomeInput, attachAvisoNomeUtente(nomeInput)]));
     campos.push(h('div', { class: 'field field-sm' }, [h('label', {}, 'Contacto *'), contactoInput]));
     if (estadoSelect) {
       campos.push(h('div', { class: 'field field-sm' }, [h('label', {}, 'Estado *'), estadoSelect]));
@@ -3941,6 +3977,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
         // restantes ações vivem na barra flutuante.
         const acoes = [avisoToggleBtn(m)];
         if (m.observacoes && m.observacoes.trim()) acoes.push(obsEyeButton(m.observacoes));
+        if (!isPast && vagaCanceladaOuFaltou(m) && horaAindaNaoChegou(m.hora)) acoes.push(buildReaproveitarVagaBtn(m));
         if (!isPast) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
         node = h('div', { class: 'agenda-slot-row agenda-slot-ocupado' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : '') }, [
           h('span', { class: 'agenda-slot-hora' }, m.hora),
@@ -3960,6 +3997,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       // seleção (barra flutuante para o resto).
       const acoes = [avisoToggleBtn(m)];
       if (m.observacoes && m.observacoes.trim()) acoes.push(obsEyeButton(m.observacoes));
+      if (!isPast && vagaCanceladaOuFaltou(m) && horaAindaNaoChegou(m.hora)) acoes.push(buildReaproveitarVagaBtn(m));
       if (!isPast) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
       const node = h('div', { class: 'agenda-slot-row agenda-slot-encaixe' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : '') }, [
         h('span', { class: 'agenda-slot-hora' }, `${m.hora} · Encaixe`),
@@ -6412,6 +6450,49 @@ function toTitleCasePT(str) {
     return lower.replace(/(^|[^a-zà-öø-ÿ])([a-zà-öø-ÿ])/g, (m, sep, ch) => sep + ch.toLocaleUpperCase('pt-PT'));
   }).join(' ');
 }
+// Número máximo de nomes/palavras aceites no campo "Nome do Utente/
+// Cliente" — nomes maiores desformatam a linha no calendário, nas listas
+// e nos cartões. Usado por limitarPalavrasNomeUtente() e pela validação
+// amigável em tempo real dos formulários de agendamento/fichas.
+const NOME_UTENTE_MAX_PALAVRAS = 7;
+// Apara espaços a mais e mantém só as primeiras NOME_UTENTE_MAX_PALAVRAS
+// palavras — nunca corta a meio de uma palavra, só descarta palavras a
+// mais a partir da 8ª.
+function limitarPalavrasNomeUtente(str, max) {
+  if (!str || typeof str !== 'string') return str;
+  const limite = max || NOME_UTENTE_MAX_PALAVRAS;
+  const palavras = str.trim().split(/\s+/).filter(Boolean);
+  if (palavras.length <= limite) return palavras.join(' ');
+  return palavras.slice(0, limite).join(' ');
+}
+// Formatação completa do Nome do Utente/Cliente antes de gravar: capitaliza
+// (Title Case em português, com "de/da/do/das/dos/e" em minúsculas) e
+// limita a NOME_UTENTE_MAX_PALAVRAS palavras. Usada em todos os
+// formulários de agendamento (Agenda) e fichas/declarações.
+function formatarNomeUtente(str) {
+  return toTitleCasePT(limitarPalavrasNomeUtente(str));
+}
+// Aviso amigável, em tempo real, quando o campo Nome do Utente/Cliente
+// ultrapassa o limite de palavras — não bloqueia nem corta enquanto a
+// pessoa escreve (o corte real só acontece em formatarNomeUtente(), ao
+// gravar); aqui é só para avisar antes de chegar a esse ponto. Devolve o
+// elemento <p> do aviso, que o chamador insere no formulário logo a
+// seguir ao input; já vem ligado ao 'input' do campo.
+function attachAvisoNomeUtente(inputEl) {
+  const aviso = h('p', { class: 'field-helper-text', style: 'display:none;color:var(--orange,#c2410c);margin:4px 0 0;' }, '');
+  const atualizar = () => {
+    const total = String(inputEl.value || '').trim().split(/\s+/).filter(Boolean).length;
+    if (total > NOME_UTENTE_MAX_PALAVRAS) {
+      aviso.textContent = `Só serão guardadas as primeiras ${NOME_UTENTE_MAX_PALAVRAS} palavras do nome.`;
+      aviso.style.display = '';
+    } else {
+      aviso.style.display = 'none';
+    }
+  };
+  inputEl.addEventListener('input', atualizar);
+  atualizar();
+  return aviso;
+}
 // Capitaliza automaticamente a primeira letra de cada frase (início do texto,
 // e a seguir a ponto final, ponto de interrogação ou ponto de exclamação),
 // usada nos campos de Observações / Notas / texto livre.
@@ -6430,6 +6511,15 @@ function normalizeNameFields(draft) {
   }
   if (Object.prototype.hasOwnProperty.call(draft, 'registadoPor') && draft.registadoPor) {
     draft.registadoPor = toTitleCasePT(draft.registadoPor);
+  }
+  // Nome do Utente/Cliente (Agenda, fichas e declarações): além do Title
+  // Case, limita a NOME_UTENTE_MAX_PALAVRAS palavras — ver
+  // formatarNomeUtente().
+  if (Object.prototype.hasOwnProperty.call(draft, 'nomeCliente') && draft.nomeCliente) {
+    draft.nomeCliente = formatarNomeUtente(draft.nomeCliente);
+  }
+  if (Object.prototype.hasOwnProperty.call(draft, 'nomeUtente') && draft.nomeUtente) {
+    draft.nomeUtente = formatarNomeUtente(draft.nomeUtente);
   }
   return draft;
 }
@@ -14245,7 +14335,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     saving = true; render();
     const payload = {
       eventoId: currentEvento.id, hora, grupoVaga: showForm.grupo, tipoLinha: 'vaga', estado: 'agendada',
-      nomeCliente: toTitleCasePT(formDraft.nomeCliente), nFicha: formDraft.nFicha || '', contacto: formDraft.contacto || '',
+      nomeCliente: formatarNomeUtente(formDraft.nomeCliente), nFicha: formDraft.nFicha || '', contacto: formDraft.contacto || '',
       observacoes: formDraft.observacoes || '', aviso: !!formDraft.aviso, responsavel: currentUserName(),
     };
     // Edição de uma marcação já existente: grava o Estado escolhido no
@@ -14418,7 +14508,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       estadoSelect.addEventListener('change', () => { formDraft.estado = estadoSelect.value; });
     }
 
-    campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Nome do Cliente *'), nomeInput]));
+    campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Nome do Cliente *'), nomeInput, attachAvisoNomeUtente(nomeInput)]));
     campos.push(h('div', { class: 'field field-xs' }, [h('label', {}, 'Nº Ficha'), fichaInput]));
     campos.push(h('div', { class: 'field field-sm' }, [h('label', {}, 'Contacto *'), contactoInput]));
     if (estadoSelect) {
@@ -15777,7 +15867,7 @@ function buildDeclaracaoDespesasPage(container, goTo) {
     const dataEmissao = todayISO();
     const registo = {
       tipo: 'despesas_mensal',
-      nomeUtente: draft.nomeUtente,
+      nomeUtente: formatarNomeUtente(draft.nomeUtente),
       ccUtente: draft.ccUtente,
       discriminado: !!draft.discriminado,
       valorTotal: calcularTotal(),
@@ -15815,7 +15905,7 @@ function buildDeclaracaoDespesasPage(container, goTo) {
     discCb.addEventListener('change', () => { draft.discriminado = discCb.checked; rerender(); });
 
     const campos = [
-      h('div', { class: 'field doc-w-md' }, [h('label', {}, 'Nome do Utente'), nomeInput]),
+      h('div', { class: 'field doc-w-md' }, [h('label', {}, 'Nome do Utente'), nomeInput, attachAvisoNomeUtente(nomeInput)]),
       h('div', { class: 'field doc-w-xs' }, [h('label', {}, 'Cartão de Cidadão'), ccInput]),
       buildGeneroUtenteField(draft),
     ];
@@ -15949,7 +16039,7 @@ function buildDeclaracaoAvaliacaoFisicaPage(container, goTo) {
     const dataEmissao = todayISO();
     const registo = {
       tipo: 'avaliacao_fisica',
-      nomeUtente: draft.nomeUtente,
+      nomeUtente: formatarNomeUtente(draft.nomeUtente),
       ccUtente: draft.ccUtente,
       discriminado: false,
       valorTotal: null,
@@ -15991,7 +16081,7 @@ function buildDeclaracaoAvaliacaoFisicaPage(container, goTo) {
     const generoField = buildGeneroUtenteField(draft);
 
     const campos = [
-      h('div', { class: 'field doc-w-md' }, [h('label', {}, 'Nome do Utente'), nomeInput]),
+      h('div', { class: 'field doc-w-md' }, [h('label', {}, 'Nome do Utente'), nomeInput, attachAvisoNomeUtente(nomeInput)]),
       h('div', { class: 'field doc-w-xs' }, [h('label', {}, 'Cartão de Cidadão'), ccInput]),
       generoField,
       h('div', { class: 'field doc-w-36' }, [h('label', {}, 'Data de Nascimento'), melhorarInputData(nascInput)]),
@@ -16092,7 +16182,7 @@ function buildDeclaracaoPresencaPage(container, goTo) {
     const dataEmissao = todayISO();
     const registo = {
       tipo: 'presenca',
-      nomeUtente: draft.nomeUtente,
+      nomeUtente: formatarNomeUtente(draft.nomeUtente),
       ccUtente: draft.ccUtente,
       discriminado: false,
       valorTotal: null,
@@ -16139,7 +16229,7 @@ function buildDeclaracaoPresencaPage(container, goTo) {
     duracaoInput.addEventListener('input', () => { draft.duracaoAprox = duracaoInput.value; });
 
     const campos = [
-      h('div', { class: 'field doc-w-md' }, [h('label', {}, 'Nome do Utente'), nomeInput]),
+      h('div', { class: 'field doc-w-md' }, [h('label', {}, 'Nome do Utente'), nomeInput, attachAvisoNomeUtente(nomeInput)]),
       h('div', { class: 'field doc-w-xs' }, [h('label', {}, 'Cartão de Cidadão'), ccInput]),
       buildGeneroUtenteField(draft),
       h('div', { class: 'field doc-w-xs' }, [h('label', {}, 'Tipo de Serviço / Consulta'), tipoSelect]),
@@ -22078,7 +22168,6 @@ function render() {
 }
 function renderInterno() {
   const root = document.getElementById('root');
-  clear(root);
 
   // Ajuste puramente visual: a margem a piscar do Modo de Teste só é mesmo
   // mostrada ao Administrador que a ativou. Para Estafeta e Farmácia Boa
@@ -22132,28 +22221,58 @@ function renderInterno() {
 
   function goTo(key, preset) {
     const mudouDePagina = STATE.page !== key;
+    // Clicar outra vez no separador onde já se está (sem preset novo) não
+    // muda nada — evita reconstruir o .page-container à toa, que é
+    // precisamente o tipo de "piscar" sem motivo que se quer eliminar.
+    if (!mudouDePagina && !preset) return;
     STATE.navFrom = STATE.page; STATE.page = key; STATE.sidebarOpen = false; STATE.consultaPreset = preset || null; render();
     // Atualização pontual e silenciosa ao trocar de módulo — é o que
     // substitui o antigo polling por inatividade numa sessão ativa (ver
     // resetIdleRefreshTimer). refrescarDadosSilenciosamente() já tem as
     // suas próprias blindagens (nunca repete a menos de 15s, nunca
     // interrompe um formulário em uso), por isso é seguro chamar sempre
-    // que a página muda, mesmo em navegação rápida.
+    // que a página muda, mesmo em navegação rápida. É também isto que
+    // implementa o "stale-while-revalidate" da Página Inicial e dos
+    // restantes módulos: nunca se bloqueia a navegação à espera de dados
+    // novos — mostra-se logo o que já está em STATE (praticamente sempre
+    // atualizado, por já vir do arranque/login ou de um refresh recente) e
+    // só se vai buscar dados frescos em segundo plano quando fizer sentido.
     if (mudouDePagina) refrescarDadosSilenciosamente();
   }
   function toggleSidebar(open) { STATE.sidebarOpen = open; render(); }
 
-  const shell = h('div', { class: 'app-shell' });
-  const mainWrap = h('div', { class: 'main' });
-  const topbar = h('div', { class: 'topbar-mobile' }, [
-    h('button', { class: 'hamburger', onclick: () => toggleSidebar(true) }, Icon('menu', { size: 20 })),
-    h('div', { class: 'topbar-title' }, [h('img', { src: SIGA_LOGO_DATA_URI, alt: 'SigaJuncal', style: 'height:26px;width:auto;object-fit:contain;' })]),
-    h('div', { style: 'width:32px;' }),
-  ]);
-  mainWrap.appendChild(topbar);
+  // Piscar na navegação interna (RESOLVIDO): antes, TODO o #root era
+  // limpo e reconstruído do zero a cada goTo() — sidebar, topbar e tudo —
+  // o que fazia o ecrã inteiro "saltar" a cada troca de módulo, mesmo que
+  // só o conteúdo da página tivesse mesmo mudado. Agora o "casco" fixo da
+  // app (sidebar-desktop + topbar-mobile, dentro de .app-shell/.main) só é
+  // criado UMA VEZ e reaproveitado em todos os renders seguintes — só o
+  // .page-container é substituído em cada navegação (é o único elemento
+  // que precisa mesmo de mudar), e a sidebar tem o seu CONTEÚDO atualizado
+  // em bloco (destaque da página ativa + badges), sem recriar o próprio
+  // <aside>. O layout à volta nunca se desmonta.
+  let shell = root.querySelector(':scope > .app-shell');
+  const primeiraMontagem = !shell;
+  if (primeiraMontagem) {
+    shell = h('div', { class: 'app-shell' });
+    root.appendChild(shell);
+  }
+  let mainWrap = shell.querySelector(':scope > .main');
+  if (!mainWrap) {
+    mainWrap = h('div', { class: 'main' });
+    const topbar = h('div', { class: 'topbar-mobile' }, [
+      h('button', { class: 'hamburger', onclick: () => toggleSidebar(true) }, Icon('menu', { size: 20 })),
+      h('div', { class: 'topbar-title' }, [h('img', { src: SIGA_LOGO_DATA_URI, alt: 'SigaJuncal', style: 'height:26px;width:auto;object-fit:contain;' })]),
+      h('div', { style: 'width:32px;' }),
+    ]);
+    mainWrap.appendChild(topbar);
+    shell.appendChild(mainWrap);
+  }
 
+  const pageContainerAntigo = mainWrap.querySelector(':scope > .page-container');
   const pageContainer = h('div', { class: 'page-container' });
-  mainWrap.appendChild(pageContainer);
+  if (pageContainerAntigo) mainWrap.replaceChild(pageContainer, pageContainerAntigo);
+  else mainWrap.appendChild(pageContainer);
 
   // Constrói primeiro o conteúdo da página — alguns ecrãs têm efeitos
   // secundários (ex: o Chat marca-se como lido ao abrir) que precisam de já
@@ -22234,17 +22353,27 @@ function renderInterno() {
     }
   }
 
-  const sidebarDesktop = h('aside', { class: 'sidebar-desktop' }, buildSidebarContent(null, goTo));
-  shell.appendChild(sidebarDesktop);
+  // Sidebar de ecrã (desktop): conteúdo sempre atualizado (destaque da
+  // página ativa, badges) — mas o próprio <aside> é criado uma única vez e
+  // reaproveitado, nunca destruído numa navegação normal.
+  let sidebarDesktop = shell.querySelector(':scope > .sidebar-desktop');
+  if (!sidebarDesktop) {
+    sidebarDesktop = h('aside', { class: 'sidebar-desktop' });
+    shell.insertBefore(sidebarDesktop, mainWrap);
+  }
+  clear(sidebarDesktop);
+  buildSidebarContent(null, goTo).forEach(el => sidebarDesktop.appendChild(el));
 
+  // Painel de sidebar mobile (aberto/fechado por toggleSidebar): este sim
+  // é criado/destruído normalmente — só existe enquanto estiver aberto,
+  // por isso não faz parte do "casco" persistente acima.
+  const overlayMobileAntigo = shell.querySelector(':scope > .sidebar-mobile-overlay');
+  if (overlayMobileAntigo) overlayMobileAntigo.remove();
   if (STATE.sidebarOpen) {
     const panel = h('div', { class: 'sidebar-mobile-panel' }, buildSidebarContent(() => toggleSidebar(false), goTo));
     const backdrop = h('div', { class: 'sidebar-mobile-backdrop', onclick: () => toggleSidebar(false) });
-    shell.appendChild(h('div', { class: 'sidebar-mobile-overlay' }, [panel, backdrop]));
+    shell.insertBefore(h('div', { class: 'sidebar-mobile-overlay' }, [panel, backdrop]), mainWrap);
   }
-
-  shell.appendChild(mainWrap);
-  root.appendChild(shell);
 }
 
 function buildSignature() {
