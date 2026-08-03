@@ -4024,7 +4024,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   return overlay;
 }
 
-function calendarioItensDoDia(dateISO) {
+function calendarioItensDoDia(dateISO, restringirPorPerfil) {
   const itens = [];
   (STATE.eventos || []).filter(ev => ev.dataEvento === dateISO).forEach(ev => {
     itens.push({ label: eventoLabel(ev), cor: COR_EVENTOS_RASTREIOS, tipo: 'evento', evento: ev });
@@ -4049,19 +4049,26 @@ function calendarioItensDoDia(dateISO) {
     if (itens.some(it => it.label === labelBase)) return;
     itens.push({ label: `${labelBase} (Agenda Aberta)`, cor: servico ? servico.cor : COR_AGENDA_DIA_ABERTO, tipo: 'agenda', prestadorKey: d.prestadorKey });
   });
-  return itens.slice(0, 3); // limite de 3 por dia
+  // Filtragem por perfil (usada pelo Calendário da Dashboard): um Prestador
+  // de Serviço externo só vê os seus próprios itens de agenda — nunca os de
+  // outros prestadores. Eventos (Rastreios/Dias Especiais) são sempre da
+  // farmácia toda, não pertencem a nenhum prestador — continuam visíveis
+  // para todos. Colaboradores/Administrador nunca são filtrados aqui.
+  const itensVisiveis = (restringirPorPerfil && isPrestadorServico() && activeUser && activeUser.prestadorKey)
+    ? itens.filter(it => it.tipo !== 'agenda' || it.prestadorKey === activeUser.prestadorKey)
+    : itens;
+  return itensVisiveis.slice(0, 3); // limite de 3 por dia
 }
-// Abre diretamente a página/dia de UM item do calendário (agenda de
-// prestador ou evento) — navega para a página certa e, de seguida, abre
-// já o modal desse dia específico, tal como um clique na própria página
-// da agenda/evento faria.
+// Abre o Modal de Vista Geral de UM item do calendário (agenda de
+// prestador ou evento) diretamente por cima da página atual — NUNCA
+// navega para outra página/separador. Usado pelo Calendário da Dashboard
+// (clique num dia) e pelos cartões "Próximo Serviço"/"Próximo Evento",
+// para a equipa consultar marcações sem perder o ponto de scroll da
+// Dashboard nem a fluidez de navegação.
 function abrirItemCalendarioDashboard(item, dateISO, goTo) {
   if (item.tipo === 'evento' && item.evento) {
-    const tipoInfo = EVENTO_TIPOS.find(t => t.key === item.evento.tipoEvento);
-    if (goTo && tipoInfo) goTo(tipoInfo.pageKey);
     document.body.appendChild(buildEventoDiaModal(item.evento.tipoEvento, dateISO, item.evento, () => {}));
   } else if (item.tipo === 'agenda' && item.prestadorKey) {
-    if (goTo) goTo(`agenda-${item.prestadorKey}`);
     document.body.appendChild(buildAgendaDiaModal(item.prestadorKey, dateISO, () => {}));
   }
 }
@@ -4117,7 +4124,7 @@ function calendarioCellStyle(cores) {
 // estiver no centro é sempre o ponto focal, mesmo que já não seja o mês
 // presente verdadeiro. O destaque do Dia Presente é a única coisa que segue
 // sempre a data real, esteja o cartão onde estiver.
-function buildMonthCalendar(year, month, posicao, onDayClick, prestadorKey, calendarioGoTo) {
+function buildMonthCalendar(year, month, posicao, onDayClick, prestadorKey, calendarioGoTo, restringirPorPerfil) {
   const firstDay = new Date(year, month, 1);
   const startWeekday = (firstDay.getDay() + 6) % 7; // segunda-feira = 0
   const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -4127,7 +4134,7 @@ function buildMonthCalendar(year, month, posicao, onDayClick, prestadorKey, cale
   for (let i = 0; i < startWeekday; i++) cells.push(h('div', { class: 'cal-cell cal-cell-empty' }));
   for (let d = 1; d <= daysInMonth; d++) {
     const dateISO = `${year}-${pad2(month + 1)}-${pad2(d)}`;
-    const itens = calendarioItensDoDia(dateISO);
+    const itens = calendarioItensDoDia(dateISO, restringirPorPerfil);
     const cores = itens.map(it => it.cor);
     const isToday = dateISO === todayStr;
     const isPast = dateISO < todayStr;
@@ -4185,7 +4192,7 @@ function buildMonthCalendar(year, month, posicao, onDayClick, prestadorKey, cale
 // setas grandes, fora dos calendários, deslocam o bloco inteiro de uma vez
 // (ex: seta direita → mês da direita passa a centro, novo mês entra à
 // direita, o antigo centro passa a esquerda e fica suavizado).
-function buildCalendarioCarrossel(onDayClick, prestadorKey, calendarioGoTo) {
+function buildCalendarioCarrossel(onDayClick, prestadorKey, calendarioGoTo, restringirPorPerfil) {
   let offset = 0; // 0 = mês atual é o do centro
   const wrap = h('div', { class: 'cal-carousel-outer' });
 
@@ -4195,7 +4202,7 @@ function buildCalendarioCarrossel(onDayClick, prestadorKey, calendarioGoTo) {
     const posicoes = ['passado', 'atual', 'futuro', 'futuro'];
     const meses = [-1, 0, 1, 2].map((i, idx) => {
       const d = new Date(hoje.getFullYear(), hoje.getMonth() + offset + i, 1);
-      return buildMonthCalendar(d.getFullYear(), d.getMonth(), posicoes[idx], onDayClick, prestadorKey, calendarioGoTo);
+      return buildMonthCalendar(d.getFullYear(), d.getMonth(), posicoes[idx], onDayClick, prestadorKey, calendarioGoTo, restringirPorPerfil);
     });
 
     const prevBtn = h('button', { class: 'cal-nav-btn-grande', title: 'Recuar um mês', 'aria-label': 'Recuar um mês' }, Icon('arrowleft', { size: 24, strokeWidth: 2.6 }));
@@ -4540,7 +4547,7 @@ function buildCalendarioSection(goTo) {
   }
   return h('div', { class: 'home-section' }, [
     h('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:14px;' }, tituloKids),
-    buildCalendarioCarrossel(undefined, undefined, goTo),
+    buildCalendarioCarrossel(undefined, undefined, goTo, true),
   ]);
 }
 
@@ -9565,7 +9572,7 @@ function buildHomepage(container, goTo) {
         titulo: eventoLabel(ev),
         subtitulo: h('span', {}, [buildBadgeEvento(ev, aDecorrer), vagasSpan]),
         aDecorrer,
-        onClick: () => goTo(tipoInfo ? tipoInfo.pageKey : 'eventos'),
+        onClick: () => document.body.appendChild(buildEventoDiaModal(ev.tipoEvento, ev.dataEvento, ev, () => {})),
       };
     }),
   });
@@ -9592,7 +9599,10 @@ function buildHomepage(container, goTo) {
 
   // Um item por SERVIÇO/PRESTADOR distinto (nunca por consulta individual)
   // — a marcação mais próxima de cada prestador representa esse serviço.
-  const agendaBruta = proximasAgendaMarcacoes(30);
+  // Um Prestador de Serviço externo só vê os seus próprios agendamentos
+  // aqui — Colaboradores/Administrador continuam a ver a totalidade.
+  const agendaBruta = proximasAgendaMarcacoes(30)
+    .filter(m => !isPrestadorServico() || !activeUser || !activeUser.prestadorKey || m.prestadorKey === activeUser.prestadorKey);
   const prestadoresVistos = new Set();
   const servicosDistintos = [];
   agendaBruta.forEach(m => {
@@ -9617,7 +9627,7 @@ function buildHomepage(container, goTo) {
         titulo: prestador ? `${prestador.especialidade} · ${prestador.nome}` : 'Agenda',
         subtitulo: buildBadgeServicoAgenda(m.prestadorKey, aDecorrer, m.data, normalizarHora(m.hora)),
         aDecorrer,
-        onClick: () => goTo(`agenda-${m.prestadorKey}`),
+        onClick: () => document.body.appendChild(buildAgendaDiaModal(m.prestadorKey, m.data, () => {})),
       };
     }),
   });
@@ -13643,10 +13653,40 @@ function buildProximoServicoRotativoCard({ labelTitulo, labelVazio, tone, itens 
     itens.some(it => it.aDecorrer) ? h('span', { class: 'servico-hoje-pulse', 'aria-hidden': 'true' }) : null,
   ]);
   card.addEventListener('click', () => {
-    const atual = parseInt(viewport.dataset.atual || '0', 10);
-    (itens[atual] || itens[0]).onClick();
+    if (itens.length > 1) { abrirEscolhaServicoRotativo(labelTitulo, itens); return; }
+    itens[0].onClick();
   });
   return card;
+}
+// Seletor/lista para quando há vários serviços a decorrer em simultâneo no
+// mesmo horário — em vez de abrir "o que calhar estar visível no ticker"
+// naquele instante, mostra os itens todos e deixa a equipa escolher qual
+// pretende consultar. Reaproveita o mesmo padrão visual de
+// abrirEscolhaDiaCalendario (lista simples num modal-overlay).
+function abrirEscolhaServicoRotativo(titulo, itens) {
+  const overlay = h('div', { class: 'modal-overlay' });
+  function close() { document.removeEventListener('keydown', onKeydown); overlay.remove(); }
+  function onKeydown(e) { if (e.key === 'Escape') close(); }
+  document.addEventListener('keydown', onKeydown);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  const opcoes = itens.map(it => {
+    const btn = h('button', { class: 'cal-escolha-item', type: 'button' }, [
+      Icon(it.icon, { size: 16, strokeWidth: 2.2 }),
+      h('span', {}, [h('strong', { style: 'display:block;' }, it.titulo), it.subtitulo]),
+    ]);
+    btn.addEventListener('click', () => { close(); it.onClick(); });
+    return btn;
+  });
+  const panel = h('div', { class: 'modal-panel', style: 'max-width:380px;' }, [
+    h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;' }, [
+      h('p', { class: 'modal-title', style: 'margin:0;' }, titulo),
+      h('button', { class: 'close-btn', onclick: close }, Icon('x', { size: 16 })),
+    ]),
+    h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, 'Vários serviços a decorrer em simultâneo — escolha qual pretende consultar.'),
+    h('div', { class: 'cal-escolha-lista' }, opcoes),
+  ]);
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
 }
 // Próxima consulta/serviço de Agenda (Nutrição, Podologia, Prima Corpus,
 // etc.) — usa-se proximasAgendaMarcacoes(1)[0] quando só se precisa da
@@ -16806,7 +16846,7 @@ function buildDefinicoesPage(container, goTo) {
     if (!ehBoaNova) {
       base.push({
         name: 'incluirHorarios', label: 'Incluir nos Horários/Escalas?', type: 'checkbox',
-        help: 'Só quem tiver esta opção ativa aparece nos dropdowns do módulo Horários (Gerir Vagas, Lista Única de Rotação, Férias/Indisponibilidades, Saldos, Trocas).',
+        help: 'Só quem tiver esta opção ativa aparece nos dropdowns do módulo Horários (Gerir Posições, Lista Única de Rotação, Férias/Indisponibilidades, Saldos, Trocas).',
         onChange: () => rerender(),
       });
       if (draft.incluirHorarios) {
@@ -16947,7 +16987,7 @@ ALTER TABLE usuarios_app ADD COLUMN IF NOT EXISTS ativo boolean NOT NULL DEFAULT
 
 -- 1b) Colunas novas em usuarios_app para o módulo Horários:
 --     "incluir_horarios" decide se o colaborador aparece em QUALQUER
---     dropdown do módulo Horários (Gerir Vagas, Lista Única de Rotação,
+--     dropdown do módulo Horários (Gerir Posições, Lista Única de Rotação,
 --     Férias/Indisponibilidades, Saldos, Trocas); "estatuto_colaborador"
 --     distingue Quadro ('quadro', com saldo anual de férias) de
 --     Prestador de Serviços de Farmácia ('prestador', só
@@ -17154,6 +17194,46 @@ SET utilizador_id = u.id
 FROM usuarios_app u
 WHERE r.utilizador_id IS NULL AND u.nome_completo = r.nome;
 
+-- 8) CORREÇÃO CRÍTICA — colunas de soft-delete em falta. dbFetchAll()
+--    (genérico, usado por TODAS as tabelas de TABLES) filtra sempre por
+--    `.eq('eliminado', false)`, e dbDelete() escreve sempre
+--    `{ eliminado: true, data_eliminacao: ... }` — tal como qualquer
+--    outra tabela da app. As 6 tabelas do módulo Horários nunca
+--    receberam estas 2 colunas, o que causa o erro em bruto "column
+--    escala_semanas.eliminado does not exist" (e equivalente nas
+--    restantes) sempre que a app tenta ler ou eliminar qualquer uma
+--    delas. Corre este bloco uma vez para resolver em definitivo:
+ALTER TABLE escala_vagas ADD COLUMN IF NOT EXISTS eliminado boolean NOT NULL DEFAULT false;
+ALTER TABLE escala_vagas ADD COLUMN IF NOT EXISTS data_eliminacao timestamptz;
+ALTER TABLE escala_semanas ADD COLUMN IF NOT EXISTS eliminado boolean NOT NULL DEFAULT false;
+ALTER TABLE escala_semanas ADD COLUMN IF NOT EXISTS data_eliminacao timestamptz;
+ALTER TABLE escala_ferias ADD COLUMN IF NOT EXISTS eliminado boolean NOT NULL DEFAULT false;
+ALTER TABLE escala_ferias ADD COLUMN IF NOT EXISTS data_eliminacao timestamptz;
+ALTER TABLE escala_saldos_ferias ADD COLUMN IF NOT EXISTS eliminado boolean NOT NULL DEFAULT false;
+ALTER TABLE escala_saldos_ferias ADD COLUMN IF NOT EXISTS data_eliminacao timestamptz;
+ALTER TABLE escala_prioridade_ferias ADD COLUMN IF NOT EXISTS eliminado boolean NOT NULL DEFAULT false;
+ALTER TABLE escala_prioridade_ferias ADD COLUMN IF NOT EXISTS data_eliminacao timestamptz;
+ALTER TABLE escala_rotacao_grupo_a ADD COLUMN IF NOT EXISTS eliminado boolean NOT NULL DEFAULT false;
+ALTER TABLE escala_rotacao_grupo_a ADD COLUMN IF NOT EXISTS data_eliminacao timestamptz;
+
+-- 9) Variante de semana "Com Mariana" / "Sem Mariana" — a rotação das
+--    letras (A1, A2, A3...) do Grupo A é sempre a mesma sequência normal,
+--    independente da variante; o que muda é o HORÁRIO associado a cada
+--    posição. Cada posição pode ter um horário alternativo opcional para
+--    quando a Mariana está ausente — só é usado se estiver preenchido,
+--    caso contrário usa-se sempre o horário normal (mesmo comportamento
+--    de sempre). "variante" em escala_semanas fica gravada com a semana,
+--    imutável tal como o resto do histórico.
+ALTER TABLE escala_vagas ADD COLUMN IF NOT EXISTS entrada_semana_sem_mariana text DEFAULT '';
+ALTER TABLE escala_vagas ADD COLUMN IF NOT EXISTS pausa_inicio_semana_sem_mariana text DEFAULT '';
+ALTER TABLE escala_vagas ADD COLUMN IF NOT EXISTS pausa_fim_semana_sem_mariana text DEFAULT '';
+ALTER TABLE escala_vagas ADD COLUMN IF NOT EXISTS saida_semana_sem_mariana text DEFAULT '';
+ALTER TABLE escala_vagas ADD COLUMN IF NOT EXISTS entrada_fds_sem_mariana text DEFAULT '';
+ALTER TABLE escala_vagas ADD COLUMN IF NOT EXISTS pausa_inicio_fds_sem_mariana text DEFAULT '';
+ALTER TABLE escala_vagas ADD COLUMN IF NOT EXISTS pausa_fim_fds_sem_mariana text DEFAULT '';
+ALTER TABLE escala_vagas ADD COLUMN IF NOT EXISTS saida_fds_sem_mariana text DEFAULT '';
+ALTER TABLE escala_semanas ADD COLUMN IF NOT EXISTS variante text NOT NULL DEFAULT 'com_mariana';
+
 -- Realtime (opcional, mas recomendado — a app já assume Realtime genérico
 -- por tabela via setupRealtime()/TABLES):
 ALTER PUBLICATION supabase_realtime ADD TABLE escala_vagas;
@@ -17221,6 +17301,15 @@ const ESCALA_TIPOS_AUSENCIA_PRESTADOR = [
 // escalaSaldoAnual) — só Férias Base e Dia Extra; Falta/Baixa não descontam
 // dias de férias.
 const ESCALA_TIPOS_COM_SALDO = ['ferias', 'extra'];
+// Variante da semana ao gerar o horário: a sequência de rotação das
+// letras do Grupo A é sempre a mesma, independente da variante — o que
+// muda é o horário associado a cada posição (ver campos "*_sem_mariana"
+// em escala_vagas e escalaConstruirDiaBase). Gravada com a semana em
+// escala_semanas.variante, imutável como o resto do histórico.
+const ESCALA_VARIANTES = [
+  { key: 'com_mariana', label: 'Semana com Mariana Presente' },
+  { key: 'sem_mariana', label: 'Semana com Mariana Ausente (part-time 20h)' },
+];
 // "Prestador de Serviços de Farmácia" (Farmacêuticos/Técnicos externos sem
 // contrato fixo — ex: Michael, André Sousa, Vânia, Diogo) é um conceito
 // diferente do perfil de login "Prestador de Serviço" (esse é para os
@@ -17260,6 +17349,11 @@ function escalaVagasGrupoOrdenadas(grupo) {
     .sort((a, b) => (a.ordem || 0) - (b.ordem || 0) || String(a.codigo || '').localeCompare(String(b.codigo || '')));
 }
 function escalaTodasVagasOrdenadas() { return ESCALA_GRUPOS.flatMap(g => escalaVagasGrupoOrdenadas(g.key)); }
+// Validação prévia ao "Criar Semana": sem nenhuma Posição ativa
+// configurada (em qualquer grupo), gerar uma semana produziria só uma
+// grelha vazia sem sentido — bloqueia o botão e explica ao utilizador o
+// que fazer, em vez de deixar acontecer e mostrar um resultado confuso.
+function escalaConfiguracaoEmFalta() { return escalaTodasVagasOrdenadas().length === 0; }
 function escalaProximoCodigoVaga(grupo) {
   let max = 0;
   (STATE.escalaVagas || []).forEach(v => {
@@ -17400,19 +17494,38 @@ function escalaPrioridadeParaAno(ano) {
 // data tem sempre prioridade sobre o horário-modelo: Férias/Dia
 // Extra/Falta/Baixa (Quadro) ou Indisponibilidade (Prestador de Serviço)
 // substituem o dia normal e nunca são sobrepostas por um turno.
-function escalaConstruirDiaBase(vaga, diaKey, dataISO) {
+// Dia-base de uma vaga a partir do seu horário-modelo (semana ou fim de
+// semana) — sem entrada/saída definidas para esse tipo de dia (normal em
+// Part-Time/Backoffice ao fim de semana, por exemplo), o dia nasce como
+// Folga, nunca como um horário vazio a confundir a grelha. Quando é dada
+// a data exata do dia, uma ausência registada em escala_ferias para essa
+// data tem sempre prioridade sobre o horário-modelo: Férias/Dia
+// Extra/Falta/Baixa (Quadro) ou Indisponibilidade (Prestador de Serviço)
+// substituem o dia normal e nunca são sobrepostas por um turno.
+// "variante" ('com_mariana' | 'sem_mariana', ver ESCALA_VARIANTES): a
+// rotação das letras nunca muda com a variante — só o horário de cada
+// posição. Cada campo "*_sem_mariana" é uma sobreposição OPCIONAL: só é
+// usado quando a variante é 'sem_mariana' E esse campo específico foi
+// mesmo preenchido; caso contrário usa-se sempre o horário normal — uma
+// posição que não muda entre variantes não precisa de duplicar nada.
+function escalaConstruirDiaBase(vaga, diaKey, dataISO, variante) {
   const ausencia = escalaAusenciaDoDia(vaga.utilizadorId, dataISO);
   if (ausencia) return { entrada: '', saida: '', pausaInicio: '', pausaFim: '', tipo: ausencia.tipo, heHoras: 0, horas: 0 };
   const fds = ESCALA_FDS_KEYS.includes(diaKey);
-  const entrada = String((fds ? vaga.entradaFds : vaga.entradaSemana) || '').trim();
-  const saida = String((fds ? vaga.saidaFds : vaga.saidaSemana) || '').trim();
-  const pausaInicio = String((fds ? vaga.pausaInicioFds : vaga.pausaInicioSemana) || '').trim();
-  const pausaFim = String((fds ? vaga.pausaFimFds : vaga.pausaFimSemana) || '').trim();
+  const semMariana = variante === 'sem_mariana';
+  const campo = (campoNormal, campoAlt) => {
+    const valorAlt = semMariana ? String(vaga[campoAlt] || '').trim() : '';
+    return valorAlt || String(vaga[campoNormal] || '').trim();
+  };
+  const entrada = fds ? campo('entradaFds', 'entradaFdsSemMariana') : campo('entradaSemana', 'entradaSemanaSemMariana');
+  const saida = fds ? campo('saidaFds', 'saidaFdsSemMariana') : campo('saidaSemana', 'saidaSemanaSemMariana');
+  const pausaInicio = fds ? campo('pausaInicioFds', 'pausaInicioFdsSemMariana') : campo('pausaInicioSemana', 'pausaInicioSemanaSemMariana');
+  const pausaFim = fds ? campo('pausaFimFds', 'pausaFimFdsSemMariana') : campo('pausaFimSemana', 'pausaFimSemanaSemMariana');
   if (!entrada || !saida) return { entrada: '', saida: '', pausaInicio: '', pausaFim: '', tipo: 'folga', heHoras: 0, horas: 0 };
   return { entrada, saida, pausaInicio, pausaFim, tipo: 'normal', heHoras: 0, horas: escalaCalcularHorasComPausa(entrada, saida, pausaInicio, pausaFim) };
 }
 // Lista Única de Rotação do Grupo A: escala_rotacao_grupo_a (persistida,
-// gerida em "Gerir Vagas") ordenada por "ordem", ou a lista-base do
+// gerida em "Gerir Posições") ordenada por "ordem", ou a lista-base do
 // código enquanto essa tabela estiver vazia.
 function escalaRotacaoGrupoALista() {
   const lista = (STATE.escalaRotacaoGrupoA || []).slice().sort((a, b) => (a.ordem || 0) - (b.ordem || 0));
@@ -17475,19 +17588,28 @@ function escalaAtribuirGrupoA(semanaInicioISO) {
   const atribuicoes = [];
   let cursor = indiceInicial;
   vagasA.forEach(v => {
-    let idxEncontrado = -1, utilizadorEncontrado = null;
+    let idxEncontrado = -1, utilizadorEncontrado = null, nomeFallback = '';
     for (let tentativa = 0; tentativa < n; tentativa += 1) {
       const idx = (cursor + tentativa) % n;
       if (usadas.has(idx)) continue;
-      const utilizador = escalaRotacaoResolverUtilizador(lista[idx]);
+      const entrada = lista[idx];
+      const utilizador = escalaRotacaoResolverUtilizador(entrada);
       if (utilizador && utilizador.ativo !== false) { idxEncontrado = idx; utilizadorEncontrado = utilizador; break; }
+      // Resiliência: a conta ainda não existe no Supabase (ex.: colaborador
+      // acabou de regressar de licença e o registo em usuarios_app está a
+      // ser feito no próprio dia) — usa o nome da Lista Única de Rotação
+      // como fallback e ocupa a vaga na mesma, sem crashar e sem saltar a
+      // vez desta pessoa. Só salta de facto quando a conta EXISTE mas está
+      // inativa (utilizador && utilizador.ativo === false) — nesse caso
+      // sim, avança para o próximo da lista.
+      if (!utilizador && entrada && String(entrada.nome || '').trim()) { idxEncontrado = idx; utilizadorEncontrado = null; nomeFallback = String(entrada.nome).trim(); break; }
     }
     if (idxEncontrado !== -1) { usadas.add(idxEncontrado); cursor = idxEncontrado + 1; }
     else { vagasLibertadas.push(v.codigo); cursor += 1; }
     atribuicoes.push({
       vagaId: v.id, codigo: v.codigo,
       utilizadorId: utilizadorEncontrado ? utilizadorEncontrado.id : null,
-      colaboradorNome: utilizadorEncontrado ? (utilizadorEncontrado.nomeCompleto || utilizadorEncontrado.username) : (idxEncontrado !== -1 ? lista[idxEncontrado].nome : ''),
+      colaboradorNome: utilizadorEncontrado ? (utilizadorEncontrado.nomeCompleto || utilizadorEncontrado.username) : (nomeFallback || (idxEncontrado !== -1 ? lista[idxEncontrado].nome : '')),
     });
   });
   return { atribuicoes, vagasLibertadas };
@@ -17497,12 +17619,12 @@ function escalaAtribuirGrupoA(semanaInicioISO) {
 // selecionada/visualizada na navegação, não necessariamente "a seguinte à
 // última". O Grupo A é atribuído dinamicamente pela Lista Única de
 // Rotação (nunca grava um "colaborador fixo" em escala_vagas); os Grupos
-// F/P/B continuam fixos, tal como configurados em "Gerir Vagas". Monta a
+// F/P/B continuam fixos, tal como configurados em "Gerir Posições". Monta a
 // grelha completa (Segunda a Domingo) de TODAS as vagas ativas a partir
 // dos horários-modelo de cada uma (já cruzados com Férias/
 // Indisponibilidades), e grava tudo como uma nova escala_semanas em
 // estado 'rascunho' — nunca mexe em semanas já existentes.
-async function escalaGerarOuAbrirSemana(semanaInicioISO) {
+async function escalaGerarOuAbrirSemana(semanaInicioISO, variante) {
   // 1) Já existe (rascunho ou publicada)? Devolve-a diretamente — nunca
   // tenta inserir de novo, o que evitaria por completo o erro de chave
   // duplicada em vez de só o mitigar. Semanas passadas/publicadas nunca
@@ -17510,6 +17632,7 @@ async function escalaGerarOuAbrirSemana(semanaInicioISO) {
   // escalaSemanaEstaCongelada().
   const existente = (STATE.escalaSemanas || []).find(s => s.semanaInicio === semanaInicioISO);
   if (existente) return { semana: existente, criada: false, vagasLibertadas: [], vagasComCobertura: [] };
+  const varianteFinal = ESCALA_VARIANTES.some(v => v.key === variante) ? variante : 'com_mariana';
   const { atribuicoes: atribuicoesA, vagasLibertadas } = escalaAtribuirGrupoA(semanaInicioISO);
   const mapaAtribuicoesA = new Map(atribuicoesA.map(a => [a.vagaId, a]));
   const dados = {};
@@ -17531,14 +17654,14 @@ async function escalaGerarOuAbrirSemana(semanaInicioISO) {
     let precisaCobertura = false;
     ESCALA_DIAS.forEach(d => {
       const dataISO = escalaDataDoDia(semanaInicioISO, d.key);
-      const dia = escalaConstruirDiaBase(vagaEfetiva, d.key, dataISO);
+      const dia = escalaConstruirDiaBase(vagaEfetiva, d.key, dataISO, varianteFinal);
       linha.dias[d.key] = dia;
       if (dia.tipo === 'ferias' || dia.tipo === 'extra' || dia.tipo === 'indisponivel') precisaCobertura = true;
     });
     dados[v.codigo] = linha;
     if (precisaCobertura) vagasComCobertura.push(v.codigo);
   });
-  const payload = { semanaInicio: semanaInicioISO, estado: 'rascunho', observacoes: '', tarefas: '', dados, criadoPor: currentUserName() };
+  const payload = { semanaInicio: semanaInicioISO, estado: 'rascunho', variante: varianteFinal, observacoes: '', tarefas: '', dados, criadoPor: currentUserName() };
   const created = await dbInsert('escalaSemanas', payload);
   if (created) { STATE.escalaSemanas = [created, ...STATE.escalaSemanas]; return { semana: created, criada: true, vagasLibertadas, vagasComCobertura }; }
   // 2) A inserção falhou — pode ser mesmo um erro, ou pode ser uma corrida
@@ -17667,6 +17790,33 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   requestAnimationFrame(atualizarVisibilidade);
 }
 
+// Traduz um erro em bruto do Supabase (lastDbError) para uma mensagem
+// amigável em português de Portugal — o módulo Horários nunca mostra ao
+// utilizador texto cru como "column escala_semanas.eliminado does not
+// exist". Quando o erro indica claramente uma coluna/tabela em falta,
+// aponta diretamente para o bloco SQL de correção (ver comentário
+// ESCALA_SQL mais acima, secção 8). A mensagem técnica original
+// continua sempre no console (ver dbInsert/dbUpdate/dbDelete/dbFetchAll)
+// para diagnóstico, nunca é escondida por completo — só não é imposta
+// ao utilizador final.
+function escalaMensagemErroAmigavel(erroBruto) {
+  const msg = String(erroBruto || '').trim();
+  if (!msg) return 'Verifique a ligação à internet e tente novamente.';
+  if (/does not exist/i.test(msg) && /column|table|relation/i.test(msg)) {
+    return 'A base de dados do módulo Horários ainda não está totalmente configurada (falta uma coluna/tabela). Peça a um Administrador para correr o script SQL do módulo Horários (bloco ESCALA_SQL, secção 8 — colunas "eliminado"/"data_eliminacao") no SQL Editor do Supabase.';
+  }
+  if (/duplicate key|already exists|unique constraint/i.test(msg)) return 'Já existe um registo igual (código ou nome repetido) — verifique os dados introduzidos.';
+  if (/network|fetch|failed to fetch|dataclone/i.test(msg)) return 'Falha de ligação ao servidor. Verifique a internet e tente novamente.';
+  if (/permission denied|row-level security|policy/i.test(msg)) return 'Sem permissão para esta ação (política de segurança da base de dados). Contacte um Administrador.';
+  return 'Não foi possível concluir a operação. Tente novamente ou contacte um Administrador se o problema persistir.';
+}
+// Toast de erro do módulo Horários — usa sempre a tradução amigável
+// acima em vez do texto em bruto do Supabase (ver showDbErrorToast, a
+// versão genérica usada no resto da app, que continua a mostrar
+// lastDbError diretamente).
+function escalaShowErro(acao) {
+  showToast(`${acao}. ${escalaMensagemErroAmigavel(lastDbError)}`, 'error');
+}
 function buildHorariosPage(container, goTo) {
   // Vista predefinida ao entrar no módulo: SEMPRE "A Minha Semana" (Vista
   // Pessoal), na semana corrente do utilizador ligado.
@@ -17674,6 +17824,7 @@ function buildHorariosPage(container, goTo) {
   let semanaSelecionadaData = null; // 'YYYY-MM-DD' — sempre uma Segunda-feira; null até ao primeiro build()
   let gerando = false;
   let showVagaForm = false, editingVagaId = null, vagaDraft = {}, vagaFormError = '', vagaSaving = false;
+  let varianteSelecionada = 'com_mariana'; // 'com_mariana' | 'sem_mariana' — só relevante ao CRIAR uma semana nova
   let rotacaoADraft = {};
   let feriasDraft = { utilizadorId: '', tipo: 'ferias', dataInicio: '', dataFim: '', observacoes: '' }, feriasError = '', feriasSaving = false;
   let feriasAnoSaldos = new Date().getFullYear();
@@ -17721,7 +17872,7 @@ function buildHorariosPage(container, goTo) {
     if (!isMasterUser() || gerando) return;
     gerando = true; rerender();
     const alvo = dataSemanaSelecionada();
-    const { semana, criada, vagasLibertadas, vagasComCobertura } = await escalaGerarOuAbrirSemana(alvo);
+    const { semana, criada, vagasLibertadas, vagasComCobertura } = await escalaGerarOuAbrirSemana(alvo, varianteSelecionada);
     gerando = false;
     if (semana) {
       semanaSelecionadaData = semana.semanaInicio;
@@ -17737,7 +17888,7 @@ function buildHorariosPage(container, goTo) {
           : `Horário de ${formatDate(semana.semanaInicio)} criado como rascunho.`, avisos.length ? 'info' : 'success');
       }
     } else {
-      showToast(`Não foi possível gerar o horário. ${lastDbError || 'Verifique a ligação e tente novamente.'}`, 'error');
+      showToast(`Não foi possível gerar o horário. ${escalaMensagemErroAmigavel(lastDbError)}`, 'error');
     }
     rerender();
   }
@@ -17746,21 +17897,21 @@ function buildHorariosPage(container, goTo) {
     if (escalaSemanaNoPassado(semana)) { showToast('Esta semana já passou — o histórico está congelado.', 'error'); return; }
     const updated = await dbUpdate('escalaSemanas', semana.id, { estado: 'publicado', publicadoEm: new Date().toISOString() });
     if (updated) { STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s); showToast('Horário publicado.', 'success'); }
-    else showDbErrorToast('Não foi possível publicar o horário');
+    else escalaShowErro('Não foi possível publicar o horário');
     rerender();
   }
   async function reabrirSemana(semana) {
     if (escalaSemanaNoPassado(semana)) { showToast('Esta semana já passou — o histórico está congelado e não pode ser reaberto.', 'error'); return; }
     const updated = await dbUpdate('escalaSemanas', semana.id, { estado: 'rascunho', publicadoEm: null });
     if (updated) { STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s); showToast('Horário reaberto para edição.', 'success'); }
-    else showDbErrorToast('Não foi possível reabrir o horário');
+    else escalaShowErro('Não foi possível reabrir o horário');
     rerender();
   }
   async function guardarNotasSemana(semana, observacoes, tarefas) {
     if (escalaSemanaCongelada(semana)) { showToast('Esta semana está congelada e não pode ser editada.', 'error'); return; }
     const updated = await dbUpdate('escalaSemanas', semana.id, { observacoes, tarefas });
     if (updated) { STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s); showToast('Rascunho guardado.', 'success'); }
-    else showDbErrorToast('Não foi possível guardar');
+    else escalaShowErro('Não foi possível guardar');
     rerender();
   }
 
@@ -17788,7 +17939,13 @@ function buildHorariosPage(container, goTo) {
       if (!s) return null;
       return h('span', { class: 'badge ' + (s.estado === 'publicado' ? 'badge-green' : 'badge-orange') }, s.estado === 'publicado' ? 'Publicado' : 'Rascunho');
     })();
-    return h('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;' }, [btnAnterior, dateInput, btnSeguinte, hojeBtn, estadoBadge]);
+    const varianteBadge = (() => {
+      const s = semanaSelecionada();
+      if (!s || !s.variante || s.variante === 'com_mariana') return null;
+      const info = ESCALA_VARIANTES.find(v => v.key === s.variante);
+      return h('span', { class: 'badge badge-purple', title: 'Variante usada ao gerar esta semana' }, info ? info.label : s.variante);
+    })();
+    return h('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;' }, [btnAnterior, dateInput, btnSeguinte, hojeBtn, estadoBadge, varianteBadge]);
   }
 
   // Uma semana fica "no passado" quando o seu início já é anterior à
@@ -17805,7 +17962,7 @@ function buildHorariosPage(container, goTo) {
   function buildGrelhaEquipa(semana) {
     const editavel = isMasterUser() && !escalaSemanaCongelada(semana);
     const wrap = h('div', { class: 'card' });
-    const thead = h('thead', {}, h('tr', {}, ['Vaga', 'Colaborador', ...ESCALA_DIAS.map(d => d.label.slice(0, 3)), 'Total'].map(t => h('th', {}, t))));
+    const thead = h('thead', {}, h('tr', {}, ['Posição', 'Colaborador', ...ESCALA_DIAS.map(d => d.label.slice(0, 3)), 'Total'].map(t => h('th', {}, t))));
     const bodyRows = [];
     // Soma-se por dia (todas as vagas) à medida que as linhas são
     // construídas — evita percorrer semana.dados uma segunda vez só para
@@ -17836,7 +17993,7 @@ function buildHorariosPage(container, goTo) {
         });
         bodyRows.push(h('tr', {}, [
           h('td', { class: 'cell-strong' }, v.codigo),
-          h('td', {}, linha.colaboradorNome || h('span', { class: 'cell-muted' }, 'Vaga por preencher')),
+          h('td', {}, linha.colaboradorNome || h('span', { class: 'cell-muted' }, 'Posição por preencher')),
           ...cells,
           h('td', { class: 'cell-strong' }, escalaFormatarHoras(escalaTotalHorasLinha(linha))),
         ]));
@@ -17903,7 +18060,7 @@ function buildHorariosPage(container, goTo) {
     if (!activeUser) return EmptyState('Inicie sessão para ver o seu horário pessoal.');
     if (!semana) return EmptyState('Ainda não existe nenhum horário gerado para esta semana.');
     const codigosMeus = Object.keys(semana.dados || {}).filter(cod => semana.dados[cod].colaboradorId === activeUser.id);
-    if (!codigosMeus.length) return EmptyState('Não está atribuído a nenhuma vaga nesta semana.');
+    if (!codigosMeus.length) return EmptyState('Não está atribuído a nenhuma posição nesta semana.');
     const wrap = h('div', {});
     codigosMeus.forEach(codigo => {
       const linha = semana.dados[codigo];
@@ -17956,7 +18113,7 @@ function buildHorariosPage(container, goTo) {
       feriasDraft = { utilizadorId: '', tipo: 'ferias', dataInicio: '', dataFim: '', observacoes: '' };
       showToast('Período registado.', 'success');
     } else {
-      feriasError = `Não foi possível guardar. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
+      feriasError = `Não foi possível guardar. ${escalaMensagemErroAmigavel(lastDbError)}`;
     }
     rerender();
   }
@@ -17964,7 +18121,7 @@ function buildHorariosPage(container, goTo) {
     confirmDialog('Tem a certeza de que quer eliminar este período? Esta ação não pode ser desfeita.', async () => {
       const ok = await dbDelete('escalaFerias', pedido.id);
       if (ok) { STATE.escalaFerias = STATE.escalaFerias.filter(f => f.id !== pedido.id); rerender(); }
-      else showDbErrorToast('Não foi possível eliminar');
+      else escalaShowErro('Não foi possível eliminar');
     }, { danger: true, confirmLabel: 'Eliminar' });
   }
   function buildFormPedidoFerias() {
@@ -18047,7 +18204,7 @@ function buildHorariosPage(container, goTo) {
       editingSaldoUserId = null;
       showToast('Saldo atualizado.', 'success');
     } else {
-      saldoError = `Não foi possível guardar. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
+      saldoError = `Não foi possível guardar. ${escalaMensagemErroAmigavel(lastDbError)}`;
     }
     rerender();
   }
@@ -18169,7 +18326,7 @@ function buildHorariosPage(container, goTo) {
     const max = (STATE.escalaPrioridadeFerias || []).reduce((m, x) => Math.max(m, x.ordem || 0), 0);
     const created = await dbInsert('escalaPrioridadeFerias', { ordem: max + 1, nome: nomeLimpo, utilizadorId: null });
     if (created) { STATE.escalaPrioridadeFerias = [...(STATE.escalaPrioridadeFerias || []), created]; prioridadeDraft = {}; }
-    else showDbErrorToast('Não foi possível adicionar');
+    else escalaShowErro('Não foi possível adicionar');
     rerender();
   }
   async function atualizarOrdemPrioridade(item, novaOrdem) {
@@ -18177,14 +18334,14 @@ function buildHorariosPage(container, goTo) {
     if (isNaN(ordem)) return;
     const updated = await dbUpdate('escalaPrioridadeFerias', item.id, { ordem });
     if (updated) STATE.escalaPrioridadeFerias = STATE.escalaPrioridadeFerias.map(x => x.id === item.id ? updated : x);
-    else showDbErrorToast('Não foi possível atualizar a ordem');
+    else escalaShowErro('Não foi possível atualizar a ordem');
     rerender();
   }
   function eliminarPrioridade(item) {
     confirmDialog(`Tem a certeza de que quer remover ${item.nome} da lista de prioridade?`, async () => {
       const ok = await dbDelete('escalaPrioridadeFerias', item.id);
       if (ok) { STATE.escalaPrioridadeFerias = STATE.escalaPrioridadeFerias.filter(x => x.id !== item.id); rerender(); }
-      else showDbErrorToast('Não foi possível remover');
+      else escalaShowErro('Não foi possível remover');
     }, { danger: true, confirmLabel: 'Remover' });
   }
   function buildGerirPrioridadeBase() {
@@ -18250,24 +18407,34 @@ function buildHorariosPage(container, goTo) {
     ]);
   }
 
-  // ---- Gerir Vagas (Administrador/Master) ----
+  // ---- Gerir Posições (Administrador/Master) ----
   // Fonte única de colaboradores elegíveis para TODOS os dropdowns do
-  // módulo Horários (Gerir Vagas, Lista Única de Rotação, Férias/
+  // módulo Horários (Gerir Posições, Lista Única de Rotação, Férias/
   // Indisponibilidades, Saldos) — filtra estritamente por
   // incluirHorarios === true, além de ativo e visível ao utilizador atual.
   function usuariosAtivosParaVaga() {
     return ordenarUsuariosPorHierarquia((STATE.usuarios || []).filter(u => u.ativo !== false && u.incluirHorarios === true && usuarioVisivelParaAtual(u)));
   }
   function openNovaVaga(grupo) {
-    vagaDraft = { grupo: grupo || 'A', codigo: escalaProximoCodigoVaga(grupo || 'A'), ordem: escalaVagasGrupoOrdenadas(grupo || 'A').length + 1, utilizadorId: '', entradaSemana: '', pausaInicioSemana: '', pausaFimSemana: '', saidaSemana: '', entradaFds: '', pausaInicioFds: '', pausaFimFds: '', saidaFds: '' };
+    vagaDraft = {
+      grupo: grupo || 'A', codigo: escalaProximoCodigoVaga(grupo || 'A'), ordem: escalaVagasGrupoOrdenadas(grupo || 'A').length + 1, utilizadorId: '',
+      entradaSemana: '', pausaInicioSemana: '', pausaFimSemana: '', saidaSemana: '', entradaFds: '', pausaInicioFds: '', pausaFimFds: '', saidaFds: '',
+      temVarianteSemMariana: false,
+      entradaSemanaSemMariana: '', pausaInicioSemanaSemMariana: '', pausaFimSemanaSemMariana: '', saidaSemanaSemMariana: '',
+      entradaFdsSemMariana: '', pausaInicioFdsSemMariana: '', pausaFimFdsSemMariana: '', saidaFdsSemMariana: '',
+    };
     editingVagaId = null; vagaFormError = ''; showVagaForm = true; rerender();
   }
   function openEditarVaga(v) {
+    const temVarianteSemMariana = !!(v.entradaSemanaSemMariana || v.saidaSemanaSemMariana || v.entradaFdsSemMariana || v.saidaFdsSemMariana);
     vagaDraft = {
       grupo: v.grupo, codigo: v.codigo, ordem: v.ordem || 1, utilizadorId: v.utilizadorId || '',
       entradaSemana: v.entradaSemana || '', pausaInicioSemana: v.pausaInicioSemana || '', pausaFimSemana: v.pausaFimSemana || '', saidaSemana: v.saidaSemana || '',
       entradaFds: v.entradaFds || '', pausaInicioFds: v.pausaInicioFds || '', pausaFimFds: v.pausaFimFds || '', saidaFds: v.saidaFds || '',
       ativo: v.ativo !== false,
+      temVarianteSemMariana,
+      entradaSemanaSemMariana: v.entradaSemanaSemMariana || '', pausaInicioSemanaSemMariana: v.pausaInicioSemanaSemMariana || '', pausaFimSemanaSemMariana: v.pausaFimSemanaSemMariana || '', saidaSemanaSemMariana: v.saidaSemanaSemMariana || '',
+      entradaFdsSemMariana: v.entradaFdsSemMariana || '', pausaInicioFdsSemMariana: v.pausaInicioFdsSemMariana || '', pausaFimFdsSemMariana: v.pausaFimFdsSemMariana || '', saidaFdsSemMariana: v.saidaFdsSemMariana || '',
     };
     editingVagaId = v.id; vagaFormError = ''; showVagaForm = true; rerender();
   }
@@ -18278,7 +18445,7 @@ function buildHorariosPage(container, goTo) {
     const entradaSemana = String(vagaDraft.entradaSemana || '').trim();
     const saidaSemana = String(vagaDraft.saidaSemana || '').trim();
     if (!codigo || !entradaSemana || !saidaSemana) {
-      vagaFormError = 'Por favor, preencha o Código da Vaga e o horário de Entrada/Saída em Semana.';
+      vagaFormError = 'Por favor, preencha o Código da Posição e o horário de Entrada/Saída em Semana.';
       rerender();
       return;
     }
@@ -18308,9 +18475,45 @@ function buildHorariosPage(container, goTo) {
       rerender();
       return;
     }
+    // Horário alternativo "Sem Mariana" — só validado/gravado quando o
+    // toggle está ligado; desligado, os campos são limpos (payload vazio)
+    // para nunca deixar uma sobreposição esquecida a aplicar-se sem o
+    // utilizador saber.
+    let entradaSemanaSemMariana = '', saidaSemanaSemMariana = '', pausaInicioSemanaSemMariana = '', pausaFimSemanaSemMariana = '';
+    let entradaFdsSemMariana = '', saidaFdsSemMariana = '', pausaInicioFdsSemMariana = '', pausaFimFdsSemMariana = '';
+    if (vagaDraft.temVarianteSemMariana) {
+      entradaSemanaSemMariana = String(vagaDraft.entradaSemanaSemMariana || '').trim();
+      saidaSemanaSemMariana = String(vagaDraft.saidaSemanaSemMariana || '').trim();
+      if ((entradaSemanaSemMariana && !saidaSemanaSemMariana) || (!entradaSemanaSemMariana && saidaSemanaSemMariana) || (entradaSemanaSemMariana && (!/^\d{1,2}:\d{2}$/.test(entradaSemanaSemMariana) || !/^\d{1,2}:\d{2}$/.test(saidaSemanaSemMariana)))) {
+        vagaFormError = 'Entrada/Saída (Semana, Sem Mariana) devem estar ambas preenchidas e no formato HH:MM, ou ambas em branco.';
+        rerender();
+        return;
+      }
+      pausaInicioSemanaSemMariana = String(vagaDraft.pausaInicioSemanaSemMariana || '').trim();
+      pausaFimSemanaSemMariana = String(vagaDraft.pausaFimSemanaSemMariana || '').trim();
+      if ((pausaInicioSemanaSemMariana && !pausaFimSemanaSemMariana) || (!pausaInicioSemanaSemMariana && pausaFimSemanaSemMariana) || (pausaInicioSemanaSemMariana && (!/^\d{1,2}:\d{2}$/.test(pausaInicioSemanaSemMariana) || !/^\d{1,2}:\d{2}$/.test(pausaFimSemanaSemMariana)))) {
+        vagaFormError = 'A Pausa/Almoço da Semana (Sem Mariana) deve ter Saída e Regresso preenchidos e no formato HH:MM, ou ficar em branco.';
+        rerender();
+        return;
+      }
+      entradaFdsSemMariana = String(vagaDraft.entradaFdsSemMariana || '').trim();
+      saidaFdsSemMariana = String(vagaDraft.saidaFdsSemMariana || '').trim();
+      if ((entradaFdsSemMariana && !saidaFdsSemMariana) || (!entradaFdsSemMariana && saidaFdsSemMariana) || (entradaFdsSemMariana && (!/^\d{1,2}:\d{2}$/.test(entradaFdsSemMariana) || !/^\d{1,2}:\d{2}$/.test(saidaFdsSemMariana)))) {
+        vagaFormError = 'Entrada/Saída (Fim de Semana, Sem Mariana) devem estar ambas preenchidas e no formato HH:MM, ou ambas em branco.';
+        rerender();
+        return;
+      }
+      pausaInicioFdsSemMariana = String(vagaDraft.pausaInicioFdsSemMariana || '').trim();
+      pausaFimFdsSemMariana = String(vagaDraft.pausaFimFdsSemMariana || '').trim();
+      if ((pausaInicioFdsSemMariana && !pausaFimFdsSemMariana) || (!pausaInicioFdsSemMariana && pausaFimFdsSemMariana) || (pausaInicioFdsSemMariana && (!/^\d{1,2}:\d{2}$/.test(pausaInicioFdsSemMariana) || !/^\d{1,2}:\d{2}$/.test(pausaFimFdsSemMariana)))) {
+        vagaFormError = 'A Pausa/Almoço do Fim de Semana (Sem Mariana) deve ter Saída e Regresso preenchidos e no formato HH:MM, ou ficar em branco.';
+        rerender();
+        return;
+      }
+    }
     const duplicado = (STATE.escalaVagas || []).find(v => v.id !== editingVagaId && String(v.codigo || '').toUpperCase() === codigo);
     if (duplicado) {
-      vagaFormError = `Já existe uma vaga com o código ${codigo}.`;
+      vagaFormError = `Já existe uma posição com o código ${codigo}.`;
       rerender();
       return;
     }
@@ -18321,27 +18524,29 @@ function buildHorariosPage(container, goTo) {
       utilizadorId: grupo === 'A' ? null : (vagaDraft.utilizadorId || null),
       entradaSemana, pausaInicioSemana, pausaFimSemana, saidaSemana,
       entradaFds, pausaInicioFds, pausaFimFds, saidaFds,
+      entradaSemanaSemMariana, pausaInicioSemanaSemMariana, pausaFimSemanaSemMariana, saidaSemanaSemMariana,
+      entradaFdsSemMariana, pausaInicioFdsSemMariana, pausaFimFdsSemMariana, saidaFdsSemMariana,
     };
     if (editingVagaId) {
       payload.ativo = vagaDraft.ativo !== false;
       const updated = await dbUpdate('escalaVagas', editingVagaId, payload);
       if (updated) STATE.escalaVagas = STATE.escalaVagas.map(v => v.id === editingVagaId ? updated : v);
-      else vagaFormError = `Não foi possível guardar. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
+      else vagaFormError = `Não foi possível guardar. ${escalaMensagemErroAmigavel(lastDbError)}`;
     } else {
       payload.ativo = true;
       const created = await dbInsert('escalaVagas', payload);
       if (created) STATE.escalaVagas = [...STATE.escalaVagas, created];
-      else vagaFormError = `Não foi possível criar a vaga. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
+      else vagaFormError = `Não foi possível criar a posição. ${escalaMensagemErroAmigavel(lastDbError)}`;
     }
     vagaSaving = false;
     if (!vagaFormError) showVagaForm = false;
     rerender();
   }
   function eliminarVaga(v) {
-    confirmDialog(`Tem a certeza de que quer eliminar a vaga ${v.codigo}? Esta ação não pode ser desfeita — o histórico de semanas já geradas mantém-se.`, async () => {
+    confirmDialog(`Tem a certeza de que quer eliminar a posição ${v.codigo}? Esta ação não pode ser desfeita — o histórico de semanas já geradas mantém-se.`, async () => {
       const ok = await dbDelete('escalaVagas', v.id);
       if (ok) { STATE.escalaVagas = STATE.escalaVagas.filter(x => x.id !== v.id); rerender(); }
-      else showDbErrorToast('Não foi possível eliminar a vaga');
+      else escalaShowErro('Não foi possível eliminar a posição');
     }, { danger: true, confirmLabel: 'Eliminar' });
   }
 
@@ -18361,7 +18566,7 @@ function buildHorariosPage(container, goTo) {
     ordemInput.value = String(vagaDraft.ordem || 1);
     ordemInput.addEventListener('input', () => { vagaDraft.ordem = ordemInput.value; });
     const colaboradorSelect = h('select', { class: 'select' }, [
-      h('option', { value: '', selected: !vagaDraft.utilizadorId ? 'selected' : undefined }, '— Vaga por preencher —'),
+      h('option', { value: '', selected: !vagaDraft.utilizadorId ? 'selected' : undefined }, '— Posição por preencher —'),
       ...ativos.map(u => h('option', { value: u.id, selected: vagaDraft.utilizadorId === u.id ? 'selected' : undefined }, u.nomeCompleto || u.username)),
     ]);
     colaboradorSelect.value = vagaDraft.utilizadorId || '';
@@ -18382,28 +18587,63 @@ function buildHorariosPage(container, goTo) {
     const pausaFimFdsInput = campoHora(vagaDraft.pausaFimFds, (v) => { vagaDraft.pausaFimFds = v; }, 'HH:MM (opcional)');
     const saiFdsInput = campoHora(vagaDraft.saidaFds, (v) => { vagaDraft.saidaFds = v; }, 'HH:MM (opcional)');
 
+    // Horário alternativo opcional para "Semana com Mariana Ausente" — só
+    // aparece quando o toggle está ligado; os campos em branco herdam
+    // sempre o horário normal acima (ver escalaConstruirDiaBase).
+    const toggleSemMariana = h('input', { type: 'checkbox' });
+    toggleSemMariana.checked = !!vagaDraft.temVarianteSemMariana;
+    toggleSemMariana.addEventListener('change', () => { vagaDraft.temVarianteSemMariana = toggleSemMariana.checked; rerender(); });
+    let blocosSemMariana = [];
+    if (vagaDraft.temVarianteSemMariana) {
+      const entSemMInput = campoHora(vagaDraft.entradaSemanaSemMariana, (v) => { vagaDraft.entradaSemanaSemMariana = v; }, 'HH:MM (opcional)');
+      const pausaIniSemMInput = campoHora(vagaDraft.pausaInicioSemanaSemMariana, (v) => { vagaDraft.pausaInicioSemanaSemMariana = v; }, 'HH:MM (opcional)');
+      const pausaFimSemMInput = campoHora(vagaDraft.pausaFimSemanaSemMariana, (v) => { vagaDraft.pausaFimSemanaSemMariana = v; }, 'HH:MM (opcional)');
+      const saiSemMInput = campoHora(vagaDraft.saidaSemanaSemMariana, (v) => { vagaDraft.saidaSemanaSemMariana = v; }, 'HH:MM (opcional)');
+      const entFdsMInput = campoHora(vagaDraft.entradaFdsSemMariana, (v) => { vagaDraft.entradaFdsSemMariana = v; }, 'HH:MM (opcional)');
+      const pausaIniFdsMInput = campoHora(vagaDraft.pausaInicioFdsSemMariana, (v) => { vagaDraft.pausaInicioFdsSemMariana = v; }, 'HH:MM (opcional)');
+      const pausaFimFdsMInput = campoHora(vagaDraft.pausaFimFdsSemMariana, (v) => { vagaDraft.pausaFimFdsSemMariana = v; }, 'HH:MM (opcional)');
+      const saiFdsMInput = campoHora(vagaDraft.saidaFdsSemMariana, (v) => { vagaDraft.saidaFdsSemMariana = v; }, 'HH:MM (opcional)');
+      blocosSemMariana = [
+        h('p', { class: 'field-helper-text', style: 'margin:0 0 10px;' }, 'Campos em branco mantêm o horário normal acima — só preencha o que muda quando a Mariana está ausente.'),
+        h('h3', { class: 'page-eyebrow', style: 'margin:0 0 10px;color:var(--pharm-700);font-size:12.5px;' }, 'Turno Semana (Seg–Sex) — Sem Mariana'),
+        h('div', { class: 'form-grid' }, [
+          h('div', { class: 'field field-sm' }, [h('label', {}, 'Entrada'), entSemMInput]),
+          h('div', { class: 'field field-sm' }, [h('label', {}, 'Saída Pausa'), pausaIniSemMInput]),
+          h('div', { class: 'field field-sm' }, [h('label', {}, 'Regresso Pausa'), pausaFimSemMInput]),
+          h('div', { class: 'field field-sm' }, [h('label', {}, 'Saída'), saiSemMInput]),
+        ]),
+        h('h3', { class: 'page-eyebrow', style: 'margin:14px 0 10px;color:var(--pharm-700);font-size:12.5px;' }, 'Turno Fim de Semana (Sáb–Dom) — Sem Mariana'),
+        h('div', { class: 'form-grid' }, [
+          h('div', { class: 'field field-sm' }, [h('label', {}, 'Entrada'), entFdsMInput]),
+          h('div', { class: 'field field-sm' }, [h('label', {}, 'Saída Pausa'), pausaIniFdsMInput]),
+          h('div', { class: 'field field-sm' }, [h('label', {}, 'Regresso Pausa'), pausaFimFdsMInput]),
+          h('div', { class: 'field field-sm' }, [h('label', {}, 'Saída'), saiFdsMInput]),
+        ]),
+      ];
+    }
+
     const actionsRow = [
-      h('button', { class: 'btn btn-primary', onclick: vagaSaving ? null : () => requireAuth(submitVaga), disabled: vagaSaving ? 'disabled' : undefined }, vagaSaving ? 'A guardar…' : (editingVagaId ? 'Guardar alterações' : 'Criar vaga')),
+      h('button', { class: 'btn btn-primary', onclick: vagaSaving ? null : () => requireAuth(submitVaga), disabled: vagaSaving ? 'disabled' : undefined }, vagaSaving ? 'A guardar…' : (editingVagaId ? 'Guardar alterações' : 'Criar posição')),
       h('button', { class: 'btn btn-secondary', onclick: cancelVagaForm }, 'Cancelar'),
     ];
     if (editingVagaId) {
       const vAlvo = (STATE.escalaVagas || []).find(x => x.id === editingVagaId);
-      actionsRow.push(h('button', { class: 'btn-fab-sm form-delete-btn', title: 'Eliminar vaga', 'aria-label': 'Eliminar vaga', onclick: () => requireAuth(() => eliminarVaga(vAlvo)) }, Icon('trash', { size: 15, strokeWidth: 2.2 })));
+      actionsRow.push(h('button', { class: 'btn-fab-sm form-delete-btn', title: 'Eliminar posição', 'aria-label': 'Eliminar posição', onclick: () => requireAuth(() => eliminarVaga(vAlvo)) }, Icon('trash', { size: 15, strokeWidth: 2.2 })));
     }
     return h('div', { class: 'card card-pad animate-in', style: 'margin-bottom:20px;' }, [
-      h('h3', { class: 'page-eyebrow', style: 'margin-bottom:6px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, editingVagaId ? 'Editar Vaga' : 'Nova Vaga'),
+      h('h3', { class: 'page-eyebrow', style: 'margin-bottom:6px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, editingVagaId ? 'Editar Posição' : 'Nova Posição'),
       h('p', { class: 'field-helper-text', style: 'margin:0 0 16px;' },
-        'As vagas definem os turnos-modelo da farmácia. As vagas do Grupo A rodam automaticamente de semana para semana; as vagas F, P e B são fixas.'),
+        'As posições definem os turnos-modelo da farmácia. As posições do Grupo A rodam automaticamente de semana para semana; as posições F, P e B são fixas.'),
       h('div', { class: 'form-grid' }, [
         h('div', { class: 'field field-sm' }, [h('label', {}, 'Grupo'), grupoSelect]),
-        h('div', { class: 'field field-sm' }, [h('label', {}, 'Código da Vaga'), codigoInput]),
+        h('div', { class: 'field field-sm' }, [h('label', {}, 'Código da Posição'), codigoInput]),
         vagaDraft.grupo === 'A'
           ? h('div', { class: 'field field-sm' }, [h('label', {}, 'Ordem na Rotação'), ordemInput])
           : null,
         vagaDraft.grupo === 'A'
           ? h('div', { class: 'field span2' }, [
               h('label', {}, 'Colaborador'),
-              h('p', { class: 'field-helper-text', style: 'margin:6px 0 0;' }, 'Rotativo — atribuído automaticamente semana a semana pela Lista Única de Rotação (ver abaixo, fora deste formulário). Esta vaga nunca tem um colaborador fixo.'),
+              h('p', { class: 'field-helper-text', style: 'margin:6px 0 0;' }, 'Rotativo — atribuído automaticamente semana a semana pela Lista Única de Rotação (ver abaixo, fora deste formulário). Esta posição nunca tem um colaborador fixo.'),
             ])
           : h('div', { class: 'field span2' }, [h('label', {}, 'Colaborador Fixo'), colaboradorSelect]),
       ]),
@@ -18421,13 +18661,17 @@ function buildHorariosPage(container, goTo) {
         h('div', { class: 'field field-sm' }, [h('label', {}, 'Regresso Pausa'), pausaFimFdsInput]),
         h('div', { class: 'field field-sm' }, [h('label', {}, 'Saída'), saiFdsInput]),
       ]),
+      h('label', { style: 'display:flex;align-items:center;gap:8px;margin:20px 0 0;font-size:13px;font-weight:700;color:var(--pharm-700);cursor:pointer;' }, [
+        toggleSemMariana, 'Esta posição tem horário diferente na "Semana com Mariana Ausente"',
+      ]),
+      ...blocosSemMariana,
       vagaFormError ? h('p', { class: 'form-error', style: 'margin-top:14px;' }, vagaFormError) : null,
       h('div', { class: 'form-actions' }, actionsRow),
     ]);
   }
 
   // ---- Lista Única de Rotação (Grupo A) — fonte de verdade em runtime,
-  // gerida aqui em "Gerir Vagas". Diferente da lista de Prioridade de
+  // gerida aqui em "Gerir Posições". Diferente da lista de Prioridade de
   // Escolha de Férias (essa é só informativa): esta é lida a sério por
   // escalaAtribuirGrupoA() sempre que se gera uma semana nova. ----
   async function inicializarRotacaoGrupoABase() {
@@ -18462,7 +18706,7 @@ function buildHorariosPage(container, goTo) {
     const max = (STATE.escalaRotacaoGrupoA || []).reduce((m, x) => Math.max(m, x.ordem || 0), 0);
     const created = await dbInsert('escalaRotacaoGrupoA', { ordem: max + 1, nome: utilizador.nomeCompleto || utilizador.username, utilizadorId: utilizador.id });
     if (created) { STATE.escalaRotacaoGrupoA = [...(STATE.escalaRotacaoGrupoA || []), created]; rotacaoADraft = {}; }
-    else showDbErrorToast('Não foi possível adicionar à lista');
+    else escalaShowErro('Não foi possível adicionar à lista');
     rerender();
   }
   async function atualizarOrdemRotacaoGrupoA(item, novaOrdem) {
@@ -18470,21 +18714,21 @@ function buildHorariosPage(container, goTo) {
     if (isNaN(ordem)) return;
     const updated = await dbUpdate('escalaRotacaoGrupoA', item.id, { ordem });
     if (updated) STATE.escalaRotacaoGrupoA = STATE.escalaRotacaoGrupoA.map(x => x.id === item.id ? updated : x);
-    else showDbErrorToast('Não foi possível atualizar a ordem');
+    else escalaShowErro('Não foi possível atualizar a ordem');
     rerender();
   }
   function eliminarRotacaoGrupoA(item) {
     confirmDialog(`Tem a certeza de que quer remover ${item.nome} da Lista Única de Rotação? Semanas já geradas mantêm-se inalteradas — só as próximas semanas deixam de o incluir.`, async () => {
       const ok = await dbDelete('escalaRotacaoGrupoA', item.id);
       if (ok) { STATE.escalaRotacaoGrupoA = STATE.escalaRotacaoGrupoA.filter(x => x.id !== item.id); rerender(); }
-      else showDbErrorToast('Não foi possível remover');
+      else escalaShowErro('Não foi possível remover');
     }, { danger: true, confirmLabel: 'Remover' });
   }
   function buildGerirRotacaoGrupoA() {
     const lista = (STATE.escalaRotacaoGrupoA || []).slice().sort((a, b) => (a.ordem || 0) - (b.ordem || 0));
     const kids = [
       h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' },
-        'Ordem oficial de rotação do Grupo A. Cada nova semana gerada avança exatamente 1 posição nesta lista a partir de quem estava na 1ª vaga (ex: A1) na última semana já gerada — nunca altera semanas passadas, só as próximas.'),
+        'Ordem oficial de rotação do Grupo A. Cada nova semana gerada avança exatamente 1 posição nesta lista a partir de quem estava na 1ª posição (ex: A1) na última semana já gerada — nunca altera semanas passadas, só as próximas.'),
     ];
     // Só Quadro entra no dropdown de adicionar — Prestadores de Serviço de
     // Farmácia nunca fazem parte da rotação do Grupo A.
@@ -18505,7 +18749,7 @@ function buildHorariosPage(container, goTo) {
         const utilizadorAtual = escalaRotacaoResolverUtilizador(item);
         return h('tr', {}, [
           h('td', {}, ordemInput),
-          h('td', { class: 'cell-strong' }, item.nome + (!utilizadorAtual ? ' (sem conta associada)' : (utilizadorAtual.ativo === false ? ' (inativo)' : ''))),
+          h('td', { class: 'cell-strong' }, item.nome + (!utilizadorAtual ? ' (sem conta associada — usa o nome como reserva ao gerar semanas)' : (utilizadorAtual.ativo === false ? ' (inativo)' : ''))),
           h('td', {}, delBtn),
         ]);
       });
@@ -18533,15 +18777,19 @@ function buildHorariosPage(container, goTo) {
     ]);
   }
 
-  function buildVistaVagas() {
-    const wrap = h('div', {});
-    wrap.appendChild(buildGerirRotacaoGrupoA());
+  // ---- Secção A: Posições Base (Turnos-Modelo) ----
+  function buildSecaoPosicoesBase() {
+    const wrap = h('div', { style: 'margin-bottom:32px;' });
+    wrap.appendChild(h('h2', { style: 'margin:0 0 4px;color:var(--pharm-800);font-size:16px;font-weight:800;display:flex;align-items:center;gap:8px;' },
+      [Icon('clipboard', { size: 16, strokeWidth: 2.2 }), ' Posições Base (Turnos-Modelo)']));
+    wrap.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' },
+      'Configuração de cada posição (A1, A2, A3, F1...) com os horários de Segunda a Sexta e de Fim de Semana (Entrada, Saída Pausa, Regresso Pausa, Saída).'));
     if (showVagaForm) wrap.appendChild(buildVagaFormPanel());
     if (!showVagaForm) {
-      wrap.appendChild(h('button', { class: 'btn btn-primary', style: 'margin-bottom:16px;', onclick: () => requireAuth(() => openNovaVaga('A')) }, [Icon('plus', { size: 14 }), ' Nova Vaga']));
+      wrap.appendChild(h('button', { class: 'btn btn-primary', style: 'margin-bottom:16px;', onclick: () => requireAuth(() => openNovaVaga('A')) }, [Icon('plus', { size: 14 }), ' Nova Posição']));
     }
     const todas = escalaTodasVagasOrdenadas().concat((STATE.escalaVagas || []).filter(v => v.ativo === false));
-    if (!todas.length) { wrap.appendChild(EmptyState('Ainda não há nenhuma vaga configurada.')); return wrap; }
+    if (!todas.length) { wrap.appendChild(EmptyState('Ainda não há nenhuma posição configurada.')); return wrap; }
     const thead = h('thead', {}, h('tr', {}, ['Grupo', 'Código', 'Ordem', 'Colaborador Atual', 'Entrada–Saída (Semana)', 'Entrada–Saída (F.Semana)', 'Estado', ''].map(t => h('th', {}, t))));
     const rows = todas.map(v => {
       const utilizador = v.utilizadorId ? (STATE.usuarios || []).find(u => u.id === v.utilizadorId) : null;
@@ -18551,7 +18799,7 @@ function buildHorariosPage(container, goTo) {
         h('td', {}, ESCALA_GRUPOS.find(g => g.key === v.grupo)?.label || v.grupo),
         h('td', { class: 'cell-strong' }, v.codigo),
         h('td', {}, v.grupo === 'A' ? String(v.ordem || '—') : '—'),
-        h('td', {}, v.grupo === 'A' ? h('span', { class: 'badge badge-blue' }, 'Rotativo') : (utilizador ? (utilizador.nomeCompleto || utilizador.username) : h('span', { class: 'cell-muted' }, 'Vaga por preencher'))),
+        h('td', {}, v.grupo === 'A' ? h('span', { class: 'badge badge-blue' }, 'Rotativo') : (utilizador ? (utilizador.nomeCompleto || utilizador.username) : h('span', { class: 'cell-muted' }, 'Posição por preencher'))),
         h('td', {}, `${v.entradaSemana || '—'} – ${v.saidaSemana || '—'}` + ((v.pausaInicioSemana && v.pausaFimSemana) ? ` (pausa ${v.pausaInicioSemana}-${v.pausaFimSemana})` : '')),
         h('td', {}, v.entradaFds ? `${v.entradaFds} – ${v.saidaFds}` + ((v.pausaInicioFds && v.pausaFimFds) ? ` (pausa ${v.pausaInicioFds}-${v.pausaFimFds})` : '') : '—'),
         h('td', {}, v.ativo === false ? 'Inativa' : 'Ativa'),
@@ -18562,9 +18810,29 @@ function buildHorariosPage(container, goTo) {
     return wrap;
   }
 
+  // ---- Secção B: Lista Única de Rotação e Ciclos da Equipa ----
+  function buildSecaoRotacaoEquipa() {
+    const wrap = h('div', {});
+    wrap.appendChild(h('h2', { style: 'margin:0 0 4px;color:var(--pharm-800);font-size:16px;font-weight:800;display:flex;align-items:center;gap:8px;' },
+      [Icon('users', { size: 16, strokeWidth: 2.2 }), ' Lista Única de Rotação e Ciclos da Equipa']));
+    wrap.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' },
+      'Fonte de verdade da sequência da equipa no Grupo A. A rotação para a semana selecionada é gerada a partir desta sequência, mantendo todo o histórico já gerado 100% imutável.'));
+    wrap.appendChild(buildGerirRotacaoGrupoA());
+    return wrap;
+  }
+
+  function buildVistaVagas() {
+    const wrap = h('div', {});
+    wrap.appendChild(buildSecaoPosicoesBase());
+    wrap.appendChild(h('hr', { style: 'border:none;border-top:1px solid var(--pharm-100);margin:0 0 28px;' }));
+    wrap.appendChild(buildSecaoRotacaoEquipa());
+    return wrap;
+  }
+
+
   function build() {
     const wrap = h('div', { class: 'animate-in' });
-    wrap.appendChild(withBackButton(buildPageHeader('clock', 'Horários', 'A sua semana, a escala da equipa e a gestão de férias e vagas.', undefined), goTo));
+    wrap.appendChild(withBackButton(buildPageHeader('clock', 'Horários', 'A sua semana, a escala da equipa e a gestão de férias e posições.', undefined), goTo));
 
     // Botão de destaque "Férias" — sempre visível no topo do módulo,
     // independente do separador ativo.
@@ -18580,7 +18848,7 @@ function buildHorariosPage(container, goTo) {
       h('button', { class: 'tab-btn tone-blue' + (activeTab === 'equipa' ? ' active' : ''), onclick: () => { activeTab = 'equipa'; rerender(); } }, [Icon('users', { size: 14 }), h('span', {}, 'Escala da Equipa')]),
     ]);
     if (isMasterUser()) {
-      tabsRow.appendChild(h('button', { class: 'tab-btn tone-orange' + (activeTab === 'vagas' ? ' active' : ''), onclick: () => { showVagaForm = false; activeTab = 'vagas'; rerender(); } }, [Icon('settings', { size: 14 }), h('span', {}, 'Gerir Vagas')]));
+      tabsRow.appendChild(h('button', { class: 'tab-btn tone-orange' + (activeTab === 'vagas' ? ' active' : ''), onclick: () => { showVagaForm = false; activeTab = 'vagas'; rerender(); } }, [Icon('settings', { size: 14 }), h('span', {}, 'Gerir Posições')]));
     }
     wrap.appendChild(tabsRow);
 
@@ -18593,13 +18861,35 @@ function buildHorariosPage(container, goTo) {
       const nav = buildNavegacaoSemanas();
       const topRow = h('div', { style: 'display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px;' });
       topRow.appendChild(nav);
+      const semConfiguracao = isMasterUser() && escalaConfiguracaoEmFalta();
+      const semanaJaExiste = !!semanaSelecionada();
+      if (isMasterUser() && !semanaJaExiste) {
+        // A variante só é relevante ANTES de a semana existir — depois de
+        // gerada, fica gravada e imutável em escala_semanas.variante (ver
+        // varianteBadge em buildNavegacaoSemanas), tal como o resto do
+        // histórico.
+        const varianteSelect = h('select', { class: 'select', style: 'max-width:260px;' },
+          ESCALA_VARIANTES.map(v => h('option', { value: v.key, selected: varianteSelecionada === v.key ? 'selected' : undefined }, v.label)));
+        varianteSelect.value = varianteSelecionada;
+        varianteSelect.addEventListener('change', () => { varianteSelecionada = varianteSelect.value; });
+        topRow.appendChild(varianteSelect);
+      }
       if (isMasterUser()) {
         topRow.appendChild(h('button', {
-          class: 'btn btn-primary', style: 'margin-left:auto;', disabled: gerando ? 'disabled' : undefined,
-          onclick: () => requireAuth(criarOuAbrirSemana),
+          class: 'btn btn-primary', style: semanaJaExiste ? '' : 'margin-left:auto;', disabled: (gerando || semConfiguracao) ? 'disabled' : undefined,
+          title: semConfiguracao ? 'Configure primeiro as Posições em "Gerir Posições".' : undefined,
+          onclick: () => { if (semConfiguracao) return; requireAuth(criarOuAbrirSemana); },
         }, [Icon('plus', { size: 14 }), ' ' + (gerando ? 'A gerar…' : 'Criar Semana')]));
       }
       wrap.appendChild(topRow);
+      if (semConfiguracao) {
+        wrap.appendChild(h('div', {
+          style: 'display:flex;gap:10px;align-items:flex-start;background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;line-height:1.5;',
+        }, [
+          Icon('alert', { size: 16, strokeWidth: 2.2 }),
+          h('span', {}, 'Ainda não existem Posições ou elementos na Rotação configurados. Por favor, aceda a "Gerir Posições" para configurar os turnos base antes de gerar a semana.'),
+        ]));
+      }
       const semana = semanaSelecionada();
       wrap.appendChild(activeTab === 'pessoal' ? buildVistaPessoal(semana) : buildVistaEquipa(semana));
     } else {
@@ -22113,12 +22403,30 @@ async function loadAllData() {
     // leitura nova seja adicionada sem essa sanitização embutida.
     keys.forEach((k, i) => { STATE[k] = sanitizarSupabase(results[i]); });
     normalizarTipoPremioDesafios();
-    await carregarDadosFinanceirosSeAutorizado();
-    STATE.mensagemDia = sanitizarSupabase(await dbFetchMensagemDia());
-    await dbCleanupOldChatMessages();
-    STATE.mensagensChat = sanitizarSupabase(await dbFetchChat());
-    STATE.documentosEmitidos = sanitizarSupabase(await dbFetchDocumentosEmitidos());
-    STATE.gavetaRecados = sanitizarSupabase(await dbFetchGavetaRecados());
+    // Os 5 pedidos secundários (financeiro, mensagem do dia, chat,
+    // documentos emitidos, gaveta de recados) são independentes entre si —
+    // antes corriam um a seguir ao outro (5 viagens sequenciais ao
+    // servidor); agora vão todos em paralelo num único Promise.all, e o
+    // STATE só é atualizado no fim, de uma só vez, quando tudo já chegou.
+    // Único cuidado: a limpeza de mensagens antigas do chat tem de acontecer
+    // ANTES da leitura do chat (para não trazer mensagens prestes a ser
+    // apagadas) — isolado na função carregarChat(), que corre como mais um
+    // braço do Promise.all, sem quebrar essa ordem interna.
+    async function carregarChat() {
+      await dbCleanupOldChatMessages();
+      return dbFetchChat();
+    }
+    const [, mensagemDia, mensagensChat, documentosEmitidos, gavetaRecados] = await Promise.all([
+      carregarDadosFinanceirosSeAutorizado(),
+      dbFetchMensagemDia(),
+      carregarChat(),
+      dbFetchDocumentosEmitidos(),
+      dbFetchGavetaRecados(),
+    ]);
+    STATE.mensagemDia = sanitizarSupabase(mensagemDia);
+    STATE.mensagensChat = sanitizarSupabase(mensagensChat);
+    STATE.documentosEmitidos = sanitizarSupabase(documentosEmitidos);
+    STATE.gavetaRecados = sanitizarSupabase(gavetaRecados);
   } catch (e) {
     console.error('[Arranque] falha inesperada ao carregar dados iniciais:', formatarErroSeguro(e));
   }
@@ -22442,11 +22750,11 @@ function requireAuth(actionFn) {
       // Perfil de bloqueio total: independentemente da ação que estava a ser
       // tentada, o login como Estafeta ou Farmácia Boa Nova refaz sempre a
       // app inteira (sidebar reduzida a Entregas), nunca a ação original.
+      // Só muda o STATE aqui — concluirLogin() já trata do render() único
+      // a seguir, com os dados frescos já carregados (evita o piscar duplo).
       STATE.page = 'entregas';
-      render();
       return;
     }
-    refreshSidebarBadges();
     if (actionFn) actionFn();
   });
 }
@@ -22616,7 +22924,7 @@ function showUserLoginScreen(onSuccess) {
     }, { confirmLabel: 'Ativar' });
   }
 
-  function concluirLogin(u) {
+  async function concluirLogin(u) {
     activeUser = { id: u.id, username: u.username, nomeCompleto: u.nomeCompleto || u.username, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', prestadorKey: u.prestadorKey || '' };
     activeUserPin = u.pin || null;
     // Herdar do modo convidado o que já tinha sido lido antes do login —
@@ -22627,42 +22935,39 @@ function showUserLoginScreen(onSuccess) {
     iniciarPresenca();
     registarLeituraMensagemDoDiaSeNecessario();
     document.removeEventListener('keydown', onKeydown);
+    // Piscar duplo (RESOLVIDO): antes o modal fechava já e a app
+    // renderizava de imediato com o STATE ainda desatualizado (dados de
+    // antes do login, sem refletir as permissões do novo perfil), só para
+    // se redesenhar uma 2ª vez segundos depois quando loadAllData()
+    // terminava — dois saltos visuais em sequência. Agora o modal só
+    // fecha DEPOIS de os dados frescos (já com as permissões do novo
+    // utilizador) estarem prontos: troca-se o conteúdo do próprio modal
+    // por um spinner leve enquanto isso acontece, e a app só é montada
+    // (render() único, no fim) quando a vista já está 100% correta.
+    clear(panel);
+    panel.appendChild(h('div', { style: 'padding:24px 4px 8px;text-align:center;' }, [
+      h('div', { class: 'boot-spinner', style: 'margin:0 auto 14px;' }),
+      h('p', { class: 'login-sub', style: 'margin:0;' }, `A preparar a sessão de ${activeUser.nomeCompleto || activeUser.username}…`),
+    ]));
+    await loadAllData();
+    STATE.ultimaAtualizacaoEm = new Date().toISOString();
     overlay.remove();
     // A janela de tolerância de edição (uiEstaOcupada) fica "quente" pelos
     // próprios campos de Username/PIN que a pessoa acabou de preencher no
     // modal — sem este reset, o refresh imediato a seguir ao login ficava
-    // adiado até 8s (ver JANELA_TOLERANCIA_EDICAO_MS), e nesse intervalo o
-    // indicador "Atualizado há X min" continuava a mostrar o valor
-    // desatualizado de antes do login. O modal acabou de fechar, não há
-    // nenhum formulário aberto a proteger — pode limpar-se já.
+    // adiado até 8s (ver JANELA_TOLERANCIA_EDICAO_MS). O modal acabou de
+    // fechar, não há nenhum formulário aberto a proteger — pode limpar-se já.
     ultimoFocoEmCampoEm = 0;
+    // onSuccess() corre agora já com STATE 100% atualizado (pode mudar
+    // STATE.page, ex: Estafeta/Boa Nova → 'entregas', ou executar a ação
+    // que tinha ficado pendente antes do requireAuth) — o render() a
+    // seguir é a ÚNICA repintura completa deste fluxo de login.
     onSuccess();
+    render();
+    atualizarIndicadorDadosAtualizados();
     atualizarIndicadoresChat();
-    // Sincronização completa e silenciosa logo após o login (ou troca de
-    // utilizador) — sem esperar pelo próximo refresh periódico em segundo
-    // plano nem pedir F5. loadAllData() já reavalia tudo o que depende do
-    // novo utilizador: módulos com acesso condicionado por perfil (ex:
-    // Financeiro, via carregarDadosFinanceirosSeAutorizado embutido),
-    // recados da Gaveta, e a lista de leitores da Mensagem do Dia
-    // ("Visto por", através do registarLeituraMensagemDoDiaSeNecessario já
-    // chamado acima). Corre em segundo plano (await dentro de uma função
-    // assíncrona não bloqueia a interface, que já ficou interativa assim
-    // que o modal fechou) e só redesenha o ecrã no fim — via
-    // renderOuAdiarSeOcupado(), que adia sozinho para não interromper um
-    // campo em edição ou outro modal entretanto aberto, evitando qualquer
-    // flicker brusco nos menus.
-    loadAllData().then(() => {
-      STATE.ultimaAtualizacaoEm = new Date().toISOString();
-      // Atualiza já o indicador "Atualizado agora mesmo" diretamente no
-      // DOM (sem depender do render completo, que pode ficar adiado por
-      // uiEstaOcupada) — garante que o texto nunca fica preso no valor de
-      // antes do login, mesmo que o resto do ecrã só atualize a seguir.
-      atualizarIndicadorDadosAtualizados();
-      atualizarIndicadoresChat();
-      renderOuAdiarSeOcupado();
-    });
   }
-  function tryLogin() {
+  async function tryLogin() {
     const pareceNumerico = /^[0-9]{2,4}$/.test(credenciais.usernameReal) && /^[0-9]{2,4}$/.test(credenciais.pinReal);
     const podeSerContaEmergencia = credenciais.usernameReal === ADMIN_FUNDADOR.username;
     if (!pareceNumerico && !podeSerContaEmergencia) {
@@ -22673,7 +22978,7 @@ function showUserLoginScreen(onSuccess) {
     // usamos sempre os valores reais guardados no objeto de estado.
     const u = findUsuario(credenciais.usernameReal, credenciais.pinReal);
     if (u) {
-      concluirLogin(u);
+      await concluirLogin(u);
       // Oferece a biometria só DEPOIS do modal já ter fechado — não atrasa
       // o login em si.
       ofereceAtivarBiometriaSeAplicavel(u);
@@ -22915,7 +23220,7 @@ function clearSessionSilently() {
   // atualiza o badge, e mostra-se logo o pop-up a pedir novamente as
   // credenciais, sem sair da página atual.
   refreshSidebarBadges();
-  showUserLoginScreen(() => { refreshSidebarBadges(); });
+  showUserLoginScreen(() => {}); // concluirLogin() já faz o render() único, com dados+sidebar frescos
 }
 function manualLogout() {
   confirmDialog('Deseja terminar a sessão atual?', () => {
@@ -23075,7 +23380,7 @@ async function startApp() {
   // logo a seguir, sem precisar de um clique extra no badge, para o fluxo
   // de entrada ser o mais rápido possível ao balcão.
   render();
-  if (!activeUser) showUserLoginScreen(() => { refreshSidebarBadges(); });
+  if (!activeUser) showUserLoginScreen(() => {}); // concluirLogin() já faz o render() único, com dados+sidebar frescos
   document.body.appendChild(buildSignature());
   document.body.appendChild(buildClock());
   // Confirmação: setupRealtime() e setupSilentDataRefreshWatcher() arrancam
