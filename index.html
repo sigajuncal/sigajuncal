@@ -888,6 +888,8 @@
   .btn-text-danger:hover{opacity:1;text-decoration:underline;}
   .form-error{margin-top:14px;padding:9px 12px;background:#fef2f2;border:1px solid #fecaca;
     color:#b91c1c;font-size:12.5px;font-weight:600;border-radius:8px;}
+  .campo-obrigatorio-invalido{border-color:var(--red)!important;box-shadow:0 0 0 3px rgba(220,38,38,.12);}
+  .campo-obrigatorio-msg{color:var(--red);font-size:11.5px;font-weight:700;margin:4px 0 0;}
   .readonly-notice{margin-top:14px;padding:9px 12px;background:var(--pharm-50);border:1px solid var(--pharm-200);
     color:var(--pharm-600);font-size:12px;font-weight:600;border-radius:8px;}
 
@@ -3248,6 +3250,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   let showForm = false; // false | 'nova' | 'encaixe'
   let formDraft = {};
   let formError = '';
+  let tipoConsultaInvalido = false;
   let saving = false;
   // ---- Seleção de marcações (checkboxes) + Barra Inferior Flutuante ----
   let selecionadas = new Set();
@@ -3360,11 +3363,11 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
 
   function openNovaMarcacao(horaPreenchida, forcarEncaixe) {
     formDraft = { hora: horaPreenchida || agendaSlotsPara(prestadorKey)[0], tipoConsulta: '', duracaoManual: agendaDuracaoManualDefault(prestadorKey), nomeCliente: '', contacto: '', aviso: false, observacoes: '', responsavel: currentUserName(), forcarEncaixe: !!forcarEncaixe };
-    formError = ''; showForm = 'nova'; render();
+    formError = ''; tipoConsultaInvalido = false; showForm = 'nova'; render();
   }
   function openEncaixe() {
     formDraft = { hora: '', tipoConsulta: '', duracaoManual: agendaDuracaoManualDefault(prestadorKey), nomeCliente: '', contacto: '', aviso: false, observacoes: '', responsavel: currentUserName() };
-    formError = ''; showForm = 'encaixe'; render();
+    formError = ''; tipoConsultaInvalido = false; showForm = 'encaixe'; render();
   }
   // Edição de uma marcação existente (grelha padrão ou encaixe): reabre o
   // mesmo formulário com todos os campos pré-preenchidos — permite alterar
@@ -3377,9 +3380,9 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       aviso: !!m.aviso, observacoes: m.observacoes || '', responsavel: m.responsavel || currentUserName(), ultimaAtualizacaoPor: m.ultimaAtualizacaoPor || '', forcarEncaixe: false,
       estado: m.estado || 'agendada',
     };
-    formError = ''; showForm = ehEncaixe ? 'encaixe' : 'nova'; render();
+    formError = ''; tipoConsultaInvalido = false; showForm = ehEncaixe ? 'encaixe' : 'nova'; render();
   }
-  function cancelForm() { showForm = false; formError = ''; render(); }
+  function cancelForm() { showForm = false; formError = ''; tipoConsultaInvalido = false; render(); }
 
   // ---- Controlo de Dia Aberto/Fechado ----
   async function abrirDiaAgenda() {
@@ -3445,14 +3448,20 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   }
 
   async function submitForm() {
+    tipoConsultaInvalido = false;
     if (!String(formDraft.nomeCliente || '').trim()) { formError = 'Por favor, preencha o Nome do Cliente.'; render(); return; }
     if (!String(formDraft.contacto || '').trim()) { formError = 'Por favor, preencha o Contacto.'; render(); return; }
     if (!/^[0-9]{9}$/.test(String(formDraft.contacto || '').trim())) { formError = 'O Contacto deve ter exatamente 9 dígitos numéricos.'; render(); return; }
     // Nutrição, Prima Corpus, Podologia e Massagem do Marco: sem opção
     // predefinida no dropdown — a colega tem sempre de escolher
     // explicitamente o Tipo de Consulta/Serviço antes de poder confirmar.
+    // O botão "Confirmar Marcação" fica sempre ativo (nunca "disabled"
+    // silencioso) — ao clicar sem preencher, este erro aparece bem visível
+    // (mensagem + campo destacado a vermelho), em vez de o botão
+    // simplesmente não reagir.
     if (agendaTipoConsultaObrigatorio(prestadorKey) && !String(formDraft.tipoConsulta || '').trim()) {
-      formError = 'Por favor, selecione o Tipo de Consulta.'; render(); return;
+      tipoConsultaInvalido = true;
+      formError = 'Campo Obrigatório: por favor, selecione o Tipo de Consulta.'; render(); return;
     }
     if (showForm === 'encaixe') {
       formDraft.hora = normalizarHora(formDraft.hora);
@@ -3781,13 +3790,13 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       campos.push(h('div', { class: 'field field-xs' }, [h('label', {}, 'Hora'), horaSelect]));
     }
     if (isNutricao) {
-      const tipoSelect = h('select', { class: 'select' }, [
+      const tipoSelect = h('select', { class: 'select' + (tipoConsultaInvalido ? ' campo-obrigatorio-invalido' : '') }, [
         h('option', { value: '', selected: !formDraft.tipoConsulta ? 'selected' : undefined }, '-- Selecionar Tipo de Consulta --'),
         ...TIPOS_CONSULTA_NUTRICAO.map(t => h('option', { value: t, selected: formDraft.tipoConsulta === t ? 'selected' : undefined }, t)),
       ]);
       tipoSelect.value = formDraft.tipoConsulta;
-      tipoSelect.addEventListener('change', () => { formDraft.tipoConsulta = tipoSelect.value; render(); });
-      campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Tipo de Consulta'), tipoSelect]));
+      tipoSelect.addEventListener('change', () => { formDraft.tipoConsulta = tipoSelect.value; tipoConsultaInvalido = false; render(); });
+      campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Tipo de Consulta'), tipoSelect, tipoConsultaInvalido ? h('p', { class: 'campo-obrigatorio-msg' }, 'Campo Obrigatório') : null]));
     }
     if (isDepilacao) {
       const servicoInput = h('input', { class: 'input', maxlength: '80', placeholder: 'Ex: Buço + Axilas, Completa, Rosto, HIFU...' });
@@ -3805,37 +3814,37 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       // a duração no calendário (40 / 50 / 75 min) — sem campo de duração
       // manual, para a grelha refletir sempre o tempo real do serviço.
       // Sem opção predefinida: força a escolha consciente do serviço.
-      const servicoSelect = h('select', { class: 'select' }, [
+      const servicoSelect = h('select', { class: 'select' + (tipoConsultaInvalido ? ' campo-obrigatorio-invalido' : '') }, [
         h('option', { value: '', selected: !formDraft.tipoConsulta ? 'selected' : undefined }, '-- Selecionar Tipo de Consulta --'),
         ...PRIMA_CORPUS_SERVICOS.map(sv => h('option', { value: sv.nome, selected: formDraft.tipoConsulta === sv.nome ? 'selected' : undefined }, sv.nome)),
       ]);
       servicoSelect.value = formDraft.tipoConsulta || '';
-      servicoSelect.addEventListener('change', () => { formDraft.tipoConsulta = servicoSelect.value; render(); });
-      campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Serviço Prima Corpus'), servicoSelect]));
+      servicoSelect.addEventListener('change', () => { formDraft.tipoConsulta = servicoSelect.value; tipoConsultaInvalido = false; render(); });
+      campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Serviço Prima Corpus'), servicoSelect, tipoConsultaInvalido ? h('p', { class: 'campo-obrigatorio-msg' }, 'Campo Obrigatório') : null]));
       campos.push(h('p', { class: 'field-helper-text', style: 'grid-column:1/-1;margin:0;' },
         'Regras Prima Corpus: último serviço com início até às 19h (máximo 75 min, termina até às 20h15) · máximo 2 serviços em simultâneo (o 2.º carece de validação com a Andreia).'));
     }
     if (isPodologia) {
       // Sem opção predefinida: força a escolha consciente do tipo de
       // consulta. Ambos os tipos usam sempre 20 min (grelha da Podologia).
-      const tipoSelect = h('select', { class: 'select' }, [
+      const tipoSelect = h('select', { class: 'select' + (tipoConsultaInvalido ? ' campo-obrigatorio-invalido' : '') }, [
         h('option', { value: '', selected: !formDraft.tipoConsulta ? 'selected' : undefined }, '-- Selecionar Tipo de Consulta --'),
         ...PODOLOGIA_TIPOS.map(t => h('option', { value: t.nome, selected: formDraft.tipoConsulta === t.nome ? 'selected' : undefined }, t.nome)),
       ]);
       tipoSelect.value = formDraft.tipoConsulta || '';
-      tipoSelect.addEventListener('change', () => { formDraft.tipoConsulta = tipoSelect.value; render(); });
-      campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Tipo de Consulta'), tipoSelect]));
+      tipoSelect.addEventListener('change', () => { formDraft.tipoConsulta = tipoSelect.value; tipoConsultaInvalido = false; render(); });
+      campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Tipo de Consulta'), tipoSelect, tipoConsultaInvalido ? h('p', { class: 'campo-obrigatorio-msg' }, 'Campo Obrigatório') : null]));
     }
     if (isMassagemMarco) {
       // Sem opção predefinida: força a escolha consciente do tipo de
       // massagem. Duração pré-definida em 60 min, mas ajustável na caixa.
-      const servicoSelect = h('select', { class: 'select' }, [
+      const servicoSelect = h('select', { class: 'select' + (tipoConsultaInvalido ? ' campo-obrigatorio-invalido' : '') }, [
         h('option', { value: '', selected: !formDraft.tipoConsulta ? 'selected' : undefined }, '-- Selecionar Tipo de Consulta --'),
         ...MASSAGEM_MARCO_SERVICOS.map(nome => h('option', { value: nome, selected: formDraft.tipoConsulta === nome ? 'selected' : undefined }, nome)),
       ]);
       servicoSelect.value = formDraft.tipoConsulta || '';
-      servicoSelect.addEventListener('change', () => { formDraft.tipoConsulta = servicoSelect.value; render(); });
-      campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Tipo de Massagem'), servicoSelect]));
+      servicoSelect.addEventListener('change', () => { formDraft.tipoConsulta = servicoSelect.value; tipoConsultaInvalido = false; render(); });
+      campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Tipo de Massagem'), servicoSelect, tipoConsultaInvalido ? h('p', { class: 'campo-obrigatorio-msg' }, 'Campo Obrigatório') : null]));
 
       const duracaoInput = h('input', { class: 'input', type: 'number', min: '5', max: '240', step: '5' });
       duracaoInput.value = String(formDraft.duracaoManual || 60);
@@ -3873,8 +3882,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     }
 
     const duracaoInfo = h('p', { class: 'field-helper-text' }, `Duração desta marcação: ${agendaDuracaoPorTipo(prestadorKey, formDraft.tipoConsulta, formDraft.duracaoManual)} minutos.`);
-    const tipoConsultaEmFalta = agendaTipoConsultaObrigatorio(prestadorKey) && !String(formDraft.tipoConsulta || '').trim();
-    const saveBtn = h('button', { class: 'btn btn-primary', onclick: (saving || tipoConsultaEmFalta) ? null : () => requireAuth(submitForm), disabled: (saving || tipoConsultaEmFalta) ? 'disabled' : undefined, title: tipoConsultaEmFalta ? 'Selecione o Tipo de Consulta para poder confirmar' : undefined }, saving ? 'A guardar…' : (formDraft.editId ? 'Guardar Alterações' : 'Confirmar Marcação'));
+    const saveBtn = h('button', { class: 'btn btn-primary', onclick: saving ? null : () => requireAuth(submitForm), disabled: saving ? 'disabled' : undefined }, saving ? 'A guardar…' : (formDraft.editId ? 'Guardar Alterações' : 'Confirmar Marcação'));
     const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: cancelForm }, 'Cancelar');
 
     const camposGrid = h('div', { class: 'form-grid' }, campos);
