@@ -3842,6 +3842,14 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     if (m.estado === 'concluida') return ' · Concluída';
     return '';
   }
+  // Primeiro + último nome apenas — usado na linha "↳ Continuação" das
+  // vagas de continuação (marcações de 1h+), para manter a linha curta e
+  // visivelmente subordinada ao slot principal.
+  function primeiroUltimoNome(nomeCompleto) {
+    const partes = String(nomeCompleto || '').trim().split(/\s+/).filter(Boolean);
+    if (partes.length <= 1) return partes[0] || '—';
+    return `${partes[0]} ${partes[partes.length - 1]}`;
+  }
   // Reaproveitar Vaga: só faz sentido para uma marcação Cancelada/Faltou
   // cujo horário ainda não chegou — cancelar/faltar num horário de HOJE já
   // passado não deve oferecer "reaproveitar" (a vaga já não existe na
@@ -4108,24 +4116,17 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       if (!primeiraLinha) {
         // Slot "arrastado" por uma marcação mais longa que começou antes
         // (ex: 12:15 com 60min bloqueia também 12:30/12:45/13:00) — mostra-se
-        // sempre associado visualmente à marcação principal e ao serviço,
-        // mas a equipa mantém controlo total: um clique em "Forçar Encaixe"
-        // abre logo uma marcação nova aqui, ignorando o bloqueio automático.
+        // como linha curta e subordinada (só "↳ Continuação — Nome"), sem
+        // repetir estado nem botões de ação (esses ficam só no slot
+        // principal, à hora de início da marcação).
         let node;
         if (m.tipoLinha === 'bloqueado') {
           linhasGrade.push({ hora, node: null }); // vagas bloqueadas nunca ocupam mais de 1 slot — nunca deveria cair aqui
           return;
         }
-        const acoes = [];
-        if (!isPast) {
-          const forcarBtn = h('button', { class: 'btn-fab-sm tone-orange', title: 'Forçar Encaixe neste horário', 'aria-label': 'Forçar Encaixe' }, Icon('lockOpen', { size: 12, strokeWidth: 2.2 }));
-          forcarBtn.addEventListener('click', () => requireAuth(() => openNovaMarcacao(hora, true)));
-          acoes.push(forcarBtn);
-        }
         node = h('div', { class: 'agenda-slot-row agenda-slot-continuacao' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') }, [
           h('span', { class: 'agenda-slot-hora' }, hora),
-          h('span', { class: 'agenda-slot-label cell-muted' }, `↳ Ocupado — ${m.nomeCliente || '—'}${m.tipoConsulta ? ' · ' + m.tipoConsulta : ''}${estadoSufixoVaga(m)}`),
-          h('div', { class: 'row-actions' }, acoes),
+          h('span', { class: 'agenda-slot-label cell-muted', style: 'font-style:italic;opacity:.75;' }, `↳ Continuação — ${primeiroUltimoNome(m.nomeCliente)}`),
         ]);
         linhasGrade.push({ hora, node });
         return;
@@ -9953,8 +9954,9 @@ function buildHomepage(container, goTo) {
   // simplesmente o próximo agendado.
   const itensAgendaFinal = servicosADecorrerAgora.length >= 2 ? servicosADecorrerAgora
     : (servicosADecorrerAgora.length === 1 ? servicosADecorrerAgora : servicosDistintos.slice(0, 1));
+  const agendaAlgumADecorrer = itensAgendaFinal.some(m => servicoAgendaADecorrerAgora(m.prestadorKey));
   const proximaAgendaCard = buildProximoServicoRotativoCard({
-    labelTitulo: 'Próximo Serviço de Agenda', labelVazio: 'Sem consultas/serviços agendados', tone: 'tone-blue-soft',
+    labelTitulo: agendaAlgumADecorrer ? 'Serviço a Decorrer' : 'Próximo Serviço de Agenda', labelVazio: 'Sem consultas/serviços agendados', tone: 'tone-blue-soft',
     itens: itensAgendaFinal.map(m => {
       const prestador = PRESTADORES_AGENDA.find(p => p.key === m.prestadorKey);
       const aDecorrer = servicoAgendaADecorrerAgora(m.prestadorKey);
