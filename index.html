@@ -2244,21 +2244,13 @@
     align-items:center;justify-content:center;gap:16px;background:var(--pharm-50);}
   .boot-static-spinner-brand{font-size:20px;font-weight:800;color:var(--pharm-700);letter-spacing:.02em;}
 
-  /* Transição entre páginas/módulos (navegação interna): mostra-se de
-     imediato ao clicar, sobre o .page-container atual — nunca se deixa a
-     página antiga simplesmente "congelar" enquanto a nova é construída,
-     nem se troca o conteúdo aos pedaços. Cobre SEMPRE uma mudança real de
-     página, seja qual for a origem do clique (sidebar, botões internos,
-     "Ver Todos", etc.) — ver render()/ultimaPaginaRenderizada. Sem
-     animação de entrada: aparece logo no 1º frame (uma fade-in de ~120ms
-     sobre uma transição que pode durar menos do que isso lê-se como um
-     "flash" a mais, exatamente o piscar que isto existe para eliminar).
-     Fundo quase opaco (não 100%) para a página de baixo nunca se ver a
-     "aparecer" por trás enquanto ainda está a ser construída. */
-  .page-transition-overlay{position:absolute;inset:0;z-index:15;display:flex;align-items:center;
-    justify-content:center;background:#fbfdfe;}
-  .page-transition-spinner{width:30px;height:30px;border-radius:50%;border:3px solid var(--pharm-100);
-    border-top-color:var(--pharm-600);animation:spin .7s linear infinite;}
+  /* Transição entre páginas/módulos (navegação interna): deliberadamente
+     SEM overlay/spinner — ver o comentário em render() para o porquê. A
+     troca é uma substituição síncrona e atómica de .page-container
+     (mainWrap.replaceChild), construído inteiro fora do DOM antes de
+     entrar; qualquer camada visual extra a meio (overlay, fade) só
+     introduzia um frame intermédio a mais, que é precisamente o que
+     aparecia como "piscar".*/
 
   /* =================================================================
      OTIMIZAÇÃO MOBILE (iOS Safari / Android Chrome) — só se aplica em
@@ -23510,6 +23502,18 @@ function esconderTooltipSidebar(btn, texto) {
   if (sidebarTooltipEl) sidebarTooltipEl.style.display = 'none';
   if (btn && texto && !btn.getAttribute('title')) btn.setAttribute('title', texto);
 }
+// Limpeza forçada, sem precisar do botão/texto originais — usada em
+// qualquer ponto que possa destruir/substituir o botão que estava a
+// mostrar o tooltip ANTES de o rato sair de cima dele (navegação, troca
+// de módulo, colapsar/expandir a sidebar). Sem isto, o mouseleave nunca
+// chega a disparar (o elemento já não existe no DOM para o disparar) e o
+// balão preto fica preso no ecrã, flutuante, para sempre — exatamente o
+// bug reportado. Chamada sempre no arranque de render() (cobre TODAS as
+// formas de mudar de página, não só goTo()) e em toggleSidebarDesktop().
+function esconderTooltipSidebarForcado() {
+  if (sidebarTooltipEl) sidebarTooltipEl.style.display = 'none';
+  document.querySelectorAll('.sidebar-tooltip-flutuante').forEach(el => { if (el !== sidebarTooltipEl) el.remove(); });
+}
 function buildSidebarContent(onClose, goTo, desktopToggle) {
   const navChildren = [];
   const estafeta = isEstafeta();
@@ -23728,19 +23732,6 @@ function renderOuAdiarSeOcupado() {
   render();
 }
 
-// Overlay de transição de página — ver .page-transition-overlay (CSS).
-// Criado/removido diretamente no .main (fora da árvore que o
-// .page-container troca), por isso nunca é apagado nem duplicado pelo
-// próprio redesenho que está a cobrir.
-function mostrarOverlayTransicaoPagina() {
-  const mainWrap = document.querySelector('.app-shell > .main');
-  if (!mainWrap || mainWrap.querySelector(':scope > .page-transition-overlay')) return;
-  mainWrap.appendChild(h('div', { class: 'page-transition-overlay' }, h('div', { class: 'page-transition-spinner' })));
-}
-function esconderOverlayTransicaoPagina() {
-  const overlay = document.querySelector('.app-shell > .main > .page-transition-overlay');
-  if (overlay) overlay.remove();
-}
 // Só a página REALMENTE mudou de módulo é que conta como "transição" (com
 // spinner) — redesenhos dentro da mesma página (Realtime, gravações,
 // formulários) continuam instantâneos e silenciosos, como sempre foram.
@@ -23753,6 +23744,13 @@ let ultimaPaginaRenderizada = null;
 let ultimoUtilizadorRenderizado = undefined; // undefined = ainda não houve nenhum render
 let jaFezPrimeiraRenderizacao = false;
 function render() {
+  // Limpeza forçada do tooltip flutuante da sidebar — SEMPRE, em toda e
+  // qualquer chamada a render() (mudança de página, gravação, Realtime,
+  // toggle de colapsar/expandir). Sem isto, clicar num botão que dispara
+  // um redesenho da sidebar destrói o elemento hovered ANTES do
+  // mouseleave alguma vez disparar nele, deixando o balão preto preso e
+  // flutuante no ecrã.
+  esconderTooltipSidebarForcado();
   const primeiraVez = !jaFezPrimeiraRenderizacao;
   const utilizadorAtualId = activeUser ? activeUser.id : null;
   const mudouDeSessao = !primeiraVez && utilizadorAtualId !== ultimoUtilizadorRenderizado;
@@ -23778,34 +23776,21 @@ function render() {
     comScrollPreservado(() => renderInterno(false));
     return;
   }
-  // Mudança real de módulo (ou de sessão — login/logout): mostra logo o
-  // spinner sobre o conteúdo atual e só a seguir é que o redesenho pesado
-  // acontece — nunca há um .page-container vazio nem um ecrã "congelado"
-  // sem feedback, nem uma troca brusca de conteúdo (ex: lista de Entregas
-  // → Página Inicial) sem transição visível a meio. O ecrã anterior fica
-  // 100% intacto e visível enquanto o novo .page-container é construído —
-  // a troca em si (dentro de renderInterno) só acontece depois de um
-  // DUPLO requestAnimationFrame (obriga o browser a calcular layout/estilo
-  // da pintura ANTERIOR — o spinner — antes de sequer começar a preparar a
-  // seguinte, eliminando qualquer frame intermédio por pintar), e o novo
-  // conteúdo entra com um fade-in suave de opacidade em vez de aparecer
-  // instantaneamente. A troca de nó em si (mainWrap.replaceChild) continua
-  // completamente síncrona e atómica dentro de comScrollPreservado — só
-  // ASSIM a captura/restauro de posição de scroll continua a funcionar
-  // (não pode haver nada assíncrono a meio dessa chamada).
-  mostrarOverlayTransicaoPagina();
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      comScrollPreservado(() => renderInterno(true));
-      esconderOverlayTransicaoPagina();
-      const novoContainer = document.querySelector('.app-shell > .main > .page-container');
-      if (novoContainer) {
-        novoContainer.style.opacity = '0';
-        novoContainer.style.transition = 'opacity .15s ease';
-        requestAnimationFrame(() => { novoContainer.style.opacity = '1'; });
-      }
-    });
-  });
+  // Mudança real de módulo (ou de sessão — login/logout): o ecrã anterior
+  // fica 100% intacto e visível enquanto o novo .page-container é
+  // construído inteiro FORA da árvore do DOM (ver renderInterno) — só
+  // depois de estar completo é que substitui o antigo, numa única
+  // operação síncrona e atómica (mainWrap.replaceChild). Isto é
+  // DELIBERADAMENTE sem overlay/spinner, sem requestAnimationFrame e sem
+  // fade de opacidade: qualquer uma dessas três coisas obriga o browser a
+  // pintar um frame intermédio (o overlay, ou o novo conteúdo ainda a
+  // meio do fade a partir de opacity:0) ANTES do conteúdo final estar
+  // visível — e é precisamente esse frame intermédio, por breve que seja,
+  // que aparecia como o "piscar" reportado. Uma troca síncrona pura nunca
+  // tem esse problema: o browser só pinta depois desta função acabar, e
+  // nessa altura o DOM já só tem a página nova, completa — não há
+  // nenhum instante para pintar a meio.
+  comScrollPreservado(() => renderInterno(true));
 }
 // PAGINAS_NUNCA_RECONSTROI_EM_FUNDO: módulos com muito estado local
 // sensível a interrupções (formulários abertos, drag & drop em curso,
@@ -23896,13 +23881,18 @@ function renderInterno(ehTransicaoDePagina) {
     // só se vai buscar dados frescos em segundo plano quando fizer sentido.
     if (mudouDePagina) refrescarDadosSilenciosamente();
   }
-  function toggleSidebar(open) { STATE.sidebarOpen = open; render(); }
+  function toggleSidebar(open) { esconderTooltipSidebarForcado(); STATE.sidebarOpen = open; render(); }
   // Sidebar de desktop recolhível — só tem efeito fora da Página Inicial
   // (na Home mantém-se sempre expandida, por pedido explícito). Alterna
   // só STATE.sidebarColapsada e chama render(): como STATE.page não muda,
   // o render() trata isto como redesenho normal (sem overlay/spinner de
   // transição de página — ver ultimaPaginaRenderizada), instantâneo.
-  function toggleSidebarDesktop() { STATE.sidebarColapsada = !STATE.sidebarColapsada; render(); }
+  // esconderTooltipSidebarForcado() explícito aqui também — expandir a
+  // sidebar troca logo o ícone hovered por um botão bem mais largo (com
+  // rótulo de texto), o que por si só já desalinha a posição calculada do
+  // balão; mais vale escondê-lo já em vez de o deixar reposicionar-se um
+  // frame depois, visualmente a "saltar".
+  function toggleSidebarDesktop() { esconderTooltipSidebarForcado(); STATE.sidebarColapsada = !STATE.sidebarColapsada; render(); }
 
   // Piscar na navegação interna (RESOLVIDO): antes, TODO o #root era
   // limpo e reconstruído do zero a cada goTo() — sidebar, topbar e tudo —
