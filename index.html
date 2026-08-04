@@ -67,7 +67,7 @@
      que soma exatamente esta margem, sem gaps nem sobreposição). */
   .sidebar-desktop{width:240px;flex-shrink:0;background:#fff;border-right:1px solid var(--pharm-200);
     height:100vh;position:fixed;top:0;left:0;display:none;flex-direction:column;padding:14px 0;
-    overflow-y:auto;overflow-x:hidden;z-index:30;box-sizing:border-box;transition:width .18s ease;}
+    overflow-y:auto;z-index:30;box-sizing:border-box;transition:width .18s ease;}
   @media (min-width:1024px){.sidebar-desktop{display:flex;}}
   /* Recolhida: encolhe para um "rail" estreito só com ícones (nunca a
      0px) — o botão de colapsar vive DENTRO do cabeçalho da própria
@@ -89,6 +89,15 @@
   .sidebar-desktop.sidebar-colapsada .nav-item-chat{padding:10px;}
   .sidebar-desktop.sidebar-colapsada .sidebar-brand-logo{justify-content:center;padding:0 10px;}
   .sidebar-desktop.sidebar-colapsada .conexao-indicador{justify-content:center;padding:8px;}
+  /* Tooltip flutuante ao passar o cursor por um ícone da sidebar
+     colapsada (ver mostrarTooltipSidebar/esconderTooltipSidebar, JS) —
+     um <div> só, reaproveitado e reposicionado a cada hover, anexado
+     diretamente a <body> em position:fixed para nunca ficar cortado pelo
+     overflow-y:auto da própria sidebar (um tooltip absoluto dentro dela
+     ficaria invisível, cortado no limite dos 68px do rail). */
+  .sidebar-tooltip-flutuante{position:fixed;z-index:200;background:var(--pharm-900);color:#fff;
+    font-size:12px;font-weight:700;padding:6px 11px;border-radius:7px;white-space:nowrap;
+    pointer-events:none;box-shadow:0 4px 14px rgba(0,0,0,.28);}
   /* Botão de recolher/expandir — agora integrado no cabeçalho da sidebar
      (junto ao logótipo), nunca flutuante sobre a divisória. Ícone estilo
      "painel lateral" (retângulo com a coluna esquerda destacada) em vez
@@ -18173,16 +18182,11 @@ function escalaSemanasOrdenadas() {
 function escalaUltimaSemana() { return escalaSemanasOrdenadas()[0] || null; }
 // Data exata (ISO) de um dia da semana, a partir da Segunda-feira em que
 // essa semana começa — usado para cruzar a grelha com escala_ferias (que
-// guarda intervalos de datas, não "dias da semana").
-// Segunda-feira da semana que contém uma data qualquer — versão top-level
-// (a mesma lógica existe também como closure em buildHorariosPage; esta
-// serve os pontos do código que vivem fora desse closure, como o editor
-// de célula, que precisa de validar o congelamento de histórico por si).
-function escalaSegundaFeiraDaSemanaDeISO(dataISO) {
-  const d = new Date(dataISO + 'T12:00:00');
-  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
-  return dateToISO(d);
-}
+// guarda intervalos de datas, não "dias da semana"). A função
+// escalaSegundaFeiraDaSemanaDeISO já está declarada acima (serve tanto os
+// pontos do código fora de buildHorariosPage, como o editor de célula que
+// precisa de validar o congelamento de histórico por si, como o motor do
+// ciclo da Mariana).
 // Rede de segurança: uma semana já passada OU publicada está congelada —
 // imutável mesmo pelo Diretor Técnico/Administrador. Ver também
 // escalaSemanaCongelada() (closure de buildHorariosPage), que é a mesma
@@ -18388,14 +18392,6 @@ function escalaPrioridadeParaAno(ano) {
   const rodada2 = rodada1.slice().reverse();
   return base.map((nomeBase, i) => ({ posicao: i + 1, colaboradorBase: nomeBase, rodada1: rodada1[i], rodada2: rodada2[i] }));
 }
-// Dia-base de uma vaga a partir do seu horário-modelo (semana ou fim de
-// semana) — sem entrada/saída definidas para esse tipo de dia (normal em
-// Part-Time/Backoffice ao fim de semana, por exemplo), o dia nasce como
-// Folga, nunca como um horário vazio a confundir a grelha. Quando é dada
-// a data exata do dia, uma ausência registada em escala_ferias para essa
-// data tem sempre prioridade sobre o horário-modelo: Férias/Dia
-// Extra/Falta/Baixa (Quadro) ou Indisponibilidade (Prestador de Serviço)
-// substituem o dia normal e nunca são sobrepostas por um turno.
 // Dia-base de uma vaga a partir do seu horário-modelo (semana ou fim de
 // semana) — sem entrada/saída definidas para esse tipo de dia (normal em
 // Part-Time/Backoffice ao fim de semana, por exemplo), o dia nasce como
@@ -21185,6 +21181,14 @@ function blocoHorarioFimHora(bloco) {
   if (isNaN(hh) || hh < 0 || hh > 23) return null;
   return `${pad2(hh)}:00`;
 }
+// Versão curta do Bloco Horário para a tabela de Entregas (poupa espaço
+// horizontal): "2º (14H - 16H)" → "2º", "Sábado (14H - 18H)" → "Sábado" —
+// só a identificação do bloco, sem o intervalo de horas entre parênteses
+// (que continua disponível no formulário e no cabeçalho impresso).
+function blocoHorarioCurto(bloco) {
+  if (!bloco) return '';
+  return String(bloco).split(' (')[0];
+}
 // Um Bloco Horário só pode "expirar" no próprio dia de hoje — se a Data de
 // Entrega for outro dia (passado já não se agenda; futuro ainda não chegou),
 // não faz sentido nenhum bloco estar "expirado".
@@ -22352,7 +22356,7 @@ function buildEntregasPage(container, goTo) {
         : (activeTab === 'historico' ? 'Ainda não há entregas concluídas.' : 'Sem entregas pendentes.');
       return EmptyState(msg);
     }
-    const thead = h('thead', {}, h('tr', {}, ['', 'Prazo', 'Cliente', 'Estado', 'Obs.', 'Contacto', 'Morada', 'Data', 'Registado por', 'Bloco Horário', 'Pagamento', 'Ações'].map(t => h('th', {}, t))));
+    const thead = h('thead', {}, h('tr', {}, ['', 'Prazo', 'Cliente', 'Estado', 'Obs.', 'Contacto', 'Morada', 'Data', 'Registado por', 'Bloco', 'Pagamento', 'Ações'].map(t => h('th', {}, t))));
     const rows = list.map(r => {
       const selected = selectedIds.has(r.id);
       // Coluna "Prazo": em Pendentes mostra o temporizador regressivo ao
@@ -22437,7 +22441,7 @@ function buildEntregasPage(container, goTo) {
         h('td', {}, moradaCell),
         h('td', {}, formatDate(r.dataEntrega)),
         h('td', {}, r.registadoPor || '—'),
-        h('td', {}, r.blocoHorario ? h('span', { class: 'badge-bloco' }, r.blocoHorario) : '—'),
+        h('td', {}, r.blocoHorario ? h('span', { class: 'badge-bloco', title: r.blocoHorario }, blocoHorarioCurto(r.blocoHorario)) : '—'),
         h('td', {}, pagamentoCell),
         h('td', {}, printRowBtn),
       ]);
@@ -23481,6 +23485,31 @@ function buildNutricaoSubPage(container, goTo) {
 // + atributo disabled), e só o botão da sua própria área fica ativo e
 // clicável. Isto substitui a versão anterior, que escondia por completo
 // os restantes separadores do DOM.
+// Tooltip flutuante da sidebar colapsada — um único elemento reaproveitado
+// (criado apenas na primeira vez que é preciso), reposicionado junto ao
+// ícone sobre o qual está o cursor. Só aparece quando a sidebar de
+// desktop tem mesmo a classe "sidebar-colapsada" (rail só com ícones) —
+// no modo expandido o rótulo de texto já está visível, seria redundante.
+let sidebarTooltipEl = null;
+function mostrarTooltipSidebar(btn, texto) {
+  const sidebar = btn.closest('.sidebar-desktop');
+  if (!sidebar || !sidebar.classList.contains('sidebar-colapsada') || !texto) return;
+  // Tira o title nativo enquanto o tooltip próprio está visível — senão o
+  // tooltip do próprio browser (com ~1s de atraso) acabava a aparecer
+  // por cima, duplicado, se o cursor ficasse parado tempo suficiente.
+  btn.removeAttribute('title');
+  if (!sidebarTooltipEl) { sidebarTooltipEl = document.createElement('div'); sidebarTooltipEl.className = 'sidebar-tooltip-flutuante'; document.body.appendChild(sidebarTooltipEl); }
+  sidebarTooltipEl.textContent = texto;
+  const rect = btn.getBoundingClientRect();
+  sidebarTooltipEl.style.top = Math.round(rect.top + rect.height / 2) + 'px';
+  sidebarTooltipEl.style.left = Math.round(rect.right + 10) + 'px';
+  sidebarTooltipEl.style.transform = 'translateY(-50%)';
+  sidebarTooltipEl.style.display = 'block';
+}
+function esconderTooltipSidebar(btn, texto) {
+  if (sidebarTooltipEl) sidebarTooltipEl.style.display = 'none';
+  if (btn && texto && !btn.getAttribute('title')) btn.setAttribute('title', texto);
+}
 function buildSidebarContent(onClose, goTo, desktopToggle) {
   const navChildren = [];
   const estafeta = isEstafeta();
@@ -23549,7 +23578,7 @@ function buildSidebarContent(onClose, goTo, desktopToggle) {
         class: 'nav-item' + (item.key === 'gaveta' ? ' nav-item-chat' : '') + (active ? ' active' : '') + (allowed ? '' : ' nav-item-disabled'),
         onclick: allowed ? aoClicar : null,
         disabled: allowed ? undefined : 'disabled',
-        title: allowed ? undefined : 'Sem acesso a esta área',
+        title: allowed ? section.title : 'Sem acesso a esta área',
       }, btnKids));
     } else {
       // "Equipa" (onde vive o Mapa de Tarefas/Responsabilidades) fica
@@ -23576,7 +23605,7 @@ function buildSidebarContent(onClose, goTo, desktopToggle) {
         class: 'nav-item' + extraClass + (activeHub ? ' active' : '') + (allowed ? '' : ' nav-item-disabled'),
         onclick: allowed ? () => requireAuth(() => goTo(clickTarget)) : null,
         disabled: allowed ? undefined : 'disabled',
-        title: allowed ? undefined : 'Sem acesso a esta área',
+        title: allowed ? section.title : 'Sem acesso a esta área',
       }, [
         h('span', { class: 'nav-icon' }, Icon(hub.icon, { size: 17 })), h('span', {}, section.title),
       ]));
@@ -23600,6 +23629,16 @@ function buildSidebarContent(onClose, goTo, desktopToggle) {
   ]);
   const badgeSlot = h('div', { class: 'sidebar-badge-slot' }, buildSidebarBadgeSlotContent());
   const footer = h('div', { class: 'sidebar-footer' }, [buildConexaoIndicador()]);
+  // Tooltip da sidebar colapsada: qualquer botão de navegação com "title"
+  // definido (nome da página, ou aviso de acesso) mostra-o também em
+  // tooltip flutuante próprio quando a sidebar está no modo rail — ver
+  // mostrarTooltipSidebar/esconderTooltipSidebar acima.
+  navChildren.forEach(btn => {
+    const texto = btn.getAttribute && btn.getAttribute('title');
+    if (!texto) return;
+    btn.addEventListener('mouseenter', () => mostrarTooltipSidebar(btn, texto));
+    btn.addEventListener('mouseleave', () => esconderTooltipSidebar(btn, texto));
+  });
   return [brand, badgeSlot, h('nav', { class: 'nav' }, navChildren), footer];
 }
 // Indicador discreto de Online/Offline — vive na base da sidebar, por
@@ -23718,6 +23757,17 @@ function render() {
   const utilizadorAtualId = activeUser ? activeUser.id : null;
   const mudouDeSessao = !primeiraVez && utilizadorAtualId !== ultimoUtilizadorRenderizado;
   const mudouDePagina = !primeiraVez && (STATE.page !== ultimaPaginaRenderizada || mudouDeSessao);
+  // Auto-colapsar/expandir a Sidebar de desktop ao entrar/sair da Página
+  // Inicial — feito aqui (e não em goTo()) para apanhar TODAS as formas de
+  // mudar de página (sino de Lembretes, "Voltar à Página Inicial" no ecrã
+  // de erro, etc.), não só a navegação pela própria sidebar. Só dispara
+  // numa mudança real de página (nunca ao ficar na mesma), e nunca mexe no
+  // que a pessoa já tiver escolhido manualmente ao navegar entre dois
+  // módulos de trabalho (nenhum dos dois é 'home').
+  if (!primeiraVez && STATE.page !== ultimaPaginaRenderizada) {
+    if (STATE.page === 'home') STATE.sidebarColapsada = false;
+    else if (ultimaPaginaRenderizada === 'home') STATE.sidebarColapsada = true;
+  }
   jaFezPrimeiraRenderizacao = true;
   ultimaPaginaRenderizada = STATE.page;
   ultimoUtilizadorRenderizado = utilizadorAtualId;
@@ -23828,6 +23878,10 @@ function renderInterno(ehTransicaoDePagina) {
     // muda nada — evita reconstruir o .page-container à toa, que é
     // precisamente o tipo de "piscar" sem motivo que se quer eliminar.
     if (!mudouDePagina && !preset) return;
+    // Auto-colapsar/expandir a Sidebar de desktop ao entrar/sair da
+    // Página Inicial: ver render() — feito lá (não aqui) para cobrir
+    // também as outras formas de mudar de página que não passam por
+    // goTo() (sino de Lembretes, ecrã de erro, etc.).
     STATE.navFrom = STATE.page; STATE.page = key; STATE.sidebarOpen = false; STATE.consultaPreset = preset || null; STATE.categoriaStatusFilter = {}; render();
     // Atualização pontual e silenciosa ao trocar de módulo — é o que
     // substitui o antigo polling por inatividade numa sessão ativa (ver
