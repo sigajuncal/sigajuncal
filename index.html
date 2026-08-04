@@ -40,6 +40,14 @@
   }
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;max-width:100%;overflow-x:hidden;}
+  /* Blindagem extra pedida explicitamente: garante que o browser nunca
+     pinta branco puro em momento nenhum (arranque, refresh, troca de
+     sessão) — usa-se o mesmo tom de fundo da marca (--pharm-50) em vez de
+     um cinza genérico, para nunca haver um salto de cor visível contra o
+     resto da app. #root/.app-shell/.main/.page-container herdam o mesmo
+     fundo, como rede de segurança extra em qualquer instante transitório
+     entre uma troca de conteúdo e a seguinte. */
+  html,body,#root,.app-shell,.main,.page-container{background-color:var(--pharm-50)!important;}
   body{
     background:var(--pharm-50); color:var(--pharm-950);
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
@@ -2199,12 +2207,22 @@
 
   /* Ecrã de carregamento inicial (Supabase) */
   .boot-loading{position:fixed;inset:0;z-index:110;display:flex;flex-direction:column;align-items:center;
-    justify-content:center;gap:18px;background:#ffffff;}
+    justify-content:center;gap:18px;background:var(--pharm-50);}
   .boot-loading-logo{max-width:220px;width:60%;height:auto;}
   .boot-spinner{width:34px;height:34px;border-radius:50%;border:3px solid var(--pharm-100);
     border-top-color:var(--pharm-600);animation:spin .8s linear infinite;}
   @keyframes spin{to{transform:rotate(360deg);}}
   .boot-loading-text{color:var(--pharm-500);font-size:13px;font-weight:600;}
+  /* Spinner estático (puro CSS/HTML, sem depender de nenhum JS) — cobre
+     mesmo o frame 0, enquanto o browser ainda está a analisar/executar o
+     script principal (que só arranca a app no fim). Usa a MESMA cor de
+     fundo da marca que o resto da app (nunca branco puro), para nunca
+     haver um salto de cor visível quando o ecrã de arranque real (JS) o
+     substitui a seguir. É removido pelo próprio script assim que chega ao
+     arranque (ver fundo do ficheiro) — nunca fica preso no ecrã.               */
+  .boot-static-spinner{position:fixed;inset:0;z-index:120;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:16px;background:var(--pharm-50);}
+  .boot-static-spinner-brand{font-size:20px;font-weight:800;color:var(--pharm-700);letter-spacing:.02em;}
 
   /* Transição entre páginas/módulos (navegação interna): mostra-se de
      imediato ao clicar, sobre o .page-container atual — nunca se deixa a
@@ -2296,6 +2314,16 @@
 </head>
 <body>
 <div id="root"></div>
+<!-- Spinner estático de arranque — puro HTML/CSS, pintado pelo browser
+     assim que o <head> é processado, SEM esperar que o script principal
+     (mais abaixo) acabe de ser analisado/executado. É removido pelo
+     próprio script no primeiro instante em que arranca (ver fundo do
+     ficheiro) e substituído pelo ecrã real (palavra-passe ou carregamento
+     de dados) — nunca há um frame em branco entre este e esse. -->
+<div id="boot-static-spinner" class="boot-static-spinner">
+  <p class="boot-static-spinner-brand">SigaJuncal</p>
+  <div class="boot-spinner"></div>
+</div>
 
 <script>
 /* =================================================================
@@ -23639,13 +23667,22 @@ function esconderOverlayTransicaoPagina() {
 // Só a página REALMENTE mudou de módulo é que conta como "transição" (com
 // spinner) — redesenhos dentro da mesma página (Realtime, gravações,
 // formulários) continuam instantâneos e silenciosos, como sempre foram.
+// Login/Logout também contam como transição, mesmo quando STATE.page fica
+// igual (ex: sessão termina já na Página Inicial) — o conteúdo real muda
+// radicalmente (sidebar, badges, página inicial de convidado vs. da
+// pessoa autenticada), por isso rastreia-se também a identidade de
+// activeUser, não só STATE.page.
 let ultimaPaginaRenderizada = null;
+let ultimoUtilizadorRenderizado = undefined; // undefined = ainda não houve nenhum render
 let jaFezPrimeiraRenderizacao = false;
 function render() {
   const primeiraVez = !jaFezPrimeiraRenderizacao;
-  const mudouDePagina = !primeiraVez && STATE.page !== ultimaPaginaRenderizada;
+  const utilizadorAtualId = activeUser ? activeUser.id : null;
+  const mudouDeSessao = !primeiraVez && utilizadorAtualId !== ultimoUtilizadorRenderizado;
+  const mudouDePagina = !primeiraVez && (STATE.page !== ultimaPaginaRenderizada || mudouDeSessao);
   jaFezPrimeiraRenderizacao = true;
   ultimaPaginaRenderizada = STATE.page;
+  ultimoUtilizadorRenderizado = utilizadorAtualId;
   if (!mudouDePagina) {
     // Preservar a posição de scroll (janela + contentores) durante o
     // redesenho completo — essencial quando o Realtime dispara um render a
@@ -23653,20 +23690,33 @@ function render() {
     comScrollPreservado(() => renderInterno(false));
     return;
   }
-  // Mudança real de módulo: mostra logo o spinner sobre o conteúdo atual
-  // e só a seguir é que o redesenho pesado acontece — nunca há um
-  // .page-container vazio nem um ecrã "congelado" sem feedback. Usa-se
-  // requestAnimationFrame (aguarda o próximo frame disponível) seguido de
-  // um setTimeout(0) (força ainda outra volta ao event loop, DEPOIS desse
-  // frame já ter sido pintado) — mais garantido do que 2x rAF sozinho, que
-  // em alguns motores de browser pode acabar a coalescer as duas chamadas
-  // no mesmo frame e saltar a pintura intermédia do spinner.
+  // Mudança real de módulo (ou de sessão — login/logout): mostra logo o
+  // spinner sobre o conteúdo atual e só a seguir é que o redesenho pesado
+  // acontece — nunca há um .page-container vazio nem um ecrã "congelado"
+  // sem feedback, nem uma troca brusca de conteúdo (ex: lista de Entregas
+  // → Página Inicial) sem transição visível a meio. O ecrã anterior fica
+  // 100% intacto e visível enquanto o novo .page-container é construído —
+  // a troca em si (dentro de renderInterno) só acontece depois de um
+  // DUPLO requestAnimationFrame (obriga o browser a calcular layout/estilo
+  // da pintura ANTERIOR — o spinner — antes de sequer começar a preparar a
+  // seguinte, eliminando qualquer frame intermédio por pintar), e o novo
+  // conteúdo entra com um fade-in suave de opacidade em vez de aparecer
+  // instantaneamente. A troca de nó em si (mainWrap.replaceChild) continua
+  // completamente síncrona e atómica dentro de comScrollPreservado — só
+  // ASSIM a captura/restauro de posição de scroll continua a funcionar
+  // (não pode haver nada assíncrono a meio dessa chamada).
   mostrarOverlayTransicaoPagina();
   requestAnimationFrame(() => {
-    setTimeout(() => {
+    requestAnimationFrame(() => {
       comScrollPreservado(() => renderInterno(true));
       esconderOverlayTransicaoPagina();
-    }, 0);
+      const novoContainer = document.querySelector('.app-shell > .main > .page-container');
+      if (novoContainer) {
+        novoContainer.style.opacity = '0';
+        novoContainer.style.transition = 'opacity .15s ease';
+        requestAnimationFrame(() => { novoContainer.style.opacity = '1'; });
+      }
+    });
   });
 }
 // PAGINAS_NUNCA_RECONSTROI_EM_FUNDO: módulos com muito estado local
@@ -25216,6 +25266,12 @@ ativarTooltipsDeCelulasTruncadas();
 //     (Username + PIN, Camada 2) através do ecrã de bloqueio "Iniciar
 //     Sessão". Já não existe Modo de Consulta Livre — sem sessão ativa,
 //     nada na app é visível nem interativo.
+// Remove o spinner estático (puro HTML/CSS, ver <body>) agora que o próprio
+// script está mesmo a arrancar — o ecrã real (palavra-passe ou carregamento
+// de dados) aparece na mesma volta de execução, por isso nunca há um frame
+// em branco entre os dois.
+const bootStaticSpinner = document.getElementById('boot-static-spinner');
+if (bootStaticSpinner) bootStaticSpinner.remove();
 if (readStoredAuth()) {
   startApp();
 } else {
