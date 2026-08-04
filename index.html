@@ -40,6 +40,13 @@
   }
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;max-width:100%;overflow-x:hidden;}
+  /* Reserva sempre o espaço da barra de scroll vertical, mesmo em páginas
+     mais curtas que não precisam de scroll — sem isto, trocar de um
+     módulo alto (com scroll) para um mais curto (sem scroll) faz a barra
+     desaparecer e o conteúdo "esticar" alguns pixels para preencher esse
+     espaço, um pequeno salto de layout que também contribuía para o
+     piscar reportado ao navegar entre módulos. */
+  html{overflow-y:scroll;scrollbar-gutter:stable;}
   /* Blindagem extra pedida explicitamente: garante que o browser nunca
      pinta branco puro em momento nenhum (arranque, refresh, troca de
      sessão) — usa-se o mesmo tom de fundo da marca (--pharm-50) em vez de
@@ -47,21 +54,22 @@
      resto da app. #root/.app-shell/.main/.page-container herdam o mesmo
      fundo, como rede de segurança extra em qualquer instante transitório
      entre uma troca de conteúdo e a seguinte. */
-  html,body,#root,.app-shell,.main,.page-container{background-color:var(--pharm-50)!important;}
+  html,body,#root,.app-shell,.main,.page-container{background-color:#f0f7fb!important;background-color:var(--pharm-50)!important;}
   body{
-    background:var(--pharm-50); color:var(--pharm-950);
+    background-color:#f0f7fb; color:var(--pharm-950);
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
     -webkit-font-smoothing:antialiased;
   }
   ::-webkit-scrollbar{height:8px;width:8px;}
   ::-webkit-scrollbar-thumb{background:var(--pharm-200);border-radius:4px;}
   ::-webkit-scrollbar-track{background:transparent;}
-  @keyframes fadeSlide{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
-  .animate-in{animation:fadeSlide .25s ease-out;}
+  @keyframes fadeSlide{from{opacity:.6;transform:translateY(3px);}to{opacity:1;transform:translateY(0);}}
+  .animate-in{animation:fadeSlide .12s ease-out;}
   button{font-family:inherit;}
   h1,h2,h3,p{margin:0;}
 
-  .app-shell{display:flex;min-height:100vh;}
+  .app-shell{display:flex;min-height:100vh;
+    transform:translateZ(0);backface-visibility:hidden;will-change:transform;}
 
   /* Sidebar (desktop) — largura 240px quando aberta (ver .main abaixo,
      que soma exatamente esta margem, sem gaps nem sobreposição). */
@@ -644,13 +652,16 @@
   .hamburger:hover{background:var(--pharm-50);}
   .topbar-title{display:flex;align-items:center;gap:6px;font-weight:800;color:var(--pharm-800);font-size:14px;}
 
-  .main{flex:1;min-width:0;position:relative;box-sizing:border-box;width:100%;max-width:100%;}
+  .main{flex:1;min-width:0;position:relative;box-sizing:border-box;width:100%;max-width:100%;min-height:100vh;
+    transform:translateZ(0);backface-visibility:hidden;will-change:transform;}
   @media (min-width:1024px){
     .main{margin-left:240px;width:calc(100% - 240px);max-width:calc(100% - 240px);
       transition:margin-left .18s ease,width .18s ease,max-width .18s ease;}
     .main.sidebar-colapsada{margin-left:68px;width:calc(100% - 68px);max-width:calc(100% - 68px);}
   }
-  .page-container{max-width:none;width:100%;box-sizing:border-box;padding:22px 16px 120px;}
+  .page-container{max-width:none;width:100%;box-sizing:border-box;padding:22px 16px 120px;
+    min-height:100vh;
+    transform:translateZ(0);backface-visibility:hidden;will-change:transform;}
   @media (min-width:640px){.page-container{padding:30px 24px 128px;}}
   @media (min-width:1024px){.page-container{padding:34px 40px 136px;}}
   @media (min-width:1440px){.page-container{padding:34px 56px 136px;}}
@@ -23790,7 +23801,19 @@ function render() {
   // tem esse problema: o browser só pinta depois desta função acabar, e
   // nessa altura o DOM já só tem a página nova, completa — não há
   // nenhum instante para pintar a meio.
-  comScrollPreservado(() => renderInterno(true));
+  // IMPORTANTE: aqui NUNCA se usa comScrollPreservado — essa função
+  // restaura a posição de scroll ANTERIOR (ex: a meio de uma lista longa
+  // em Pedidos), e é exatamente isso que causava o salto visual reportado:
+  // a página nova nascia no topo, era pintada, e um instante depois
+  // saltava para a posição de scroll da página ANTIGA (muitas vezes bem
+  // mais abaixo), o que se via como um piscar/reflow. Numa mudança real de
+  // módulo o scroll deve começar sempre no topo, nunca ser preservado —
+  // ver comScrollPreservado (usado só no ramo "!mudouDePagina" acima, para
+  // redesenhos dentro da MESMA página, onde preservar faz sentido).
+  renderInterno(true);
+  window.scrollTo(0, 0);
+  const mainWrapAtual = document.querySelector('.app-shell > .main');
+  if (mainWrapAtual) mainWrapAtual.scrollTop = 0;
 }
 // PAGINAS_NUNCA_RECONSTROI_EM_FUNDO: módulos com muito estado local
 // sensível a interrupções (formulários abertos, drag & drop em curso,
