@@ -1815,6 +1815,8 @@
      principal. */
   .agenda-slot-continuacao{background:#eff6ff;border-left:3px solid var(--blue-bd);opacity:.85;}
   .agenda-slot-continuacao .agenda-slot-label{font-style:italic;}
+  .agenda-slot-continuacao.agenda-slot-concluida{border-left-color:#15803d;opacity:1;}
+  .agenda-slot-continuacao.agenda-slot-cancelada{border-left-color:#b91c1c;opacity:1;}
   .agenda-slot-cancelada{background:#fee2e2 !important;}
   .agenda-slot-cancelada .agenda-slot-label{color:#b91c1c;text-decoration:line-through;}
   .agenda-slot-cancelada .agenda-slot-nome{color:#b91c1c !important;text-decoration:line-through;}
@@ -3094,7 +3096,7 @@ const entregasSchema = [
   { name: 'tipoDestinatario', label: 'Tipo de Destinatário', type: 'select', options: ['Particular', 'Empresa Parceira'], size: 'sm' },
   { name: 'empresaParceiraId', label: 'Empresa Parceira', type: 'select', options: [], size: 'sm' },
   { name: 'nomeCliente', label: 'Nome do Cliente/Destinatário', type: 'text', col: 2 },
-  { name: 'docReserva', label: 'Nº do Documento / Código de Reserva', type: 'text', col: 2, placeholder: 'ex: FT 2026/1234' },
+  { name: 'docReserva', label: 'Nº do Documento / Código de Reserva', type: 'text', col: 2, placeholder: 'ex: FT 2026/1234', uppercase: true },
   { name: 'entregaEmpresaParceira', label: '🏢 Entregar numa Empresa Parceira', type: 'checkbox' },
   { name: 'enderecoEmpresaParceiraId', label: 'Empresa Parceira (morada de entrega)', type: 'select', options: [], size: 'sm' },
   { name: 'morada', label: 'Morada', type: 'text', col: 2 },
@@ -4065,9 +4067,9 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
           forcarBtn.addEventListener('click', () => requireAuth(() => openNovaMarcacao(hora, true)));
           acoes.push(forcarBtn);
         }
-        node = h('div', { class: 'agenda-slot-row agenda-slot-continuacao' + (isPast ? ' agenda-vaga-passada' : '') }, [
+        node = h('div', { class: 'agenda-slot-row agenda-slot-continuacao' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') }, [
           h('span', { class: 'agenda-slot-hora' }, hora),
-          h('span', { class: 'agenda-slot-label cell-muted' }, `↳ Ocupado — ${m.nomeCliente || '—'}${m.tipoConsulta ? ' · ' + m.tipoConsulta : ''}`),
+          h('span', { class: 'agenda-slot-label cell-muted' }, `↳ Ocupado — ${m.nomeCliente || '—'}${m.tipoConsulta ? ' · ' + m.tipoConsulta : ''}${estadoSufixoVaga(m)}`),
           h('div', { class: 'row-actions' }, acoes),
         ]);
         linhasGrade.push({ hora, node });
@@ -4100,7 +4102,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
           h('span', { class: 'agenda-slot-label cell-strong' }, [
             h('span', { class: 'agenda-slot-nome' }, `${m.nomeCliente || '—'}${estadoSufixoVaga(m)}`),
             m.tipoConsulta ? h('span', { class: 'agenda-slot-servico' }, m.tipoConsulta) : null,
-            m.contacto ? h('span', { class: 'agenda-slot-contacto' }, `📞 ${m.contacto}`) : null,
+            m.contacto ? h('span', { class: 'agenda-slot-contacto' }, `📞 ${formatarTelefonePT(m.contacto)}`) : null,
           ]),
           h('div', { class: 'row-actions' }, acoes),
         ]);
@@ -4120,7 +4122,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
         h('span', { class: 'agenda-slot-label cell-strong' }, [
           h('span', { class: 'agenda-slot-nome' }, `${m.nomeCliente || '—'}${estadoSufixoVaga(m)}`),
           m.tipoConsulta ? h('span', { class: 'agenda-slot-servico' }, m.tipoConsulta) : null,
-          m.contacto ? h('span', { class: 'agenda-slot-contacto' }, `📞 ${m.contacto}`) : null,
+          m.contacto ? h('span', { class: 'agenda-slot-contacto' }, `📞 ${formatarTelefonePT(m.contacto)}`) : null,
         ]),
         h('div', { class: 'row-actions' }, acoes),
       ]);
@@ -7094,6 +7096,7 @@ function buildField(field, draft) {
     // Telefone (field.phone): o valor já gravado (só dígitos) mostra-se
     // logo formatado "xxx xxx xxx" ao abrir o formulário.
     if (field.phone) control.value = formatarTelefonePT(control.value);
+    if (field.uppercase && control.value) control.value = control.value.toUpperCase();
     // Campos de data pré-preenchidos (ex: "Data" com o dia de hoje, definido
     // em emptyRecord) já ficam imediatamente válidos e prontos a submeter —
     // a obrigatoriedade lê sempre o estado do draft, nunca exige que o
@@ -7143,6 +7146,13 @@ function buildField(field, draft) {
       if (field.digitsOnly) {
         const cleaned = v.replace(/\D/g, '');
         if (cleaned !== v) { control.value = cleaned; v = cleaned; }
+      }
+      // Força maiúsculas em tempo real (ex: Nº do Documento / Código de
+      // Reserva em Entregas) — evita desformatações e mantém consistência
+      // com o que é gravado no registo.
+      if (field.uppercase) {
+        const emMaiusculas = v.toUpperCase();
+        if (emMaiusculas !== v) { control.value = emMaiusculas; v = emMaiusculas; }
       }
       // Segunda barreira (além do keydown) contra valores negativos em
       // campos financeiros/quantidades — cobre colar/autofill, que o
@@ -14734,7 +14744,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
           h('span', { class: 'agenda-slot-hora' }, hora),
           h('span', { class: 'agenda-slot-label cell-strong' }, [
             h('span', { class: 'agenda-slot-nome' }, `${m.nomeCliente || '—'}${estadoSufixoVaga(m)}`),
-            m.contacto ? h('span', { class: 'agenda-slot-contacto' }, `📞 ${m.contacto}`) : null,
+            m.contacto ? h('span', { class: 'agenda-slot-contacto' }, `📞 ${formatarTelefonePT(m.contacto)}`) : null,
           ]),
           h('div', { class: 'row-actions' }, acoes),
         ]);
@@ -14753,7 +14763,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
         h('span', { class: 'agenda-slot-hora' }, `${m.hora} · Encaixe`),
         h('span', { class: 'agenda-slot-label cell-strong' }, [
           h('span', { class: 'agenda-slot-nome' }, `${m.nomeCliente || '—'}${estadoSufixoVaga(m)}`),
-          m.contacto ? h('span', { class: 'agenda-slot-contacto' }, `📞 ${m.contacto}`) : null,
+          m.contacto ? h('span', { class: 'agenda-slot-contacto' }, `📞 ${formatarTelefonePT(m.contacto)}`) : null,
         ]),
         h('div', { class: 'row-actions' }, acoes),
       ]);
@@ -20836,7 +20846,7 @@ function buildFormularioEntregaDoc(r) {
   const linhasAntes = [
     ['Farmácia', r.farmacia || '—'],
     ['Cliente / Destinatário', clienteDestinatarioTxt],
-    ['Doc/Reserva', r.docReserva || '—'],
+    ['Doc/Reserva', r.docReserva ? String(r.docReserva).toUpperCase() : '—'],
     ['Morada', [r.morada, r.localidade].filter(Boolean).join(', ') || '—'],
     ['Contacto', r.contacto ? formatarTelefonePT(r.contacto) : '—'],
     ['Data de Entrega', formatDate(r.dataEntrega)],
@@ -22176,8 +22186,8 @@ function buildEntregasPage(container, goTo) {
       draft.ultimaAtualizacaoPor = currentUserName();
     }
     normalizeNameFields(draft);
+    if (draft.docReserva) draft.docReserva = String(draft.docReserva).toUpperCase();
     saving = true; rerender();
-    const eraNovo = !editingId;
     let registoGuardado = null;
     if (editingId) {
       const updated = await dbUpdate('entregas', editingId, draft);
@@ -22357,7 +22367,7 @@ function buildEntregasPage(container, goTo) {
           r.urgente ? h('span', { title: 'Entrega Urgente', style: 'font-size:13px;flex-shrink:0;' }, '🚨') : null,
           h('span', { class: 'cell-truncate', title: r.nomeCliente || undefined }, r.nomeCliente || '—'),
         ]),
-        r.docReserva ? h('span', { class: 'badge-doc-reserva', title: 'Nº do Documento / Código de Reserva' }, r.docReserva) : null,
+        r.docReserva ? h('span', { class: 'badge-doc-reserva', title: 'Nº do Documento / Código de Reserva' }, String(r.docReserva).toUpperCase()) : null,
       ]);
       const printRowBtn = h('button', { class: 'btn-fab-sm tone-blue', title: 'Reimprimir formulário de entrega', 'aria-label': 'Reimprimir formulário de entrega' }, Icon('printer', { size: 12, strokeWidth: 2.2 }));
       printRowBtn.addEventListener('click', (e) => { e.stopPropagation(); imprimirFormularioEntrega(r); });
