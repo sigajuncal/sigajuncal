@@ -842,6 +842,10 @@
      distinguir claramente do aviso âmbar (ex: CNP já pendente). */
   .field-error-red{font-size:11.5px;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;
     border-radius:7px;padding:5px 9px;margin-top:6px;font-weight:700;line-height:1.4;}
+  /* Nota de rodapé do formulário (Entregas/Pedidos/Declarações) — substitui
+     os antigos popups de confirmação de ficha; discreta, mas em vermelho
+     para não passar despercebida. */
+  .aviso-rodape-ficha{font-size:12.5px;color:#b91c1c;font-weight:600;margin:12px 0 0;line-height:1.4;}
   .backup-status{font-size:12.5px;font-weight:700;margin-top:12px;}
   .input,.select,.textarea{width:100%;border:1px solid var(--pharm-200);background:#fff;border-radius:10px;
     padding:9px 12px;font-size:14px;color:var(--pharm-950);font-family:inherit;
@@ -3246,7 +3250,20 @@ CREATE TABLE IF NOT EXISTS clientes_habituais (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_clientes_habituais_farmacia ON clientes_habituais (farmacia_id);
-CREATE INDEX IF NOT EXISTS idx_clientes_habituais_numero_ficha ON clientes_habituais (numero_ficha);
+-- Índice ÚNICO parcial (farmacia_id + numero_ficha) — a mesma Ficha Nº 100
+-- pode existir em paralelo na Juncal e na Boa Nova (linhas diferentes,
+-- farmacia_id diferente), mas NUNCA duas vezes dentro da MESMA farmácia.
+-- Parcial ("WHERE numero_ficha <> ''") porque nem todo cliente tem Nº de
+-- Ficha preenchido — vários registos com numero_ficha em branco na mesma
+-- farmácia não devem colidir entre si. É esta chave que os UPSERT do
+-- código (dbUpsertClienteHabitual) usam via "ON CONFLICT
+-- (farmacia_id, numero_ficha)" — torna a gravação atómica: nunca cria
+-- duplicados mesmo com duas entregas em simultâneo para a mesma ficha nova.
+-- SUBSTITUÍDO pela secção 6 (índice único flexível) — a mesma Ficha Nº já
+-- pode ter mais do que um utente associado (família a partilhar a ficha).
+DROP INDEX IF EXISTS idx_clientes_habituais_numero_ficha;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_clientes_habituais_unico_ficha
+  ON clientes_habituais (farmacia_id, numero_ficha) WHERE numero_ficha <> '';
 ALTER TABLE clientes_habituais ENABLE ROW LEVEL SECURITY;
 CREATE POLICY anon_select_clientes_habituais ON clientes_habituais FOR SELECT TO anon USING (true);
 CREATE POLICY anon_insert_clientes_habituais ON clientes_habituais FOR INSERT TO anon WITH CHECK (true);
@@ -3276,6 +3293,33 @@ ALTER TABLE clientes_juncal ADD COLUMN IF NOT EXISTS data_nascimento date;
 ALTER TABLE clientes_habituais RENAME COLUMN num_cc TO nif;
 ALTER TABLE clientes_habituais ADD COLUMN IF NOT EXISTS data_nascimento date;
 ALTER TABLE documentos_emitidos RENAME COLUMN cc_utente TO nif_utente;
+
+-- 6) Índice único FLEXÍVEL em clientes_habituais — permite que vários
+--    membros da mesma família partilhem o mesmo Nº de Ficha (ex: Ficha Nº
+--    5449 = Teresa Pinto E João Pinto). Antes, (farmacia_id, numero_ficha)
+--    sozinho era a única chave possível (ver secção 2) — a Ficha Nº só
+--    podia ter UM cliente associado por farmácia; a 2ª pessoa a ser
+--    gravada nessa mesma ficha rebentava o índice único ou sobrescrevia a
+--    1ª. Passam a existir 2 índices únicos parciais, mutuamente exclusivos
+--    consoante o NIF vier preenchido ou não:
+--    a) COM NIF: nunca duas linhas com o mesmo NIF na mesma farmácia — é a
+--       identidade real da pessoa. A mesma numero_ficha pode repetir-se à
+--       vontade entre linhas com NIFs diferentes (a família inteira).
+--    b) SEM NIF: cai para (farmacia_id, numero_ficha, nome) — ainda evita
+--       duplicar exatamente o mesmo nome na mesma ficha (proteção contra
+--       gravação em duplicado por engano), mas já permite nomes diferentes
+--       na mesma ficha (ex: dois familiares ainda sem NIF registado).
+--    dbUpsertClienteHabitual() escolhe o alvo de conflito consoante o
+--    payload trouxer NIF preenchido ou não; quando já se conhece o id da
+--    linha (cliente carregado por uma pesquisa anterior por Nº de Ficha ou
+--    NIF), o código faz sempre UPDATE direto por id em vez de upsert por
+--    chave composta — nunca depende de adivinhar qual dos 2 índices está
+--    ativo nessa linha em concreto.
+DROP INDEX IF EXISTS idx_clientes_habituais_unico_ficha;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_clientes_habituais_unico_nif
+  ON clientes_habituais (farmacia_id, nif) WHERE nif <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_clientes_habituais_unico_ficha_nome
+  ON clientes_habituais (farmacia_id, numero_ficha, nome) WHERE numero_ficha <> '' AND nif = '';
 ================================================================= */
 // Sábado — usa meio-dia para evitar qualquer problema de fuso horário ao
 // interpretar uma data "YYYY-MM-DD" pura.
@@ -4666,6 +4710,23 @@ function lerCampoComFallback(obj, chaves) {
   }
   return '';
 }
+// Converte uma linha de clientes_habituais no formato "candidato/encontrado"
+// usado por toda a app (fonte/id/nome/morada/localidade/contacto/nif/
+// genero/dataNascimento/numeroFicha) — usado tanto para o resultado único
+// como para cada opção da modal de desambiguação (ver
+// abrirModalDesambiguacaoUtente), quando o mesmo Nº de Ficha tem mais do
+// que um utente associado (família a partilhar a ficha — ver CLIENTES_SQL,
+// secção 6).
+function mapHabitualParaCandidato(doHabituais) {
+  return {
+    fonte: 'clientes_habituais', id: doHabituais.id, nome: doHabituais.nome,
+    morada: doHabituais.morada, localidade: doHabituais.localidade, contacto: doHabituais.contacto,
+    nif: lerCampoComFallback(doHabituais, ['nif', 'num_cc', 'numCc']),
+    dataNascimento: lerCampoComFallback(doHabituais, ['dataNascimento', 'data_nascimento']),
+    genero: doHabituais.genero || '',
+    numeroFicha: doHabituais.numeroFicha || '',
+  };
+}
 async function dbBuscarClienteJuncalPorNumero(numero) {
   const numeroNorm = parseInt(String(numero || '').trim(), 10);
   if (!sb || isNaN(numeroNorm)) return null;
@@ -4766,11 +4827,16 @@ async function dbBuscarClienteJuncalPorNif(nif) {
 // Juncal, por isso segue exatamente a mesma prioridade "clientes_habituais
 // (farmacia_id='juncal') primeiro, clientes_juncal depois" da Juncal em
 // buscarClienteFicha() (Entregas), sem precisar de um farmaciaAtiva.
+// Devolve: null (não encontrado), um único candidato (formato "encontrado"
+// de sempre) quando só há UM utente com esse Nº de Ficha, ou
+// { duplicados: [...] } com a lista de candidatos (mapHabitualParaCandidato)
+// quando há mais do que um — cabe ao chamador abrir a modal de
+// desambiguação (abrirModalDesambiguacaoUtente) e deixar o operador
+// escolher qual o membro da família pretendido.
 async function buscarClienteFichaJuncal(numero) {
-  const doHabituais = (STATE.clientesHabituais || []).find(c => c.farmaciaId === 'juncal' && fichaValoresIguais(c.numeroFicha, numero));
-  // doHabituais.numCc é o fallback da coluna antiga (rowToRecord converte
-  // sempre num_cc -> numCc) — só entra em jogo se "nif" ainda estiver vazio.
-  if (doHabituais) return { fonte: 'clientes_habituais', id: doHabituais.id, nome: doHabituais.nome, morada: doHabituais.morada, localidade: doHabituais.localidade, contacto: doHabituais.contacto, nif: lerCampoComFallback(doHabituais, ['nif', 'num_cc', 'numCc']), dataNascimento: lerCampoComFallback(doHabituais, ['dataNascimento', 'data_nascimento']), genero: doHabituais.genero || '' };
+  const candidatosHabituais = (STATE.clientesHabituais || []).filter(c => c.farmaciaId === 'juncal' && fichaValoresIguais(c.numeroFicha, numero));
+  if (candidatosHabituais.length > 1) return { duplicados: candidatosHabituais.map(mapHabitualParaCandidato) };
+  if (candidatosHabituais.length === 1) return mapHabitualParaCandidato(candidatosHabituais[0]);
   const doJuncal = await dbBuscarClienteJuncalPorNumero(numero);
   if (doJuncal) return Object.assign({ fonte: 'clientes_juncal', id: null }, doJuncal);
   return null;
@@ -4796,6 +4862,53 @@ async function buscarClienteFichaJuncalPorNif(nif) {
   if (doJuncal) return Object.assign({ fonte: 'clientes_juncal', id: null }, doJuncal);
   return null;
 }
+// Grava OU atualiza um cliente em clientes_habituais numa única operação
+// atómica, usando a chave composta (farmacia_id, numero_ficha) — nunca por
+// "procurar id, depois inserir ou atualizar". Isto garante 2 coisas ao
+// mesmo tempo: 1) a Ficha Nº 100 da Juncal e a Ficha Nº 100 da Boa Nova
+// NUNCA se confundem nem se sobrescrevem (farmacia_id faz sempre parte da
+// chave); 2) duas entregas em simultâneo para a mesma ficha NOVA nunca
+// criam registos duplicados (o índice único no Supabase — ver CLIENTES_SQL
+// — resolve a corrida a nível de base de dados, não só a nível de app).
+// payload TEM de incluir sempre farmaciaId e numeroFicha (não vazio).
+// Duas rotas, consoante payload.id venha preenchido ou não:
+// 1) payload.id conhecido — o cliente já tinha sido carregado por uma
+//    pesquisa anterior (Nº de Ficha ou NIF), por isso já se sabe
+//    exatamente qual linha atualizar: UPDATE direto por id (dbUpdate
+//    genérico), que nunca depende de adivinhar qual dos 2 índices únicos
+//    (ver CLIENTES_SQL, secção 6) está ativo nessa linha em concreto — só
+//    manda ao servidor os campos que realmente mudaram.
+// 2) sem id (cliente novo, ainda sem linha em clientes_habituais) —
+//    upsert por chave composta, escolhendo o alvo de conflito consoante o
+//    payload trouxer NIF preenchido ou não: (farmacia_id, nif) com NIF, ou
+//    (farmacia_id, numero_ficha, nome) sem NIF — os mesmos 2 índices
+//    únicos parciais criados no Supabase. Isto garante que a mesma Ficha
+//    Nº pode passar a ter vários membros de família em simultâneo
+//    (numero_ficha deixou de ser, sozinho, a chave de unicidade) e que
+//    duas gravações em simultâneo para o mesmo cliente novo nunca criam
+//    duplicados (a corrida resolve-se a nível de base de dados).
+async function dbUpsertClienteHabitual(payload) {
+  if (!sb) return null;
+  const farmaciaId = String(payload.farmaciaId || '').trim();
+  const numeroFicha = String(payload.numeroFicha || '').trim();
+  if (!farmaciaId || !numeroFicha) return null; // chave composta incompleta — nunca tenta o upsert às cegas
+  if (payload.id) {
+    const patch = Object.assign({}, payload, { farmaciaId, numeroFicha });
+    delete patch.id;
+    return await dbUpdate('clientesHabituais', payload.id, patch);
+  }
+  try {
+    const row = recordToRow(Object.assign({}, payload, { farmaciaId, numeroFicha }));
+    const nifPayload = String(payload.nif || '').trim();
+    const onConflict = nifPayload ? 'farmacia_id,nif' : 'farmacia_id,numero_ficha,nome';
+    const { data, error } = await sb.from('clientes_habituais')
+      .upsert(row, { onConflict })
+      .select('id, farmacia_id, numero_ficha, nome, morada, localidade, contacto, nif, genero, data_nascimento')
+      .maybeSingle();
+    if (error) { console.error('[Supabase] erro ao upsert clientes_habituais:', error.message); return null; }
+    return data ? rowToRecord(data) : null;
+  } catch (e) { console.error('[Supabase] erro de rede ao upsert clientes_habituais:', formatarErroSeguro(e)); return null; }
+}
 // Campo "🔎 Nº de Ficha" reutilizável nos módulos de Pedidos (por agora só
 // ligado em Manipulados — ver fieldOverrides em buildCategoryPage). Mesmo
 // comportamento do equivalente em Entregas: substitui sempre Nome/Contacto
@@ -4818,6 +4931,19 @@ function buildNumFichaCategoriaField(f, draft, rerender, onCarregado) {
     const encontrado = await buscarClienteFichaJuncal(atual);
     if (String(draft[f.name] || '').trim() !== atual) return; // Nº mudou entretanto — descarta resposta tardia
     if (!encontrado) { onCarregado(null); limparCamposCliente(); rerender(); return; }
+    if (encontrado.duplicados) {
+      // Esta Ficha tem mais do que um utente associado (família a
+      // partilhar o mesmo Nº de Ficha) — pede ao operador para escolher
+      // qual, em vez de preencher com um ao acaso.
+      abrirModalDesambiguacaoUtente(atual, encontrado.duplicados, (escolhido) => {
+        if (String(draft[f.name] || '').trim() !== atual) return; // Nº mudou entretanto — descarta escolha tardia
+        aplicarEscolha(escolhido);
+      });
+      return;
+    }
+    aplicarEscolha(encontrado);
+  }
+  function aplicarEscolha(encontrado) {
     onCarregado({ fonte: encontrado.fonte, id: encontrado.id, nome: encontrado.nome, contacto: encontrado.contacto });
     draft.nome = encontrado.nome;
     draft.contacto = encontrado.contacto;
@@ -7764,6 +7890,13 @@ function buildRecordForm(schema, draft, opts) {
   if (opts.errorMessage) {
     children.push(h('p', { class: 'form-error' }, opts.errorMessage));
   }
+  // Nota de rodapé (substitui os antigos popups de confirmação de ficha —
+  // ver perguntarSobreFichaClienteManipulados/Entrega): a gravação/
+  // atualização da ficha do cliente já acontece sempre em silêncio; isto é
+  // só um lembrete visual para conferir os dados antes de guardar.
+  if (opts.avisoFicha) {
+    children.push(h('p', { class: 'aviso-rodape-ficha' }, '⚠️ Confirme se os dados da ficha do utente (automáticos ou editados) estão corretos antes de guardar.'));
+  }
   children.push(h('div', { class: 'form-actions' }, actionsRow));
   return h('div', { class: 'card card-pad animate-in', style: 'margin-bottom:24px;' }, children);
 }
@@ -7877,6 +8010,48 @@ function perguntaSimNaoDialog(mensagem, onResposta) {
   const panel = h('div', { class: 'modal-panel confirm-panel' }, [
     h('p', { class: 'confirm-message' }, mensagem),
     h('div', { class: 'form-actions' }, [simBtn, naoBtn]),
+  ]);
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+}
+// Modal de desambiguação de Utentes — usada sempre que uma pesquisa por Nº
+// de Ficha (Entregas, Pedidos/Manipulados, Declarações) encontra mais do
+// que um utente associado à mesma ficha (caso típico: vários membros da
+// mesma família a partilhar o mesmo Nº de Ficha, ver CLIENTES_SQL, secção
+// 6). candidatos vem sempre no formato mapHabitualParaCandidato (nome/nif/
+// morada/localidade/contacto/genero/dataNascimento/id). A escolha do
+// operador chama SEMPRE onEscolher(candidato) com o candidato selecionado
+// — nunca escolhe um ao acaso. Fechar sem escolher (Escape ou clique fora)
+// não chama onEscolher — os campos ficam como já tinham sido deixados
+// pelo chamador antes de abrir a modal (normalmente limpos).
+// Nunca usada para a pesquisa por NIF — essa já identifica diretamente um
+// único utente, sem ambiguidade nenhuma.
+function abrirModalDesambiguacaoUtente(numeroFicha, candidatos, onEscolher) {
+  const overlay = h('div', { class: 'modal-overlay' });
+  let escolhido = false;
+  function fechar() { document.removeEventListener('keydown', onKeydown); overlay.remove(); }
+  function escolher(c) { if (escolhido) return; escolhido = true; fechar(); onEscolher(c); }
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) fechar(); });
+  function onKeydown(e) { if (e.key === 'Escape') fechar(); }
+  document.addEventListener('keydown', onKeydown);
+  const linhas = candidatos.map(c => {
+    const linhaDetalhe = [c.nif ? `NIF: ${c.nif}` : 'Sem NIF associado', c.localidade].filter(Boolean).join(' · ');
+    const btn = h('button', {
+      type: 'button', class: 'btn btn-secondary',
+      style: 'width:100%;text-align:left;display:flex;flex-direction:column;align-items:flex-start;gap:2px;margin-bottom:8px;padding:10px 14px;',
+    }, [
+      h('span', { style: 'font-weight:700;' }, c.nome || '(sem nome)'),
+      h('span', { style: 'font-size:12px;color:var(--pharm-600);' }, linhaDetalhe),
+    ]);
+    btn.addEventListener('click', () => escolher(c));
+    return btn;
+  });
+  const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: fechar }, 'Cancelar');
+  const panel = h('div', { class: 'modal-panel', style: 'max-width:400px;' }, [
+    h('p', { class: 'modal-title', style: 'margin-bottom:4px;' }, `Ficha Nº ${numeroFicha}`),
+    h('p', { class: 'confirm-message', style: 'margin-bottom:14px;' }, 'Existe mais do que um utente associado a esta Ficha. Escolha o membro da família pretendido:'),
+    h('div', {}, linhas),
+    h('div', { class: 'form-actions' }, [cancelBtn]),
   ]);
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
@@ -8377,7 +8552,6 @@ const PAGINA_PAI = {
   // Entregas — item único, sem hub próprio
   entregas: 'home',
   'gestao-empresas-parceiras': 'entregas', // gerido a partir de Entregas
-  'gestao-clientes-habituais': 'entregas', // gerido a partir de Entregas (só Boa Nova)
 
   // Agendas
   'hub-agendas': 'home', 'hub-agendas-nutricao': 'hub-agendas',
@@ -8795,8 +8969,8 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
     const nomeAtual = String(draft.nome || '').trim();
     if (!numeroDigitado || !nomeAtual) { seguir(); return; }
     if (!clienteFichaCarregada) {
-      const criado = await dbInsert('clientesHabituais', { farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, contacto: draft.contacto || '' });
-      if (criado) STATE.clientesHabituais = [criado, ...(STATE.clientesHabituais || [])];
+      const gravado = await dbUpsertClienteHabitual({ farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, contacto: draft.contacto || '' });
+      if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
       seguir();
     } else {
       const alterou = nomeAtual !== String(clienteFichaCarregada.nome || '').trim()
@@ -8804,18 +8978,17 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
       if (!alterou) { seguir(); return; }
       // Só Nome/Contacto vão no payload — Manipulados não tem campos de
       // Morada/Localidade, por isso nunca os inclui aqui (evita apagar
-      // por engano dados que só o formulário de Entregas conhece).
+      // por engano dados que só o formulário de Entregas conhece). Quando
+      // já se conhece o id da linha em clientes_habituais (ficha carregada
+      // dessa fonte, nunca da referência clientes_juncal só de leitura),
+      // inclui-se sempre no payload — dbUpsertClienteHabitual faz então
+      // UPDATE direto por id, em vez de arriscar um upsert por chave
+      // composta a apanhar a pessoa errada quando a mesma Ficha tem mais
+      // do que um utente associado (família a partilhar a ficha).
       const payload = { farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, contacto: draft.contacto || '' };
-      if (clienteFichaCarregada.fonte === 'clientes_habituais' && clienteFichaCarregada.id) {
-        const atualizado = await dbUpdate('clientesHabituais', clienteFichaCarregada.id, payload);
-        if (atualizado) STATE.clientesHabituais = (STATE.clientesHabituais || []).map(c => c.id === clienteFichaCarregada.id ? atualizado : c);
-      } else {
-        // Fonte clientes_juncal (referência importada, só de leitura) — a
-        // correção fica como registo novo em clientes_habituais, com
-        // prioridade sobre a referência nas próximas consultas.
-        const criado = await dbInsert('clientesHabituais', payload);
-        if (criado) STATE.clientesHabituais = [criado, ...(STATE.clientesHabituais || [])];
-      }
+      if (clienteFichaCarregada.fonte === 'clientes_habituais' && clienteFichaCarregada.id) payload.id = clienteFichaCarregada.id;
+      const gravado = await dbUpsertClienteHabitual(payload);
+      if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
       seguir();
     }
   }
@@ -8950,6 +9123,7 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
       const schemaVisivel = editingId ? schema : schema.filter(f => f.name !== 'ultimaAtualizacaoPor');
       wrap.appendChild(buildRecordForm(schemaVisivel, draft, {
         editing: !!editingId, onSubmit: submit, onCancel: cancel, errorMessage: formError, saving, fieldOverrides,
+        avisoFicha: listKey === 'manipulados',
       }));
       const painelOrcamentos = buildOrcamentosPanel(listKey, draft, rerender, estado.orcamentosBloqueados);
       if (painelOrcamentos) wrap.appendChild(painelOrcamentos);
@@ -11508,7 +11682,7 @@ function buildErrosPage(container, goTo) {
         h('td', { style: 'white-space:nowrap;' }, String(fisV)),
         h('td', { style: 'white-space:nowrap;' }, String(sisV)),
         h('td', { style: 'white-space:nowrap;' }, diffSpan),
-        h('td', { style: 'white-space:nowrap;' }, r.responsavel || '—'),
+        h('td', { style: 'white-space:nowrap;', title: r.responsavel || undefined }, r.responsavel ? formatarNomeResponsavelTabela(r.responsavel, STATE.usuarios) : '—'),
       );
       if (mode === 'resolved') cells.push(h('td', {}, h('span', { class: 'badge badge-green' }, 'RESOLVIDO')));
       cells.push(h('td', {}, ObsIndicator(r.obs)));
@@ -13363,7 +13537,7 @@ function buildFinanceiroPage(container, goTo) {
             h('td', {}, financeiroFormatarEuro(r.entidades, 2)),
             h('td', {}, financeiroFormatarEuro(r.credito, 2)),
             h('td', { class: 'cell-strong' }, financeiroFormatarEuro(financeiroValorCaixaRegisto(r) + (parseFloat(r.entidades) || 0) + (parseFloat(r.credito) || 0), 2)),
-            h('td', {}, r.registadoPor || '—'),
+            h('td', { title: r.registadoPor || undefined }, r.registadoPor ? formatarNomeResponsavelTabela(r.registadoPor, STATE.usuarios) : '—'),
           ]))),
         ]),
       ]));
@@ -14052,7 +14226,7 @@ function buildLembretesPage(container, goTo, embedded) {
         h('td', {}, ambitoBadge),
         h('td', {}, alertaTexto),
         h('td', { class: 'cell-muted' }, lembreteRepeticaoTexto(r)),
-        h('td', { class: 'cell-strong' }, r.responsavel || '—'),
+        h('td', { class: 'cell-strong', title: r.responsavel || undefined }, r.responsavel ? formatarNomeResponsavelTabela(r.responsavel, STATE.usuarios) : '—'),
         h('td', { style: 'white-space:normal;max-width:380px;' }, r.info || '—'),
         h('td', {}, estadoBadge),
       ]);
@@ -14089,7 +14263,7 @@ function buildLembretesPage(container, goTo, embedded) {
         h('td', {}, ambitoBadge),
         h('td', {}, formatDate(l.quando)),
         h('td', { class: 'cell-muted' }, lembreteRepeticaoTexto(r)),
-        h('td', { class: 'cell-strong' }, r.responsavel || '—'),
+        h('td', { class: 'cell-strong', title: r.responsavel || undefined }, r.responsavel ? formatarNomeResponsavelTabela(r.responsavel, STATE.usuarios) : '—'),
         h('td', { style: 'white-space:normal;max-width:380px;' }, r.info || '—'),
         h('td', {}, estadoBadge),
       ]);
@@ -14419,7 +14593,7 @@ function buildReclamacoesPage(container, goTo) {
         h('td', {}, r.produto || '—'),
         h('td', {}, r.cnp || '—'),
         h('td', {}, motivoCell),
-        h('td', {}, r.responsavel || '—'),
+        h('td', { title: r.responsavel || undefined }, r.responsavel ? formatarNomeResponsavelTabela(r.responsavel, STATE.usuarios) : '—'),
         h('td', {}, estadoBadge),
       ]);
       return row;
@@ -16526,6 +16700,19 @@ function buildFichaClienteDeclaracaoFields(draft, rerender, onCarregado) {
     const encontrado = await buscarClienteFichaJuncal(atual);
     if (String(draft.numeroFicha || '').trim() !== atual) return; // Nº mudou entretanto — descarta resposta tardia
     if (!encontrado) { onCarregado(null); limparCamposCliente(); rerender(); return; }
+    if (encontrado.duplicados) {
+      // Esta Ficha tem mais do que um utente associado (família a
+      // partilhar o mesmo Nº de Ficha) — pede ao operador para escolher
+      // qual, em vez de preencher com um ao acaso. Pesquisar diretamente
+      // pelo NIF (consultarPorNif, abaixo) continua a selecionar sempre de
+      // forma direta, sem esta modal — o NIF já identifica uma só pessoa.
+      abrirModalDesambiguacaoUtente(atual, encontrado.duplicados, (escolhido) => {
+        if (String(draft.numeroFicha || '').trim() !== atual) return; // Nº mudou entretanto — descarta escolha tardia
+        aplicarEncontrado(escolhido);
+        rerender();
+      });
+      return;
+    }
     aplicarEncontrado(encontrado);
     rerender();
   }
@@ -16583,28 +16770,27 @@ function buildFichaClienteDeclaracaoFields(draft, rerender, onCarregado) {
 // o snapshot mais recente (pode ter chegado pela pesquisa por Nº de Ficha
 // OU pela pesquisa por NIF — ver buildFichaClienteDeclaracaoFields).
 function criarPerguntaSobreFichaCliente(draft, getClienteFichaCarregada) {
-  return function perguntarSobreFichaClienteDeclaracao() {
+  return async function perguntarSobreFichaClienteDeclaracao() {
     const numeroDigitado = String(draft.numeroFicha || '').trim();
     const nomeAtual = String(draft.nomeUtente || '').trim();
     if (!numeroDigitado || !nomeAtual) return;
     const clienteFichaCarregada = getClienteFichaCarregada();
     if (!clienteFichaCarregada) {
-      confirmDialog(`Ficha Nº ${numeroDigitado} não encontrada. Deseja guardar este cliente para entregas futuras?`, async () => {
-        const criado = await dbInsert('clientesHabituais', { farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, nif: draft.nifUtente || '', genero: draft.genero || '', dataNascimento: draft.dataNascimento || '' });
-        if (criado) STATE.clientesHabituais = [criado, ...(STATE.clientesHabituais || [])];
-        else showToast('A declaração foi gravada, mas não foi possível guardar a ficha do cliente. Podes tentar novamente mais tarde.', 'error');
-      }, { confirmLabel: 'Sim, Guardar', cancelLabel: 'Não' });
+      // Ficha nova — grava-se automaticamente, em silêncio, sem popup (mesma
+      // regra de Entregas/Manipulados — a submissão nunca é interrompida).
+      const gravado = await dbUpsertClienteHabitual({ farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, nif: draft.nifUtente || '', genero: draft.genero || '', dataNascimento: draft.dataNascimento || '' });
+      if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
     } else {
       // Comparação estrita apenas aos dados da FICHA do cliente — Nome,
       // NIF, Género e Data de Nascimento. Campos exclusivos do documento
       // em si (Valor Total, Discriminado, itens, Observações, etc.) NUNCA
       // entram aqui — não fazem parte da ficha do cliente, só da
-      // declaração atual, por isso não podem disparar este popup.
+      // declaração atual.
       // Género só conta como alteração se tiver sido escolhido À MÃO
       // (draft.generoEscolhidoManualmente) — uma sugestão automática por
       // dedução do nome (deduzirGeneroPorNome, ver
       // buildFichaClienteDeclaracaoFields) nunca é, por si só, motivo para
-      // perguntar se se quer atualizar a ficha.
+      // atualizar a ficha.
       // Data de Nascimento compara sempre normalizada para AAAA-MM-DD
       // (normalizarDataParaComparacao), para nunca dar falso positivo por
       // causa de uma diferença de formato entre o valor vindo da ficha e o
@@ -16615,18 +16801,17 @@ function criarPerguntaSobreFichaCliente(draft, getClienteFichaCarregada) {
         || (generoConta && String(draft.genero || '').trim() !== String(clienteFichaCarregada.genero || '').trim())
         || normalizarDataParaComparacao(draft.dataNascimento) !== normalizarDataParaComparacao(clienteFichaCarregada.dataNascimento);
       if (!alterou) return;
-      confirmDialog(`Detetámos alterações nos dados da Ficha Nº ${numeroDigitado}. Deseja atualizar permanentemente os dados deste cliente na base de dados?`, async () => {
-        const payload = { farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, nif: draft.nifUtente || '', genero: draft.genero || '', dataNascimento: draft.dataNascimento || '' };
-        if (clienteFichaCarregada.fonte === 'clientes_habituais' && clienteFichaCarregada.id) {
-          const atualizado = await dbUpdate('clientesHabituais', clienteFichaCarregada.id, payload);
-          if (atualizado) STATE.clientesHabituais = (STATE.clientesHabituais || []).map(c => c.id === clienteFichaCarregada.id ? atualizado : c);
-          else showToast('A declaração foi gravada, mas não foi possível atualizar a ficha do cliente. Podes tentar novamente mais tarde.', 'error');
-        } else {
-          const criado = await dbInsert('clientesHabituais', payload);
-          if (criado) STATE.clientesHabituais = [criado, ...(STATE.clientesHabituais || [])];
-          else showToast('A declaração foi gravada, mas não foi possível atualizar a ficha do cliente. Podes tentar novamente mais tarde.', 'error');
-        }
-      }, { confirmLabel: 'Sim, Atualizar Ficha', cancelLabel: 'Não, Manter Apenas na Declaração' });
+      // Dados alterados — atualiza-se automaticamente, em silêncio. Quando
+      // já se conhece o id da linha em clientes_habituais (ficha carregada
+      // dessa fonte, nunca da referência clientes_juncal só de leitura),
+      // inclui-se sempre no payload — dbUpsertClienteHabitual faz então
+      // UPDATE direto por id, em vez de arriscar um upsert por chave
+      // composta a apanhar a pessoa errada quando a mesma Ficha tem mais
+      // do que um utente associado (família a partilhar a ficha).
+      const payload = { farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, nif: draft.nifUtente || '', genero: draft.genero || '', dataNascimento: draft.dataNascimento || '' };
+      if (clienteFichaCarregada.fonte === 'clientes_habituais' && clienteFichaCarregada.id) payload.id = clienteFichaCarregada.id;
+      const gravado = await dbUpsertClienteHabitual(payload);
+      if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
     }
   };
 }
@@ -17218,6 +17403,7 @@ function buildDeclaracaoDespesasPage(container, goTo) {
     const saveBtn = h('button', { class: 'btn btn-secondary', onclick: saving ? null : () => requireAuth(() => guardarDocumento(false)) }, saving ? 'A guardar…' : 'Guardar Apenas');
     const pdfBtn = h('button', { class: 'btn btn-secondary', onclick: saving ? null : () => requireAuth(() => guardarDocumento('pdf')) }, 'Download PDF');
     const printBtn = h('button', { class: 'btn btn-primary', onclick: saving ? null : () => requireAuth(() => guardarDocumento('print')) }, 'Imprimir');
+    wrap.appendChild(h('p', { class: 'aviso-rodape-ficha' }, '⚠️ Confirme se os dados da ficha do utente (automáticos ou editados) estão corretos antes de guardar.'));
     wrap.appendChild(h('div', { class: 'form-actions', style: 'margin-top:16px;' }, [saveBtn, pdfBtn, printBtn]));
 
     return wrap;
@@ -17376,6 +17562,7 @@ function buildDeclaracaoAvaliacaoFisicaPage(container, goTo) {
     const saveBtn = h('button', { class: 'btn btn-secondary', onclick: saving ? null : () => requireAuth(() => guardarDocumento(false)) }, saving ? 'A guardar…' : 'Guardar Apenas');
     const pdfBtn = h('button', { class: 'btn btn-secondary', onclick: saving ? null : () => requireAuth(() => guardarDocumento('pdf')) }, 'Download PDF');
     const printBtn = h('button', { class: 'btn btn-primary', onclick: saving ? null : () => requireAuth(() => guardarDocumento('print')) }, 'Imprimir');
+    wrap.appendChild(h('p', { class: 'aviso-rodape-ficha' }, '⚠️ Confirme se os dados da ficha do utente (automáticos ou editados) estão corretos antes de guardar.'));
     wrap.appendChild(h('div', { class: 'form-actions', style: 'margin-top:16px;' }, [saveBtn, pdfBtn, printBtn]));
 
     return wrap;
@@ -17511,6 +17698,7 @@ function buildDeclaracaoPresencaPage(container, goTo) {
     const saveBtn = h('button', { class: 'btn btn-secondary', onclick: saving ? null : () => requireAuth(() => guardarDocumento(false)) }, saving ? 'A guardar…' : 'Guardar Apenas');
     const pdfBtn = h('button', { class: 'btn btn-secondary', onclick: saving ? null : () => requireAuth(() => guardarDocumento('pdf')) }, 'Download PDF');
     const printBtn = h('button', { class: 'btn btn-primary', onclick: saving ? null : () => requireAuth(() => guardarDocumento('print')) }, 'Imprimir');
+    wrap.appendChild(h('p', { class: 'aviso-rodape-ficha' }, '⚠️ Confirme se os dados da ficha do utente (automáticos ou editados) estão corretos antes de guardar.'));
     wrap.appendChild(h('div', { class: 'form-actions', style: 'margin-top:16px;' }, [saveBtn, pdfBtn, printBtn]));
 
     return wrap;
@@ -17659,7 +17847,7 @@ function buildHistoricoDocumentosSection(goTo) {
     const linhas = lista.map(r => {
       const dataHora = r.createdAt ? new Date(r.createdAt).toLocaleString('pt-PT', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
       const badge = h('span', { class: 'badge ' + (TIPOS_DOCUMENTO_BADGE_TONE[r.tipo] || 'badge-blue') }, TIPOS_DOCUMENTO_LABELS[r.tipo] || r.tipo);
-      const emitidoPor = [r.responsavelNome, r.responsavelCargo].filter(Boolean).join(' - ');
+      const emitidoPor = [r.responsavelNome ? formatarNomeResponsavelTabela(r.responsavelNome, STATE.usuarios) : '', r.responsavelCargo].filter(Boolean).join(' - ');
 
       const nomeBaseHist = { despesas_mensal: 'declaracao_despesas', presenca: 'declaracao_presenca', avaliacao_fisica: 'declaracao_avaliacao_fisica' }[r.tipo] || 'documento';
       const dataDoc = r.dataEmissao || (r.createdAt ? String(r.createdAt).slice(0, 10) : todayISO());
@@ -18713,7 +18901,7 @@ ALTER PUBLICATION supabase_realtime ADD TABLE escala_feriados;
 // (o Diretor Técnico/Administrador gere a lista real a partir de "Gerir
 // Vagas", que fica sempre a fonte de verdade assim que existir pelo menos
 // uma linha na tabela).
-const ESCALA_ROTACAO_GRUPO_A_LISTA_BASE = ['Joana Mendonça', 'Inês Ferreira', 'Lúcia Rodrigues', 'Joana Coelho', 'Sofia André', 'Magda Antunes', 'André Seixas', 'João Rego'];
+const ESCALA_ROTACAO_GRUPO_A_LISTA_BASE = ['Joana Mendonça', 'Inês Ferreira', 'Lúcia Rodrigues', 'Joana Coelho', 'Sofia André', 'Magda Antunes', 'André Seixas', 'João Rego', 'Ana Moreira'];
 // Seed inicial das Posições Base (Turnos-Modelo), extraído dia a dia (2ª a
 // Domingo) das matrizes oficiais do Paulo: BASE 1 = "Mariana Semana"
 // (horariosDias) e BASE 2 = "Mariana FDS/Ausente" (horariosDiasSemMariana,
@@ -21919,7 +22107,7 @@ function buildFormularioEntregaDoc(r) {
     ['Bloco Horário', r.blocoHorario || '—'],
     ['Hora Limite', entregaHoraLimiteEfetiva(r) || '—'],
     ['Entregue por', r.entreguePor || '—'],
-    ['Responsável pela Entrega', r.registadoPor || '—'],
+    ['Responsável pela Entrega', r.registadoPor ? formatarNomeResponsavelTabela(r.registadoPor, STATE.usuarios) : '—'],
     ['Urgente', r.urgente ? 'SIM — Entrega Imediata' : 'Não'],
   ];
   const pago = r.estadoPagamento === 'Pago';
@@ -22337,7 +22525,7 @@ function abrirModalEntregasAtrasadas(itensIniciais, opts) {
         ]),
         h('p', { class: 'cell-muted', style: 'margin:0 0 3px;font-size:12.5px;' }, `📍 ${r.morada || '—'}`),
         h('p', { class: 'cell-muted', style: 'margin:0 0 3px;font-size:12.5px;' }, `🕒 ${r.blocoHorario || '—'} · ${formatDate(r.dataEntrega)}`),
-        h('p', { class: 'cell-muted', style: 'margin:0 0 8px;font-size:12.5px;' }, `🚴 Estafeta/Responsável: ${r.entreguePor || r.registadoPor || '—'}`),
+        h('p', { class: 'cell-muted', style: 'margin:0 0 8px;font-size:12.5px;' }, `🚴 Estafeta/Responsável: ${r.entreguePor || (r.registadoPor ? formatarNomeResponsavelTabela(r.registadoPor, STATE.usuarios) : '') || '—'}`),
         h('div', { style: 'display:flex;gap:8px;' }, [confirmarBtn, detalhesBtn]),
       ]));
     });
@@ -22515,7 +22703,7 @@ function buildMapaTarefasPage(container, goTo) {
       const linhaCelulas = [
         h('td', {}, h('span', { class: `badge badge-${tone}` }, r.categoria || '—')),
         h('td', { class: 'cell-strong', title: r.titulo || '' }, r.titulo || '—'),
-        h('td', { title: r.responsavel || '' }, r.responsavel || '—'),
+        h('td', { title: r.responsavel || '' }, r.responsavel ? formatarNomeResponsavelTabela(r.responsavel, STATE.usuarios) : '—'),
         h('td', { title: (r.substituto && r.substituto !== '—') ? r.substituto : '' }, (r.substituto && r.substituto !== '—') ? r.substituto : '—'),
         h('td', { style: 'text-align:center;', onclick: (e) => e.stopPropagation() }, obsEyeButton(r.observacoes)),
       ];
@@ -22751,122 +22939,6 @@ function buildEmpresasParceirasPage(container, goTo, farmaciaAtiva) {
 
   container.appendChild(build());
 }
-// Gestão de Clientes Habituais — só Farmácia Boa Nova (a Juncal usa
-// clientes_juncal, tabela de referência só de leitura, sem ecrã de gestão
-// próprio: é mantida via re-importação do export do 4Digital Care).
-// Estrutura em tudo idêntica a buildEmpresasParceirasPage acima.
-function buildClientesHabituaisPage(container, goTo) {
-  let showForm = false, editingId = null, draft = emptyRecord(clienteHabitualSchema);
-  let formError = '';
-  let saving = false;
-  let searchQuery = '';
-
-  function records() { return (STATE.clientesHabituais || []).filter(c => c.farmaciaId === 'boa_nova'); }
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
-
-  function openNew() { draft = emptyRecord(clienteHabitualSchema); draft.farmaciaId = 'boa_nova'; editingId = null; formError = ''; showForm = true; rerender(); }
-  function openEdit(r) { draft = Object.assign({}, r); editingId = r.id; formError = ''; showForm = true; rerender(); }
-  function cancel() { formError = ''; showForm = false; rerender(); }
-
-  async function submit() {
-    const missing = checkRequiredFields(draft, clienteHabitualSchema);
-    if (missing.length) { formError = buildRequiredMessage(missing, clienteHabitualSchema); rerender(); return; }
-    const formatoInvalido = checkFieldFormats(draft, clienteHabitualSchema);
-    if (formatoInvalido) { formError = formatoInvalido; rerender(); return; }
-    formError = '';
-    normalizeNameFields(draft);
-    saving = true; rerender();
-    if (editingId) {
-      const updated = await dbUpdate('clientesHabituais', editingId, draft);
-      if (updated) STATE.clientesHabituais = records().map(r => r.id === editingId ? updated : r);
-      else formError = `Não foi possível guardar as alterações. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
-    } else {
-      const created = await dbInsert('clientesHabituais', Object.assign({ farmaciaId: 'boa_nova' }, draft));
-      // O dropdown/lookup "Cliente Habitual" do formulário de Entregas lê
-      // sempre STATE.clientesHabituais em tempo real — ao gravar aqui, fica
-      // logo disponível lá, sem qualquer passo extra de sincronização.
-      if (created) STATE.clientesHabituais = [created, ...records()];
-      else formError = `Não foi possível adicionar o cliente habitual. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
-    }
-    saving = false;
-    if (!formError) showForm = false;
-    rerender();
-  }
-  function removeCliente(r) {
-    // Mesmo padrão de empresas_parceiras: eliminação sempre definitiva
-    // (hard delete), sem soft-delete/Lixeira, restrita a Administrador/Master.
-    if (!isMasterUser()) {
-      showToast('Apenas Administrador ou Master podem eliminar clientes habituais.', 'error');
-      return;
-    }
-    confirmDialog(`Tem a certeza de que quer eliminar "${r.nome}"? Esta ação não pode ser desfeita.`, async () => {
-      const apagados = await bulkHardDelete('clientesHabituais', [r.id]);
-      STATE.clientesHabituais = records().filter(x => !apagados.has(x.id));
-      rerender();
-    }, { danger: true, confirmLabel: 'Eliminar' });
-  }
-
-  function build() {
-    const wrap = h('div', { class: 'animate-in' });
-    wrap.appendChild(withCustomBackButton(buildPageHeader('star', 'Clientes Habituais · Boa Nova', 'Gestão de Clientes Habituais da Farmácia Boa Nova — preenchimento automático das entregas desta farmácia.', undefined), () => goTo('entregas')));
-
-    if (showForm) {
-      wrap.appendChild(buildRecordForm(clienteHabitualSchema, draft, {
-        editing: !!editingId, onSubmit: submit, onCancel: cancel, errorMessage: formError, saving,
-      }));
-      return wrap;
-    }
-
-    const searchInput = h('input', { class: 'search-input', type: 'text', placeholder: 'Pesquisar por nome, Nº de Ficha, morada ou contacto...' });
-    searchInput.value = searchQuery;
-    const resultsEl = h('div', {});
-    function renderResultsOnly() {
-      clear(resultsEl);
-      const q = normalizarTexto(searchQuery).trim();
-      const filtradas = !q ? records() : records().filter(r =>
-        [r.nome, r.numeroFicha, r.morada, r.localidade, r.contacto].some(v => normalizarTexto(v).includes(q)));
-      if (!filtradas.length) {
-        resultsEl.appendChild(EmptyState(q ? 'Nenhum cliente encontrado para essa pesquisa.' : 'Sem clientes habituais registados. Adiciona o primeiro pelo botão abaixo.'));
-        return;
-      }
-      const thead = h('thead', {}, h('tr', {}, ['Nº Ficha', 'Nome', 'Morada', 'Localidade', 'Contacto', 'Ações'].map(t => h('th', {}, t))));
-      const tbody = h('tbody', {}, filtradas.map(r => {
-        const editBtn = h('button', { class: 'btn-fab-sm tone-blue', title: 'Editar', 'aria-label': 'Editar' }, Icon('pencil', { size: 13, strokeWidth: 2.2 }));
-        editBtn.addEventListener('click', () => requireAuth(() => openEdit(r)));
-        const podeEliminar = isMasterUser();
-        const delBtn = h('button', {
-          class: 'btn-fab-sm tone-red', title: podeEliminar ? 'Eliminar' : 'Só Administrador ou Master podem eliminar clientes habituais',
-          'aria-label': 'Eliminar', disabled: podeEliminar ? undefined : 'disabled',
-          style: podeEliminar ? undefined : 'opacity:.4;cursor:not-allowed;',
-        }, Icon('trash', { size: 13, strokeWidth: 2.2 }));
-        if (podeEliminar) delBtn.addEventListener('click', () => requireAuth(() => removeCliente(r)));
-        return h('tr', {}, [
-          h('td', {}, r.numeroFicha || '—'),
-          h('td', { class: 'cell-strong' }, r.nome || '—'),
-          h('td', {}, r.morada || '—'),
-          h('td', {}, r.localidade || '—'),
-          h('td', {}, r.contacto ? formatarTelefonePT(r.contacto) : '—'),
-          h('td', {}, h('div', { class: 'row-actions' }, [editBtn, delBtn])),
-        ]);
-      }));
-      resultsEl.appendChild(h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', { class: 'pedidos-table' }, [thead, tbody]))));
-    }
-    const debouncedRenderResultsOnly = debounce(renderResultsOnly, 180);
-    searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResultsOnly(); });
-    renderResultsOnly();
-
-    const novaBtn = h('button', { class: 'btn btn-primary', style: 'margin-bottom:18px;' }, [Icon('plus', { size: 14 }), ' Novo Cliente Habitual']);
-    novaBtn.addEventListener('click', () => requireAuth(openNew));
-    wrap.appendChild(novaBtn);
-    wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
-      h('div', { class: 'search-row' }, [h('div', { class: 'search-input-wrap' }, [h('span', { class: 'icon' }, Icon('search', { size: 15 })), searchInput])]),
-    ]));
-    wrap.appendChild(resultsEl);
-    return wrap;
-  }
-
-  container.appendChild(build());
-}
 
 // Memória do contexto onde o utilizador está dentro de Entregas — farmácia
 // ativa, separador (Pendentes/Histórico), texto de pesquisa e, desde
@@ -22926,16 +22998,17 @@ function buildEntregasPage(container, goTo) {
   // Isola o rascunho de "Nova Entrega" por utilizador + farmácia — nunca só
   // por farmácia (essa era a falha: um rascunho deixado por outra pessoa
   // nesta farmácia podia ser restaurado na sessão de outro utilizador).
+  // Rascunho automático DESATIVADO de propósito (pedido explícito): o
+  // formulário de Nova Entrega nunca grava nem restaura estado entre
+  // sessões — abre sempre limpo. rascunhoChaveEntregaNova() fica só para
+  // as funções abaixo poderem limpar qualquer rascunho antigo que ainda
+  // exista em localStorage de antes desta alteração.
   function rascunhoChaveEntregaNova() {
     const uid = activeUser ? activeUser.id : 'sem_sessao';
     return `entregas_nova_${farmaciaAtiva}_${uid}`;
   }
-  const guardarRascunhoEntregaDebounced = debounce(() => {
-    if (showForm && !editingId && farmaciaAtiva) salvarRascunhoLocal(rascunhoChaveEntregaNova(), draft);
-  }, 400);
   function rerender() {
-    guardarRascunhoEntregaDebounced();
-    // Mantém a memória do módulo sempre alinhada com o estado atual do
+    // Guarda o estado do formulário em memória (não em localStorage) no
     // formulário — é isto que permite a uma reinstanciação desta função,
     // disparada por um render em segundo plano, retomar exatamente onde o
     // utilizador estava (ver entregasContextoMemorizado acima).
@@ -23050,17 +23123,19 @@ function buildEntregasPage(container, goTo) {
   // pela farmácia ativa) tem sempre prioridade sobre a referência
   // importada (clientes_juncal) — é onde ficam as correções/novos
   // clientes guardados a partir do próprio formulário de Entregas.
-  function clienteHabitualPorNumeroFicha(numero) {
-    const fid = farmaciaIdDe();
-    return (STATE.clientesHabituais || []).find(c => c.farmaciaId === fid && fichaValoresIguais(c.numeroFicha, numero));
-  }
   // Lookup unificado por Nº de Ficha — igual para as duas farmácias: 1)
   // clientes_habituais (camada de overrides/novos clientes, sempre local e
   // instantânea); 2) só a Juncal tem uma 2ª camada, a referência
   // clientes_juncal importada do 4Digital Care (consulta on-demand).
   async function buscarClienteFicha(numero) {
-    const doHabituais = clienteHabitualPorNumeroFicha(numero);
-    if (doHabituais) return { fonte: 'clientes_habituais', id: doHabituais.id, nome: doHabituais.nome, morada: doHabituais.morada, localidade: doHabituais.localidade, contacto: doHabituais.contacto, nif: doHabituais.nif || '', genero: doHabituais.genero || '' };
+    const fid = farmaciaIdDe();
+    const candidatosHabituais = (STATE.clientesHabituais || []).filter(c => c.farmaciaId === fid && fichaValoresIguais(c.numeroFicha, numero));
+    // Este Nº de Ficha tem mais do que um utente associado (família a
+    // partilhar a ficha — ver CLIENTES_SQL, secção 6): devolve a lista
+    // completa em vez de um só, para o chamador poder abrir a modal de
+    // desambiguação e deixar o operador escolher.
+    if (candidatosHabituais.length > 1) return { duplicados: candidatosHabituais.map(mapHabitualParaCandidato) };
+    if (candidatosHabituais.length === 1) return mapHabitualParaCandidato(candidatosHabituais[0]);
     if (farmaciaAtiva === 'Juncal') {
       const doJuncal = await dbBuscarClienteJuncalPorNumero(numero);
       if (doJuncal) return Object.assign({ fonte: 'clientes_juncal', id: null }, doJuncal);
@@ -23096,36 +23171,6 @@ function buildEntregasPage(container, goTo) {
       valorAPagar: '', precisaTroco: false, valorEntregue: '', troco: '',
       observacoes: '', observacoesEntrega: '', estadoEntrega: 'Pendente',
     };
-    // Salvaguarda contra perda de dados: se havia um rascunho por gravar
-    // desta farmácia (sessão expirou / formulário fechado sem querer),
-    // restaura-o automaticamente por cima do rascunho em branco. A chave é
-    // isolada por utilizador (rascunhoChaveEntregaNova) precisamente para
-    // impedir que um rascunho deixado por outra pessoa apareça na sessão de
-    // alguém diferente no mesmo dispositivo/farmácia. Mesmo assim,
-    // registadoPor NUNCA vem do rascunho — fica sempre com o valor já
-    // calculado acima a partir da sessão ativa (fonte única da verdade para
-    // "quem está a registar"), evitando qualquer vazamento de estado entre
-    // utilizadores mesmo que um rascunho antigo (de antes desta correção)
-    // ainda exista em localStorage.
-    // Janela apertada de 2h (em vez das 24h genéricas de lerRascunhoLocal) —
-    // ver lerRascunhoLocalRecente acima. Um rascunho mais velho do que isto
-    // é apagado em silêncio, sem restaurar e sem toast: mais provável ser
-    // lixo de um turno anterior (sobretudo na Boa Nova, conta partilhada)
-    // do que algo que a pessoa à frente do ecrã ainda queira retomar.
-    const rascunho = lerRascunhoLocalRecente(rascunhoChaveEntregaNova(), 2 * 60 * 60 * 1000);
-    if (rascunho && rascunhoEntregaTemConteudo(rascunho)) {
-      draft = Object.assign(draft, rascunho, {
-        farmacia: farmaciaAtiva, registadoPor: draft.registadoPor,
-        // Tipo de Destinatário nunca vem do rascunho — arranca SEMPRE em
-        // "Particular", rigorosamente, mesmo que o rascunho guardado
-        // tivesse "Empresa Parceira" (ex: rascunho antigo deixado a meio,
-        // ou de uma versão anterior do formulário). Se a pessoa quer
-        // mesmo Empresa Parceira, escolhe de novo — é 1 clique, e evita
-        // reabrir sempre no estado errado por engano.
-        tipoDestinatario: 'Particular', empresaParceiraId: '',
-      });
-      showToast('Rascunho anterior restaurado automaticamente.', 'success');
-    }
     editingId = null; formError = ''; showForm = true; rerender();
   }
   function openEditSelected() {
@@ -23339,6 +23384,19 @@ function buildEntregasPage(container, goTo) {
       const encontrado = await buscarClienteFicha(atual);
       if (String(draft.numeroFicha || '').trim() !== atual) return; // Nº mudou entretanto — descarta resposta tardia
       if (!encontrado) { clienteFichaCarregada = null; limparCamposCliente(); rerender(); return; }
+      if (encontrado.duplicados) {
+        // Esta Ficha tem mais do que um utente associado (família a
+        // partilhar o mesmo Nº de Ficha) — pede ao operador para escolher
+        // qual, em vez de preencher com um ao acaso.
+        abrirModalDesambiguacaoUtente(atual, encontrado.duplicados, (escolhido) => {
+          if (String(draft.numeroFicha || '').trim() !== atual) return; // Nº mudou entretanto — descarta escolha tardia
+          aplicarEscolha(escolhido);
+        });
+        return;
+      }
+      aplicarEscolha(encontrado);
+    }
+    function aplicarEscolha(encontrado) {
       clienteFichaCarregada = { fonte: encontrado.fonte, id: encontrado.id, nome: encontrado.nome, morada: encontrado.morada, localidade: encontrado.localidade, contacto: encontrado.contacto };
       draft.nomeCliente = encontrado.nome;
       draft.morada = encontrado.morada;
@@ -23523,12 +23581,15 @@ function buildEntregasPage(container, goTo) {
         // (clientes_habituais nem, na Juncal, clientes_juncal) — grava-se
         // automaticamente como cliente novo, em silêncio, sem popup (mesma
         // regra do ramo "alterou" abaixo — nunca interrompe a submissão).
+        // UPSERT por (farmacia_id, numero_ficha) — a Ficha Nº 100 da Juncal
+        // e a Ficha Nº 100 da Boa Nova nunca se confundem (chave composta
+        // inclui sempre a farmácia ativa, via farmaciaIdDe()).
         (async () => {
-          const criado = await dbInsert('clientesHabituais', {
+          const gravado = await dbUpsertClienteHabitual({
             farmaciaId: farmaciaIdDe(), numeroFicha: numeroDigitado, nome: nomeAtual,
             morada: draft.morada || '', localidade: draft.localidade || '', contacto: draft.contacto || '',
           });
-          if (criado) STATE.clientesHabituais = [criado, ...(STATE.clientesHabituais || [])];
+          if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
           else showToast('A entrega foi gravada, mas não foi possível guardar a ficha do cliente. Podes tentar novamente mais tarde.', 'error');
           finalizarSubmissaoEntrega();
         })();
@@ -23545,25 +23606,26 @@ function buildEntregasPage(container, goTo) {
         if (!alterou) {
           finalizarSubmissaoEntrega();
         } else {
+          // Quando já se conhece o id da linha em clientes_habituais (ficha
+          // carregada dessa fonte, nunca da referência clientes_juncal só
+          // de leitura), inclui-se sempre no payload — dbUpsertClienteHabitual
+          // faz então UPDATE direto por id, em vez de arriscar um upsert
+          // por chave composta a apanhar a pessoa errada quando a mesma
+          // Ficha tem mais do que um utente associado (família a
+          // partilhar a ficha — ver CLIENTES_SQL, secção 6). Sem id
+          // conhecido, resolve-se por upsert (cliente novo, ou correção
+          // por cima da referência clientes_juncal).
           const payload = {
             farmaciaId: farmaciaIdDe(), numeroFicha: numeroDigitado, nome: nomeAtual,
             morada: draft.morada || '', localidade: draft.localidade || '', contacto: draft.contacto || '',
           };
-          if (clienteFichaCarregada.fonte === 'clientes_habituais' && clienteFichaCarregada.id) {
-            const atualizado = await dbUpdate('clientesHabituais', clienteFichaCarregada.id, payload);
-            if (atualizado) STATE.clientesHabituais = (STATE.clientesHabituais || []).map(c => c.id === clienteFichaCarregada.id ? atualizado : c);
+          if (clienteFichaCarregada.fonte === 'clientes_habituais' && clienteFichaCarregada.id) payload.id = clienteFichaCarregada.id;
+          (async () => {
+            const gravado = await dbUpsertClienteHabitual(payload);
+            if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
             else showToast('A entrega foi gravada, mas não foi possível atualizar a ficha do cliente. Podes tentar novamente mais tarde.', 'error');
-          } else {
-            // Fonte clientes_juncal (referência importada, só de leitura —
-            // nunca editada diretamente): a correção fica gravada como um
-            // registo novo em clientes_habituais, que passa a ter
-            // prioridade sobre a referência nas próximas consultas por
-            // este Nº de Ficha (ver buscarClienteFicha).
-            const criado = await dbInsert('clientesHabituais', payload);
-            if (criado) STATE.clientesHabituais = [criado, ...(STATE.clientesHabituais || [])];
-            else showToast('A entrega foi gravada, mas não foi possível atualizar a ficha do cliente. Podes tentar novamente mais tarde.', 'error');
-          }
-          finalizarSubmissaoEntrega();
+            finalizarSubmissaoEntrega();
+          })();
         }
       }
       return;
@@ -23826,6 +23888,7 @@ function buildEntregasPage(container, goTo) {
       wrap.appendChild(buildRecordForm(entregasFormSchema(), draft, {
         editing: !!editingId, onSubmit: submit, onCancel: cancel, errorMessage: formError, saving,
         fieldOverrides: entregasFieldOverrides(),
+        avisoFicha: draft.tipoDestinatario !== 'Empresa Parceira',
         onConclude: (editingId && draft.estadoEntrega !== 'Entregue') ? () => marcarEntregue(editingId) : null, concludeLabel: 'Marcar como Entregue',
         onRevert: (editingId && draft.estadoEntrega === 'Entregue') ? () => anularEntrega(editingId) : null, revertLabel: 'Anular Entrega',
       }));
@@ -23841,7 +23904,6 @@ function buildEntregasPage(container, goTo) {
         Icon('checkcircle', { size: 14 }), h('span', {}, 'Histórico'), h('span', { class: 'tab-count' }, String(historicoCount)),
       ]),
       h('button', { class: 'btn btn-secondary', style: 'margin-left:auto;', onclick: () => requireAuth(() => goTo('gestao-empresas-parceiras', { farmacia: farmaciaAtiva })) }, [Icon('settings', { size: 14, strokeWidth: 2.2 }), ' Gerir Empresas Parceiras']),
-      farmaciaAtiva === 'Boa Nova' ? h('button', { class: 'btn btn-secondary', onclick: () => requireAuth(() => goTo('gestao-clientes-habituais')) }, [Icon('star', { size: 14, strokeWidth: 2.2 }), ' Gerir Clientes Habituais']) : null,
     ].filter(Boolean));
     wrap.appendChild(tabsRow);
 
@@ -25154,7 +25216,7 @@ function renderInterno(ehTransicaoDePagina) {
   // Gestão de Empresas Parceiras — qualquer perfil pode adicionar/editar
   // empresas parceiras (só a eliminação fica restrita a Administrador/Master,
   // controlado à parte dentro da própria página).
-  if (isEstafeta() && STATE.page !== 'entregas' && STATE.page !== 'home' && STATE.page !== 'gestao-empresas-parceiras' && STATE.page !== 'gestao-clientes-habituais') {
+  if (isEstafeta() && STATE.page !== 'entregas' && STATE.page !== 'home' && STATE.page !== 'gestao-empresas-parceiras') {
     STATE.page = 'entregas';
   }
   // Mesma lógica para o Prestador de Serviço: só a Página Inicial (restrita)
@@ -25175,7 +25237,7 @@ function renderInterno(ehTransicaoDePagina) {
   // este perfil — sem esta exceção, o goTo() para lá era imediatamente
   // revertido para 'entregas' neste mesmo render, e o botão parecia não
   // fazer nada.
-  if (isBoaNovaOperador() && STATE.page !== 'entregas' && STATE.page !== 'gestao-empresas-parceiras' && STATE.page !== 'gestao-clientes-habituais') {
+  if (isBoaNovaOperador() && STATE.page !== 'entregas' && STATE.page !== 'gestao-empresas-parceiras') {
     STATE.page = 'entregas';
   }
 
@@ -25301,7 +25363,6 @@ function renderInterno(ehTransicaoDePagina) {
       case 'entregas': buildEntregasPage(pageContainer, goTo); break;
       case 'horarios': buildHorariosPage(pageContainer, goTo); break;
       case 'gestao-empresas-parceiras': buildEmpresasParceirasPage(pageContainer, goTo, entregasContextoMemorizado.farmaciaAtiva || (STATE.consultaPreset && STATE.consultaPreset.farmacia) || 'Juncal'); STATE.consultaPreset = null; break;
-      case 'gestao-clientes-habituais': buildClientesHabituaisPage(pageContainer, goTo); STATE.consultaPreset = null; break;
       case 'recolhas': buildRecolhasPage(pageContainer, goTo); break;
       case 'tarefas': buildTarefasPage(pageContainer, goTo); break;
       case 'formacoes': buildFormacoesPage(pageContainer, goTo); break;
