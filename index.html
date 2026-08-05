@@ -68,8 +68,7 @@
   button{font-family:inherit;}
   h1,h2,h3,p{margin:0;}
 
-  .app-shell{display:flex;min-height:100vh;
-    transform:translateZ(0);backface-visibility:hidden;will-change:transform;}
+  .app-shell{display:flex;min-height:100vh;}
 
   /* Sidebar (desktop) — largura 240px quando aberta (ver .main abaixo,
      que soma exatamente esta margem, sem gaps nem sobreposição). */
@@ -640,16 +639,14 @@
   .hamburger:hover{background:var(--pharm-50);}
   .topbar-title{display:flex;align-items:center;gap:6px;font-weight:800;color:var(--pharm-800);font-size:14px;}
 
-  .main{flex:1;min-width:0;position:relative;box-sizing:border-box;width:100%;max-width:100%;min-height:100vh;
-    transform:translateZ(0);backface-visibility:hidden;will-change:transform;}
+  .main{flex:1;min-width:0;position:relative;box-sizing:border-box;width:100%;max-width:100%;min-height:100vh;}
   @media (min-width:1024px){
     .main{margin-left:240px;width:calc(100% - 240px);max-width:calc(100% - 240px);
       transition:margin-left .18s ease,width .18s ease,max-width .18s ease;}
     .main.sidebar-colapsada{margin-left:68px;width:calc(100% - 68px);max-width:calc(100% - 68px);}
   }
   .page-container{max-width:none;width:100%;box-sizing:border-box;padding:22px 16px 120px;
-    min-height:100vh;
-    transform:translateZ(0);backface-visibility:hidden;will-change:transform;}
+    min-height:100vh;}
   @media (min-width:640px){.page-container{padding:30px 24px 128px;}}
   @media (min-width:1024px){.page-container{padding:34px 40px 136px;}}
   @media (min-width:1440px){.page-container{padding:34px 56px 136px;}}
@@ -8784,42 +8781,42 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
   // SEMPRE no fim de finalizarSubmit(), depois de qualquer outro aviso já
   // existente (nunca em simultâneo — só depois desse ser fechado), para
   // nunca empilhar 2 modais ao mesmo tempo.
-  function perguntarSobreFichaClienteManipulados(depoisDisto) {
+  // Guarda/atualiza a Ficha de Cliente em segundo plano, SEM qualquer
+  // popup/modal de confirmação — a gravação do pedido é sempre direta e
+  // nunca é interrompida por uma pergunta sobre a ficha. Se o Nº de Ficha
+  // não existir ainda, cria-se automaticamente; se os dados mudaram,
+  // atualiza-se automaticamente. Falhas nesta parte nunca afetam o pedido
+  // em si (que já está gravado nesse ponto) — só ficam por sincronizar
+  // silenciosamente para a próxima vez.
+  async function perguntarSobreFichaClienteManipulados(depoisDisto) {
     const seguir = depoisDisto || (() => rerender());
     if (listKey !== 'manipulados') { seguir(); return; }
     const numeroDigitado = String(draft.numCliente || '').trim();
     const nomeAtual = String(draft.nome || '').trim();
     if (!numeroDigitado || !nomeAtual) { seguir(); return; }
     if (!clienteFichaCarregada) {
-      confirmDialog(`Ficha Nº ${numeroDigitado} não encontrada. Deseja guardar este cliente para entregas futuras?`, async () => {
-        const criado = await dbInsert('clientesHabituais', { farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, contacto: draft.contacto || '' });
-        if (criado) STATE.clientesHabituais = [criado, ...(STATE.clientesHabituais || [])];
-        else showToast('O pedido foi gravado, mas não foi possível guardar a ficha do cliente. Podes tentar novamente mais tarde.', 'error');
-        seguir();
-      }, { confirmLabel: 'Sim, Guardar', cancelLabel: 'Não', onCancel: seguir });
+      const criado = await dbInsert('clientesHabituais', { farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, contacto: draft.contacto || '' });
+      if (criado) STATE.clientesHabituais = [criado, ...(STATE.clientesHabituais || [])];
+      seguir();
     } else {
       const alterou = nomeAtual !== String(clienteFichaCarregada.nome || '').trim()
         || String(draft.contacto || '').trim() !== String(clienteFichaCarregada.contacto || '').trim();
       if (!alterou) { seguir(); return; }
-      confirmDialog(`Detetámos alterações nos dados da Ficha Nº ${numeroDigitado}. Deseja atualizar permanentemente os dados deste cliente na base de dados?`, async () => {
-        // Só Nome/Contacto vão no payload — Manipulados não tem campos de
-        // Morada/Localidade, por isso nunca os inclui aqui (evita apagar
-        // por engano dados que só o formulário de Entregas conhece).
-        const payload = { farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, contacto: draft.contacto || '' };
-        if (clienteFichaCarregada.fonte === 'clientes_habituais' && clienteFichaCarregada.id) {
-          const atualizado = await dbUpdate('clientesHabituais', clienteFichaCarregada.id, payload);
-          if (atualizado) STATE.clientesHabituais = (STATE.clientesHabituais || []).map(c => c.id === clienteFichaCarregada.id ? atualizado : c);
-          else showToast('O pedido foi gravado, mas não foi possível atualizar a ficha do cliente. Podes tentar novamente mais tarde.', 'error');
-        } else {
-          // Fonte clientes_juncal (referência importada, só de leitura) — a
-          // correção fica como registo novo em clientes_habituais, com
-          // prioridade sobre a referência nas próximas consultas.
-          const criado = await dbInsert('clientesHabituais', payload);
-          if (criado) STATE.clientesHabituais = [criado, ...(STATE.clientesHabituais || [])];
-          else showToast('O pedido foi gravado, mas não foi possível atualizar a ficha do cliente. Podes tentar novamente mais tarde.', 'error');
-        }
-        seguir();
-      }, { confirmLabel: 'Sim, Atualizar Ficha', cancelLabel: 'Não, Manter Apenas no Pedido', onCancel: seguir });
+      // Só Nome/Contacto vão no payload — Manipulados não tem campos de
+      // Morada/Localidade, por isso nunca os inclui aqui (evita apagar
+      // por engano dados que só o formulário de Entregas conhece).
+      const payload = { farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, contacto: draft.contacto || '' };
+      if (clienteFichaCarregada.fonte === 'clientes_habituais' && clienteFichaCarregada.id) {
+        const atualizado = await dbUpdate('clientesHabituais', clienteFichaCarregada.id, payload);
+        if (atualizado) STATE.clientesHabituais = (STATE.clientesHabituais || []).map(c => c.id === clienteFichaCarregada.id ? atualizado : c);
+      } else {
+        // Fonte clientes_juncal (referência importada, só de leitura) — a
+        // correção fica como registo novo em clientes_habituais, com
+        // prioridade sobre a referência nas próximas consultas.
+        const criado = await dbInsert('clientesHabituais', payload);
+        if (criado) STATE.clientesHabituais = [criado, ...(STATE.clientesHabituais || [])];
+      }
+      seguir();
     }
   }
   async function finalizarSubmit() {
@@ -23523,9 +23520,10 @@ function buildEntregasPage(container, goTo) {
         finalizarSubmissaoEntrega();
       } else if (!clienteFichaCarregada) {
         // Nº de Ficha digitado mas não encontrado em nenhuma das camadas
-        // (clientes_habituais nem, na Juncal, clientes_juncal) — pergunta se
-        // quer guardar este cliente novo para entregas futuras.
-        confirmDialog(`Ficha Nº ${numeroDigitado} não encontrada. Deseja guardar este cliente para entregas futuras?`, async () => {
+        // (clientes_habituais nem, na Juncal, clientes_juncal) — grava-se
+        // automaticamente como cliente novo, em silêncio, sem popup (mesma
+        // regra do ramo "alterou" abaixo — nunca interrompe a submissão).
+        (async () => {
           const criado = await dbInsert('clientesHabituais', {
             farmaciaId: farmaciaIdDe(), numeroFicha: numeroDigitado, nome: nomeAtual,
             morada: draft.morada || '', localidade: draft.localidade || '', contacto: draft.contacto || '',
@@ -23533,7 +23531,7 @@ function buildEntregasPage(container, goTo) {
           if (criado) STATE.clientesHabituais = [criado, ...(STATE.clientesHabituais || [])];
           else showToast('A entrega foi gravada, mas não foi possível guardar a ficha do cliente. Podes tentar novamente mais tarde.', 'error');
           finalizarSubmissaoEntrega();
-        }, { confirmLabel: 'Sim, Guardar', cancelLabel: 'Não', onCancel: finalizarSubmissaoEntrega });
+        })();
       } else {
         // Ficha carregada por Nº — em Entregas a submissão é sempre
         // DIRETA: ao contrário das Declarações, nunca interrompe com um
