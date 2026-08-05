@@ -4654,6 +4654,21 @@ function fichaValoresIguais(a, b) {
   if (/^[0-9]+$/.test(sa) && /^[0-9]+$/.test(sb)) return parseInt(sa, 10) === parseInt(sb, 10);
   return sa === sb;
 }
+// Lê um campo tentando várias chaves possíveis, pela ordem dada — usado
+// para nunca depender de um único nome ao ler NIF/Data de Nascimento de um
+// cliente, que podem chegar como nif/num_cc/numCc ou
+// dataNascimento/data_nascimento consoante a fonte (Supabase cru vs.
+// rowToRecord) e o estado da migração SQL (ver CLIENTES_SQL, secção 5).
+// Devolve a primeira chave com valor não vazio (já em texto, com trim), ou
+// '' se nenhuma delas tiver valor.
+function lerCampoComFallback(obj, chaves) {
+  if (!obj) return '';
+  for (let i = 0; i < chaves.length; i++) {
+    const v = obj[chaves[i]];
+    if (v !== undefined && v !== null && String(v).trim() !== '') return String(v).trim();
+  }
+  return '';
+}
 async function dbBuscarClienteJuncalPorNumero(numero) {
   const numeroNorm = parseInt(String(numero || '').trim(), 10);
   if (!sb || isNaN(numeroNorm)) return null;
@@ -4692,8 +4707,8 @@ async function dbBuscarClienteJuncalPorNumero(numero) {
         // limpo.nif/limpo.num_cc/limpo.data_nascimento (nomes reais das
         // colunas), nunca limpo.dataNascimento. limpo.num_cc é só o
         // fallback — se "nif" já tiver valor, esse é que conta.
-        nif: String(limpo.nif || limpo.num_cc || '').trim(),
-        dataNascimento: String(limpo.data_nascimento || '').trim(),
+        nif: lerCampoComFallback(limpo, ['nif', 'num_cc', 'numCc']),
+        dataNascimento: lerCampoComFallback(limpo, ['data_nascimento', 'dataNascimento']),
         genero: String(limpo.genero || '').trim(),
       };
     } catch (e) { console.error('[Supabase] erro de rede ao consultar clientes_juncal:', formatarErroSeguro(e)); return null; }
@@ -4740,8 +4755,8 @@ async function dbBuscarClienteJuncalPorNif(nif) {
         morada: String(limpo.morada || '').trim(),
         localidade: String(limpo.localidade || '').trim(),
         contacto: (String(limpo.tlm || '').trim() === '0') ? '' : String(limpo.tlm || '').trim(),
-        nif: String(limpo.nif || limpo.num_cc || '').trim(),
-        dataNascimento: String(limpo.data_nascimento || '').trim(),
+        nif: lerCampoComFallback(limpo, ['nif', 'num_cc', 'numCc']),
+        dataNascimento: lerCampoComFallback(limpo, ['data_nascimento', 'dataNascimento']),
         genero: String(limpo.genero || '').trim(),
       };
     } catch (e) { console.error('[Supabase] erro de rede ao consultar clientes_juncal por NIF:', formatarErroSeguro(e)); return null; }
@@ -4758,7 +4773,7 @@ async function buscarClienteFichaJuncal(numero) {
   const doHabituais = (STATE.clientesHabituais || []).find(c => c.farmaciaId === 'juncal' && fichaValoresIguais(c.numeroFicha, numero));
   // doHabituais.numCc é o fallback da coluna antiga (rowToRecord converte
   // sempre num_cc -> numCc) — só entra em jogo se "nif" ainda estiver vazio.
-  if (doHabituais) return { fonte: 'clientes_habituais', id: doHabituais.id, nome: doHabituais.nome, morada: doHabituais.morada, localidade: doHabituais.localidade, contacto: doHabituais.contacto, nif: doHabituais.nif || doHabituais.numCc || '', dataNascimento: doHabituais.dataNascimento || '', genero: doHabituais.genero || '' };
+  if (doHabituais) return { fonte: 'clientes_habituais', id: doHabituais.id, nome: doHabituais.nome, morada: doHabituais.morada, localidade: doHabituais.localidade, contacto: doHabituais.contacto, nif: lerCampoComFallback(doHabituais, ['nif', 'num_cc', 'numCc']), dataNascimento: lerCampoComFallback(doHabituais, ['dataNascimento', 'data_nascimento']), genero: doHabituais.genero || '' };
   const doJuncal = await dbBuscarClienteJuncalPorNumero(numero);
   if (doJuncal) return Object.assign({ fonte: 'clientes_juncal', id: null }, doJuncal);
   return null;
@@ -4777,7 +4792,7 @@ async function buscarClienteFichaJuncalPorNif(nif) {
   if (doHabituaisMatches.length > 1) return { duplicado: true };
   if (doHabituaisMatches.length === 1) {
     const doHabituais = doHabituaisMatches[0];
-    return { fonte: 'clientes_habituais', id: doHabituais.id, numeroFicha: doHabituais.numeroFicha || '', nome: doHabituais.nome, morada: doHabituais.morada, localidade: doHabituais.localidade, contacto: doHabituais.contacto, nif: doHabituais.nif || doHabituais.numCc || '', dataNascimento: doHabituais.dataNascimento || '', genero: doHabituais.genero || '' };
+    return { fonte: 'clientes_habituais', id: doHabituais.id, numeroFicha: doHabituais.numeroFicha || '', nome: doHabituais.nome, morada: doHabituais.morada, localidade: doHabituais.localidade, contacto: doHabituais.contacto, nif: lerCampoComFallback(doHabituais, ['nif', 'num_cc', 'numCc']), dataNascimento: lerCampoComFallback(doHabituais, ['dataNascimento', 'data_nascimento']), genero: doHabituais.genero || '' };
   }
   const doJuncal = await dbBuscarClienteJuncalPorNif(nifNorm);
   if (doJuncal && doJuncal.duplicado) return { duplicado: true };
@@ -16461,12 +16476,18 @@ function buildFichaClienteDeclaracaoFields(draft, rerender, onCarregado) {
     draft.nomeUtente = ''; draft.nifUtente = ''; draft.dataNascimento = '';
   }
   function aplicarEncontrado(encontrado) {
+    // Rede de segurança final: mesmo que `encontrado` já venha das funções
+    // de pesquisa (que já tratam nif/num_cc/numCc e
+    // dataNascimento/data_nascimento), lê de novo com fallback aqui — nunca
+    // depende de um único nome de campo para preencher o formulário.
+    const nifEncontrado = lerCampoComFallback(encontrado, ['nif', 'num_cc', 'numCc']);
+    const dataNascEncontrada = lerCampoComFallback(encontrado, ['dataNascimento', 'data_nascimento']);
     onCarregado({
       fonte: encontrado.fonte, id: encontrado.id, nome: encontrado.nome,
-      nif: encontrado.nif || '', genero: encontrado.genero || '', dataNascimento: encontrado.dataNascimento || '',
+      nif: nifEncontrado, genero: encontrado.genero || '', dataNascimento: dataNascEncontrada,
     });
     draft.nomeUtente = encontrado.nome;
-    draft.nifUtente = encontrado.nif || '';
+    draft.nifUtente = nifEncontrado;
     // Um cliente novo carregado destranca sempre a escolha de género — a
     // "trava" de generoEscolhidoManualmente é sobre o cliente ANTERIOR, não
     // faz sentido continuar a aplicar-se a partir daqui.
@@ -16481,7 +16502,7 @@ function buildFichaClienteDeclaracaoFields(draft, rerender, onCarregado) {
       const deduzido = deduzirGeneroPorNome(encontrado.nome);
       if (deduzido) draft.genero = deduzido;
     }
-    if (encontrado.dataNascimento) draft.dataNascimento = encontrado.dataNascimento;
+    if (dataNascEncontrada) draft.dataNascimento = dataNascEncontrada;
     if (encontrado.numeroFicha) draft.numeroFicha = encontrado.numeroFicha;
   }
   async function consultarPorFicha() {
@@ -16530,6 +16551,9 @@ function buildFichaClienteDeclaracaoFields(draft, rerender, onCarregado) {
     const cleaned = nifControl.value.replace(/\D/g, '').slice(0, 9);
     if (cleaned !== nifControl.value) nifControl.value = cleaned;
     draft.nifUtente = nifControl.value;
+  });
+  nifControl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); consultarPorNif(); }
   });
   nifControl.addEventListener('blur', () => { consultarPorNif(); });
 
@@ -16589,7 +16613,7 @@ function buildGeneroUtenteField(draft) {
     rb.addEventListener('change', () => { if (rb.checked) { draft.genero = g; draft.generoEscolhidoManualmente = true; } });
     return h('label', { class: 'radio-inline-label', style: 'display:inline-flex;align-items:center;gap:6px;margin-right:18px;font-weight:600;font-size:13px;color:var(--pharm-800);white-space:nowrap;' }, [rb, h('span', { style: 'white-space:nowrap;' }, g)]);
   });
-  return h('div', { class: 'field doc-w-xs' }, [h('label', {}, 'Sexo/Género do Utente'), h('div', { style: 'padding-top:6px;' }, radios)]);
+  return h('div', { class: 'field doc-w-xs' }, [h('label', {}, 'Género do Utente'), h('div', { style: 'padding-top:6px;' }, radios)]);
 }
 function nomeResponsavelComCargo() {
   if (!activeUser) return '';
@@ -16866,6 +16890,17 @@ function buildListaDiaAcoes(titulo, subtitulo, dataISO, getLinhas) {
 // itens/parâmetros vão como texto em formato JSON — mais simples e mais
 // robusto do que depender de uma coluna jsonb ligada ao conversor genérico
 // camelCase<->snake_case usado no resto da app. ----
+// Se a gravação teve de recorrer ao nome antigo da coluna (cc_utente, ver
+// dbInserirDocumentoEmitido/dbAtualizarDocumentoEmitido), rowToRecord()
+// devolve o campo como ccUtente — o resto da app (formulários, Histórico)
+// espera sempre nifUtente. Normaliza aqui, no único ponto de entrada, para
+// nunca ter de replicar este "ou" em cada sítio que lê um documento.
+function normalizarDocumentoEmitidoLido(registo) {
+  if (registo && registo.nifUtente === undefined && registo.ccUtente !== undefined) {
+    registo.nifUtente = registo.ccUtente;
+  }
+  return registo;
+}
 async function dbInserirDocumentoEmitido(record) {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível.'; return null; }
   try {
@@ -16881,9 +16916,21 @@ async function dbInserirDocumentoEmitido(record) {
       responsavel_cargo: record.responsavelCargo || null,
       data_emissao: record.dataEmissao || null,
     };
-    const { data, error } = await sb.from('documentos_emitidos').insert(row).select().single();
+    let { data, error } = await sb.from('documentos_emitidos').insert(row).select().single();
+    if (error && extrairColunaEmFalta(error.message) === 'nif_utente') {
+      // A coluna ainda não foi renomeada de cc_utente para nif_utente no
+      // Supabase (ou o schema cache do PostgREST ainda não atualizou) —
+      // tenta de novo com o nome antigo, para nunca bloquear a gravação
+      // do documento só por causa disso. Ver CLIENTES_SQL para o script
+      // que corrige isto na origem.
+      console.warn('[Supabase] coluna "nif_utente" não encontrada em documentos_emitidos — a gravar com o nome antigo "cc_utente".');
+      const rowAntigo = Object.assign({}, row);
+      delete rowAntigo.nif_utente;
+      rowAntigo.cc_utente = record.nifUtente || null;
+      ({ data, error } = await sb.from('documentos_emitidos').insert(rowAntigo).select().single());
+    }
     if (error) { lastDbError = error.message; console.error('[Supabase] erro ao gravar documento emitido:', error.message); return null; }
-    return rowToRecord(data);
+    return normalizarDocumentoEmitidoLido(rowToRecord(data));
   } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error('[Supabase] erro de rede ao gravar documento emitido:', formatarErroSeguro(e)); return null; }
 }
 async function dbAtualizarDocumentoEmitido(id, record) {
@@ -16901,9 +16948,19 @@ async function dbAtualizarDocumentoEmitido(id, record) {
       responsavel_cargo: record.responsavelCargo || null,
       data_emissao: record.dataEmissao || null,
     };
-    const { data, error } = await sb.from('documentos_emitidos').update(row).eq('id', id).select().single();
+    let { data, error } = await sb.from('documentos_emitidos').update(row).eq('id', id).select().single();
+    if (error && extrairColunaEmFalta(error.message) === 'nif_utente') {
+      // Mesma resiliência do insert acima — tenta com o nome antigo da
+      // coluna se "nif_utente" ainda não existir/não estiver no schema
+      // cache do PostgREST.
+      console.warn('[Supabase] coluna "nif_utente" não encontrada em documentos_emitidos — a gravar com o nome antigo "cc_utente".');
+      const rowAntigo = Object.assign({}, row);
+      delete rowAntigo.nif_utente;
+      rowAntigo.cc_utente = record.nifUtente || null;
+      ({ data, error } = await sb.from('documentos_emitidos').update(rowAntigo).eq('id', id).select().single());
+    }
     if (error) { lastDbError = error.message; console.error('[Supabase] erro ao atualizar documento emitido:', error.message); return null; }
-    return rowToRecord(data);
+    return normalizarDocumentoEmitidoLido(rowToRecord(data));
   } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error('[Supabase] erro de rede ao atualizar documento emitido:', formatarErroSeguro(e)); return null; }
 }
 async function dbEliminarDocumentoEmitido(id) {
@@ -16919,7 +16976,7 @@ async function dbFetchDocumentosEmitidos() {
   try {
     const { data, error } = await sb.from('documentos_emitidos').select('*').order('created_at', { ascending: false });
     if (error) { lastDbError = error.message; console.error('[Supabase] erro ao ler documentos_emitidos:', error.message); return []; }
-    return (data || []).map(rowToRecord);
+    return (data || []).map(rowToRecord).map(normalizarDocumentoEmitidoLido);
   } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error('[Supabase] erro de rede ao ler documentos_emitidos:', formatarErroSeguro(e)); return []; }
 }
 function parseJSONSafe(str) {
