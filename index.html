@@ -16422,6 +16422,21 @@ function idadeAPartirDeNascimento(dataNascimentoISO, dataReferenciaISO) {
   if (aindaNaoFezAnos) idade -= 1;
   return idade >= 0 ? idade : null;
 }
+// Normaliza uma data para AAAA-MM-DD antes de comparar — usada só para
+// detetar alterações reais na Data de Nascimento (ver
+// criarPerguntaSobreFichaCliente), nunca para gravar. Protege contra
+// qualquer discrepância de formato entre o valor lido da ficha (Supabase,
+// coluna `date`) e o valor do <input type="date"> do formulário — ex: se
+// algum dia vier com hora agregada ("1991-10-24T00:00:00") em vez de só a
+// data. Datas inválidas ou vazias normalizam sempre para ''.
+function normalizarDataParaComparacao(valor) {
+  const texto = String(valor || '').trim();
+  if (!texto) return '';
+  const soData = texto.split('T')[0].trim();
+  const d = new Date(soData + 'T00:00:00');
+  if (isNaN(d.getTime())) return soData;
+  return dateToISO(d);
+}
 // Dedução de género pelo primeiro nome — usada só como valor SUGERIDO nos
 // radio buttons Sexo/Género das Declarações, quando a ficha do cliente não
 // trouxe género gravado (ou ainda não foi escolhido manualmente). Regra
@@ -16583,10 +16598,25 @@ function criarPerguntaSobreFichaCliente(draft, getClienteFichaCarregada) {
         else showToast('A declaração foi gravada, mas não foi possível guardar a ficha do cliente. Podes tentar novamente mais tarde.', 'error');
       }, { confirmLabel: 'Sim, Guardar', cancelLabel: 'Não' });
     } else {
+      // Comparação estrita apenas aos dados da FICHA do cliente — Nome,
+      // NIF, Género e Data de Nascimento. Campos exclusivos do documento
+      // em si (Valor Total, Discriminado, itens, Observações, etc.) NUNCA
+      // entram aqui — não fazem parte da ficha do cliente, só da
+      // declaração atual, por isso não podem disparar este popup.
+      // Género só conta como alteração se tiver sido escolhido À MÃO
+      // (draft.generoEscolhidoManualmente) — uma sugestão automática por
+      // dedução do nome (deduzirGeneroPorNome, ver
+      // buildFichaClienteDeclaracaoFields) nunca é, por si só, motivo para
+      // perguntar se se quer atualizar a ficha.
+      // Data de Nascimento compara sempre normalizada para AAAA-MM-DD
+      // (normalizarDataParaComparacao), para nunca dar falso positivo por
+      // causa de uma diferença de formato entre o valor vindo da ficha e o
+      // do <input type="date">.
+      const generoConta = !!draft.generoEscolhidoManualmente;
       const alterou = nomeAtual !== String(clienteFichaCarregada.nome || '').trim()
         || String(draft.nifUtente || '').trim() !== String(clienteFichaCarregada.nif || '').trim()
-        || String(draft.genero || '').trim() !== String(clienteFichaCarregada.genero || '').trim()
-        || String(draft.dataNascimento || '').trim() !== String(clienteFichaCarregada.dataNascimento || '').trim();
+        || (generoConta && String(draft.genero || '').trim() !== String(clienteFichaCarregada.genero || '').trim())
+        || normalizarDataParaComparacao(draft.dataNascimento) !== normalizarDataParaComparacao(clienteFichaCarregada.dataNascimento);
       if (!alterou) return;
       confirmDialog(`Detetámos alterações nos dados da Ficha Nº ${numeroDigitado}. Deseja atualizar permanentemente os dados deste cliente na base de dados?`, async () => {
         const payload = { farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, nif: draft.nifUtente || '', genero: draft.genero || '', dataNascimento: draft.dataNascimento || '' };
@@ -23505,8 +23535,11 @@ function buildEntregasPage(container, goTo) {
           finalizarSubmissaoEntrega();
         }, { confirmLabel: 'Sim, Guardar', cancelLabel: 'Não', onCancel: finalizarSubmissaoEntrega });
       } else {
-        // Ficha carregada por Nº — confirma se algum dos campos que vieram
-        // dela foi alterado à mão no formulário.
+        // Ficha carregada por Nº — em Entregas a submissão é sempre
+        // DIRETA: ao contrário das Declarações, nunca interrompe com um
+        // popup de confirmação por alterações na ficha do cliente (pedido
+        // explícito). Se algum campo mudou, atualiza a ficha em silêncio
+        // e segue logo para finalizarSubmissaoEntrega() — sem perguntar.
         const alterou = nomeAtual !== String(clienteFichaCarregada.nome || '').trim()
           || String(draft.morada || '').trim() !== String(clienteFichaCarregada.morada || '').trim()
           || String(draft.localidade || '').trim() !== String(clienteFichaCarregada.localidade || '').trim()
@@ -23514,27 +23547,25 @@ function buildEntregasPage(container, goTo) {
         if (!alterou) {
           finalizarSubmissaoEntrega();
         } else {
-          confirmDialog(`Detetámos alterações nos dados da Ficha Nº ${numeroDigitado}. Deseja atualizar permanentemente os dados deste cliente na base de dados?`, async () => {
-            const payload = {
-              farmaciaId: farmaciaIdDe(), numeroFicha: numeroDigitado, nome: nomeAtual,
-              morada: draft.morada || '', localidade: draft.localidade || '', contacto: draft.contacto || '',
-            };
-            if (clienteFichaCarregada.fonte === 'clientes_habituais' && clienteFichaCarregada.id) {
-              const atualizado = await dbUpdate('clientesHabituais', clienteFichaCarregada.id, payload);
-              if (atualizado) STATE.clientesHabituais = (STATE.clientesHabituais || []).map(c => c.id === clienteFichaCarregada.id ? atualizado : c);
-              else showToast('A entrega foi gravada, mas não foi possível atualizar a ficha do cliente. Podes tentar novamente mais tarde.', 'error');
-            } else {
-              // Fonte clientes_juncal (referência importada, só de leitura —
-              // nunca editada diretamente): a correção fica gravada como um
-              // registo novo em clientes_habituais, que passa a ter
-              // prioridade sobre a referência nas próximas consultas por
-              // este Nº de Ficha (ver buscarClienteFicha).
-              const criado = await dbInsert('clientesHabituais', payload);
-              if (criado) STATE.clientesHabituais = [criado, ...(STATE.clientesHabituais || [])];
-              else showToast('A entrega foi gravada, mas não foi possível atualizar a ficha do cliente. Podes tentar novamente mais tarde.', 'error');
-            }
-            finalizarSubmissaoEntrega();
-          }, { confirmLabel: 'Sim, Atualizar Ficha', cancelLabel: 'Não, Manter Apenas na Entrega', onCancel: finalizarSubmissaoEntrega });
+          const payload = {
+            farmaciaId: farmaciaIdDe(), numeroFicha: numeroDigitado, nome: nomeAtual,
+            morada: draft.morada || '', localidade: draft.localidade || '', contacto: draft.contacto || '',
+          };
+          if (clienteFichaCarregada.fonte === 'clientes_habituais' && clienteFichaCarregada.id) {
+            const atualizado = await dbUpdate('clientesHabituais', clienteFichaCarregada.id, payload);
+            if (atualizado) STATE.clientesHabituais = (STATE.clientesHabituais || []).map(c => c.id === clienteFichaCarregada.id ? atualizado : c);
+            else showToast('A entrega foi gravada, mas não foi possível atualizar a ficha do cliente. Podes tentar novamente mais tarde.', 'error');
+          } else {
+            // Fonte clientes_juncal (referência importada, só de leitura —
+            // nunca editada diretamente): a correção fica gravada como um
+            // registo novo em clientes_habituais, que passa a ter
+            // prioridade sobre a referência nas próximas consultas por
+            // este Nº de Ficha (ver buscarClienteFicha).
+            const criado = await dbInsert('clientesHabituais', payload);
+            if (criado) STATE.clientesHabituais = [criado, ...(STATE.clientesHabituais || [])];
+            else showToast('A entrega foi gravada, mas não foi possível atualizar a ficha do cliente. Podes tentar novamente mais tarde.', 'error');
+          }
+          finalizarSubmissaoEntrega();
         }
       }
       return;
