@@ -1867,8 +1867,10 @@
      conteúdo interno (grelha de dias, cabeçalho) alguma vez calculasse
      mal a própria largura, fica sempre cortado dentro dos limites do
      cartão branco, nunca "caído" visualmente no fundo da página por
-     baixo dele. */
-  .cal-card{min-width:230px;flex-shrink:0;overflow:hidden;padding:16px;transition:background-color .2s ease,opacity .2s ease;}
+     baixo dele. Padding SIMÉTRICO (14px iguais dos 2 lados) — nunca um
+     valor diferente à esquerda/direita, para a grelha de 7 dias (ver
+     .cal-grid acima) ficar sempre centrada dentro do cartão branco. */
+  .cal-card{min-width:230px;flex-shrink:0;overflow:hidden;padding:12px 14px;transition:background-color .2s ease,opacity .2s ease;}
   /* Centro — ponto focal absoluto: fundo mais saturado e elementos bem definidos */
   .cal-card.cal-card-atual{background:var(--pharm-100);border-color:var(--pharm-400);
     box-shadow:0 4px 14px rgba(0,0,0,.08);}
@@ -1882,14 +1884,42 @@
   .cal-card-contagem{font-size:10.5px;font-weight:700;color:var(--pharm-500);margin-top:3px;
     display:inline-flex;align-items:center;gap:4px;}
   .cal-card.cal-card-atual .cal-card-contagem{color:var(--pharm-700);}
-  .cal-weekdays{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin:11px 0 5px;}
+  /* Grelha de 7 colunas (SEG a DOM) — justify-items/align-items:center +
+     width:100% garantem sempre uma distribuição SIMÉTRICA das 7 colunas
+     dentro do cartão, cada uma a exatamente 1/7 da largura útil (nunca
+     mais espaço de um lado do que do outro, mesmo que o conteúdo de uma
+     célula individual — ex: "SÁB"/"DOM" — seja ligeiramente mais largo). */
+  .cal-weekdays{display:grid;grid-template-columns:repeat(7,1fr);justify-items:center;align-items:center;
+    width:100%;gap:3px;margin:11px 0 5px;}
   .cal-weekday{text-align:center;font-size:9.5px;font-weight:800;color:var(--pharm-400);
     text-transform:uppercase;letter-spacing:.02em;}
-  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;}
-  .cal-cell{aspect-ratio:1/1;display:flex;align-items:center;justify-content:center;border-radius:6px;
+  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);justify-items:center;align-items:center;
+    width:100%;gap:3px;}
+  .cal-cell{aspect-ratio:1/1;width:100%;display:flex;align-items:center;justify-content:center;border-radius:6px;
     font-size:11.5px;font-weight:700;color:var(--pharm-800);background:var(--pharm-100);}
   .cal-cell-empty{background:none;}
   .cal-cell-marcado{color:#1c1206;text-shadow:0 1px 2px rgba(255,255,255,.5);}
+  /* ---- Dias com Eventos Registados — destaque dourado especial (ex:
+     Eclipse Solar, Rastreios) em vez do cinzento neutro de antes. Só se
+     aplica a dias em que TODOS os itens são eventos (nunca quando o dia
+     também tem uma agenda/consulta marcada nesse mesmo dia — aí
+     mantém-se o gradiente às riscas de sempre, cada serviço com a sua
+     própria cor, ver calendarioCellStyle/COR_EVENTOS_RASTREIOS). Fundo
+     com !important: a especificidade de ".cal-card .cal-cell.cal-cell-today"
+     (o contorno do Dia Presente, ver mais abaixo) é maior do que a desta
+     classe sozinha — sem !important, um evento marcado no dia de hoje
+     perderia o dourado para o cinzento por defeito do "Hoje". */
+  .cal-cell-evento-especial{
+    background:linear-gradient(135deg, #FFE066 0%, #F5A623 100%) !important;
+    box-shadow:0 0 8px rgba(255,215,0,.6);
+    color:#331A00;
+    font-weight:800;
+    transition:transform .15s ease, box-shadow .15s ease;
+  }
+  .cal-cell-evento-especial:hover{
+    transform:scale(1.08);
+    box-shadow:0 0 14px rgba(255,215,0,.85);
+  }
   .cal-cell-clicavel{cursor:pointer;}
   .cal-cell-passado{opacity:.4;filter:grayscale(.6);}
   /* O Dia Presente mantém sempre o seu destaque forte, seja qual for a
@@ -3436,7 +3466,7 @@ function entregaEhSabado(dataISO) {
 ================================================================= */
 const MESES_PT = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
 const DIAS_SEMANA_PT = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
-const COR_EVENTOS_RASTREIOS = '#cbd5e1'; // cinzento
+const COR_EVENTOS_RASTREIOS = '#F5A623'; // dourado — usado só como cor de riscas em dias mistos (evento + agenda); dias 100% de evento usam o gradiente/brilho de .cal-cell-evento-especial (CSS)
 const COR_AGENDA_DIA_ABERTO = '#a7f3d0'; // verde-claro — dia de Agenda aberto sem marcações
 const SERVICOS_CALENDARIO = [
   { key: 'nutricao_tatiana', label: 'Nutrição Tatiana', cor: '#fde047' }, // amarelo
@@ -4613,6 +4643,12 @@ function buildMonthCalendar(year, month, posicao, onDayClick, prestadorKey, cale
     const dateISO = `${year}-${pad2(month + 1)}-${pad2(d)}`;
     const itens = calendarioItensDoDia(dateISO, restringirPorPerfil);
     const cores = itens.map(it => it.cor);
+    // Dia "puro de evento" — todos os itens desse dia são eventos (nunca
+    // uma agenda/consulta): recebe o destaque dourado especial em vez do
+    // gradiente às riscas genérico (ver .cal-cell-evento-especial, CSS).
+    // Um dia MISTO (evento + agenda no mesmo dia) mantém o comportamento
+    // de sempre — cada serviço com a sua própria cor, sem o dourado.
+    const soEvento = itens.length > 0 && itens.every(it => it.tipo === 'evento');
     const isToday = dateISO === todayStr;
     const isPast = dateISO < todayStr;
     // Nas páginas de Agenda/Evento (onDayClick fornecido) qualquer dia
@@ -4626,9 +4662,13 @@ function buildMonthCalendar(year, month, posicao, onDayClick, prestadorKey, cale
       class: 'cal-cell'
         + (isToday ? ' cal-cell-today' : '')
         + (cores.length ? ' cal-cell-marcado' : '')
+        + (soEvento ? ' cal-cell-evento-especial' : '')
         + (isPast ? ' cal-cell-passado' : '')
         + (temAcao ? ' cal-cell-clicavel' : ''),
-      style: calendarioCellStyle(cores),
+      // Dia puro de evento: o dourado vem inteiramente da classe CSS
+      // acima — nunca se define aqui um "background" inline por cima,
+      // que ganharia sempre a qualquer regra de classe.
+      style: soEvento ? '' : calendarioCellStyle(cores),
       title: itens.length ? itens.map(it => it.label).join(' + ') : undefined,
     }, String(d));
     if (onDayClick) {
