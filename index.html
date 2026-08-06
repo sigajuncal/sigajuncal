@@ -20172,6 +20172,59 @@ function escalaRotacaoResolverUtilizador(entry) {
 // topo da lista. Um colaborador entretanto inativado, ou já não
 // encontrado na lista/base de utilizadores, nunca preenche a vaga — fica
 // "por preencher" e é devolvido em vagasLibertadas para avisar o gestor.
+// ---- Fallback local (localStorage) da Lista de Rotação do Grupo B ----
+// Usado exclusivamente quando o INSERT/UPDATE/DELETE no Supabase falha —
+// rede em baixo OU a tabela escala_rotacao_grupo_b ainda não existe no
+// ambiente remoto (ver ESCALA_SQL, secção 13): em vez de bloquear a UI com
+// um erro definitivo, a lista continua editável e persiste neste
+// dispositivo/browser via localStorage. Um registo criado neste modo fica
+// sinalizado com _local:true e um id "local-…" (nunca um uuid real do
+// Supabase) — reordenar/remover um destes registos também fica só local
+// (ver reordenarRotacaoGrupoB/eliminarRotacaoGrupoB), nunca chega a tentar
+// um dbUpdate/dbDelete condenado a falhar outra vez. Assim que a tabela
+// remota existir e a ligação voltar, os próximos "Adicionar ao Fundo"
+// voltam a gravar normalmente no Supabase — os registos locais anteriores
+// continuam a aparecer (mesclados em escalaRotacaoGrupoBMesclarFallbackLocal,
+// chamada ao abrir o módulo Horários) até alguém os recriar a sério do
+// lado do servidor.
+const ESCALA_ROTACAO_GRUPO_B_LOCAL_KEY = 'sigajuncal_escala_rotacao_grupo_b_local';
+function escalaRotacaoGrupoBLerLocal() {
+  try {
+    const bruto = localStorage.getItem(ESCALA_ROTACAO_GRUPO_B_LOCAL_KEY);
+    const lista = bruto ? JSON.parse(bruto) : [];
+    return Array.isArray(lista) ? lista : [];
+  } catch (e) { return []; }
+}
+function escalaRotacaoGrupoBGuardarLocal(lista) {
+  try { localStorage.setItem(ESCALA_ROTACAO_GRUPO_B_LOCAL_KEY, JSON.stringify(lista)); }
+  catch (e) { console.warn('[Horários] não foi possível guardar o fallback local da rotação do Grupo B:', formatarErroSeguro(e)); }
+}
+function escalaRotacaoGrupoBCriarRegistoLocal(registoBase) {
+  const registo = Object.assign({}, registoBase, {
+    id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    _local: true,
+  });
+  escalaRotacaoGrupoBGuardarLocal([...escalaRotacaoGrupoBLerLocal(), registo]);
+  return registo;
+}
+function escalaRotacaoGrupoBAtualizarLocal(id, patch) {
+  escalaRotacaoGrupoBGuardarLocal(escalaRotacaoGrupoBLerLocal().map(x => x.id === id ? Object.assign({}, x, patch) : x));
+}
+function escalaRotacaoGrupoBRemoverLocal(id) {
+  escalaRotacaoGrupoBGuardarLocal(escalaRotacaoGrupoBLerLocal().filter(x => x.id !== id));
+}
+// Chamada ao abrir o módulo Horários: junta ao STATE (vindo do Supabase)
+// qualquer registo local que ainda não lá esteja, por id — nunca duplica,
+// e garante que os registos criados em modo de fallback continuam visíveis
+// mesmo depois de recarregar a página, enquanto a tabela remota não
+// estiver disponível.
+function escalaRotacaoGrupoBMesclarFallbackLocal() {
+  const locais = escalaRotacaoGrupoBLerLocal();
+  if (!locais.length) return;
+  const idsAtuais = new Set((STATE.escalaRotacaoGrupoB || []).map(x => x.id));
+  const emFalta = locais.filter(x => !idsAtuais.has(x.id));
+  if (emFalta.length) STATE.escalaRotacaoGrupoB = [...(STATE.escalaRotacaoGrupoB || []), ...emFalta];
+}
 // Lista Única de Rotação do Grupo B (Backoffice — vagas B1/B2): mesmo
 // mecanismo de escalaRotacaoGrupoALista() acima, só a tabela muda
 // (escala_rotacao_grupo_b).
@@ -20478,6 +20531,10 @@ function escalaShowErro(acao) {
 // mesmo padrão já usado em Entregas (ver entregasContextoMemorizado).
 let horariosContextoMemorizado = { activeTab: 'pessoal', semanaSelecionadaData: null };
 function buildHorariosPage(container, goTo) {
+  // Traz de volta qualquer registo da rotação do Grupo B gravado só
+  // localmente (fallback do Supabase — ver escalaRotacaoGrupoBMesclarFallbackLocal
+  // acima) para o STATE desta sessão, antes de qualquer render do módulo.
+  escalaRotacaoGrupoBMesclarFallbackLocal();
   // Vista predefinida ao ENTRAR no módulo pela 1ª vez nesta sessão: "A
   // Minha Semana" (Vista Pessoal), na semana corrente. Reaberturas
   // seguintes (incl. redesenhos em segundo plano) retomam sempre o que
@@ -22215,14 +22272,31 @@ function buildHorariosPage(container, goTo) {
     const utilizador = (STATE.usuarios || []).find(u => String(u.id) === String(utilizadorId));
     if (!utilizador) { escalaShowErro('Escolhe primeiro um colaborador válido no dropdown.'); return; }
     const max = (STATE.escalaRotacaoGrupoB || []).reduce((m, x) => Math.max(m, x.ordem || 0), 0);
-    const created = await dbInsert('escalaRotacaoGrupoB', { ordem: max + 1, nome: utilizador.nomeCompleto || utilizador.username, utilizadorId: utilizador.id });
-    if (created) {
-      STATE.escalaRotacaoGrupoB = [...(STATE.escalaRotacaoGrupoB || []), created];
-      if (rotacaoBEditando && rotacaoBRascunho) rotacaoBRascunho = [...rotacaoBRascunho, created];
-      rotacaoBDraft = {};
-    } else {
-      escalaShowErro('Não foi possível adicionar à lista');
+    // Estrutura enviada ao Supabase: ordem (posição na rotação), nome
+    // (cache legível, evita um JOIN a usuarios_app nas leituras) e
+    // utilizadorId → coluna utilizador_id (bigint, FK a usuarios_app.id —
+    // ver ESCALA_SQL secção 13). "eliminado" (equivalente ao "ativo"
+    // pedido) já vem com DEFAULT false na própria tabela, não precisa de
+    // ser enviado em cada INSERT.
+    const registoBase = { ordem: max + 1, nome: utilizador.nomeCompleto || utilizador.username, utilizadorId: utilizador.id };
+    let created = null;
+    try {
+      created = await dbInsert('escalaRotacaoGrupoB', registoBase);
+    } catch (e) {
+      console.error('[Horários] erro inesperado ao inserir na rotação do Grupo B:', formatarErroSeguro(e));
     }
+    if (!created) {
+      // Supabase indisponível (rede em baixo) ou a tabela ainda não existe
+      // neste ambiente — nunca bloqueia a UI: grava um registo local
+      // (localStorage) para a lista continuar utilizável nesta sessão/
+      // dispositivo, e avisa com um toast informativo (não um erro
+      // definitivo, já que a ação teve efeito).
+      created = escalaRotacaoGrupoBCriarRegistoLocal(registoBase);
+      showToast('Sem ligação ao servidor — colaborador adicionado apenas neste dispositivo por agora. Sincroniza automaticamente assim que a base de dados estiver disponível.', 'info');
+    }
+    STATE.escalaRotacaoGrupoB = [...(STATE.escalaRotacaoGrupoB || []), created];
+    if (rotacaoBEditando && rotacaoBRascunho) rotacaoBRascunho = [...rotacaoBRascunho, created];
+    rotacaoBDraft = {};
     rerender();
   }
   async function reordenarRotacaoGrupoB(novaSequencia) {
@@ -22238,6 +22312,14 @@ function buildHorariosPage(container, goTo) {
     if (!atualizacoes.length) return;
     let falhas = 0;
     for (const { item, novaOrdem } of atualizacoes) {
+      // Registo só local (fallback do Supabase, ver adicionarRotacaoGrupoB
+      // acima) — nunca tenta um dbUpdate real (o id "local-…" não existe
+      // no servidor, falharia sempre); grava só em localStorage.
+      if (item._local) {
+        escalaRotacaoGrupoBAtualizarLocal(item.id, { ordem: novaOrdem });
+        STATE.escalaRotacaoGrupoB = STATE.escalaRotacaoGrupoB.map(x => x.id === item.id ? Object.assign({}, x, { ordem: novaOrdem }) : x);
+        continue;
+      }
       const updated = await dbUpdate('escalaRotacaoGrupoB', item.id, { ordem: novaOrdem });
       if (updated) STATE.escalaRotacaoGrupoB = STATE.escalaRotacaoGrupoB.map(x => x.id === item.id ? updated : x);
       else falhas += 1;
@@ -22247,6 +22329,12 @@ function buildHorariosPage(container, goTo) {
   }
   function eliminarRotacaoGrupoB(item) {
     confirmDialog(`Tem a certeza de que quer remover ${item.nome} da Lista Única de Rotação do Grupo B? Semanas já geradas mantêm-se inalteradas — só as próximas semanas deixam de o incluir.`, async () => {
+      if (item._local) {
+        escalaRotacaoGrupoBRemoverLocal(item.id);
+        STATE.escalaRotacaoGrupoB = STATE.escalaRotacaoGrupoB.filter(x => x.id !== item.id);
+        rerender();
+        return;
+      }
       const ok = await dbDelete('escalaRotacaoGrupoB', item.id);
       if (ok) { STATE.escalaRotacaoGrupoB = STATE.escalaRotacaoGrupoB.filter(x => x.id !== item.id); rerender(); }
       else escalaShowErro('Não foi possível remover');
