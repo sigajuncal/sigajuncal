@@ -224,7 +224,7 @@
   .presenca-dot{width:8px;height:8px;border-radius:50%;background:#22c55e;flex-shrink:0;
     animation:presencaDotPulse 1.8s ease-in-out infinite;}
   @keyframes presencaDotPulse{0%,100%{opacity:1;}50%{opacity:.4;}}
-  .presenca-online-nomes{font-weight:500;font-size:11px;color:#0d9668;opacity:.85;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .presenca-online-nomes{font-weight:500;font-size:11px;color:#0d9668;opacity:.85;white-space:nowrap;}
   /* Chat Interno */
   .chat-page-wrap{display:flex;flex-direction:column;}
   .chat-messages{display:flex;flex-direction:column;gap:14px;padding:6px 4px 16px;max-height:56vh;min-height:280px;overflow-y:auto;}
@@ -5730,6 +5730,32 @@ function nomeCurtoDesambiguado(nomeCompleto) {
   const homonimos = (STATE.usuarios || []).filter(u => u.ativo !== false && primeiroNomeDe(u.nomeCompleto) === primeiro);
   if (homonimos.length <= 1) return primeiro;
   return nome;
+}
+// Abreviatura compacta específica para o badge de utilizadores Online
+// (buildUtilizadoresOnlineBadge) — ao contrário de nomeCurtoDesambiguado()
+// acima (que recua para o NOME COMPLETO em caso de homónimos, podendo
+// ficar demasiado comprido com vários "Joana" em simultâneo, obrigando o
+// badge a cortar com reticências), aqui o objetivo é sempre o mais
+// compacto possível, para o badge nunca precisar de cortar nada:
+//   - As 3 colegas "Joana" da equipa (nunca ambíguas entre si, cada uma
+//     com a sua própria abreviatura fixa, pedida explicitamente).
+//   - Todos os outros: "Primeiro Nome + Inicial do Apelido." (ex: "Inês
+//     F.", "Hugo C.", "Lúcia R.", "Ana M.").
+//   - Nome de uma só palavra (sem apelido): sai como está.
+const NOMES_ABREVIADOS_ONLINE_FIXOS = {
+  'Joana Cerqueira': 'J. Cerqueira',
+  'Joana Coelho': 'J. Coelho',
+  'Joana Mendonça': 'J. Mendonça',
+};
+function nomeAbreviadoOnline(nomeCompleto) {
+  const nome = String(nomeCompleto || '').trim();
+  if (!nome) return '';
+  if (NOMES_ABREVIADOS_ONLINE_FIXOS[nome]) return NOMES_ABREVIADOS_ONLINE_FIXOS[nome];
+  const partes = nome.split(/\s+/);
+  if (partes.length === 1) return partes[0];
+  const primeiro = partes[0];
+  const apelido = partes[partes.length - 1];
+  return `${primeiro} ${apelido.charAt(0).toUpperCase()}.`;
 }
 // Nome abreviado/desambiguado para colunas "Responsável" em tabelas de
 // listagem (Pedidos/Manipulados/Ortopedia/Ervanária/Veterinária/Outros e
@@ -19208,7 +19234,11 @@ ALTER PUBLICATION supabase_realtime ADD TABLE escala_feriados;
 // valor por omissão para popular escala_rotacao_grupo_a da primeira vez
 // (o Diretor Técnico/Administrador gere a lista real a partir de "Gerir
 // Vagas", que fica sempre a fonte de verdade assim que existir pelo menos
-// uma linha na tabela).
+// uma linha na tabela). Sequência oficial confirmada (Joana Mendonça em
+// 1.º, Inês Ferreira em 2.º, ..., Ana Moreira em 9.º/último) — já batia
+// certo com o pedido; o motivo de a app mostrar uma ordem diferente não
+// era este array (só usado quando a tabela está mesmo vazia), era o bug
+// de persistência do "Guardar Alterações" corrigido em reordenarRotacaoGrupoA().
 const ESCALA_ROTACAO_GRUPO_A_LISTA_BASE = ['Joana Mendonça', 'Inês Ferreira', 'Lúcia Rodrigues', 'Joana Coelho', 'Sofia André', 'Magda Antunes', 'André Seixas', 'João Rego', 'Ana Moreira'];
 // Seed inicial das Posições Base (Turnos-Modelo), extraído dia a dia (2ª a
 // Domingo) das matrizes oficiais do Paulo: BASE 1 = "Mariana Semana"
@@ -21705,15 +21735,20 @@ function buildHorariosPage(container, goTo) {
       if ((item.ordem || 0) !== novaOrdem) atualizacoes.push({ item, novaOrdem });
     });
     if (!atualizacoes.length) return;
-    // Otimista: aplica já localmente para o arrastar parecer instantâneo —
-    // se alguma gravação falhar a seguir, o toast de erro avisa e o
-    // próximo redesenho/Realtime acaba por repor o que está mesmo no
-    // Supabase.
-    STATE.escalaRotacaoGrupoA = STATE.escalaRotacaoGrupoA.map(x => {
-      const alterado = atualizacoes.find(a => a.item.id === x.id);
-      return alterado ? Object.assign({}, x, { ordem: alterado.novaOrdem }) : x;
-    });
-    rerender();
+    // BUG REAL CORRIGIDO AQUI (reordenações "perdiam-se" ao recarregar a
+    // página): esta função costumava atualizar STATE.escalaRotacaoGrupoA
+    // com a "ordem" nova ANTES de chamar dbUpdate(), como otimismo para o
+    // arrastar parecer instantâneo. Mas dbUpdate() só envia ao Supabase os
+    // campos que difiram do que já está em STATE (apenasCamposAlterados)
+    // — com STATE já mutado para o valor novo antes da chamada, a
+    // comparação via sempre "nada mudou" e o pedido a sério ao Supabase
+    // NUNCA chegava a sair, apesar de a interface mostrar a nova ordem
+    // (a lista arrastável em modo de edição vem sempre do rascunho local
+    // — rotacaoRascunho — nunca de STATE diretamente, por isso o ecrã
+    // continuava a parecer certo até à próxima recarga). Agora só se
+    // grava mesmo (via dbUpdate, que compara com o valor ORIGINAL ainda
+    // em STATE) e só DEPOIS de confirmado é que STATE é atualizado com o
+    // registo que o Supabase devolveu — nunca antes.
     let falhas = 0;
     for (const { item, novaOrdem } of atualizacoes) {
       const updated = await dbUpdate('escalaRotacaoGrupoA', item.id, { ordem: novaOrdem });
@@ -26190,7 +26225,7 @@ function buildUtilizadoresOnlineBadge() {
     return true;
   });
   if (!lista.length) return null;
-  const primeirosNomes = lista.map(u => nomeCurtoDesambiguado(u.nome)).filter(Boolean);
+  const primeirosNomes = lista.map(u => nomeAbreviadoOnline(u.nome)).filter(Boolean);
   const nomesCompletos = lista.map(u => u.nome).join(', ');
   return h('span', { class: 'presenca-online-badge', title: `Online agora: ${nomesCompletos}` }, [
     h('span', { class: 'presenca-dot' }),
