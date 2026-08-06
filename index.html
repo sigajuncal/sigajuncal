@@ -7340,6 +7340,72 @@ function normalizarHora(str) {
   if (!m) m = '00';
   return `${h.padStart(2, '0')}:${m.padStart(2, '0')}`;
 }
+// Junta hora+minuto (já como números/strings soltas) sempre em "HH:MM",
+// cortando horas/minutos fora do intervalo válido (nunca 25:99) — usada
+// só por parseHoraInteligente, abaixo.
+function horaMinutoParaHHMM(hStr, mStr) {
+  let h = parseInt(hStr, 10);
+  let mnt = parseInt(mStr, 10);
+  if (isNaN(h)) h = 0;
+  if (isNaN(mnt)) mnt = 0;
+  if (h > 23) h = 23;
+  if (mnt > 59) mnt = 59;
+  return `${pad2(h)}:${pad2(mnt)}`;
+}
+// Parser INTELIGENTE de horas, para os campos "HH:MM" do módulo Horários
+// (Entrada/Saída Pausa/Regresso Pausa/Saída) — ao contrário de
+// normalizarHora() (que já assume um valor tipo "9:15", só acerta o zero
+// à esquerda), este interpreta atalhos que a equipa escreve naturalmente
+// enquanto preenche a grelha à pressa:
+//   "14"      -> "14:00"   (1-2 dígitos = só a hora, minutos a 00)
+//   "7"       -> "07:00"
+//   "1430"    -> "14:30"   (4 dígitos sem separador = HHMM)
+//   "930"     -> "09:30"   (3 dígitos sem separador = HMM)
+//   "0830"    -> "08:30"
+//   "14.30", "14 30", "14h30" -> "14:30" (ponto/espaço/h como separador)
+//   "14h"     -> "14:00"   ('h' sozinho = só a hora)
+//   "14:30"   -> "14:30"   (já estava certo, mantém-se)
+// Devolve '' se o campo estiver vazio, ou null se não conseguir perceber
+// nada com sentido — nesse caso o chamador NUNCA reescreve o campo, para
+// nunca inventar uma hora a partir de texto que não é mesmo uma hora.
+function parseHoraInteligente(valor) {
+  const bruto = String(valor || '').trim();
+  if (!bruto) return '';
+  let m = bruto.match(/^(\d{1,2}):(\d{1,2})$/);
+  if (m) return horaMinutoParaHHMM(m[1], m[2]);
+  m = bruto.match(/^(\d{1,2})[hH](\d{0,2})$/);
+  if (m) return horaMinutoParaHHMM(m[1], m[2] || '0');
+  m = bruto.match(/^(\d{1,2})[.\s](\d{1,2})$/);
+  if (m) return horaMinutoParaHHMM(m[1], m[2]);
+  if (/^\d+$/.test(bruto)) {
+    if (bruto.length <= 2) return horaMinutoParaHHMM(bruto, '0');
+    if (bruto.length === 3) return horaMinutoParaHHMM(bruto.slice(0, 1), bruto.slice(1));
+    if (bruto.length === 4) return horaMinutoParaHHMM(bruto.slice(0, 2), bruto.slice(2));
+  }
+  return null;
+}
+// Liga a auto-formatação inteligente de horas a um <input> — corre SÓ ao
+// sair do campo (blur), nunca enquanto a pessoa ainda está a escrever
+// (reescrever a meio interromperia o próprio ato de escrever, ex:
+// "apagar" um dígito só para o campo saltar sozinho para "14:00" antes de
+// se acabar de escrever "1430"). Se parseHoraInteligente perceber o que
+// foi escrito, o valor do próprio <input> é substituído por "HH:MM"
+// limpo e onFormatado(novoValor) é chamado, para o estado (draft) do
+// formulário ficar sempre sincronizado com o que passou a estar visível
+// no campo — sem isto, o input mostraria "14:30" mas o formulário
+// continuaria a gravar o "1430" original. Texto que não é interpretável
+// (ex: lixo, ou já estava certo) fica sempre exatamente como a pessoa
+// escreveu — nunca apagado nem substituído às cegas.
+function ligarFormatacaoHoraInteligente(input, onFormatado) {
+  input.classList.add('time-input-smart');
+  input.addEventListener('blur', () => {
+    const interpretado = parseHoraInteligente(input.value);
+    if (interpretado !== null && interpretado !== input.value) {
+      input.value = interpretado;
+      if (onFormatado) onFormatado(interpretado);
+    }
+  });
+}
 // Ordena um array de vagas/horários por ordem cronológica ascendente — quer
 // os itens sejam strings ("09:15") quer objetos com campo .hora.
 function ordenarPorHora(vagas) {
@@ -20095,12 +20161,16 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   tipoSelect.value = diaAtual.tipo || 'normal';
   const entradaInput = h('input', { class: 'input', placeholder: 'HH:MM', maxlength: '5' });
   entradaInput.value = diaAtual.entrada || '';
+  ligarFormatacaoHoraInteligente(entradaInput);
   const saidaInput = h('input', { class: 'input', placeholder: 'HH:MM', maxlength: '5' });
   saidaInput.value = diaAtual.saida || '';
+  ligarFormatacaoHoraInteligente(saidaInput);
   const pausaInicioInput = h('input', { class: 'input', placeholder: 'HH:MM (opcional)', maxlength: '5' });
   pausaInicioInput.value = diaAtual.pausaInicio || '';
+  ligarFormatacaoHoraInteligente(pausaInicioInput);
   const pausaFimInput = h('input', { class: 'input', placeholder: 'HH:MM (opcional)', maxlength: '5' });
   pausaFimInput.value = diaAtual.pausaFim || '';
+  ligarFormatacaoHoraInteligente(pausaFimInput);
   const heInput = h('input', { class: 'input', type: 'number', step: '0.5', min: '0', placeholder: '0' });
   heInput.value = String(diaAtual.heHoras || '');
   const errorEl = h('p', { class: 'form-error', style: 'display:none;' }, '');
@@ -21389,6 +21459,7 @@ function buildHorariosPage(container, goTo) {
         input.value = valorAtual || '';
         input.disabled = !!dia.folga;
         input.addEventListener('input', () => onInput(input.value));
+        ligarFormatacaoHoraInteligente(input, onInput);
         return input;
       };
       const entradaInput = campoHoraGrid(dia.entrada, (v) => { dia.entrada = v; });
