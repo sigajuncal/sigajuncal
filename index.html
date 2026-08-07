@@ -1472,6 +1472,13 @@
   .escala-vertical-bloco-tipo-ausencia{background:var(--pharm-300)!important;color:var(--pharm-700);
     display:flex;align-items:center;justify-content:center;text-align:center;padding:6px 3px;
     font-size:10px;box-shadow:none;}
+  /* Folga — estilização suave e minimalista à parte (nunca a mesma dos
+     outros tipos de ausência): sem ícone/texto visível (nunca deve
+     rivalizar visualmente com turnos reais ou ausências que precisam de
+     atenção, tipo Férias/Baixa) — cinzento ultra ténue e translúcido,
+     quase invisível; identificação (Folga + colaborador) só aparece via
+     tooltip nativo (title) ao passar o cursor. */
+  .escala-vertical-bloco-folga{background:rgba(0,0,0,.04)!important;box-shadow:none;}
   /* Item 2 (Banco de Horas): selo compacto no bloco do turno indicando
      que foram descontadas horas de banco nesse dia — visível para toda
      a equipa (só a EDIÇÃO é restrita a Hugo/Paulo, a leitura não). */
@@ -21515,7 +21522,7 @@ function escalaTarefasAtivasAgora() {
   const segundaISO = escalaSegundaFeiraDaSemanaDeISO(dateToISO(agora));
   const semana = (STATE.escalaSemanas || []).find(s => s.semanaInicio === segundaISO);
   if (!semana) return [];
-  if (semana.estado !== 'publicado' && !escalaMostrarRascunhosEquipa() && !isMasterUser()) return [];
+  if (semana.estado !== 'publicado' && !escalaMostrarRascunhosEquipa(semana) && !isMasterUser()) return [];
   const diaKey = escalaDiaKeyDeData(agora);
   const ativas = [];
   Object.keys(semana.dados || {}).forEach(codigo => {
@@ -21544,7 +21551,7 @@ function escalaMinhasTarefasHoje() {
   const segundaISO = escalaSegundaFeiraDaSemanaDeISO(hojeISO);
   const semana = (STATE.escalaSemanas || []).find(s => s.semanaInicio === segundaISO);
   if (!semana) return [];
-  if (semana.estado !== 'publicado' && !escalaMostrarRascunhosEquipa() && !isMasterUser()) return [];
+  if (semana.estado !== 'publicado' && !escalaMostrarRascunhosEquipa(semana) && !isMasterUser()) return [];
   const diaKey = escalaDiaKeyDeData(agora);
   const minhas = [];
   Object.keys(semana.dados || {}).forEach(codigo => {
@@ -21576,9 +21583,17 @@ function escalaConfiguracaoEmFalta() { return escalaTodasVagasOrdenadas().length
 // é Master/Administrador. Só o Diretor Técnico/Administrador consegue
 // ligar/desligar (ver toggle em buildVistaGerador, dentro do separador
 // "Gerador / Vista Vertical").
-function escalaMostrarRascunhosEquipa() {
-  const cfg = (STATE.escalaConfigFerias || [])[0];
-  return !!(cfg && cfg.mostrarRascunhosEquipa);
+// Interruptor "Mostrar rascunho à equipa" — POR SEMANA (campo
+// escala_semanas.mostrar_rascunho_equipa), nunca mais um interruptor
+// global partilhado por todas as semanas (era escala_config_ferias.
+// mostrar_rascunhos_equipa, campo agora obsoleto/só histórico — deixou
+// de ser lido). Sem argumento (semana indisponível/ainda não gerada)
+// devolve sempre false — nunca há nada para mostrar antes de existir
+// semana. Só o Diretor Técnico/Administrador consegue ligar/desligar
+// (ver checkbox em buildOpcoesGeradorMenu, dentro do separador
+// "Gerador de Horário").
+function escalaMostrarRascunhosEquipa(semana) {
+  return !!(semana && semana.mostrarRascunhoEquipa);
 }
 function escalaProximoCodigoVaga(grupo) {
   let max = 0;
@@ -23511,7 +23526,7 @@ function buildHorariosPage(container, goTo) {
       const s = semanaSelecionada();
       if (!s) return h('span', { class: 'badge badge-gray' }, '⚪ Sem Horário Definido');
       if (s.estado === 'publicado') return h('span', { class: 'badge badge-green' }, '🟢 Horário Oficial Publicado');
-      return h('span', { class: 'badge badge-orange' }, escalaMostrarRascunhosEquipa()
+      return h('span', { class: 'badge badge-orange' }, escalaMostrarRascunhosEquipa(s)
         ? '🟠 Rascunho Visível (Em Teste)'
         : '🟠 Rascunho em Edição (Não Visível para a Equipa)');
     })();
@@ -26098,24 +26113,30 @@ function buildHorariosPage(container, goTo) {
   // Interruptor "Mostrar rascunhos à equipa" — persistido em
   // escala_config_ferias (linha única, ver escalaMostrarRascunhosEquipa).
   // Só aparece aqui, no separador reservado à gestão.
-  function buildToggleMostrarRascunhos() {
-    const cfg = (STATE.escalaConfigFerias || [])[0];
-    const ligado = configVisibilidadeDraft !== null ? configVisibilidadeDraft : escalaMostrarRascunhosEquipa();
+  // Item 2 — Checkbox de Visibilidade de Rascunho POR SEMANA (nunca mais
+  // um interruptor global): persistido em escala_semanas.mostrar_
+  // rascunho_equipa, na própria semana selecionada (`semana.id`) — ligar/
+  // desligar afeta SÓ essa semana; qualquer outra semana mantém o seu
+  // próprio valor gravado, independente desta. Versões Publicadas
+  // continuam sempre visíveis à equipa, com ou sem este toggle (só
+  // controla a pré-visualização de um Rascunho ainda não publicado).
+  function buildToggleMostrarRascunhos(semana) {
+    const ligado = configVisibilidadeDraft !== null ? configVisibilidadeDraft : escalaMostrarRascunhosEquipa(semana);
     const cb = h('input', { type: 'checkbox' });
     cb.checked = ligado;
     cb.addEventListener('change', () => requireAuth(async () => {
       configVisibilidadeDraft = cb.checked;
       rerender();
-      const resultado = cfg
-        ? await dbUpdate('escalaConfigFerias', cfg.id, { mostrarRascunhosEquipa: cb.checked })
-        : await dbInsert('escalaConfigFerias', { mostrarRascunhosEquipa: cb.checked });
+      const resultado = await dbUpdate('escalaSemanas', semana.id, { mostrarRascunhoEquipa: cb.checked });
       configVisibilidadeDraft = null;
-      if (resultado) { STATE.escalaConfigFerias = [resultado]; showToast(cb.checked ? 'A equipa passa a ver Rascunhos em "A Minha Semana"/"Escala da Equipa".' : 'A equipa deixa de ver Rascunhos — só horários Publicados.', 'success'); }
-      else escalaShowErro('Não foi possível guardar esta definição');
+      if (resultado) {
+        STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? resultado : s);
+        showToast(cb.checked ? 'A equipa passa a ver o Rascunho desta semana em "A Minha Semana"/"Escala da Equipa".' : 'A equipa deixa de ver o Rascunho desta semana — só o horário Publicado.', 'success');
+      } else escalaShowErro('Não foi possível guardar esta definição');
       rerender();
     }));
     return h('label', { style: 'display:flex;align-items:center;gap:8px;margin:0 0 16px;font-size:13px;font-weight:700;color:var(--pharm-700);cursor:pointer;' }, [
-      cb, 'Mostrar Rascunhos à equipa em "A Minha Semana"/"Escala da Equipa" (por omissão, só veem horários Publicados)',
+      cb, '👁️ Permitir à equipa ver o rascunho desta semana (as versões oficiais/publicadas ficam sempre disponíveis)',
     ]);
   }
 
@@ -26135,13 +26156,13 @@ function buildHorariosPage(container, goTo) {
   // página como um modal faria.
   function buildOpcoesGeradorMenu(semana, semConfiguracao) {
     const podeRecalcular = semana && !escalaSemanaCongelada(semana) && !semConfiguracao;
-    const btn = h('button', { class: 'btn btn-secondary', style: 'padding:8px 12px;font-size:12.5px;' }, [Icon('settings', { size: 14, strokeWidth: 2.2 }), ' ⚙️ Opções do Gerador']);
+    const btn = h('button', { class: 'btn btn-secondary', style: 'padding:8px 12px;font-size:12.5px;' }, [Icon('settings', { size: 14, strokeWidth: 2.2 }), ' Opções do Gerador']);
     btn.addEventListener('click', () => { mostrarOpcoesGerador = !mostrarOpcoesGerador; rerender(); });
     const wrap = h('div', { class: 'escala-opcoes-wrap' }, [btn]);
     if (!mostrarOpcoesGerador) return wrap;
     const backdrop = h('div', { class: 'escala-opcoes-backdrop' });
     backdrop.addEventListener('click', () => { mostrarOpcoesGerador = false; rerender(); });
-    const painelKids = [buildToggleMostrarRascunhos()];
+    const painelKids = [buildToggleMostrarRascunhos(semana)];
     if (podeRecalcular) {
       painelKids.push(h('button', {
         class: 'btn btn-secondary', style: 'padding:8px 14px;font-size:12.5px;width:100%;justify-content:center;', disabled: recalculando ? 'disabled' : undefined,
@@ -26443,11 +26464,26 @@ function buildHorariosPage(container, goTo) {
             title: `${escalaTarefaTextoItem(t)} · ${t.inicio}-${t.fim}`,
           }, tarefaInfo ? tarefaInfo.icon : '★'));
         });
+      } else if (dia.tipo === 'folga') {
+        // Folga — estilização suave e minimalista (pedido à parte de
+        // Férias/Baixa/etc.): nunca mostra ícone/texto no bloco (nem
+        // sequer "Folga" por extenso) para não rivalizar visualmente com
+        // turnos reais nem com ausências que pedem atenção — cinzento
+        // ultra ténue/translúcido (escala-vertical-bloco-folga), quase
+        // invisível. Identificação (Folga + colaborador) só via tooltip
+        // nativo (title) ao passar o cursor — nunca visível sem hover.
+        bloco = h('div', {
+          class: 'escala-vertical-bloco escala-vertical-bloco-folga' + (editavel ? ' escala-vertical-bloco-clicavel' : ''),
+          style: 'top:0%;height:100%;',
+          title: colaboradorNome ? `Folga — ${colaboradorNome}` : 'Folga',
+        });
+        if (editavel) bloco.addEventListener('click', aoClicarPosicao);
       } else if (dia.tipo && dia.tipo !== 'normal') {
         // Item 1 (Estilização Visual): Tipo diferente de "Normal" —
-        // Férias/Baixa/Falta/Folga/Indisponibilidade/Licença/Aniversário/
-        // Extra — nunca tem horário próprio para desenhar um intervalo
-        // real, por isso preenche a coluna do dia inteira a cinzento
+        // Férias/Baixa/Falta/Indisponibilidade/Licença/Aniversário/
+        // Extra (Folga tem tratamento próprio, ver ramo acima) — nunca
+        // tem horário próprio para desenhar um intervalo real, por isso
+        // preenche a coluna do dia inteira a cinzento
         // (escala-vertical-bloco-tipo-ausencia), com a etiqueta/emoji do
         // tipo ao centro — sinaliza de imediato "não está ao serviço em
         // turno regular", sem precisar de passar o rato.
@@ -26657,7 +26693,7 @@ function buildHorariosPage(container, goTo) {
     // tabela/timeline vazia ou um EmptyState genérico. Master/Administrador
     // continua a ver sempre tudo, rascunho ou não (cai no branch abaixo,
     // onde buildVistaPessoal/buildVistaEquipa tratam o `!semana` deles).
-    if (!isMasterUser() && (!semana || semana.estado !== 'publicado') && !escalaMostrarRascunhosEquipa()) {
+    if (!isMasterUser() && (!semana || semana.estado !== 'publicado') && !escalaMostrarRascunhosEquipa(semana)) {
       wrap.appendChild(buildCartaoHorarioEmElaboracao(dataSemanaSelecionada()));
       return wrap;
     }
