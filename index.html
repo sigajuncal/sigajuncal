@@ -2321,6 +2321,11 @@
     display:flex;align-items:center;justify-content:center;line-height:1;}
   .lembretes-bell-piscar{border-color:var(--red);color:var(--red);animation:lembretesBellPulse 1.1s ease-in-out infinite;}
   .lembretes-bell-piscar .lembretes-bell-badge{background:var(--red);}
+  /* Badge discreto (ex: contagem de notas por tratar no atalho do Bloco de
+     Notas Pessoal) — mesmo formato do badge normal, mas tom neutro em vez
+     de vermelho/saturado e sem qualquer animação: é só informativo, nunca
+     um alerta a pedir atenção imediata como os lembretes urgentes. */
+  .lembretes-bell-badge-discreto{background:var(--pharm-400);}
   /* Badge do botão "Gaveta" (Correio Interno) — vermelho, sem animação de
      piscar (essa linguagem visual fica reservada aos Lembretes urgentes). */
   .gaveta-bell-badge{background:var(--red) !important;}
@@ -5587,6 +5592,14 @@ function buildBlocoNotasWidget(config) {
     return q ? lista.filter(n => normalizarTexto(n.texto || '').includes(q)) : lista;
   }
   function renderLista() {
+    // Mantém a contagem do atalho 📄 na Home sempre atualizada assim que
+    // este bloco é o Bloco de Notas Pessoal (NOTA_PESSOAL_MODULO) — sem
+    // isto, o badge só se atualizaria no próximo arranque/refresh de
+    // fundo da app, nunca durante a própria sessão em que se acaba de
+    // criar/tratar/eliminar uma nota aqui mesmo.
+    if (modulo === NOTA_PESSOAL_MODULO && !loading) {
+      STATE.notaPessoalPendentesCount = notas.filter(n => !n.resolvidoEm).length;
+    }
     clear(listEl);
     if (loading) { listEl.appendChild(h('p', { class: 'cell-muted', style: 'margin:4px 0;' }, 'A carregar…')); return; }
     if (!notas.length) {
@@ -11418,14 +11431,22 @@ function buildLembretesBellHome() {
 // Botão do Bloco de Notas Pessoal (item 8) — mesmo estilo/tamanho da
 // sineta de Lembretes, colocado mesmo ao lado dela (ver buildHomepage).
 // Atalho direto para a aba "Bloco de Notas Pessoal" dentro de Lembretes
-// (ver goTo('bloco-notas-pessoal')/lembretesTabAoAbrir) — nunca mostra
-// contagem/badge (ao contrário da sineta, não há "notas urgentes" aqui, é
-// só um bloco de notas pessoal).
+// (ver goTo('bloco-notas-pessoal')/lembretesTabAoAbrir). Badge discreto
+// (sem "piscar" como a sineta — aqui não há nada "urgente", só um
+// contador informativo) com o nº de notas por tratar (resolvidoEm vazio);
+// STATE.notaPessoalPendentesCount vem do arranque da app (loadAllData) e
+// é mantido atualizado em tempo real por buildBlocoNotasWidget sempre que
+// o próprio bloco é aberto e alterado nesta sessão. null (ainda não lido)
+// ou 0 (tudo tratado) — nunca mostra o badge.
 function buildBlocoNotasPessoalBtnHome(goTo) {
   if (!activeUser) return null;
+  const pendentes = STATE.notaPessoalPendentesCount;
   const btn = h('button', {
-    class: 'lembretes-bell-btn lembretes-bell-inativa', title: 'Bloco de Notas Pessoal', 'aria-label': 'Bloco de Notas Pessoal',
-  }, Icon('filetext', { size: 18, strokeWidth: 2.2 }));
+    class: 'lembretes-bell-btn lembretes-bell-inativa', title: pendentes ? `${pendentes} nota(s) por tratar` : 'Bloco de Notas Pessoal', 'aria-label': 'Bloco de Notas Pessoal',
+  }, [
+    Icon('filetext', { size: 18, strokeWidth: 2.2 }),
+    pendentes ? h('span', { class: 'lembretes-bell-badge lembretes-bell-badge-discreto' }, String(pendentes)) : null,
+  ]);
   btn.addEventListener('click', () => goTo('bloco-notas-pessoal'));
   return btn;
 }
@@ -20908,6 +20929,12 @@ BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE escala_dias_operacionais_especiais;
   END IF;
 END $$;
+
+-- 25) escala_notas_pessoais.resolvido_em — Notas Pessoais de "A Minha
+--     Semana" passam a seguir a MESMA lógica visual do Bloco de Notas
+--     Pessoal (checkbox Pendente/Tratada em vez de editar o texto):
+--     null = pendente, timestamp = tratada/resolvida nessa data/hora.
+ALTER TABLE escala_notas_pessoais ADD COLUMN IF NOT EXISTS resolvido_em timestamptz;
 ================================================================= */
 // Lista-base (usada em runtime, não só informativa) da Lista Única de
 // Rotação do Grupo A — ver escalaAtribuirGrupoA() mais abaixo. Serve só de
@@ -23322,12 +23349,9 @@ function buildHorariosPage(container, goTo) {
   let notaEquipaEditandoId = null;
   let notaEquipaEditandoTexto = '';
   let notaEquipaSaving = false;
-  // Bloco Pessoal ("A Minha Semana") — rascunho local do textarea antes de
-  // "Guardar"; nunca gravado a cada tecla, só ao clicar no botão.
-  let notaPessoalNovoTexto = ''; // draft do cartão "+ Nova Nota" ainda por guardar
-  let notaPessoalMostrarForm = false; // mostra/esconde o formulário de nova nota
-  let notaPessoalEditandoId = null; // id da nota atualmente em edição inline (ou null)
-  let notaPessoalEditDraft = ''; // texto em edição da nota acima
+  // Bloco Pessoal ("A Minha Semana") — mesma lógica/UX do Bloco de Notas
+  // Pessoal (buildBlocoNotasWidget): entrada no topo + checkbox Pendente/
+  // Tratada em vez de editar o texto, só sem barra de pesquisa.
   let notaPessoalASalvar = false; // evita duplo-clique em Guardar/nova nota
 
   // Toda a mudança de separador ou de semana selecionada passa por aqui —
@@ -23859,11 +23883,11 @@ function buildHorariosPage(container, goTo) {
     const lista = escalaNotasPessoaisLerLocal(); lista.push(registo); escalaNotasPessoaisGuardarLocal(lista);
     return registo;
   }
-  function escalaNotasPessoaisAtualizarLocal(id, texto) {
+  function escalaNotasPessoaisAtualizarLocal(id, patch) {
     const lista = escalaNotasPessoaisLerLocal();
     const idx = lista.findIndex(n => n.id === id);
     if (idx === -1) return null;
-    lista[idx] = { ...lista[idx], texto, updatedAt: new Date().toISOString() };
+    lista[idx] = { ...lista[idx], ...patch, updatedAt: new Date().toISOString() };
     escalaNotasPessoaisGuardarLocal(lista);
     return lista[idx];
   }
@@ -23885,9 +23909,12 @@ function buildHorariosPage(container, goTo) {
   }
   function escalaNotasPessoaisDaSemana(semanaInicioISO) {
     if (!activeUser) return [];
+    // Mais recentes primeiro — mesma ordem do Bloco de Notas Pessoal
+    // (buildBlocoNotasWidget), para as duas listas se comportarem de
+    // forma idêntica aos olhos de quem usa a app.
     return (STATE.escalaNotasPessoais || [])
       .filter(n => n.semanaInicio === semanaInicioISO && String(n.utilizadorId) === String(activeUser.id))
-      .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
   }
   async function criarNotaPessoal(semanaInicioISO, texto) {
     if (!activeUser || !texto.trim() || notaPessoalASalvar) return;
@@ -23902,20 +23929,23 @@ function buildHorariosPage(container, goTo) {
       STATE.escalaNotasPessoais = [...(STATE.escalaNotasPessoais || []), local];
       showToast('Sem ligação ao servidor — nota guardada só neste dispositivo.', 'info');
     }
-    notaPessoalNovoTexto = ''; notaPessoalMostrarForm = false; notaPessoalASalvar = false;
+    notaPessoalASalvar = false;
     rerender();
   }
-  async function editarNotaPessoal(nota, novoTexto) {
-    if (!novoTexto.trim()) return;
+  // Mesma lógica do Bloco de Notas Pessoal (buildBlocoNotasWidget):
+  // checkbox Pendente/Tratada em vez de editar o texto — desmarcar volta
+  // a Pendente e apaga a data de resolução (nunca fica um registo
+  // "fantasma" de quando foi tratada antes).
+  async function alternarResolvidaNotaPessoal(nota, resolvida) {
+    const resolvidoEm = resolvida ? new Date().toISOString() : null;
     if (nota._local) {
-      const atualizado = escalaNotasPessoaisAtualizarLocal(nota.id, novoTexto.trim());
+      const atualizado = escalaNotasPessoaisAtualizarLocal(nota.id, { resolvidoEm });
       if (atualizado) STATE.escalaNotasPessoais = STATE.escalaNotasPessoais.map(n => n.id === nota.id ? atualizado : n);
     } else {
-      const updated = await dbUpdate('escalaNotasPessoais', nota.id, { texto: novoTexto.trim() });
+      const updated = await dbUpdate('escalaNotasPessoais', nota.id, { resolvidoEm });
       if (updated) STATE.escalaNotasPessoais = STATE.escalaNotasPessoais.map(n => n.id === nota.id ? updated : n);
-      else { escalaShowErro('Não foi possível guardar a nota pessoal'); return; }
+      else { escalaShowErro('Não foi possível guardar esta nota pessoal'); return; }
     }
-    notaPessoalEditandoId = null;
     rerender();
   }
   function eliminarNotaPessoal(nota) {
@@ -23932,56 +23962,46 @@ function buildHorariosPage(container, goTo) {
       rerender();
     }, { danger: true, confirmLabel: 'Eliminar Nota' });
   }
-  function buildCartaoNotaPessoal(nota) {
-    const emEdicao = notaPessoalEditandoId === nota.id;
-    if (emEdicao) {
-      const editInput = h('textarea', { class: 'textarea', rows: '3' });
-      editInput.value = notaPessoalEditDraft;
-      editInput.addEventListener('input', () => { notaPessoalEditDraft = editInput.value; });
-      return h('div', { class: 'nota-pessoal-card nota-pessoal-card-editando' }, [
-        editInput,
-        h('div', { class: 'form-actions', style: 'margin-top:8px;' }, [
-          h('button', { class: 'btn btn-secondary btn-sm', onclick: () => { notaPessoalEditandoId = null; rerender(); } }, 'Cancelar'),
-          h('button', { class: 'btn btn-primary btn-sm', onclick: () => editarNotaPessoal(nota, editInput.value) }, 'Guardar'),
-        ]),
-      ]);
-    }
-    return h('div', { class: 'nota-pessoal-card' }, [
-      h('div', { class: 'nota-pessoal-card-texto' }, nota.texto),
-      h('div', { class: 'nota-pessoal-card-acoes' }, [
-        h('button', { class: 'nota-pessoal-icon-btn', title: 'Editar', 'aria-label': 'Editar nota', onclick: () => { notaPessoalEditandoId = nota.id; notaPessoalEditDraft = nota.texto; rerender(); } }, Icon('pencil', { size: 13, strokeWidth: 2.2 })),
-        h('button', { class: 'nota-pessoal-icon-btn nota-pessoal-icon-btn-danger', title: 'Eliminar', 'aria-label': 'Eliminar nota', onclick: () => eliminarNotaPessoal(nota) }, Icon('trash', { size: 13, strokeWidth: 2.2 })),
+  function buildLinhaNotaPessoal(nota) {
+    const resolvida = !!nota.resolvidoEm;
+    const cb = h('input', { type: 'checkbox', class: 'notas-pessoal-checkbox', title: resolvida ? 'Marcar como Pendente' : 'Marcar como Tratada/Resolvida' });
+    cb.checked = resolvida;
+    cb.addEventListener('change', () => requireAuth(() => alternarResolvidaNotaPessoal(nota, cb.checked)));
+    const metaKids = [h('span', {}, formatCarimboNota(nota.createdAt))];
+    if (resolvida) metaKids.push(h('span', { class: 'notas-pessoal-meta-resolvido' }, `Resolvido: ${formatCarimboNota(nota.resolvidoEm)}`));
+    const delBtn = h('button', { class: 'notas-pessoal-del', title: 'Eliminar nota em definitivo', 'aria-label': 'Eliminar nota' }, Icon('trash', { size: 13, strokeWidth: 2.2 }));
+    delBtn.addEventListener('click', () => requireAuth(() => eliminarNotaPessoal(nota)));
+    return h('div', { class: 'notas-pessoal-row' }, [
+      cb,
+      h('div', { class: 'notas-pessoal-corpo' }, [
+        h('p', { class: 'notas-pessoal-texto' + (resolvida ? ' resolvida' : '') }, nota.texto),
+        h('div', { class: 'notas-pessoal-meta' }, metaKids),
       ]),
+      delBtn,
     ]);
   }
   function buildNotasPessoaisSemana(semana) {
     if (!activeUser) return null;
     escalaNotasPessoaisMesclarFallbackLocal();
     const notas = escalaNotasPessoaisDaSemana(semana.semanaInicio);
-    const conteudo = [];
-    if (notas.length) {
-      conteudo.push(h('div', { class: 'notas-pessoais-grid' }, notas.map(buildCartaoNotaPessoal)));
-    } else if (!notaPessoalMostrarForm) {
-      conteudo.push(EmptyState('Sem notas pessoais para esta semana — mais ninguém consegue ver este bloco.'));
+    const listaEl = notas.length
+      ? h('div', { class: 'notas-pessoais-lista' }, notas.map(buildLinhaNotaPessoal))
+      : h('p', { class: 'cell-muted', style: 'margin:4px 0;' }, 'Sem notas pessoais para esta semana — mais ninguém consegue ver este bloco.');
+    // Entrada de nova nota no TOPO, logo por baixo do cabeçalho — mesma
+    // posição/lógica do Bloco de Notas Pessoal (buildBlocoNotasWidget),
+    // só que sem barra de pesquisa (não faz sentido para um punhado de
+    // notas de uma única semana) e sempre estritamente privado.
+    const inputNovo = h('input', { class: 'input', maxlength: String(NOTA_PESSOAL_MAX_CHARS), placeholder: 'Escrever nota e pressionar Enter…' });
+    const addBtn = h('button', { class: 'notas-pessoal-add-btn', title: 'Adicionar nota', 'aria-label': 'Adicionar nota', disabled: notaPessoalASalvar ? 'disabled' : undefined }, Icon('plus', { size: 16, strokeWidth: 2.6 }));
+    function tentarAdicionar() {
+      requireAuth(() => { if (inputNovo.value.trim()) { criarNotaPessoal(semana.semanaInicio, inputNovo.value); inputNovo.value = ''; } });
     }
-    if (notaPessoalMostrarForm) {
-      const novoInput = h('textarea', { class: 'textarea', rows: '3', placeholder: 'Escreva a sua nota…' });
-      novoInput.value = notaPessoalNovoTexto;
-      novoInput.addEventListener('input', () => { notaPessoalNovoTexto = novoInput.value; });
-      conteudo.push(h('div', { class: 'nota-pessoal-card nota-pessoal-card-editando', style: 'margin-top:10px;' }, [
-        novoInput,
-        h('div', { class: 'form-actions', style: 'margin-top:8px;' }, [
-          h('button', { class: 'btn btn-secondary btn-sm', onclick: () => { notaPessoalMostrarForm = false; notaPessoalNovoTexto = ''; rerender(); } }, 'Cancelar'),
-          h('button', { class: 'btn btn-primary btn-sm', disabled: notaPessoalASalvar ? 'disabled' : undefined, onclick: () => criarNotaPessoal(semana.semanaInicio, novoInput.value) }, notaPessoalASalvar ? 'A guardar…' : 'Guardar Nota'),
-        ]),
-      ]));
-    }
+    addBtn.addEventListener('click', tentarAdicionar);
+    inputNovo.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); tentarAdicionar(); } });
     return h('div', { class: 'card card-pad', style: 'margin-top:16px;max-width:520px;' }, [
-      h('div', { class: 'nota-rapida-header' }, [
-        h('span', {}, '🔒 Notas Pessoais (só você vê)'),
-        !notaPessoalMostrarForm ? h('button', { class: 'btn btn-secondary btn-sm', style: 'margin-left:auto;', onclick: () => requireAuth(() => { notaPessoalMostrarForm = true; notaPessoalNovoTexto = ''; rerender(); }) }, [Icon('plus', { size: 13 }), ' Nova Nota']) : null,
-      ]),
-      ...conteudo,
+      h('div', { class: 'nota-rapida-header' }, [h('span', {}, '🔒 Notas Pessoais (só você vê)')]),
+      h('div', { class: 'notas-pessoal-add-row', style: 'margin-bottom:12px;' }, [inputNovo, addBtn]),
+      listaEl,
     ]);
   }
 
@@ -26535,12 +26555,14 @@ function buildHorariosPage(container, goTo) {
         // sequer "Folga" por extenso) para não rivalizar visualmente com
         // turnos reais nem com ausências que pedem atenção — cinzento
         // ultra ténue/translúcido (escala-vertical-bloco-folga), quase
-        // invisível. Identificação (Folga + colaborador) só via tooltip
-        // nativo (title) ao passar o cursor — nunca visível sem hover.
+        // invisível. Identificação (colaborador + "Folga") só ao passar o
+        // cursor, através do MESMO tooltip escuro flutuante do resto da
+        // coluna (mostrarTooltipColaborador, ver abaixo) — nunca um
+        // tooltip nativo (title) à parte, que duplicava a informação num
+        // segundo balão branco, com estilo diferente, redundante.
         const blocoFolga = h('div', {
           class: 'escala-vertical-bloco escala-vertical-bloco-folga' + (editavel ? ' escala-vertical-bloco-clicavel' : ''),
           style: 'top:0%;height:100%;',
-          title: colaboradorNome ? `Folga — ${colaboradorNome}` : 'Folga',
         });
         if (editavel) blocoFolga.addEventListener('click', aoClicarPosicao);
         blocos = [blocoFolga];
@@ -26572,6 +26594,13 @@ function buildHorariosPage(container, goTo) {
       // da própria coluna. Ver mostrarTooltipColaborador/
       // moverTooltipColaborador (helpers globais, mesmo padrão do tooltip
       // da sidebar).
+      // Situação do dia entre parênteses, dentro do MESMO balão escuro do
+      // nome (nunca um segundo tooltip nativo à parte) — só quando o dia
+      // não é um turno normal (Folga/Férias/Baixa/etc.), já que um turno
+      // normal já mostra as horas no próprio bloco, sem precisar de
+      // reforço no tooltip.
+      const situacaoDia = dia.tipo === 'folga' ? 'Folga' : (dia.tipo && dia.tipo !== 'normal' ? (ESCALA_TIPOS_DIA.find(t => t.key === dia.tipo)?.label || dia.tipo) : '');
+      const textoTooltipColaborador = colaboradorNome + (situacaoDia ? ` (${situacaoDia})` : '');
       const trilho = h('div', { class: 'escala-vertical-trilho' + (editavel && !blocos.length ? ' escala-vertical-trilho-vazio' : '') }, [...blocos, ...tarefaOverlays].filter(Boolean));
       if (editavel && !blocos.length) trilho.addEventListener('click', aoClicarPosicao);
       if (colaboradorNome) {
@@ -26581,14 +26610,14 @@ function buildHorariosPage(container, goTo) {
         // em branco do intervalo ou pelo segundo bloco.
         const ancorasTooltip = blocos.length ? blocos : [trilho];
         ancorasTooltip.forEach(ancoraTooltip => {
-          ancoraTooltip.addEventListener('mouseenter', (e) => { mostrarTooltipColaborador(colaboradorNome); moverTooltipColaborador(e); });
+          ancoraTooltip.addEventListener('mouseenter', (e) => { mostrarTooltipColaborador(textoTooltipColaborador); moverTooltipColaborador(e); });
           ancoraTooltip.addEventListener('mousemove', moverTooltipColaborador);
           ancoraTooltip.addEventListener('mouseleave', esconderTooltipColaborador);
         });
       }
       const titulo = h('div', { class: 'escala-vertical-coluna-titulo' + (editavel ? ' escala-vertical-coluna-titulo-interativa' : '') }, v.codigo);
       if (colaboradorNome) {
-        titulo.addEventListener('mouseenter', (e) => { mostrarTooltipColaborador(colaboradorNome); moverTooltipColaborador(e); });
+        titulo.addEventListener('mouseenter', (e) => { mostrarTooltipColaborador(textoTooltipColaborador); moverTooltipColaborador(e); });
         titulo.addEventListener('mousemove', moverTooltipColaborador);
         titulo.addEventListener('mouseleave', esconderTooltipColaborador);
       }
@@ -30788,17 +30817,25 @@ async function loadAllData() {
       await dbCleanupOldChatMessages();
       return dbFetchChat();
     }
-    const [, mensagemDia, mensagensChat, documentosEmitidos, gavetaRecados] = await Promise.all([
+    const [, mensagemDia, mensagensChat, documentosEmitidos, gavetaRecados, notaPessoalRegisto] = await Promise.all([
       carregarDadosFinanceirosSeAutorizado(),
       dbFetchMensagemDia(),
       carregarChat(),
       dbFetchDocumentosEmitidos(),
       dbFetchGavetaRecados(),
+      activeUser ? dbFetchNotaUtilizador(activeUser.id, NOTA_PESSOAL_MODULO) : Promise.resolve(null),
     ]);
     STATE.mensagemDia = sanitizarSupabase(mensagemDia);
     STATE.mensagensChat = sanitizarSupabase(mensagensChat);
     STATE.documentosEmitidos = sanitizarSupabase(documentosEmitidos);
     STATE.gavetaRecados = sanitizarSupabase(gavetaRecados);
+    // Contagem de notas por tratar do Bloco de Notas Pessoal (badge
+    // discreto no atalho 📄 da Home — ver buildBlocoNotasPessoalBtnHome).
+    // null = ainda não sabido (nunca mostra "0" por engano só porque a
+    // leitura falhou); recalculado a cada arranque/refresh de fundo.
+    STATE.notaPessoalPendentesCount = (notaPessoalRegisto && notaPessoalRegisto.ok)
+      ? notaExtrairTopicos(notaPessoalRegisto.nota).filter(n => !n.resolvidoEm).length
+      : null;
   } catch (e) {
     console.error('[Arranque] falha inesperada ao carregar dados iniciais:', formatarErroSeguro(e));
   }
