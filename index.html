@@ -4075,7 +4075,10 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     const idsValidos = new Set(marcacoesDoDia().map(m => m.id));
     [...selecionadas].forEach(id => { if (!idsValidos.has(id)) selecionadas.delete(id); });
     if (barraSelecaoEl) { barraSelecaoEl.remove(); barraSelecaoEl = null; }
-    if (isPast || showForm || selecionadas.size === 0) { perguntandoMotivo = false; return; }
+    // Dia passado: só o Diretor Técnico/Administrador pode continuar a
+    // editar/eliminar marcações já feitas (pedido explícito 2026-08-08) —
+    // a equipa em geral mantém o histórico bloqueado, como sempre.
+    if ((isPast && !isMasterUser()) || showForm || selecionadas.size === 0) { perguntandoMotivo = false; return; }
     barraSelecaoEl = perguntandoMotivo
       ? buildBarraMotivoCancelamento(selecionadas.size, {
           onFaltou: () => aplicarMotivoCancelamento('faltou'),
@@ -4726,7 +4729,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       let node;
       if (m.tipoLinha === 'bloqueado') {
         const acoes = [];
-        if (!isPast) {
+        if (!isPast || isMasterUser()) {
           const reabrirBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Reabrir vaga', 'aria-label': 'Reabrir vaga' }, Icon('lockOpen', { size: 12, strokeWidth: 2.2 }));
           reabrirBtn.addEventListener('click', () => requireAuth(() => desbloquearVaga(m)));
           acoes.push(reabrirBtn);
@@ -4740,11 +4743,14 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
         // observações guardadas (hover mostra o title nativo com o texto
         // completo, clique/toque abre o popover fixo — obsEyeButton já
         // trata dos dois); checkbox de seleção na extremidade — as
-        // restantes ações vivem na barra flutuante.
+        // restantes ações vivem na barra flutuante. Em dia passado, só o
+        // Diretor Técnico/Administrador continua a ver estas ações
+        // (pedido explícito 2026-08-08) — resto da equipa fica em
+        // consulta, como sempre.
         const acoes = [avisoToggleBtn(m)];
         if (m.observacoes && m.observacoes.trim()) acoes.push(obsEyeButton(m.observacoes));
-        if (!isPast && vagaCanceladaOuFaltou(m) && horaAindaNaoChegou(m.hora)) acoes.push(buildReaproveitarVagaBtn(m));
-        if (!isPast) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
+        if ((!isPast || isMasterUser()) && vagaCanceladaOuFaltou(m) && horaAindaNaoChegou(m.hora)) acoes.push(buildReaproveitarVagaBtn(m));
+        if (!isPast || isMasterUser()) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
         node = h('div', { class: 'agenda-slot-row agenda-slot-ocupado' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : '') }, [
           h('span', { class: 'agenda-slot-hora' }, m.hora),
           h('span', { class: 'agenda-slot-label cell-strong' }, [
@@ -4763,8 +4769,8 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       // seleção (barra flutuante para o resto).
       const acoes = [avisoToggleBtn(m)];
       if (m.observacoes && m.observacoes.trim()) acoes.push(obsEyeButton(m.observacoes));
-      if (!isPast && vagaCanceladaOuFaltou(m) && horaAindaNaoChegou(m.hora)) acoes.push(buildReaproveitarVagaBtn(m));
-      if (!isPast) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
+      if ((!isPast || isMasterUser()) && vagaCanceladaOuFaltou(m) && horaAindaNaoChegou(m.hora)) acoes.push(buildReaproveitarVagaBtn(m));
+      if (!isPast || isMasterUser()) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
       const node = h('div', { class: 'agenda-slot-row agenda-slot-encaixe' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : '') }, [
         h('span', { class: 'agenda-slot-hora' }, `${m.hora} · Encaixe`),
         h('span', { class: 'agenda-slot-label cell-strong' }, [
@@ -4819,7 +4825,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
         headerAcoesEl,
       ]),
     ]),
-    isPast ? h('p', { class: 'readonly-notice' }, 'Este dia já passou — fica só para consulta, sem novos agendamentos.') : null,
+    isPast ? h('p', { class: 'readonly-notice' }, isMasterUser() ? 'Este dia já passou — como Administrador, ainda podes editar/eliminar marcações aqui.' : 'Este dia já passou — fica só para consulta, sem novos agendamentos.') : null,
     bodyEl,
   ]);
   overlay.appendChild(panel);
@@ -15759,6 +15765,16 @@ function buildLembretesPage(container, goTo, embedded) {
     return filtradas.sort((a, b) => (b.quando || '').localeCompare(a.quando || ''));
   }
 
+  // Badge de Âmbito uniformizada (pedido explícito 2026-08-08: "Pessoal"
+  // e "Equipa" com a MESMA apresentação — antes "Pessoal" era só texto
+  // cinzento simples, "Equipa" já era um badge azul com ícone; agora
+  // ambos são badges, só a cor/ícone muda) — única função partilhada
+  // pelas tabelas de Lembretes Ativos e Histórico de Concluídos.
+  function lembreteAmbitoBadge(r) {
+    return r.ambito === 'Equipa'
+      ? h('span', { class: 'badge badge-blue', title: 'Visível para toda a equipa' }, [Icon('users', { size: 11, strokeWidth: 2.4 }), ' Equipa'])
+      : h('span', { class: 'badge badge-gray', title: 'Visível só para ti' }, [Icon('userIcon', { size: 11, strokeWidth: 2.4 }), ' Pessoal']);
+  }
   function buildTable(list, mode) {
     if (list.length === 0) {
       const msg = searchQuery
@@ -15784,9 +15800,7 @@ function buildLembretesPage(container, goTo, embedded) {
       } else {
         estadoBadge = h('span', { class: 'badge badge-green' }, 'CONCLUÍDO');
       }
-      const ambitoBadge = r.ambito === 'Equipa'
-        ? h('span', { class: 'badge badge-blue', title: 'Visível para toda a equipa' }, [Icon('users', { size: 11, strokeWidth: 2.4 }), ' Equipa'])
-        : h('span', { class: 'cell-muted', style: 'font-size:11.5px;' }, 'Pessoal');
+      const ambitoBadge = lembreteAmbitoBadge(r);
       const alertaTexto = r.todoDia === false && r.hora ? `${lembreteProximaOcorrenciaTexto(r)} · ${r.hora}` : lembreteProximaOcorrenciaTexto(r);
       const selected = selectedIds.has(r.id);
       const row = h('tr', { class: 'selectable-row' + (pendente ? '' : ' row-resolved') + (selected ? ' row-selected' : '') }, [
@@ -15820,9 +15834,7 @@ function buildLembretesPage(container, goTo, embedded) {
       const selecionavel = l.tipo === 'final';
       const selected = selecionavel && selectedIds.has(r.id);
       const cb = selecionavel ? buildSelectionCheckbox(r.id, selectedIds, toggleSelect) : h('span', {});
-      const ambitoBadge = r.ambito === 'Equipa'
-        ? h('span', { class: 'badge badge-blue', title: 'Visível para toda a equipa' }, [Icon('users', { size: 11, strokeWidth: 2.4 }), ' Equipa'])
-        : h('span', { class: 'cell-muted', style: 'font-size:11.5px;' }, 'Pessoal');
+      const ambitoBadge = lembreteAmbitoBadge(r);
       const estadoBadge = l.tipo === 'final'
         ? h('span', { class: 'badge badge-green' }, 'CONCLUÍDO')
         : h('span', { class: 'badge badge-green', title: 'Ocorrência concluída — o lembrete continua ativo para a próxima data da recorrência' }, 'OCORRÊNCIA CONCLUÍDA');
@@ -17003,7 +17015,9 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     const idsValidos = new Set(marcacoes.map(m => m.id));
     [...selecionadas].forEach(id => { if (!idsValidos.has(id)) selecionadas.delete(id); });
     if (barraSelecaoEl) { barraSelecaoEl.remove(); barraSelecaoEl = null; }
-    if (isPast || showForm || selecionadas.size === 0) { perguntandoMotivo = false; return; }
+    // Dia passado: só o Diretor Técnico/Administrador pode continuar a
+    // editar/eliminar marcações já feitas (pedido explícito 2026-08-08).
+    if ((isPast && !isMasterUser()) || showForm || selecionadas.size === 0) { perguntandoMotivo = false; return; }
     barraSelecaoEl = perguntandoMotivo
       ? buildBarraMotivoCancelamento(selecionadas.size, {
           onFaltou: () => aplicarMotivoCancelamento('faltou'),
@@ -17270,7 +17284,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
         }
       } else if (m.tipoLinha === 'bloqueado') {
         const acoes = [];
-        if (!isPast) {
+        if (!isPast || isMasterUser()) {
           const reabrirBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Reabrir vaga', 'aria-label': 'Reabrir vaga' }, Icon('lockOpen', { size: 12, strokeWidth: 2.2 }));
           reabrirBtn.addEventListener('click', () => requireAuth(() => desbloquearVaga(m)));
           acoes.push(reabrirBtn);
@@ -17281,10 +17295,12 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
         ]);
       } else {
         // Lembrete 🔔 direto + olho 👁 (só com observações) + checkbox de
-        // seleção (barra flutuante para o resto).
+        // seleção (barra flutuante para o resto). Em dia passado, só o
+        // Diretor Técnico/Administrador continua a ver o checkbox (pedido
+        // explícito 2026-08-08).
         const acoes = [avisoToggleBtn(m)];
         if (m.observacoes && m.observacoes.trim()) acoes.push(obsEyeButton(m.observacoes));
-        if (!isPast) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
+        if (!isPast || isMasterUser()) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
         node = h('div', { class: 'agenda-slot-row agenda-slot-ocupado' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : '') }, [
           h('span', { class: 'agenda-slot-hora' }, hora),
           h('span', { class: 'agenda-slot-label cell-strong' }, [
@@ -17303,7 +17319,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       // seleção (barra flutuante para o resto).
       const acoes = [avisoToggleBtn(m)];
       if (m.observacoes && m.observacoes.trim()) acoes.push(obsEyeButton(m.observacoes));
-      if (!isPast) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
+      if (!isPast || isMasterUser()) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
       const node = h('div', { class: 'agenda-slot-row agenda-slot-encaixe' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : '') }, [
         h('span', { class: 'agenda-slot-hora' }, `${m.hora} · Encaixe`),
         h('span', { class: 'agenda-slot-label cell-strong' }, [
@@ -17396,7 +17412,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
         headerAcoesEl,
       ]),
     ]),
-    isPast ? h('p', { class: 'readonly-notice' }, 'Este dia já passou — fica só para consulta, sem novos agendamentos.') : null,
+    isPast ? h('p', { class: 'readonly-notice' }, isMasterUser() ? 'Este dia já passou — como Administrador, ainda podes editar/eliminar marcações aqui.' : 'Este dia já passou — fica só para consulta, sem novos agendamentos.') : null,
     bodyEl,
   ]);
   overlay.appendChild(panel);
@@ -26786,7 +26802,7 @@ function buildHorariosPage(container, goTo) {
             // permanentemente por cima do bloco (pedido 2026-08-08). Sem
             // title nativo aqui — seria redundante com o balão de
             // tooltip do colaborador (situacaoDia, mais abaixo), que já
-            // mostra "Nome (Férias — turno mantido)" ao passar o cursor
+            // mostra "Nome (Férias)" ao passar o cursor
             // (pedido de remoção da repetição, 2026-08-08). O padrão às
             // riscas (escala-vertical-bloco-ausencia) continua a
             // sinalizar visualmente a sobreposição sem precisar de texto.
@@ -26880,7 +26896,14 @@ function buildHorariosPage(container, goTo) {
       // etc.) — desde que a etiqueta fixa "Férias" deixou de ficar
       // sempre visível por cima do bloco, esta é a única forma de saber
       // por hover, ver pedido 2026-08-08.
-      const situacaoDia = dia.tipo === 'folga' ? 'Folga' : (dia.tipo && dia.tipo !== 'normal' ? (ESCALA_TIPOS_DIA.find(t => t.key === dia.tipo)?.label || dia.tipo) : (ausenciaSobreposta ? `${ESCALA_TIPOS_DIA.find(t => t.key === ausenciaSobreposta.tipo)?.label || 'Ausência'} — turno mantido` : ''));
+      // Sobreposição (ausenciaSobreposta) entra também no MESMO balão
+      // escuro do nome que segue o cursor (mesmo padrão de Folga/Férias/
+      // etc.) — desde que a etiqueta fixa "Férias" deixou de ficar
+      // sempre visível por cima do bloco, esta é a única forma de saber
+      // por hover, ver pedido 2026-08-08. Sem "— turno mantido" (pedido
+      // seguinte, 2026-08-08): é óbvio pelo próprio bloco de turno estar
+      // visível e só polui o balão.
+      const situacaoDia = dia.tipo === 'folga' ? 'Folga' : (dia.tipo && dia.tipo !== 'normal' ? (ESCALA_TIPOS_DIA.find(t => t.key === dia.tipo)?.label || dia.tipo) : (ausenciaSobreposta ? (ESCALA_TIPOS_DIA.find(t => t.key === ausenciaSobreposta.tipo)?.label || 'Ausência') : ''));
       const textoTooltipColaborador = colaboradorNome + (situacaoDia ? ` (${situacaoDia})` : '');
       const trilho = h('div', { class: 'escala-vertical-trilho' + (editavel && !blocos.length ? ' escala-vertical-trilho-vazio' : '') }, [...blocos, ...tarefaOverlays].filter(Boolean));
       if (editavel && !blocos.length) trilho.addEventListener('click', aoClicarPosicao);
