@@ -1480,10 +1480,6 @@
     align-items:center;justify-content:center;gap:2px;padding:1px 4px;border-radius:4px;
     background:rgba(255,255,255,.92);color:#0f766e;font-size:9px;font-weight:800;white-space:nowrap;
     overflow:hidden;text-overflow:ellipsis;pointer-events:none;}
-  .escala-vertical-ausencia-badge{position:absolute;left:2px;right:2px;bottom:2px;display:flex;
-    align-items:center;justify-content:center;gap:2px;padding:1px 4px;border-radius:4px;
-    background:rgba(255,255,255,.92);color:#334155;font-size:9px;font-weight:800;white-space:nowrap;
-    overflow:hidden;text-overflow:ellipsis;pointer-events:none;}
   .escala-vertical-coluna-totais{min-width:56px;flex:0 0 56px;}
   .escala-vertical-total-hora{position:absolute;left:0;right:0;display:flex;align-items:center;justify-content:center;
     font-size:11px;font-weight:800;color:var(--pharm-600);border-top:1px dashed var(--pharm-100);}
@@ -20960,6 +20956,16 @@ END $$;
 --     Pessoal (checkbox Pendente/Tratada em vez de editar o texto):
 --     null = pendente, timestamp = tratada/resolvida nessa data/hora.
 ALTER TABLE escala_notas_pessoais ADD COLUMN IF NOT EXISTS resolvido_em timestamptz;
+
+-- 26) escala_saldos_ferias.ajuste_saldo_transitado — Correção manual
+--     (Master/Administrador) somada ao Saldo Transitado calculado
+--     automaticamente (escalaSaldoTransitadoAutomatico), para reconciliar
+--     com registos de férias anteriores à existência desta app (ex: 2024/
+--     2025 incompletos em escala_ferias). Pode ser positivo ou negativo;
+--     0 por omissão = sem qualquer correção, comportamento 100%
+--     automático mantém-se igual a antes. Nunca substitui o cálculo
+--     automático, só o ajusta — pedido explícito 2026-08-08.
+ALTER TABLE escala_saldos_ferias ADD COLUMN IF NOT EXISTS ajuste_saldo_transitado integer NOT NULL DEFAULT 0;
 ================================================================= */
 // Lista-base (usada em runtime, não só informativa) da Lista Única de
 // Rotação do Grupo A — ver escalaAtribuirGrupoA() mais abaixo. Serve só de
@@ -21902,6 +21908,35 @@ function escalaDataOperacionalEspecial(dataISO) {
 function escalaEhFeriado(dataISO) {
   return (STATE.escalaFeriados || []).some(f => f.data === dataISO);
 }
+// Auto-Registo de Feriados (pedido explícito 2026-08-08): garante sempre,
+// sem qualquer clique manual, que o ano corrente e o ano seguinte têm os
+// feriados nacionais/local (São João — farmácia em Vila Nova de Gaia, ver
+// escalaFeriadosNacionaisDoAno) já semeados em escala_feriados. Corre uma
+// vez a cada arranque da app (ver chamada em loadAllData) — como só
+// insere as datas que ainda faltam (nunca duplica, nunca apaga o que já
+// lá está), o ano seguinte vai sendo semeado sozinho à medida que o
+// calendário avança, sem nunca precisar de "Gerar Feriados Automáticos"
+// à mão — esse botão continua a existir só para gerar anos mais
+// distantes no futuro ou para reforçar/confirmar. Continua sempre
+// possível editar/corrigir/apagar qualquer feriado à mão em "Gerir
+// Feriados", auto-registo nunca bloqueia isso.
+async function escalaAutoSemearFeriados() {
+  try {
+    const anoAtual = new Date().getFullYear();
+    const anos = [anoAtual, anoAtual + 1];
+    for (const ano of anos) {
+      const calculados = escalaFeriadosNacionaisDoAno(ano);
+      const jaExistentes = new Set((STATE.escalaFeriados || []).map(f => f.data));
+      const emFalta = calculados.filter(f => !jaExistentes.has(f.data));
+      for (const f of emFalta) {
+        const created = await dbInsert('escalaFeriados', f);
+        if (created) STATE.escalaFeriados = [...(STATE.escalaFeriados || []), created];
+      }
+    }
+  } catch (e) {
+    console.error('[Feriados] falha no auto-registo:', formatarErroSeguro(e));
+  }
+}
 // Registo completo do feriado nessa data (nome incluído) — fonte única
 // usada por todos os calendários (Equipa/Férias, Agendas, Página
 // Principal) e pelo cabeçalho do Horário, para nunca haver 2 lógicas de
@@ -22080,11 +22115,21 @@ function escalaSaldoAnual(utilizadorId, ano) {
   const colaborador = (STATE.usuarios || []).find(u => u.id === utilizadorId);
   const bonusAniversario = escalaBonusAniversarioAno(colaborador, ano);
   const diasAniversario = bonusAniversario; // 0 ou 1 — dia de Aniversário do Quadro, independente do Prémio do Ano
-  const saldoTransitado = escalaSaldoTransitadoAutomatico(utilizadorId, ano);
+  // Saldo Transitado = cálculo 100% automático (recursivo, ver
+  // escalaSaldoTransitadoAutomatico) + Ajuste Manual opcional (Master,
+  // editável por ano+colaborador em escala_saldos_ferias.
+  // ajuste_saldo_transitado — pedido explícito 2026-08-08, para
+  // reconciliar com registos de férias anteriores à app, sem precisar de
+  // reconstruir o histórico inteiro em escala_ferias). 0 por omissão =
+  // continua exatamente igual ao comportamento 100% automático de antes.
+  const saldoTransitadoAuto = escalaSaldoTransitadoAutomatico(utilizadorId, ano);
+  const ajusteSaldoTransitado = registo ? Math.round(Number(registo.ajusteSaldoTransitado)) || 0 : 0;
+  const saldoTransitado = saldoTransitadoAuto + ajusteSaldoTransitado;
   const diasGozados = escalaDiasGozadosNoAno(utilizadorId, ano);
   const consumidoTransitado = Math.min(saldoTransitado, escalaDiasConsumidosTransitado(utilizadorId, ano));
   return {
-    diasLei: diasBase, diasBonus, diasBonusBase: diasBonus, diasAniversario, bonusAniversario, saldoTransitado, diasGozados,
+    diasLei: diasBase, diasBonus, diasBonusBase: diasBonus, diasAniversario, bonusAniversario,
+    saldoTransitadoAuto, ajusteSaldoTransitado, saldoTransitado, diasGozados,
     diasRestantes: diasBase + diasBonus + diasAniversario + saldoTransitado - diasGozados,
     restantesAnoAnterior: Math.max(0, saldoTransitado - consumidoTransitado),
   };
@@ -24101,8 +24146,12 @@ function buildHorariosPage(container, goTo) {
     let mensagem;
     if (escalaSemanaNoPassado(semana)) mensagem = 'Semana já passada — histórico congelado, só para consulta.';
     else if (semana.estado === 'publicado') mensagem = 'Horário publicado — só para consulta.';
-    else mensagem = 'Rascunho — só para consulta aqui; a edição faz-se em "Gerador de Horário".';
-    wrap.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, mensagem));
+    // Rascunho: sem mensagem extra aqui — o badge "🟠 Rascunho em Edição/
+    // Visível" logo acima já diz que é rascunho e onde se edita fica
+    // óbvio pelo separador "Gerador de Horário" que só o Master vê;
+    // repetir por baixo era redundante (pedido explícito 2026-08-08).
+    else mensagem = null;
+    if (mensagem) wrap.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, mensagem));
     // Mesmo alternador Timeline/Vista em Tabela do "Gerador de Horário"
     // (viewModeEquipa, memorizado à parte de viewModeGerador — o
     // colaborador pode preferir uma vista diferente da que o gestor
@@ -24507,11 +24556,12 @@ function buildHorariosPage(container, goTo) {
   // "Dias Base" (por omissão 22, editável por ano — nunca hardcoded como
   // garantia futura) + "Prémio_Ano" (Bónus/Extra deste ano específico — 0
   // por omissão, só existe se a gestão o atribuir explicitamente), ambos
-  // por colaborador+ano em escala_saldos_ferias. O Saldo Transitado NUNCA
-  // é enviado neste payload — é sempre calculado automaticamente (ver
-  // escalaSaldoTransitadoAutomatico), a coluna saldo_transitado da tabela
-  // deixou de ser escrita por esta app (só leitura histórica de antes
-  // desta automatização).
+  // por colaborador+ano em escala_saldos_ferias. O Saldo Transitado em si
+  // continua a NUNCA ser enviado neste payload — é sempre calculado
+  // automaticamente (ver escalaSaldoTransitadoAutomatico); o único campo
+  // relacionado que passa a ser gravado é o Ajuste manual opcional
+  // (ajuste_saldo_transitado — pedido explícito 2026-08-08), que se soma
+  // ao automático em vez de o substituir.
   async function guardarSaldo(utilizadorId) {
     if (escalaAnoSaldoBaseCongelado(feriasAnoSaldos)) { saldoError = Number(feriasAnoSaldos) >= ESCALA_ANO_SALDO_CONGELAMENTO_FIXO ? `${feriasAnoSaldos} está permanentemente congelado — só 2025/2026 podem ser ajustados manualmente, o resto transita sozinho.` : `${feriasAnoSaldos} já é um ano fechado — os saldos ficam congelados contra edições.`; rerender(); return; }
     const existente = (STATE.escalaSaldosFerias || []).find(s => s.utilizadorId === utilizadorId && Number(s.ano) === Number(feriasAnoSaldos));
@@ -24521,10 +24571,15 @@ function buildHorariosPage(container, goTo) {
     // mesmo que o valor tenha chegado por colar/escrever à mão em vez do
     // spinner do <input min="0" step="1">.
     const diasBonus = Math.max(0, Math.round(parseFloat(saldoDraft.diasBonus) || 0));
+    // "Ajuste ao Saldo Transitado" — correção manual (Master), pode ser
+    // negativo ou positivo (ao contrário do Prémio do Ano), sempre
+    // arredondado a inteiro; soma-se ao cálculo automático, nunca o
+    // substitui (ver escalaSaldoAnual).
+    const ajusteSaldoTransitado = Math.round(parseFloat(saldoDraft.ajusteSaldoTransitado) || 0);
     saldoSaving = true; rerender();
     const resultado = existente
-      ? await dbUpdate('escalaSaldosFerias', existente.id, { diasBase, diasBonus })
-      : await dbInsert('escalaSaldosFerias', { utilizadorId, ano: feriasAnoSaldos, diasBase, diasBonus });
+      ? await dbUpdate('escalaSaldosFerias', existente.id, { diasBase, diasBonus, ajusteSaldoTransitado })
+      : await dbInsert('escalaSaldosFerias', { utilizadorId, ano: feriasAnoSaldos, diasBase, diasBonus, ajusteSaldoTransitado });
     saldoSaving = false;
     if (resultado) {
       STATE.escalaSaldosFerias = existente
@@ -24543,7 +24598,7 @@ function buildHorariosPage(container, goTo) {
     anoInput.addEventListener('change', () => { const v = parseInt(anoInput.value, 10); if (!isNaN(v)) { feriasAnoSaldos = v; editingSaldoUserId = null; rerender(); } });
     const anoCongelado = escalaAnoSaldoBaseCongelado(feriasAnoSaldos);
     const anoPermanentementeCongelado = Number(feriasAnoSaldos) >= ESCALA_ANO_SALDO_CONGELAMENTO_FIXO;
-    const thead = h('thead', {}, h('tr', {}, ['Colaborador', 'Dias Base', 'Prémio do Ano', 'Saldo Transitado 🔒', 'Marcados', 'Restantes Ano Anterior', 'Restantes Totais', ''].map(t => h('th', {}, t))));
+    const thead = h('thead', {}, h('tr', {}, ['Colaborador', 'Dias Base', 'Prémio do Ano', 'Ajuste Transitado', 'Saldo Transitado', 'Marcados', 'Restantes Ano Anterior', 'Restantes Totais', ''].map(t => h('th', {}, t))));
     const rows = usuariosQuadroAtivos().map(u => {
       const saldo = escalaSaldoAnual(u.id, feriasAnoSaldos);
       if (editingSaldoUserId === u.id) {
@@ -24558,14 +24613,24 @@ function buildHorariosPage(container, goTo) {
         const bonusInput = h('input', { class: 'input', type: 'number', step: '1', min: '0', style: 'max-width:80px;' });
         bonusInput.value = String(Math.round(saldoDraft.diasBonus ?? saldo.diasBonusBase));
         bonusInput.addEventListener('input', () => { saldoDraft.diasBonus = bonusInput.value; });
+        // "Ajuste ao Saldo Transitado" — correção manual (pode ser negativo
+        // ou positivo, ao contrário do Prémio do Ano), soma-se ao cálculo
+        // automático em vez de o substituir (ver escalaSaldoAnual) — para
+        // reconciliar com registos de férias anteriores à app, sem ter de
+        // reconstruir o histórico inteiro em escala_ferias.
+        const ajusteInput = h('input', { class: 'input', type: 'number', step: '1', style: 'max-width:80px;', title: 'Correção manual (+ ou −) somada ao cálculo automático do Saldo Transitado.' });
+        ajusteInput.value = String(Math.round(saldoDraft.ajusteSaldoTransitado ?? saldo.ajusteSaldoTransitado));
+        ajusteInput.addEventListener('input', () => { saldoDraft.ajusteSaldoTransitado = ajusteInput.value; });
         return h('tr', {}, [
           h('td', { class: 'cell-strong' }, u.nomeCompleto || u.username),
           h('td', {}, baseInput),
           h('td', {}, bonusInput),
-          // Saldo Transitado nunca é um campo de formulário — sempre
-          // calculado automaticamente (ver escalaSaldoTransitadoAutomatico),
-          // read-only mesmo em modo de edição da linha.
-          h('td', { class: 'cell-muted' }, String(saldo.saldoTransitado)),
+          h('td', {}, ajusteInput),
+          // Saldo Transitado em si nunca é um campo de formulário — é
+          // sempre auto (recursivo) + ajuste acima, ver escalaSaldoAnual;
+          // fica read-only aqui mesmo em modo de edição da linha, e
+          // reflete já ao vivo o valor do input de Ajuste em cima.
+          h('td', { class: 'cell-muted' }, String(saldo.saldoTransitadoAuto + Math.round(parseFloat(saldoDraft.ajusteSaldoTransitado ?? saldo.ajusteSaldoTransitado) || 0))),
           h('td', {}, String(saldo.diasGozados)),
           h('td', { class: 'cell-strong' }, '—'),
           h('td', { class: 'cell-strong' }, '—'),
@@ -24576,14 +24641,15 @@ function buildHorariosPage(container, goTo) {
         ? h('span', { class: 'field-helper-text', title: anoPermanentementeCongelado ? `${feriasAnoSaldos} está permanentemente congelado — só 2025/2026 são ajustáveis.` : `${feriasAnoSaldos} está congelado — só é possível consultar.` }, '🔒')
         : (() => {
             const btn = h('button', { class: 'btn-fab-sm tone-blue', title: 'Editar saldo', 'aria-label': 'Editar saldo' }, Icon('pencil', { size: 13, strokeWidth: 2.2 }));
-            btn.addEventListener('click', () => { editingSaldoUserId = u.id; saldoDraft = { diasBase: saldo.diasLei, diasBonus: saldo.diasBonusBase }; saldoError = ''; rerender(); });
+            btn.addEventListener('click', () => { editingSaldoUserId = u.id; saldoDraft = { diasBase: saldo.diasLei, diasBonus: saldo.diasBonusBase, ajusteSaldoTransitado: saldo.ajusteSaldoTransitado }; saldoError = ''; rerender(); });
             return btn;
           })();
       return h('tr', {}, [
         h('td', { class: 'cell-strong' }, u.nomeCompleto || u.username),
         h('td', {}, String(saldo.diasLei)),
         h('td', {}, String(saldo.diasBonus)),
-        h('td', { class: 'cell-muted' }, String(saldo.saldoTransitado)),
+        h('td', { class: saldo.ajusteSaldoTransitado ? 'cell-strong' : 'cell-muted' }, saldo.ajusteSaldoTransitado > 0 ? `+${saldo.ajusteSaldoTransitado}` : String(saldo.ajusteSaldoTransitado)),
+        h('td', { class: 'cell-muted', title: saldo.ajusteSaldoTransitado ? `Automático: ${saldo.saldoTransitadoAuto} · Ajuste: ${saldo.ajusteSaldoTransitado > 0 ? '+' : ''}${saldo.ajusteSaldoTransitado}` : undefined }, String(saldo.saldoTransitado)),
         h('td', {}, String(saldo.diasGozados)),
         h('td', {}, String(saldo.restantesAnoAnterior)),
         h('td', { class: 'cell-strong' }, String(saldo.diasRestantes)),
@@ -25000,6 +25066,12 @@ function buildHorariosPage(container, goTo) {
         // consecutivas — sem precisar de nenhuma lógica extra de memória
         // de posição.
         const entradas = todas.filter(f => f.dataInicio <= dataISO && dataISO <= f.dataFim)
+          // Licença (tipo 'outras') nunca conta nem aparece marcada ao
+          // Sábado/Domingo NEM em Feriado (pedido explícito 2026-08-08,
+          // reforçado depois para cobrir feriados também) — ao contrário
+          // de Férias/Baixa/etc., que continuam a mostrar o período
+          // completo mesmo quando atravessa um fim de semana ou feriado.
+          .filter(f => !((fimDeSemana || feriadoInfo) && f.tipo === 'outras'))
           .slice().sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
         // Cor partilhada por TODOS os colaboradores ausentes nesse dia —
         // nunca só a do primeiro (calendarioCellStyle já sabe dividir a
@@ -26710,22 +26782,26 @@ function buildHorariosPage(container, goTo) {
           const segBloco = h('div', {
             class: 'escala-vertical-bloco' + (editavel ? ' escala-vertical-bloco-clicavel' : '') + (ausenciaSobreposta ? ' escala-vertical-bloco-ausencia' : ''),
             style: `top:${topPct}%;height:${alturaPct}%;background:${corGrupo};`,
+            // A etiqueta de texto ("Férias" etc.) deixou de ficar visível
+            // permanentemente por cima do bloco (pedido 2026-08-08). Sem
+            // title nativo aqui — seria redundante com o balão de
+            // tooltip do colaborador (situacaoDia, mais abaixo), que já
+            // mostra "Nome (Férias — turno mantido)" ao passar o cursor
+            // (pedido de remoção da repetição, 2026-08-08). O padrão às
+            // riscas (escala-vertical-bloco-ausencia) continua a
+            // sinalizar visualmente a sobreposição sem precisar de texto.
           }, [
             h('div', { class: 'escala-vertical-bloco-horas' }, [
               h('span', {}, seg.inicio),
               h('span', {}, seg.fim),
             ]),
-            // Item 2 (Banco de Horas) e badge de ausência: só no PRIMEIRO
-            // segmento — evita repetir o mesmo selo duas vezes quando o
-            // turno fica dividido em dois blocos pela pausa/almoço.
+            // Item 2 (Banco de Horas): só no PRIMEIRO segmento — evita
+            // repetir o mesmo selo duas vezes quando o turno fica dividido
+            // em dois blocos pela pausa/almoço.
             (idxSeg === 0 && dia.bancoHorasDesconto > 0) ? h('div', {
               class: 'escala-vertical-banco-horas-badge',
               title: `Banco de Horas descontado: -${escalaFormatarHoras(dia.bancoHorasDesconto)}`,
             }, `-${escalaFormatarHoras(dia.bancoHorasDesconto)} Banco`) : null,
-            (idxSeg === 0 && ausenciaSobreposta) ? h('div', {
-              class: 'escala-vertical-ausencia-badge',
-              title: `${ESCALA_TIPOS_DIA.find(t => t.key === ausenciaSobreposta.tipo)?.label || 'Ausência'} — turno original mantido para consulta`,
-            }, ESCALA_TIPOS_DIA.find(t => t.key === ausenciaSobreposta.tipo)?.label || 'Ausência') : null,
           ]);
           if (editavel) segBloco.addEventListener('click', aoClicarPosicao);
           return segBloco;
@@ -26799,7 +26875,12 @@ function buildHorariosPage(container, goTo) {
       // não é um turno normal (Folga/Férias/Baixa/etc.), já que um turno
       // normal já mostra as horas no próprio bloco, sem precisar de
       // reforço no tooltip.
-      const situacaoDia = dia.tipo === 'folga' ? 'Folga' : (dia.tipo && dia.tipo !== 'normal' ? (ESCALA_TIPOS_DIA.find(t => t.key === dia.tipo)?.label || dia.tipo) : '');
+      // Sobreposição (ausenciaSobreposta) entra também no MESMO balão
+      // escuro do nome que segue o cursor (mesmo padrão de Folga/Férias/
+      // etc.) — desde que a etiqueta fixa "Férias" deixou de ficar
+      // sempre visível por cima do bloco, esta é a única forma de saber
+      // por hover, ver pedido 2026-08-08.
+      const situacaoDia = dia.tipo === 'folga' ? 'Folga' : (dia.tipo && dia.tipo !== 'normal' ? (ESCALA_TIPOS_DIA.find(t => t.key === dia.tipo)?.label || dia.tipo) : (ausenciaSobreposta ? `${ESCALA_TIPOS_DIA.find(t => t.key === ausenciaSobreposta.tipo)?.label || 'Ausência'} — turno mantido` : ''));
       const textoTooltipColaborador = colaboradorNome + (situacaoDia ? ` (${situacaoDia})` : '');
       const trilho = h('div', { class: 'escala-vertical-trilho' + (editavel && !blocos.length ? ' escala-vertical-trilho-vazio' : '') }, [...blocos, ...tarefaOverlays].filter(Boolean));
       if (editavel && !blocos.length) trilho.addEventListener('click', aoClicarPosicao);
@@ -31045,6 +31126,10 @@ async function loadAllData() {
     STATE.notaPessoalPendentesCount = (notaPessoalRegisto && notaPessoalRegisto.ok)
       ? notaExtrairTopicos(notaPessoalRegisto.nota).filter(n => !n.resolvidoEm).length
       : null;
+    // Auto-registo de Feriados (ano corrente + seguinte) — nunca bloqueia
+    // o arranque da app (fire-and-forget, com o seu próprio try/catch
+    // interno); ver escalaAutoSemearFeriados.
+    escalaAutoSemearFeriados();
   } catch (e) {
     console.error('[Arranque] falha inesperada ao carregar dados iniciais:', formatarErroSeguro(e));
   }
