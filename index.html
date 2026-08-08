@@ -2239,6 +2239,13 @@
   }
   .cal-cell-clicavel{cursor:pointer;}
   .cal-cell-passado{opacity:.4;filter:grayscale(.6);}
+  /* Feriado (nacional ou municipal — inclui São João de Gaia): rebordo
+     próprio para distinguir de um dia normal, SEM mexer na cor de fundo
+     (essa continua a pertencer ao tipo de evento/serviço marcado nesse
+     dia, quando existir — muito raro coincidir com um feriado, mas
+     acontece). Mesma linguagem visual já usada no Calendário Anual de
+     Férias (escala-cal-dia-feriado). */
+  .cal-cell-feriado{box-shadow:inset 0 0 0 2px #f59e0b;}
   /* O Dia Presente mantém sempre o seu destaque forte, seja qual for a
      posição (esquerda/centro/direita) em que o respetivo mês estiver.
      A regra abaixo tem especificidade superior à de ".cal-card-atual
@@ -2249,6 +2256,11 @@
   .cal-card .cal-cell.cal-cell-today{outline:2.5px solid var(--pharm-600);outline-offset:-2px;
     background:var(--pharm-200);box-shadow:0 0 0 1px #fff inset;font-weight:900;
     filter:none !important;opacity:1 !important;}
+  /* Hoje + Feriado ao mesmo tempo (raro, mas possível): combina os dois
+     rebordos num só box-shadow — nunca deixa o feriado "desaparecer" só
+     por o dia também ser Hoje (regra normal de .cal-cell-feriado seria
+     substituída pela de cima, já que ambas mexem em box-shadow). */
+  .cal-card .cal-cell.cal-cell-today.cal-cell-feriado{box-shadow:0 0 0 1px #fff inset, inset 0 0 0 3px #f59e0b;}
 
   /* Reservado para o módulo Agenda (ainda por construir): distinção visual
      entre dias/vagas passados (opacos, sem interação de agendamento) e
@@ -4972,6 +4984,17 @@ function buildMonthCalendar(year, month, posicao, onDayClick, prestadorKey, cale
   const startWeekday = (firstDay.getDay() + 6) % 7; // segunda-feira = 0
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const todayStr = todayISO();
+  // Feriados deste ano (nacionais + municipal de Gaia/São Félix da
+  // Marinha — a farmácia pertence ao concelho de Vila Nova de Gaia,
+  // ver escalaFeriadosNacionaisDoAno) — calculado sempre ao vivo
+  // (função pura, sem pedido ao servidor), nunca depende de alguém já
+  // ter corrido "🔄 Gerar Feriados Automáticos" em Gerir Posições. Se
+  // a Direção tiver editado/acrescentado algum feriado à mão em
+  // escala_feriados, essa versão substitui a calculada para a mesma
+  // data (nunca o contrário).
+  const feriadosDoMes = new Map();
+  escalaFeriadosNacionaisDoAno(year).forEach(f => feriadosDoMes.set(f.data, f.nome));
+  (STATE.escalaFeriados || []).forEach(f => { if (f.data) feriadosDoMes.set(f.data, f.nome); });
 
   const cells = [];
   for (let i = 0; i < startWeekday; i++) cells.push(h('div', { class: 'cal-cell cal-cell-empty' }));
@@ -4979,6 +5002,12 @@ function buildMonthCalendar(year, month, posicao, onDayClick, prestadorKey, cale
     const dateISO = `${year}-${pad2(month + 1)}-${pad2(d)}`;
     const itens = calendarioItensDoDia(dateISO, restringirPorPerfil);
     const cores = itens.map(it => it.cor);
+    // Feriado (nacional ou municipal de Gaia — ver escala_feriados,
+    // mesma fonte já usada no Calendário Anual de Férias e gerada por
+    // "🔄 Gerar Feriados Automáticos" em Gerir Posições/Configurações):
+    // rebordo próprio, nunca troca a cor de fundo (essa continua a
+    // identificar o tipo de evento/serviço desse dia, quando existir).
+    const feriadoNome = feriadosDoMes.get(dateISO);
     // Dia "puro de evento" — todos os itens desse dia são eventos (nunca
     // uma agenda/consulta): recebe o destaque dourado especial em vez do
     // gradiente às riscas genérico (ver .cal-cell-evento-especial, CSS).
@@ -5000,6 +5029,7 @@ function buildMonthCalendar(year, month, posicao, onDayClick, prestadorKey, cale
         + (cores.length ? ' cal-cell-marcado' : '')
         + (soEvento ? ' cal-cell-evento-especial' : '')
         + (isPast ? ' cal-cell-passado' : '')
+        + (feriadoNome ? ' cal-cell-feriado' : '')
         + (temAcao ? ' cal-cell-clicavel' : ''),
       // Dia puro de evento: o destaque roxo/estrela vem inteiramente da
       // classe CSS acima — nunca se define aqui um "background" inline
@@ -5008,8 +5038,12 @@ function buildMonthCalendar(year, month, posicao, onDayClick, prestadorKey, cale
       // Tooltip explícito "Evento: <nome>" para itens de evento — nunca
       // deixa dúvidas ao operador de que aquele dia é um Evento Especial
       // (ex: Eclipse Solar) e não uma consulta/agenda de serviço normal.
-      // Itens de agenda mantêm-se sem prefixo, tal como sempre.
-      title: itens.length ? itens.map(it => it.tipo === 'evento' ? `Evento: ${it.label}` : it.label).join(' + ') : undefined,
+      // Itens de agenda mantêm-se sem prefixo, tal como sempre. Feriado
+      // entra sempre no fim da tooltip, mesmo em dias com outros itens.
+      title: [
+        itens.length ? itens.map(it => it.tipo === 'evento' ? `Evento: ${it.label}` : it.label).join(' + ') : null,
+        feriadoNome ? `🎌 Feriado: ${feriadoNome}` : null,
+      ].filter(Boolean).join(' · ') || undefined,
     }, String(d));
     if (onDayClick) {
       // Bloqueio de agendamento no passado: dias já passados não abrem a
@@ -17331,7 +17365,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       infoLinhas.push(`Marca: ${currentEvento.marcaConselheira || '—'}`);
       if (currentEvento.campanha) infoLinhas.push(`Campanha: ${currentEvento.campanha}`);
     }
-    if (currentEvento.notas) infoLinhas.push(`Notas: ${currentEvento.notas}`);
+    if (currentEvento.notas) infoLinhas.push(currentEvento.notas);
     bodyEl.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:16px;' }, infoLinhas.map(t => h('p', { class: 'login-sub', style: 'text-align:left;margin:2px 0;' }, t))));
 
     if (currentEvento.tipoEvento === 'Rastreio') {
@@ -21412,11 +21446,15 @@ const ESCALA_TIPOS_AUSENCIA_PRESTADOR = [
 // não descontam dias de férias.
 const ESCALA_TIPOS_COM_SALDO = ['ferias', 'extra'];
 // Tipos de ausência que contam para os limites de sobreposição (ver
-// escalaLimiteSobreposicaoParaSemana/escalaSemanasComSobreposicao) — tudo
-// o que tira mesmo alguém do turno, incluindo Indisponibilidade dos
-// Prestadores; Falta/Baixa não são planeadas, por isso não entram na
-// validação preventiva ao marcar.
-const ESCALA_TIPOS_CONTAM_SOBREPOSICAO = ['ferias', 'extra', 'aniversario', 'outras', 'indisponivel'];
+// escalaLimiteSobreposicaoParaSemana/escalaSemanasComSobreposicao) —
+// SÓ Férias e Dia Extra (FE): dias de Aniversário (1 dia, trivial) e
+// Indisponibilidade de Prestadores (não são do Quadro, não competem
+// pela mesma cobertura) são sempre exceções, nunca contam. Baixa/Falta/
+// Outras Ausências (Licenças) também ficam sempre de fora — uma Licença
+// longa (ex: maternidade) não é uma "escolha de férias" a limitar, é uma
+// ausência de duração fixa que não compete com pedidos de férias de
+// mais ninguém (pedido explícito 2026-08-08).
+const ESCALA_TIPOS_CONTAM_SOBREPOSICAO = ['ferias', 'extra'];
 // Variante da semana ao gerar o horário: a sequência de rotação das
 // letras do Grupo A é sempre a mesma, independente da variante — o que
 // muda é o horário associado a cada posição (ver campos "*_sem_mariana"
@@ -21677,9 +21715,9 @@ function escalaAusenciaDoDia(utilizadorId, dataISO) {
 // por uma ausência registada em escala_ferias (ver escalaAusenciaDoDia) —
 // usado tanto na Vista em Tabela como na Vista Vertical, para o mesmo
 // código nunca escolher emojis diferentes consoante a vista.
-function escalaAusenciaEmoji(tipo) {
-  return { ferias: '🏖️', extra: '🏖️', aniversario: '🎂', baixa: '🤒', falta: '⚠️', outras: '📋', indisponivel: '🚫' }[tipo] || '🏖️';
-}
+// REMOVIDA (2026-08-08, pedido explícito): nenhum emoji nos badges/blocos
+// de ausência dos Horários — todas as etiquetas de tipo (Férias, Baixa,
+// Falta, etc.) passaram a mostrar só o texto, sem ícone.
 /* ---- Pedidos Especiais de Horário/Ausências ----
    Pedidos de indisponibilidade/preferência submetidos pelo próprio
    colaborador (Casamentos, Batizados, Eventos Pessoais, etc.) —
@@ -22721,7 +22759,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   let overrideAtivo = !!diaAtual.overrideDisponibilidade;
   const overrideBanner = ausenciaCelula
     ? h('p', { class: 'field-helper-text', style: 'grid-column:1/-1;margin:0 0 6px;color:#b45309;font-weight:700;' },
-        `${escalaAusenciaEmoji(ausenciaCelula.tipo)} Colaborador com ${ESCALA_TIPOS_DIA.find(t => t.key === ausenciaCelula.tipo) ? ESCALA_TIPOS_DIA.find(t => t.key === ausenciaCelula.tipo).label : 'ausência'} registada nesta data.`)
+        `Colaborador com ${ESCALA_TIPOS_DIA.find(t => t.key === ausenciaCelula.tipo) ? ESCALA_TIPOS_DIA.find(t => t.key === ausenciaCelula.tipo).label : 'ausência'} registada nesta data.`)
     : null;
   const overrideCheckbox = podeOverride ? h('input', { type: 'checkbox', checked: overrideAtivo ? 'checked' : undefined }) : null;
   const overrideRow = podeOverride ? h('label', { class: 'field span2', style: 'display:flex;align-items:center;gap:8px;flex-direction:row;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:8px 12px;' }, [
@@ -23646,7 +23684,7 @@ function buildHorariosPage(container, goTo) {
           // indicador Online/"Visto por") — a coluna "Colaborador" da
           // linha, por si só, deixou de chegar para saber quem está cá.
           const nomeDoDiaB = v.grupo === 'B' && dia.colaboradorNome ? h('div', { class: 'escala-cell-colaborador-dia' }, nomeCurtoDesambiguado(dia.colaboradorNome)) : null;
-          const ausenciaBadge = ausencia ? h('div', { class: 'escala-cell-ausencia-badge' }, `${escalaAusenciaEmoji(ausencia.tipo)} ${ESCALA_TIPOS_DIA.find(t => t.key === ausencia.tipo)?.label || 'Ausência'}`) : null;
+          const ausenciaBadge = ausencia ? h('div', { class: 'escala-cell-ausencia-badge' }, ESCALA_TIPOS_DIA.find(t => t.key === ausencia.tipo)?.label || 'Ausência') : null;
           const conteudoFinal = (pill || nomeDoDiaB || ausenciaBadge) ? h('div', { class: 'escala-cell-conteudo' }, [conteudo, pill, nomeDoDiaB, ausenciaBadge]) : conteudo;
           const td = h('td', { class: classe + (editavel ? ' escala-cell-editavel' : '') }, conteudoFinal);
           if (editavel) td.addEventListener('click', () => requireAuth(() => abrirEditorCelulaEscala(semana, v.codigo, d.key, rerender)));
@@ -24084,7 +24122,7 @@ function buildHorariosPage(container, goTo) {
         const ausencia = dia.tipo === 'normal' ? escalaAusenciaDoDia(activeUser.id, escalaDataDoDia(semana.semanaInicio, d.key)) : null;
         const texto = dia.tipo === 'normal' ? `${dia.entrada} – ${dia.saida}${(dia.pausaInicio && dia.pausaFim) ? ` (pausa ${dia.pausaInicio}-${dia.pausaFim})` : ''}${dia.heHoras ? ` (+${escalaFormatarHoras(dia.heHoras)} HE)` : ''}` : (ESCALA_TIPOS_DIA.find(t => t.key === dia.tipo)?.label || '—');
         const pill = escalaTarefaPill(dia);
-        const ausenciaBadge = ausencia ? h('span', { class: 'escala-cell-ausencia-badge', style: 'margin-top:2px;' }, `${escalaAusenciaEmoji(ausencia.tipo)} ${ESCALA_TIPOS_DIA.find(t => t.key === ausencia.tipo)?.label || 'Ausência'}`) : null;
+        const ausenciaBadge = ausencia ? h('span', { class: 'escala-cell-ausencia-badge', style: 'margin-top:2px;' }, ESCALA_TIPOS_DIA.find(t => t.key === ausencia.tipo)?.label || 'Ausência') : null;
         const conteudoDireita = (pill || ausenciaBadge)
           ? h('span', { style: 'display:flex;flex-direction:column;align-items:flex-end;gap:3px;' }, [h('span', {}, texto), pill, ausenciaBadge])
           : h('span', {}, texto);
@@ -24317,7 +24355,8 @@ function buildHorariosPage(container, goTo) {
             `Semana de ${formatDate(c.inicio)} a ${formatDate(c.fim)}: limite é ${c.limite}. Já marcados — ${c.nomes.join(', ') || '—'}.`)),
           h('div', { class: 'form-actions', style: 'margin-top:8px;' }, [
             h('button', { class: 'btn btn-secondary', style: 'padding:7px 12px;font-size:12px;', onclick: () => { feriasConflitosPendentes = null; rerender(); } }, 'Corrigir datas'),
-            h('button', { class: 'btn btn-primary', style: 'padding:7px 12px;font-size:12px;background:#b91c1c;border-color:#b91c1c;', disabled: feriasSaving ? 'disabled' : undefined, onclick: feriasSaving ? null : () => requireAuth(() => submeterPedidoFerias(true)) }, 'Marcar mesmo assim'),
+            h('button', { class: 'btn btn-primary', style: 'padding:7px 12px;font-size:12px;', disabled: feriasSaving ? 'disabled' : undefined, onclick: feriasSaving ? null : () => requireAuth(criarExcecoesEGravarPedido) }, 'Criar Exceção desta Semana e Gravar'),
+            h('button', { class: 'btn btn-primary', style: 'padding:7px 12px;font-size:12px;background:#b91c1c;border-color:#b91c1c;', disabled: feriasSaving ? 'disabled' : undefined, onclick: feriasSaving ? null : () => requireAuth(() => submeterPedidoFerias(true)) }, 'Marcar mesmo assim (sem exceção)'),
           ]),
         ])
       : null;
@@ -24513,13 +24552,52 @@ function buildHorariosPage(container, goTo) {
       h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', {}, [thead, h('tbody', {}, rows)]))),
     ]);
   }
+  // Cria uma exceção de sobreposição diretamente (sem passar pelo
+  // formulário de "Gerir Exceções") — usada tanto no popup automático ao
+  // marcar férias com sobreposição (submeterPedidoFerias) como no botão
+  // rápido do aviso passivo (buildAvisoSobreposicoes), para nunca haver 2
+  // caminhos diferentes a criar o mesmo tipo de registo.
+  async function criarExcecaoDireta(inicio, fim, limite, observacoes) {
+    const created = await dbInsert('escalaExcecoesSobreposicao', { dataInicio: inicio, dataFim: fim, limite, observacoes });
+    if (created) { STATE.escalaExcecoesSobreposicao = [...(STATE.escalaExcecoesSobreposicao || []), created]; return true; }
+    return false;
+  }
+  // Popup automático (item pedido: "sempre que surgir uma sobreposição de
+  // 3+, lança popup para criar exceção") — cria a exceção para CADA
+  // semana em conflito (uma marcação de várias semanas pode tocar mais
+  // que uma), com o limite exato necessário (colegas já marcados + esta
+  // pessoa), e só depois volta a submeter o pedido — fica tudo num único
+  // clique, sem ter de ir a "Configurações" à parte.
+  async function criarExcecoesEGravarPedido() {
+    if (!feriasConflitosPendentes || !feriasConflitosPendentes.length) return;
+    feriasSaving = true; rerender();
+    for (const c of feriasConflitosPendentes) {
+      const limiteNecessario = c.nomes.length + 1; // colegas já marcados + esta pessoa
+      const ok = await criarExcecaoDireta(c.inicio, c.fim, limiteNecessario, 'Criada automaticamente ao marcar férias com sobreposição');
+      if (!ok) { feriasSaving = false; feriasError = `Não foi possível criar a exceção da semana de ${formatDate(c.inicio)}. Tente novamente.`; rerender(); return; }
+    }
+    feriasSaving = false;
+    await submeterPedidoFerias(true);
+  }
   function buildAvisoSobreposicoes() {
     const semanas = escalaSemanasComSobreposicao();
     if (!semanas.length) return null;
     return h('div', { class: 'card card-pad', style: 'margin-bottom:16px;background:#fffbeb;border-color:#fde68a;' }, [
       h('p', { class: 'cell-strong', style: 'margin:0 0 6px;color:#92400e;' }, [Icon('alert', { size: 15, strokeWidth: 2.2 }), ' Sobreposição de ausências']),
-      ...semanas.map(s => h('p', { style: 'margin:2px 0;font-size:12.5px;color:#92400e;' },
-        `Semana de ${formatDate(s.inicio)} a ${formatDate(s.fim)}: ${s.total} colaboradores em simultâneo (limite aplicável: ${s.limite}) — ${s.nomes.join(', ')}.`)),
+      ...semanas.map(s => {
+        const criarBtn = h('button', { class: 'btn btn-secondary', style: 'padding:4px 10px;font-size:11.5px;margin-left:8px;' }, `Criar Exceção (sobe para ${s.total})`);
+        criarBtn.addEventListener('click', () => requireAuth(async () => {
+          criarBtn.disabled = true; criarBtn.textContent = 'A criar…';
+          const ok = await criarExcecaoDireta(s.inicio, s.fim, s.total, 'Criada automaticamente a partir do aviso de sobreposição');
+          if (ok) showToast('Exceção criada — o aviso desaparece desta semana.', 'success');
+          else escalaShowErro('Não foi possível criar a exceção');
+          rerender();
+        }));
+        return h('p', { style: 'margin:2px 0;font-size:12.5px;color:#92400e;display:flex;align-items:center;flex-wrap:wrap;' }, [
+          `Semana de ${formatDate(s.inicio)} a ${formatDate(s.fim)}: ${s.total} colaboradores em simultâneo (limite aplicável: ${s.limite}) — ${s.nomes.join(', ')}.`,
+          criarBtn,
+        ]);
+      }),
     ]);
   }
   // ---- Configuração de limites de sobreposição (padrão + exceções por semana) ----
@@ -24787,6 +24865,18 @@ function buildHorariosPage(container, goTo) {
   // (title nativo) com nome e datas; clique mostra o detalhe completo do
   // dia escolhido no cartão acima do calendário.
   const ESCALA_CAL_CABECALHO_DIAS = ['SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SÁB', 'DOM'];
+  // Motivo em formato curto — usado no resumo "Nome (Motivo)" do
+  // calendário (tooltip e Detalhe do dia): nunca o rótulo por extenso de
+  // ESCALA_TIPOS_DIA (ex: "Outras Ausências/Licenças" fica só "Licença").
+  const ESCALA_MOTIVO_CURTO = { ferias: 'Férias', extra: 'Extra', aniversario: 'Aniversário', outras: 'Licença', baixa: 'Baixa', falta: 'Falta', indisponivel: 'Indisponibilidade' };
+  // Resumo dos colaboradores ausentes num dia — SÓ "Nome (Motivo)",
+  // separados por vírgula, nunca datas (pedido explícito: as datas já se
+  // veem pela própria posição no calendário, repeti-las no tooltip/
+  // detalhe só polui). Nome sempre via nomeCurtoDesambiguado — nunca o
+  // primeiro nome cru, para nunca confundir as 2 Joanas/2 Andrés.
+  function escalaResumoEntradasDia(entradas) {
+    return entradas.map(f => `${nomeCurtoDesambiguado(f.utilizadorNome)} (${ESCALA_MOTIVO_CURTO[f.tipo] || f.tipo})`).join(', ');
+  }
   function buildCalendarioEquipaAnual() {
     const anoInput = h('input', { class: 'input', type: 'number', style: 'max-width:110px;' });
     anoInput.value = String(feriasCalendarioAno);
@@ -24812,8 +24902,13 @@ function buildHorariosPage(container, goTo) {
         const fimDeSemana = dow === 0 || dow === 6;
         const feriadoInfo = (STATE.escalaFeriados || []).find(f => f.data === dataISO);
         const entradas = todas.filter(f => f.dataInicio <= dataISO && dataISO <= f.dataFim);
-        const cor = entradas.length ? escalaCorColaborador(entradas[0].utilizadorId) : null;
-        const tituloPartes = entradas.map(f => `${f.utilizadorNome || '—'}: ${formatDate(f.dataInicio)}–${formatDate(f.dataFim)} (${ESCALA_TIPOS_DIA.find(t => t.key === f.tipo)?.label || f.tipo})`);
+        // Cor partilhada por TODOS os colaboradores ausentes nesse dia —
+        // nunca só a do primeiro (calendarioCellStyle já sabe dividir a
+        // célula em faixas, uma por pessoa; com 1 só pessoa fica cor
+        // sólida como sempre).
+        const cores = [...new Set(entradas.map(f => f.utilizadorId))].map(id => escalaCorColaborador(id));
+        const tituloPartes = [];
+        if (entradas.length) tituloPartes.push(escalaResumoEntradasDia(entradas));
         if (feriadoInfo) tituloPartes.push(`Feriado: ${feriadoInfo.nome}`);
         const classes = ['escala-cal-dia'];
         if (entradas.length) classes.push('escala-cal-dia-ocupado');
@@ -24824,8 +24919,8 @@ function buildHorariosPage(container, goTo) {
         if (podeClicarParaMarcar || podeClicarParaPedido) classes.push('escala-cal-dia-clicavel');
         const celula = h('span', {
           class: classes.join(' '),
-          style: cor ? `background:${cor};color:#fff;` : undefined,
-          title: tituloPartes.join(' · ') || (feriadoInfo ? feriadoInfo.nome : undefined),
+          style: cores.length ? calendarioCellStyle(cores) + 'color:#fff;' : undefined,
+          title: tituloPartes.join(' · ') || undefined,
         }, feriadoInfo && !entradas.length ? [String(dia), h('span', { style: 'font-size:8px;line-height:1;margin-top:1px;' }, '🎌')] : String(dia));
         if (entradas.length) celula.addEventListener('click', () => { feriasDetalheSelecionado = { dataISO, entradas }; rerender(); });
         else if (podeClicarParaMarcar) celula.addEventListener('click', () => abrirModalMarcacaoFerias(dataISO));
@@ -24850,8 +24945,7 @@ function buildHorariosPage(container, goTo) {
       })) : null;
     const detalhe = feriasDetalheSelecionado ? h('div', { class: 'card card-pad', style: 'margin-bottom:14px;background:var(--pharm-50);' }, [
       h('p', { class: 'cell-strong', style: 'margin:0 0 6px;' }, `Detalhe — ${formatDate(feriasDetalheSelecionado.dataISO)}`),
-      ...feriasDetalheSelecionado.entradas.map(f => h('p', { style: 'margin:2px 0;font-size:13px;' },
-        `${f.utilizadorNome || '—'} — ${ESCALA_TIPOS_DIA.find(t => t.key === f.tipo)?.label || f.tipo}: ${formatDate(f.dataInicio)} a ${formatDate(f.dataFim)}${f.observacoes ? ` (${f.observacoes})` : ''}`)),
+      h('p', { style: 'margin:2px 0;font-size:13px;' }, escalaResumoEntradasDia(feriasDetalheSelecionado.entradas)),
     ]) : null;
     return h('div', {}, [
       h('div', { style: 'display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;' }, [
@@ -26521,12 +26615,12 @@ function buildHorariosPage(container, goTo) {
             // turno fica dividido em dois blocos pela pausa/almoço.
             (idxSeg === 0 && dia.bancoHorasDesconto > 0) ? h('div', {
               class: 'escala-vertical-banco-horas-badge',
-              title: `🏦 Banco de Horas descontado: -${escalaFormatarHoras(dia.bancoHorasDesconto)}`,
-            }, `🏦 -${escalaFormatarHoras(dia.bancoHorasDesconto)}`) : null,
+              title: `Banco de Horas descontado: -${escalaFormatarHoras(dia.bancoHorasDesconto)}`,
+            }, `-${escalaFormatarHoras(dia.bancoHorasDesconto)} Banco`) : null,
             (idxSeg === 0 && ausenciaSobreposta) ? h('div', {
               class: 'escala-vertical-ausencia-badge',
               title: `${ESCALA_TIPOS_DIA.find(t => t.key === ausenciaSobreposta.tipo)?.label || 'Ausência'} — turno original mantido para consulta`,
-            }, `${escalaAusenciaEmoji(ausenciaSobreposta.tipo)} ${ESCALA_TIPOS_DIA.find(t => t.key === ausenciaSobreposta.tipo)?.label || 'Ausência'}`) : null,
+            }, ESCALA_TIPOS_DIA.find(t => t.key === ausenciaSobreposta.tipo)?.label || 'Ausência') : null,
           ]);
           if (editavel) segBloco.addEventListener('click', aoClicarPosicao);
           return segBloco;
@@ -26572,14 +26666,15 @@ function buildHorariosPage(container, goTo) {
         // Extra (Folga tem tratamento próprio, ver ramo acima) — nunca
         // tem horário próprio para desenhar um intervalo real, por isso
         // preenche a coluna do dia inteira a cinzento
-        // (escala-vertical-bloco-tipo-ausencia), com a etiqueta/emoji do
-        // tipo ao centro — sinaliza de imediato "não está ao serviço em
-        // turno regular", sem precisar de passar o rato.
+        // (escala-vertical-bloco-tipo-ausencia), com a etiqueta do tipo
+        // ao centro (sem emoji — pedido explícito) — sinaliza de imediato
+        // "não está ao serviço em turno regular", sem precisar de passar
+        // o rato.
         const infoTipo = ESCALA_TIPOS_DIA.find(t => t.key === dia.tipo);
         const blocoAusencia = h('div', {
           class: 'escala-vertical-bloco escala-vertical-bloco-tipo-ausencia' + (editavel ? ' escala-vertical-bloco-clicavel' : ''),
           style: 'top:0%;height:100%;',
-        }, h('span', {}, `${escalaAusenciaEmoji(dia.tipo)} ${infoTipo ? infoTipo.label : dia.tipo}`));
+        }, h('span', {}, infoTipo ? infoTipo.label : dia.tipo));
         if (editavel) blocoAusencia.addEventListener('click', aoClicarPosicao);
         blocos = [blocoAusencia];
       }
