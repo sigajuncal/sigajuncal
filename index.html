@@ -8205,22 +8205,78 @@ function concludeIconButton(onClick, label) {
 function ehElementoInterativoDaLinha(target) {
   return !!target.closest('button, a, input, select, textarea, label, [contenteditable="true"]');
 }
+/* ---- "Clicar fora desseleciona" — Escape ou clicar fora de QUALQUER
+   tabela/lista selecionável (mas nunca nos botões da barra flutuante de
+   ações, nem noutra linha da própria tabela — aí é só o toggle normal de
+   sempre) limpa a seleção ativa sozinha, sem ter de voltar a clicar em
+   cada linha selecionada uma a uma. Cada tabela regista-se aqui sozinha
+   (idempotente, por referência ao contentor) assim que a 1ª linha sua é
+   ligada — ver wireRowSelectOnClick — em vez de precisar de um listener
+   próprio por página; um único par de listeners globais (click/keydown)
+   trata de todas as tabelas da app de uma vez. Entradas cujo contentor já
+   saiu do documento (por causa de um rerender entretanto) são descartadas
+   sozinhas na próxima vez que o listener corre, sem precisar de nenhuma
+   limpeza à parte. */
+const gruposSelecaoAtivos = [];
+function registarGrupoSelecao(containerEl, selectedIds, onToggleGenerico) {
+  if (!containerEl || !selectedIds || typeof onToggleGenerico !== 'function') return;
+  if (gruposSelecaoAtivos.some(g => g.containerEl === containerEl)) return;
+  gruposSelecaoAtivos.push({ containerEl, selectedIds, onToggleGenerico });
+}
+function limparGruposSelecao(alvo) {
+  for (let i = gruposSelecaoAtivos.length - 1; i >= 0; i--) {
+    const grupo = gruposSelecaoAtivos[i];
+    if (!grupo.containerEl.isConnected) { gruposSelecaoAtivos.splice(i, 1); continue; }
+    if (!grupo.selectedIds.size) continue;
+    // alvo === null (tecla Escape): limpa sempre. Clique: só limpa se o
+    // alvo do clique cair fora do contentor desta tabela E fora da barra
+    // de ações flutuante (essa já trata dos seus próprios cliques).
+    if (alvo !== null) {
+      if (grupo.containerEl.contains(alvo)) continue;
+      if (alvo.closest && alvo.closest('.bottom-action-bar, .barra-selecao-marcacoes')) continue;
+    }
+    [...grupo.selectedIds].forEach(id => grupo.onToggleGenerico(id));
+    // Rede de segurança visual: nas tabelas normais o toggle já desencadeia
+    // um rerender completo da página (por isso as linhas já aparecem
+    // corretamente desmarcadas); mas nas Agendas/Eventos o toggle é
+    // propositadamente leve (não reconstrói a grelha inteira, só a barra —
+    // ver toggleSelecaoMarcacao) e a classe visual da linha só é tocada
+    // pelo próprio clique individual. Sem isto, uma linha desmarcada "por
+    // fora" ficava com o fundo/risca de seleção pendurados.
+    if (grupo.containerEl.isConnected) {
+      grupo.containerEl.querySelectorAll('.row-selected, .linha-selecionada').forEach(el => el.classList.remove('row-selected', 'linha-selecionada'));
+    }
+  }
+}
+document.addEventListener('click', (e) => limparGruposSelecao(e.target));
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') limparGruposSelecao(null); });
 // A célula/marcador é criado ANTES do <tr> (ou .agenda-slot-row) que o vai
 // conter (só é encaixado na linha depois, quando o array de cells/acoes é
 // passado a h(...)). Por isso a ligação do clique da LINHA fica adiada para
 // o próximo tick (setTimeout 0): nessa altura o pai já existe, mesmo que a
 // página ainda não tenha sido inserida no documento. Idempotente
 // (dataset.selectRowWired) para nunca ligar a mesma linha duas vezes.
-function wireRowSelectOnClick(cellEl, id, onToggle, rowSelector) {
+// selectedIds/onToggleGenerico (opcionais): registam a tabela em
+// gruposSelecaoAtivos para o "clicar fora desseleciona" acima — onToggle
+// (o 3º parâmetro) pode ser um invólucro específico desta linha (caso das
+// Agendas, ver buildCheckboxMarcacao), por isso aceita-se em separado o
+// toggle genérico (que aceita qualquer id) sempre que os dois não coincidem.
+function wireRowSelectOnClick(cellEl, id, onToggle, rowSelector, selectedIds, onToggleGenerico) {
   setTimeout(() => {
     const row = cellEl.closest(rowSelector || 'tr');
-    if (!row || row.dataset.selectRowWired) return;
-    row.dataset.selectRowWired = '1';
-    row.classList.add('selectable-row');
-    row.addEventListener('click', (e) => {
-      if (ehElementoInterativoDaLinha(e.target)) return;
-      onToggle(id);
-    });
+    if (!row) return;
+    if (!row.dataset.selectRowWired) {
+      row.dataset.selectRowWired = '1';
+      row.classList.add('selectable-row');
+      row.addEventListener('click', (e) => {
+        if (ehElementoInterativoDaLinha(e.target)) return;
+        onToggle(id);
+      });
+    }
+    if (selectedIds) {
+      const container = row.closest('.card') || row.closest('table') || row.closest('.agenda-slots-list') || row.parentElement;
+      registarGrupoSelecao(container, selectedIds, onToggleGenerico || onToggle);
+    }
   }, 0);
 }
 // Célula de seleção — usada em todas as tabelas selecionáveis da app. Já
@@ -8232,7 +8288,7 @@ function wireRowSelectOnClick(cellEl, id, onToggle, rowSelector) {
 // continua a ser o único e suficiente sinal de "selecionado".
 function buildSelectionCheckbox(id, selectedIds, onToggle) {
   const td = h('td', { class: 'checkbox-cell' });
-  wireRowSelectOnClick(td, id, onToggle, 'tr');
+  wireRowSelectOnClick(td, id, onToggle, 'tr', selectedIds);
   return td;
 }
 function buildBottomActionBar(opts) {
@@ -8373,7 +8429,12 @@ function buildCheckboxMarcacao(id, selecionadas, onToggle) {
     const linha = marcador.closest('.agenda-slot-row');
     if (linha) linha.classList.toggle('linha-selecionada', selecionadas.has(id));
   }
-  wireRowSelectOnClick(marcador, id, aplicarToggle, '.agenda-slot-row');
+  // onToggle (o "genérico", passado em separado a seguir) é o único dos
+  // dois que aceita QUALQUER id — aplicarToggle está fixo ao id desta
+  // linha em concreto, por isso não serve para o "clicar fora desseleciona"
+  // (ver limparGruposSelecao, que precisa de invocar o toggle para cada id
+  // selecionado, um a um).
+  wireRowSelectOnClick(marcador, id, aplicarToggle, '.agenda-slot-row', selecionadas, onToggle);
   return marcador;
 }
 function buildBarraSelecaoMarcacoes(count, acoes) {
