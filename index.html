@@ -756,7 +756,15 @@
     justify-content:center;align-items:center;background:#fff;border:1px solid var(--pharm-200);padding:12px 18px;
     border-radius:18px;box-shadow:0 10px 30px rgba(0,0,0,.16);z-index:60;}
   @media (min-width:1024px){.bottom-action-bar{left:calc(50% + 130px);}}
-  .selectable-row{transition:background-color .1s ease;}
+  .selectable-row{transition:background-color .1s ease;cursor:pointer;}
+  .selectable-row:hover{background:var(--pharm-50);}
+  .selectable-row.row-selected:hover{background:var(--pharm-100);}
+  /* Elementos interativos dentro de uma linha selecionável (botões, links,
+     inputs, selects) mantêm sempre o próprio cursor — nunca o "pointer" de
+     seleção da linha, para não sugerir que também selecionam a linha. */
+  .selectable-row button, .selectable-row a, .selectable-row input,
+  .selectable-row select, .selectable-row textarea, .selectable-row label{cursor:auto;}
+  .selectable-row .row-checkbox{cursor:pointer;}
   .checkbox-cell{width:36px;text-align:center;}
   .pedidos-table th, .pedidos-table td{text-align:center;}
   .pedidos-table thead th{position:sticky;top:0;z-index:5;background:var(--pharm-50);
@@ -5548,16 +5556,9 @@ function buildNumFichaCategoriaField(f, draft, rerender, onCarregado) {
 const NOTA_PARTILHADA_OWNER = 'equipa';
 const NOTA_PESSOAL_MODULO = 'lembretes_bloco_pessoal';
 const NOTA_PESSOAL_MAX_CHARS = 300;
-// Sinal de "abrir a aba X" para o módulo Lembretes — usado pelos atalhos de
-// Bloco de Notas Pessoal (Página Inicial, cartão "Equipa") para chegar
-// direto à aba "Bloco de Notas Pessoal" em vez da vista de Lembretes
-// Ativos por omissão. Consumido (e limpo) logo no arranque de
-// buildLembretesPage — nunca fica "pendurado" a afetar uma navegação
-// normal seguinte para Lembretes.
-let lembretesTabAoAbrir = null;
 /* ---- Bloco de Notas — desenho/UX único, partilhado por TODOS os blocos de
    notas da app: Dashboard/Página Inicial, Agendas dos Prestadores de
-   Serviço, e o separador "Bloco de Notas Pessoal" dentro de Lembretes.
+   Serviço, e a página própria "Bloco de Notas Pessoal".
    Lista de notas curtas com checkbox de estado (Pendente/Tratada),
    timestamp de criação/resolução e botão eliminar — em vez do antigo
    "bloco de tópicos" (sem estado, só um "x" para apagar).
@@ -5737,10 +5738,13 @@ function buildBlocoNotasWidget(config) {
   wrap.appendChild(listEl);
   return wrap;
 }
-// Bloco de Notas Pessoal (separador dentro de Lembretes) — lista privada e
-// individual do utilizador com a sessão ativa (cada um só vê e gere as
-// suas próprias notas). Módulo próprio (NOTA_PESSOAL_MODULO) para nunca
-// colidir com o Bloco de Notas da Home nem com os das Agendas.
+// Bloco de Notas Pessoal — lista privada e individual do utilizador com a
+// sessão ativa (cada um só vê e gere as suas próprias notas). Módulo
+// próprio (NOTA_PESSOAL_MODULO) para nunca colidir com o Bloco de Notas da
+// Home nem com os das Agendas. NOTA_PESSOAL_MODULO mantém o valor antigo
+// ('lembretes_bloco_pessoal', herdado de quando isto era um separador
+// dentro de Lembretes) de propósito — é só a chave de armazenamento em
+// notas_utilizador, mudá-la faria "desaparecer" as notas já guardadas.
 function buildBlocoNotasPessoalPanel() {
   return buildBlocoNotasWidget({
     modulo: NOTA_PESSOAL_MODULO,
@@ -5750,6 +5754,17 @@ function buildBlocoNotasPessoalPanel() {
     mostrarAutor: false,
     comPesquisa: true,
   });
+}
+// Página própria do Bloco de Notas Pessoal — deixou de ser um separador
+// "emprestado" dentro de Lembretes (arquitetura antiga, confusa: tinha
+// botão/ícone próprios na Home e no hub Equipa mas vivia escondido dentro
+// de outro módulo) para passar a ser uma página independente como
+// qualquer outra, com o seu próprio cabeçalho e botão Voltar.
+function buildBlocoNotasPessoalPage(container, goTo) {
+  const wrap = h('div', { class: 'animate-in' });
+  wrap.appendChild(withBackButton(buildPageHeader('filetext', 'Bloco de Notas Pessoal', 'Notas rápidas e privadas — só você vê e gere estas notas.'), goTo));
+  wrap.appendChild(buildBlocoNotasPessoalPanel());
+  container.appendChild(wrap);
 }
 
 
@@ -8156,14 +8171,50 @@ function concludeIconButton(onClick, label) {
   return h('button', { class: 'btn-fab-sm tone-green', onclick: () => requireAuth(onClick), title: label || 'Concluir', 'aria-label': label || 'Concluir' }, Icon('check', { size: 14, strokeWidth: 3 }));
 }
 // Barra de ações inferior fixa: Adicionar (sempre ativo), Editar/Eliminar (só com linha selecionada)
+// ---- Seleção por clique na linha (em vez de exigir o clique exato na
+// checkbox) — padrão único, usado por TODAS as tabelas/listas selecionáveis
+// da app. Qualquer elemento interativo dentro da linha (botões, links,
+// inputs, selects, badges clicáveis como o estado "Satisfeito → Resolvido")
+// continua a funcionar normalmente: ou já faz e.stopPropagation() no seu
+// próprio clique (padrão já usado em toda a app para os campos de edição
+// inline), ou é apanhado pelo filtro genérico abaixo — nos dois casos o
+// clique nunca chega a alternar a seleção da linha por engano. Um clique
+// "vazio" em qualquer outra parte da linha alterna a seleção, tal como
+// clicar na própria checkbox (que continua a existir e a funcionar
+// isoladamente, com o seu próprio e.stopPropagation()).
+function ehElementoInterativoDaLinha(target) {
+  return !!target.closest('button, a, input, select, textarea, label, [contenteditable="true"]');
+}
+// A checkbox é criada ANTES do <tr> que a vai conter (a célula só é
+// encaixada na linha depois, quando o array de cells é passado a h('tr', ..)).
+// Por isso a ligação do clique da LINHA fica adiada para o próximo tick
+// (setTimeout 0): nessa altura o <tr> já existe e já é o pai da checkbox,
+// mesmo que a página ainda não tenha sido inserida no documento. Idempotente
+// (dataset.selectRowWired) para nunca ligar o mesmo <tr> duas vezes.
+function wireRowSelectOnClick(cellEl, id, onToggle, rowSelector) {
+  setTimeout(() => {
+    const row = cellEl.closest(rowSelector || 'tr');
+    if (!row || row.dataset.selectRowWired) return;
+    row.dataset.selectRowWired = '1';
+    row.classList.add('selectable-row');
+    row.addEventListener('click', (e) => {
+      if (ehElementoInterativoDaLinha(e.target)) return;
+      onToggle(id);
+    });
+  }, 0);
+}
 // Célula de checkbox de seleção — usada em todas as tabelas selecionáveis
-// da app. A seleção passa a ser feita exclusivamente pelo checkbox.
+// da app. A checkbox em si continua disponível (clique direto nela também
+// alterna a seleção), mas deixou de ser a única forma de selecionar: a
+// linha inteira fica clicável (ver wireRowSelectOnClick).
 function buildSelectionCheckbox(id, selectedIds, onToggle) {
   const cb = h('input', { type: 'checkbox', class: 'row-checkbox' });
   cb.checked = selectedIds.has(id);
   cb.addEventListener('click', (e) => e.stopPropagation());
   cb.addEventListener('change', () => onToggle(id));
-  return h('td', { class: 'checkbox-cell' }, cb);
+  const td = h('td', { class: 'checkbox-cell' }, cb);
+  wireRowSelectOnClick(td, id, onToggle, 'tr');
+  return td;
 }
 function buildBottomActionBar(opts) {
   // opts.selectedCount (preferível): número exato de linhas selecionadas.
@@ -8294,16 +8345,22 @@ function obsEyeButton(text) {
 function buildCheckboxMarcacao(id, selecionadas, onToggle) {
   const cb = h('input', { type: 'checkbox', class: 'row-checkbox marcacao-checkbox' });
   cb.checked = selecionadas.has(id);
-  cb.addEventListener('click', (e) => e.stopPropagation());
-  cb.addEventListener('change', () => {
-    // Atualização leve: só a classe visual da linha muda de imediato — o
-    // toggle() do estado e a sincronização da barra flutuante correm sem
-    // reconstruir a lista inteira de marcações, o que evita qualquer salto
-    // da posição do scroll ao selecionar vários itens seguidos.
+  // Atualização leve: só a classe visual da linha muda de imediato — o
+  // toggle() do estado e a sincronização da barra flutuante correm sem
+  // reconstruir a lista inteira de marcações, o que evita qualquer salto
+  // da posição do scroll ao selecionar vários itens seguidos.
+  function aplicarToggle() {
     const linha = cb.closest('.agenda-slot-row');
     if (linha) linha.classList.toggle('linha-selecionada', cb.checked);
     onToggle(id);
-  });
+  }
+  cb.addEventListener('click', (e) => e.stopPropagation());
+  cb.addEventListener('change', aplicarToggle);
+  // Mesma lógica de "clicar na linha seleciona" das restantes tabelas da
+  // app (ver wireRowSelectOnClick) — aqui a "linha" é o .agenda-slot-row
+  // (div, não <tr>). Um clique numa parte vazia da linha faz exatamente o
+  // que faria clicar na checkbox: inverte-a e corre a mesma lógica.
+  wireRowSelectOnClick(cb, id, () => { cb.checked = !cb.checked; aplicarToggle(); }, '.agenda-slot-row');
   return cb;
 }
 function buildBarraSelecaoMarcacoes(count, acoes) {
@@ -9355,10 +9412,11 @@ const PAGINA_PAI = {
   'hub-documentos': 'home',
   'doc-despesas': 'hub-documentos', 'doc-presenca': 'hub-documentos', 'doc-avaliacao-fisica': 'hub-documentos',
 
-  // Equipa — os Lembretes tornaram-se uma área pessoal de destaque próprio
-  // na Página Inicial (sino de notificações), por isso voltam sempre
-  // diretamente à Home em vez de passar pelo hub de Equipa.
-  'hub-equipa': 'home', lembretes: 'home',
+  // Equipa — os Lembretes (e o Bloco de Notas Pessoal, mesmo padrão)
+  // tornaram-se áreas pessoais de destaque próprio na Página Inicial (sino
+  // de notificações / ícone 📄), por isso voltam sempre diretamente à Home
+  // em vez de passar pelo hub de Equipa.
+  'hub-equipa': 'home', lembretes: 'home', 'bloco-notas-pessoal': 'home',
   'mapa-tarefas': 'hub-equipa', formacoes: 'hub-equipa',
   desafios: 'hub-equipa', objetivos: 'hub-equipa', 'historico-mensagens': 'hub-equipa',
 
@@ -11455,8 +11513,8 @@ function buildLembretesBellHome() {
 }
 // Botão do Bloco de Notas Pessoal (item 8) — mesmo estilo/tamanho da
 // sineta de Lembretes, colocado mesmo ao lado dela (ver buildHomepage).
-// Atalho direto para a aba "Bloco de Notas Pessoal" dentro de Lembretes
-// (ver goTo('bloco-notas-pessoal')/lembretesTabAoAbrir). Badge discreto
+// Atalho direto para a página própria "Bloco de Notas Pessoal"
+// (ver goTo('bloco-notas-pessoal')). Badge discreto
 // (sem "piscar" como a sineta — aqui não há nada "urgente", só um
 // contador informativo) com o nº de notas por tratar (resolvidoEm vazio);
 // STATE.notaPessoalPendentesCount vem do arranque da app (loadAllData) e
@@ -15569,12 +15627,7 @@ function lembreteRepeticaoTexto(l) {
 function buildLembretesPage(container, goTo, embedded) {
   let showForm = false, editingId = null, draft = criarRascunhoLembreteVazio();
   let searchQuery = '';
-  // Abre já na aba "Bloco de Notas Pessoal" quando chega por um dos
-  // atalhos dedicados (Página Inicial, cartão "Equipa") — ver
-  // lembretesTabAoAbrir. Consumido uma única vez: uma navegação normal
-  // seguinte para Lembretes volta a abrir em "Lembretes Ativos".
-  let activeTab = lembretesTabAoAbrir === 'notas' ? 'notas' : 'pending';
-  lembretesTabAoAbrir = null;
+  let activeTab = 'pending';
   let formError = '';
   let saving = false;
   let selectedIds = new Set();
@@ -16002,19 +16055,8 @@ function buildLembretesPage(container, goTo, embedded) {
       h('button', { class: 'tab-btn tone-green' + (activeTab === 'resolved' ? ' active' : ''), onclick: () => { activeTab = 'resolved'; selectedIds = new Set(); rerender(); } }, [
         Icon('checkcircle', { size: 14 }), h('span', {}, 'Histórico de Concluídos'), h('span', { class: 'tab-count' }, String(resolvedCount)),
       ]),
-      h('button', { class: 'tab-btn tone-blue' + (activeTab === 'notas' ? ' active' : ''), onclick: () => { activeTab = 'notas'; selectedIds = new Set(); rerender(); } }, [
-        Icon('clipboard', { size: 14 }), h('span', {}, 'Bloco de Notas Pessoal'),
-      ]),
     ]);
     wrap.appendChild(tabsRow);
-
-    // Bloco de Notas Pessoal é uma área à parte (sem pesquisa nem barra de
-    // ações em baixo — não são registos selecionáveis/concluíveis como os
-    // Lembretes, geram-se a si próprios).
-    if (activeTab === 'notas') {
-      wrap.appendChild(buildBlocoNotasPessoalPanel());
-      return wrap;
-    }
 
     const searchInput = h('input', { class: 'search-input', type: 'text', placeholder: 'Pesquisar por responsável ou informação...' });
     searchInput.value = searchQuery;
@@ -30723,26 +30765,14 @@ function renderInterno(ehTransicaoDePagina) {
   }
 
   function goTo(key, preset) {
-    // Atalhos de Bloco de Notas Pessoal (Página Inicial, cartão "Equipa") —
-    // nunca existe página própria para esta chave: redireciona sempre para
-    // Lembretes, já com a aba "Bloco de Notas Pessoal" ativa (ver
-    // lembretesTabAoAbrir, consumido em buildLembretesPage). 'bloco-notas'
-    // fica como alias de compatibilidade (chave antiga da página isolada,
-    // agora eliminada). forcarRemontagem garante que o atalho funciona
-    // mesmo estando já dentro de Lembretes noutra aba (nesse caso
-    // STATE.page não muda, e sem isto o goTo saía cedo sem reconstruir a
-    // página nem chegar a consumir o sinal da aba).
-    let forcarRemontagem = false;
-    if (key === 'bloco-notas-pessoal' || key === 'bloco-notas') {
-      lembretesTabAoAbrir = 'notas';
-      key = 'lembretes';
-      forcarRemontagem = true;
-    }
+    // 'bloco-notas' é só um alias de compatibilidade — nome antigo da
+    // página antes de ganhar o key definitivo 'bloco-notas-pessoal'.
+    if (key === 'bloco-notas') key = 'bloco-notas-pessoal';
     const mudouDePagina = STATE.page !== key;
     // Clicar outra vez no separador onde já se está (sem preset novo) não
     // muda nada — evita reconstruir o .page-container à toa, que é
     // precisamente o tipo de "piscar" sem motivo que se quer eliminar.
-    if (!mudouDePagina && !preset && !forcarRemontagem) return;
+    if (!mudouDePagina && !preset) return;
     // Auto-colapsar/expandir a Sidebar de desktop ao entrar/sair da
     // Página Inicial: ver render() — feito lá (não aqui) para cobrir
     // também as outras formas de mudar de página que não passam por
@@ -30871,10 +30901,10 @@ function renderInterno(ehTransicaoDePagina) {
       case 'recolhas': buildRecolhasPage(pageContainer, goTo); break;
       case 'tarefas': buildTarefasPage(pageContainer, goTo); break;
       case 'formacoes': buildFormacoesPage(pageContainer, goTo); break;
-      case 'bloco-notas': lembretesTabAoAbrir = 'notas'; buildLembretesPage(pageContainer, goTo); break;
       case 'orcamentos': buildOrcamentosPage(pageContainer, goTo); break;
       case 'calculadoras': buildCalculadorasPage(pageContainer, goTo); break;
       case 'lembretes': buildLembretesPage(pageContainer, goTo); break;
+      case 'bloco-notas-pessoal': buildBlocoNotasPessoalPage(pageContainer, goTo); break;
       case 'desafios': buildDesafiosPage(pageContainer, goTo); break;
       case 'objetivos': buildObjetivosPage(pageContainer, goTo); break;
       case 'historico-mensagens': buildHistoricoMensagensPage(pageContainer, goTo); break;
@@ -31660,7 +31690,16 @@ async function tentarLoginBiometrico() {
 // visualmente só por CSS (a máscara nunca reescreve o valor real do campo,
 // eliminando qualquer risco de o valor enviado ficar corrompido). O valor
 // real de cada campo vive só neste objeto de estado em memória.
-function showUserLoginScreen(onSuccess) {
+function showUserLoginScreen(onSuccess, opts) {
+  // opts.preservarEcra (só usado pelo reautenticação silenciosa por
+  // inatividade, ver clearSessionSilently): quando true, o login bem
+  // sucedido NÃO reconstrói a página atual — preserva tal e qual qualquer
+  // formulário que a pessoa tivesse aberto (e tudo o que já tinha escrito),
+  // exatamente como pedido: os dados só desaparecem se a própria pessoa
+  // cancelar ou confirmar a entrada, nunca só por a sessão ter expirado
+  // entretanto. Fora deste caso (login normal, ainda sem sessão nenhuma
+  // aberta) o comportamento mantém-se: repaint completo no fim, como sempre.
+  const preservarEcra = !!(opts && opts.preservarEcra);
   const overlay = h('div', { class: 'modal-overlay' });
   // Fechar/Cancelar = Modo Sem Sessão Iniciada: a app fica navegável em modo
   // de consulta geral (Página Inicial), sem acesso a dados/ações privadas —
@@ -31670,7 +31709,11 @@ function showUserLoginScreen(onSuccess) {
     overlay.remove();
     if (!activeUser) {
       refreshSidebarBadges();
-      if (STATE.page !== 'home') { STATE.page = 'home'; render(); }
+      // preservarEcra:true — a pessoa só estava a fechar o pedido de
+      // reautenticação (ex: Escape/clique fora), não o formulário em si;
+      // este continua aberto e com tudo o que já escreveu, tal como pedido
+      // — nunca se navega para a Página Inicial neste caso.
+      if (!preservarEcra && STATE.page !== 'home') { STATE.page = 'home'; render(); }
     }
   }
   function onKeydown(e) { if (e.key === 'Escape') close(); }
@@ -31710,7 +31753,7 @@ function showUserLoginScreen(onSuccess) {
     }, { confirmLabel: 'Ativar' });
   }
 
-  async function concluirLogin(u) {
+  async function concluirLogin(u, preservarEcra) {
     activeUser = { id: u.id, username: u.username, nomeCompleto: u.nomeCompleto || u.username, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', prestadorKey: u.prestadorKey || '' };
     activeUserPin = u.pin || null;
     // Herdar do modo convidado o que já tinha sido lido antes do login —
@@ -31749,7 +31792,17 @@ function showUserLoginScreen(onSuccess) {
     // que tinha ficado pendente antes do requireAuth) — o render() a
     // seguir é a ÚNICA repintura completa deste fluxo de login.
     onSuccess();
-    render();
+    if (preservarEcra) {
+      // Reautenticação silenciosa (sessão expirou sozinha por inatividade
+      // enquanto a pessoa tinha um formulário aberto): NUNCA reconstruir a
+      // página aqui — isso apagaria tudo o que já estava escrito. Só a
+      // barra lateral (nome/estado da sessão) e os indicadores são
+      // atualizados; o resto do ecrã, incluindo qualquer formulário aberto,
+      // fica exatamente como a pessoa o deixou.
+      refreshSidebarBadges();
+    } else {
+      render();
+    }
     atualizarIndicadorDadosAtualizados();
     atualizarIndicadoresChat();
   }
@@ -31764,7 +31817,7 @@ function showUserLoginScreen(onSuccess) {
     // usamos sempre os valores reais guardados no objeto de estado.
     const u = findUsuario(credenciais.usernameReal, credenciais.pinReal);
     if (u) {
-      await concluirLogin(u);
+      await concluirLogin(u, preservarEcra);
       // Oferece a biometria só DEPOIS do modal já ter fechado — não atrasa
       // o login em si.
       ofereceAtivarBiometriaSeAplicavel(u);
@@ -31778,7 +31831,7 @@ function showUserLoginScreen(onSuccess) {
   async function tryLoginBiometrico() {
     errorMsg.textContent = '';
     const u = await tentarLoginBiometrico();
-    if (u) concluirLogin(u);
+    if (u) concluirLogin(u, preservarEcra);
     else errorMsg.textContent = 'Não foi possível autenticar por biometria. Use o Username e o PIN.';
   }
   userInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') pinInput.focus(); });
@@ -32006,7 +32059,12 @@ function clearSessionSilently() {
   // atualiza o badge, e mostra-se logo o pop-up a pedir novamente as
   // credenciais, sem sair da página atual.
   refreshSidebarBadges();
-  showUserLoginScreen(() => {}); // concluirLogin() já faz o render() único, com dados+sidebar frescos
+  // preservarEcra:true — se a pessoa tinha um formulário aberto (Pedidos,
+  // Lembretes, etc.) quando a sessão expirou sozinha, esse formulário e
+  // tudo o que já lá estava escrito continuam exatamente ali depois de
+  // voltar a autenticar-se; só desaparece se a própria pessoa cancelar ou
+  // confirmar a entrada (ver showUserLoginScreen/concluirLogin).
+  showUserLoginScreen(() => {}, { preservarEcra: true });
 }
 function manualLogout() {
   confirmDialog('Deseja terminar a sessão atual?', () => {
