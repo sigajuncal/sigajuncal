@@ -4966,7 +4966,12 @@ function calendarioCellStyle(cores) {
     const fim = ((i + 1) / n * 100).toFixed(2);
     stops.push(`${cores[i]} ${inicio}%`, `${cores[i]} ${fim}%`);
   }
-  return `background:linear-gradient(90deg, ${stops.join(', ')});`;
+  // Faixas HORIZONTAIS (180deg = de cima para baixo), não verticais —
+  // pedido explícito (2026-08-08): mantém a mesma posição de cada faixa
+  // ao ler a mesma linha da semana (SEG a DOM) dia a dia, em vez de cada
+  // dia ter as faixas "coladas" a lados diferentes consoante quem calhou
+  // primeiro nesse dia.
+  return `background:linear-gradient(180deg, ${stops.join(', ')});`;
 }
 
 // onDayClick(dateISO, isPast) é opcional — quando omitido (caso da Página
@@ -23359,7 +23364,16 @@ function buildHorariosPage(container, goTo) {
   let mostrarGerirExcecoes = false;
   let configLimiteDraft = null, configLimiteSaving = false;
   let feriasCalendarioAno = new Date().getFullYear();
-  let feriasDetalheSelecionado = null; // { dataISO, entradas: [...] } — preenchido ao clicar num dia do Calendário da Equipa
+  // (Detalhe do dia removido — 2026-08-08: passou a hover simples via
+  // mostrarTooltipColaborador, mesmo mecanismo da Timeline de Horários,
+  // em vez de um cartão fixo por baixo do calendário.)
+  // Edição de um período já existente (Resumo de Férias/Ausências, botão
+  // ✎) — reaproveita o MESMO modal/formulário da marcação nova
+  // (buildModalMarcacaoFerias/buildFormPedidoFerias), só que com
+  // feriasEditandoId preenchido: submeterPedidoFerias faz UPDATE em vez
+  // de INSERT, e o formulário fica restrito a um único período (editar
+  // não "acrescenta" períodos novos ao mesmo registo).
+  let feriasEditandoId = null;
   // Modal Contextual de Marcação (clique direto num dia do Calendário) —
   // substitui o antigo formulário estático "Marcar Férias/Ausência" do
   // topo da página. Só Diretor Técnico/Administrador marcam. Reaproveita
@@ -24209,6 +24223,27 @@ function buildHorariosPage(container, goTo) {
     }
     feriasConflitosPendentes = null;
     feriasSaving = true; rerender();
+    // Modo edição (feriasEditandoId): um único período, faz UPDATE do
+    // registo existente em vez de criar um novo — nunca duplica.
+    if (feriasEditandoId) {
+      const p = validacao.periodos[0];
+      const payload = {
+        utilizadorId: alvo.id, utilizadorNome: alvo.nomeCompleto || alvo.username, tipo,
+        dataInicio: p.dataInicio, dataFim: p.dataFim, observacoes: feriasDraft.observacoes || '',
+        descontarDiasTransitados: !!feriasDraft.descontarDiasTransitados,
+      };
+      const updated = await dbUpdate('escalaFerias', feriasEditandoId, payload);
+      feriasSaving = false;
+      if (updated) {
+        STATE.escalaFerias = STATE.escalaFerias.map(f => f.id === feriasEditandoId ? updated : f);
+        feriasDraft = feriasNovoDraft(); feriasEditandoId = null; mostrarModalMarcacaoFerias = false;
+        showToast('Período atualizado.', 'success');
+      } else {
+        feriasError = `Não foi possível guardar as alterações. ${escalaMensagemErroAmigavel(lastDbError)}`;
+      }
+      rerender();
+      return;
+    }
     let falhou = false;
     const criados = [];
     for (const p of validacao.periodos) {
@@ -24260,13 +24295,33 @@ function buildHorariosPage(container, goTo) {
   function abrirModalMarcacaoFerias(dataISO) {
     if (!isMasterUser() || horariosEhMobile) return; // gestão avançada — nunca em mobile/tablet, mesmo para Hugo/Paulo
     feriasDraft = feriasNovoDraft();
+    feriasEditandoId = null;
     if (dataISO) feriasAplicarBlocoSemanaUtil(feriasDraft.periodos[0], dataISO);
     feriasError = ''; feriasConflitosPendentes = null;
     mostrarModalMarcacaoFerias = true;
     rerender();
   }
+  // Abre o mesmo modal, já preenchido com os dados do período existente
+  // (botão ✎ no Resumo de Férias/Ausências) — nunca cria um registo novo,
+  // ver o ramo feriasEditandoId em submeterPedidoFerias.
+  function abrirModalEdicaoFerias(pedido) {
+    if (!isMasterUser() || horariosEhMobile) return;
+    if (escalaAnoFerasCongelado(Number(String(pedido.dataInicio).slice(0, 4)))) {
+      showToast('Este período é de um ano já fechado — o calendário desse ano está congelado.', 'error');
+      return;
+    }
+    feriasEditandoId = pedido.id;
+    feriasDraft = {
+      utilizadorId: pedido.utilizadorId, tipo: pedido.tipo, observacoes: pedido.observacoes || '',
+      descontarDiasTransitados: !!pedido.descontarDiasTransitados,
+      periodos: [{ dataInicio: pedido.dataInicio, dataFim: pedido.dataFim }],
+    };
+    feriasError = ''; feriasConflitosPendentes = null;
+    mostrarModalMarcacaoFerias = true;
+    rerender();
+  }
   function fecharModalMarcacaoFerias() {
-    mostrarModalMarcacaoFerias = false; feriasError = ''; feriasConflitosPendentes = null;
+    mostrarModalMarcacaoFerias = false; feriasError = ''; feriasConflitosPendentes = null; feriasEditandoId = null;
     rerender();
   }
   function buildFormPedidoFerias() {
@@ -24321,8 +24376,8 @@ function buildHorariosPage(container, goTo) {
         removerBtn,
       ]);
     });
-    const addPeriodoBtn = h('button', { type: 'button', class: 'btn btn-secondary', style: 'padding:8px 14px;font-size:12.5px;margin-top:8px;' }, [Icon('plus', { size: 13 }), ' Adicionar Outro Período / Dia']);
-    addPeriodoBtn.addEventListener('click', () => { feriasDraft.periodos.push({ dataInicio: '', dataFim: '' }); rerender(); });
+    const addPeriodoBtn = feriasEditandoId ? null : h('button', { type: 'button', class: 'btn btn-secondary', style: 'padding:8px 14px;font-size:12.5px;margin-top:8px;' }, [Icon('plus', { size: 13 }), ' Adicionar Outro Período / Dia']);
+    if (addPeriodoBtn) addPeriodoBtn.addEventListener('click', () => { feriasDraft.periodos.push({ dataInicio: '', dataFim: '' }); rerender(); });
 
     // Resumo dinâmico: total de dias úteis a descontar do saldo (todos os
     // períodos somados, feriados e Fim de Semana já excluídos) — só é
@@ -24362,7 +24417,7 @@ function buildHorariosPage(container, goTo) {
       : null;
 
     return h('div', { class: 'card card-pad', style: 'margin-bottom:20px;' }, [
-      h('h3', { class: 'page-eyebrow', style: 'margin-bottom:14px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, prestador ? 'Marcar Indisponibilidade' : 'Marcar Férias / Ausência'),
+      h('h3', { class: 'page-eyebrow', style: 'margin-bottom:14px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, feriasEditandoId ? 'Editar Período' : (prestador ? 'Marcar Indisponibilidade' : 'Marcar Férias / Ausência')),
       h('div', { class: 'form-grid' }, [
         h('div', { class: 'field span2' }, [h('label', {}, 'Colaborador'), colaboradorSelect]),
         h('div', { class: 'field span2' }, [h('label', {}, 'Tipo'), tipoSelect]),
@@ -24377,7 +24432,7 @@ function buildHorariosPage(container, goTo) {
       feriasError ? h('p', { class: 'form-error' }, feriasError) : null,
       avisoConflito,
       h('div', { class: 'form-actions' }, [
-        h('button', { class: 'btn btn-primary', disabled: feriasSaving ? 'disabled' : undefined, onclick: feriasSaving ? null : () => requireAuth(() => submeterPedidoFerias(false)) }, feriasSaving ? 'A guardar…' : 'Guardar Período(s)'),
+        h('button', { class: 'btn btn-primary', disabled: feriasSaving ? 'disabled' : undefined, onclick: feriasSaving ? null : () => requireAuth(() => submeterPedidoFerias(false)) }, feriasSaving ? 'A guardar…' : (feriasEditandoId ? 'Guardar Alterações' : 'Guardar Período(s)')),
         h('button', { type: 'button', class: 'btn btn-secondary', onclick: fecharModalMarcacaoFerias }, 'Cancelar'),
       ]),
     ]);
@@ -24391,10 +24446,10 @@ function buildHorariosPage(container, goTo) {
     const closeBtn = h('button', { class: 'close-btn', onclick: fecharModalMarcacaoFerias }, Icon('x', { size: 16 }));
     const panel = h('div', { class: 'modal-panel', style: 'max-width:640px;' }, [
       h('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;' }, [
-        h('p', { class: 'modal-title', style: 'margin:0;' }, '🏖️ Marcar Férias / Ausência'),
+        h('p', { class: 'modal-title', style: 'margin:0;' }, feriasEditandoId ? '✎ Editar Período' : '🏖️ Marcar Férias / Ausência'),
         closeBtn,
       ]),
-      h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, 'Predefinido com um bloco de 5 dias úteis a partir do dia escolhido — ajuste as datas e a tipologia livremente.'),
+      h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, feriasEditandoId ? 'Ajuste a tipologia, as datas ou as observações e guarde.' : 'Predefinido com um bloco de 5 dias úteis a partir do dia escolhido — ajuste as datas e a tipologia livremente.'),
       buildFormPedidoFerias(),
     ]);
     overlay.appendChild(panel);
@@ -24408,6 +24463,10 @@ function buildHorariosPage(container, goTo) {
     const rows = lista.map(p => {
       const acoes = [];
       if (comAcoesGestao) {
+        const anoCongelado = escalaAnoFerasCongelado(Number(String(p.dataInicio).slice(0, 4)));
+        const editBtn = h('button', { class: 'btn-fab-sm tone-blue', title: anoCongelado ? 'Ano fechado — só consulta' : 'Editar', 'aria-label': 'Editar', disabled: anoCongelado ? 'disabled' : undefined }, Icon('pencil', { size: 13, strokeWidth: 2.2 }));
+        if (!anoCongelado) editBtn.addEventListener('click', () => requireAuth(() => abrirModalEdicaoFerias(p)));
+        acoes.push(editBtn);
         const delBtn = h('button', { class: 'btn-fab-sm', title: 'Eliminar', 'aria-label': 'Eliminar' }, Icon('trash', { size: 13, strokeWidth: 2.2 }));
         delBtn.addEventListener('click', () => requireAuth(() => eliminarPedidoFerias(p)));
         acoes.push(delBtn);
@@ -24880,7 +24939,7 @@ function buildHorariosPage(container, goTo) {
   function buildCalendarioEquipaAnual() {
     const anoInput = h('input', { class: 'input', type: 'number', style: 'max-width:110px;' });
     anoInput.value = String(feriasCalendarioAno);
-    anoInput.addEventListener('change', () => { const v = parseInt(anoInput.value, 10); if (!isNaN(v)) { feriasCalendarioAno = v; feriasDetalheSelecionado = null; rerender(); } });
+    anoInput.addEventListener('change', () => { const v = parseInt(anoInput.value, 10); if (!isNaN(v)) { feriasCalendarioAno = v; rerender(); } });
     const todas = STATE.escalaFerias || [];
     // Marcação completa (Férias Base/Baixa/Licenças de qualquer
     // colaborador) é gestão avançada — só Master em desktop. Em mobile,
@@ -24920,10 +24979,18 @@ function buildHorariosPage(container, goTo) {
         const celula = h('span', {
           class: classes.join(' '),
           style: cores.length ? calendarioCellStyle(cores) + 'color:#fff;' : undefined,
-          title: tituloPartes.join(' · ') || undefined,
         }, feriadoInfo && !entradas.length ? [String(dia), h('span', { style: 'font-size:8px;line-height:1;margin-top:1px;' }, '🎌')] : String(dia));
-        if (entradas.length) celula.addEventListener('click', () => { feriasDetalheSelecionado = { dataISO, entradas }; rerender(); });
-        else if (podeClicarParaMarcar) celula.addEventListener('click', () => abrirModalMarcacaoFerias(dataISO));
+        // Hover simples (mesmo mecanismo já usado nos blocos da Timeline
+        // de Horários — tooltip flutuante que segue o cursor) — nunca um
+        // clique a fixar um cartão "Detalhe" persistente por baixo do
+        // calendário, que só ocupava espaço vertical à toa.
+        if (tituloPartes.length) {
+          const textoHover = tituloPartes.join(' · ');
+          celula.addEventListener('mouseenter', (e) => { mostrarTooltipColaborador(textoHover); moverTooltipColaborador(e); });
+          celula.addEventListener('mousemove', moverTooltipColaborador);
+          celula.addEventListener('mouseleave', esconderTooltipColaborador);
+        }
+        if (podeClicarParaMarcar) celula.addEventListener('click', () => abrirModalMarcacaoFerias(dataISO));
         else if (podeClicarParaPedido) celula.addEventListener('click', () => requireAuth(() => abrirModalPedidosEspeciais(rerender, dataISO)));
         celulas.push(celula);
       }
@@ -24943,17 +25010,12 @@ function buildHorariosPage(container, goTo) {
           nome,
         ]);
       })) : null;
-    const detalhe = feriasDetalheSelecionado ? h('div', { class: 'card card-pad', style: 'margin-bottom:14px;background:var(--pharm-50);' }, [
-      h('p', { class: 'cell-strong', style: 'margin:0 0 6px;' }, `Detalhe — ${formatDate(feriasDetalheSelecionado.dataISO)}`),
-      h('p', { style: 'margin:2px 0;font-size:13px;' }, escalaResumoEntradasDia(feriasDetalheSelecionado.entradas)),
-    ]) : null;
     return h('div', {}, [
       h('div', { style: 'display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;' }, [
         h('label', { style: 'font-weight:700;font-size:13px;color:var(--pharm-700);' }, 'Ano'), anoInput,
         h('span', { style: 'display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--pharm-400);' }, [h('span', { style: 'width:9px;height:9px;border-radius:2px;background:var(--pharm-100);display:inline-block;' }), 'Fim de Semana']),
         h('span', { style: 'display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--pharm-400);' }, [h('span', { style: 'width:9px;height:9px;border-radius:2px;box-shadow:inset 0 0 0 2px #f59e0b;display:inline-block;' }), '🎌 Feriado']),
       ]),
-      detalhe,
       legenda,
       h('div', { class: 'calendario-anual-grid' }, meses),
     ]);
