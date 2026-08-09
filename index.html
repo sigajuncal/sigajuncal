@@ -9648,37 +9648,47 @@ const PAGINA_PAI = {
   // Chat — item único, sem hub próprio
   chat: 'home',
 };
-function buildBackButton(goTo) {
+function buildBackButton(goTo, onFecharFormulario) {
   // Navegação hierárquica estrita: nunca depende de por onde a pessoa
   // veio (sem histórico do browser, sem STATE.navFrom) — vai sempre para o
   // mesmo "pai" fixo desta página. Qualquer página sem entrada no mapa
   // sobe diretamente à Página Inicial.
+  // Pedido explícito 2026-08-09: com um formulário aberto (Nova/Editar),
+  // esta seta deixa de subir na hierarquia — passa a fechar só o
+  // formulário (mesmo efeito do botão "Cancelar"), devolvendo à lista
+  // desta própria página, nunca a abandonar o que estava a meio de
+  // preencher. `onFecharFormulario` (passado pelo módulo só quando há
+  // mesmo um formulário aberto) tem sempre prioridade sobre a navegação
+  // normal.
   const target = PAGINA_PAI[STATE.page] || 'home';
   const btn = h('button', { class: 'back-btn', title: 'Voltar' }, [
     Icon('arrowleft', { size: 16, strokeWidth: 2.2 }),
     h('span', { class: 'back-btn-label' }, 'Voltar'),
   ]);
   btn.addEventListener('click', () => {
+    if (onFecharFormulario) { onFecharFormulario(); return; }
     // Limpa qualquer sub-vista/estado temporário antes de forçar o módulo
     // pai — só o hub de Pedidos precisa de repor a pesquisa anterior.
     goTo(target, target === 'hub-pedidos' ? STATE.consultaState : undefined);
   });
   return btn;
 }
-function withBackButton(headerEl, goTo) {
-  return h('div', { class: 'page-header-wrap' }, [buildBackButton(goTo), headerEl]);
+function withBackButton(headerEl, goTo, onFecharFormulario) {
+  return h('div', { class: 'page-header-wrap' }, [buildBackButton(goTo, onFecharFormulario), headerEl]);
 }
 // Variante para ecrãs onde "um nível acima" não é o alvo normal da
 // hierarquia (STATE.navFrom), mas sim um estado local da própria página —
 // ex: a vista de farmácia das Entregas, cujo "voltar" deve regressar ao
 // ecrã de escolha de farmácia, não à Página Principal. Garante sempre um
 // único botão "Voltar" por ecrã, nunca dois em simultâneo.
-function withCustomBackButton(headerEl, onBack) {
+function withCustomBackButton(headerEl, onBack, onFecharFormulario) {
   const btn = h('button', { class: 'back-btn', title: 'Voltar', 'aria-label': 'Voltar' }, [
     Icon('arrowleft', { size: 18, strokeWidth: 2.4 }),
     h('span', { class: 'back-btn-label' }, 'Voltar'),
   ]);
-  btn.addEventListener('click', onBack);
+  // Mesma prioridade de onFecharFormulario sobre onBack — ver
+  // buildBackButton acima.
+  btn.addEventListener('click', onFecharFormulario || onBack);
   return h('div', { class: 'page-header-wrap' }, [btn, headerEl]);
 }
 
@@ -9866,7 +9876,7 @@ function buildOrtopediaPage(container, goTo) {
 
   function build() {
     const wrap = h('div', { class: 'animate-in' });
-    wrap.appendChild(withBackButton(buildPageHeader('body', 'Ortopedia', 'Gestão e acompanhamento de encomendas de ortopedia.', records().length, buildBotaoRotasPedidos()), goTo));
+    wrap.appendChild(withBackButton(buildPageHeader('body', 'Ortopedia', 'Gestão e acompanhamento de encomendas de ortopedia.', records().length, buildBotaoRotasPedidos()), goTo, showForm ? cancel : undefined));
     if (showForm) {
       const estadoOrcamento = resolveFornecedorOrcamentoState(listKey, draft, fornecedorEditadoManualmente);
       wrap.appendChild(buildOrtopediaForm(estadoOrcamento));
@@ -10129,7 +10139,7 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
 
   function build() {
     const wrap = h('div', { class: 'animate-in' });
-    wrap.appendChild(withBackButton(buildPageHeader(icon, title, subtitle, records().length, buildBotaoRotasPedidos()), goTo));
+    wrap.appendChild(withBackButton(buildPageHeader(icon, title, subtitle, records().length, buildBotaoRotasPedidos()), goTo, showForm ? cancel : undefined));
     if (showForm) {
       const estado = resolveFornecedorOrcamentoState(listKey, draft, fornecedorEditadoManualmente);
       const fieldOverrides = categoriaTemOrcamentos(listKey) ? {
@@ -13543,7 +13553,7 @@ function buildErrosPage(container, goTo) {
     const wrap = h('div', { class: 'animate-in' });
     const pendingCount = STATE.erros.filter(r => r.estado !== 'Corrigido').length;
     const resolvedCount = STATE.erros.filter(r => r.estado === 'Corrigido').length;
-    wrap.appendChild(withBackButton(buildPageHeader('alert', 'Erros de Stock', 'Registo e monitorização de falhas e acertos de stock.', STATE.erros.length), goTo));
+    wrap.appendChild(withBackButton(buildPageHeader('alert', 'Erros de Stock', 'Registo e monitorização de falhas e acertos de stock.', STATE.erros.length), goTo, showForm ? cancel : undefined));
 
     if (showForm) {
       const pendenteAgora = editingId && draft.estado !== 'Corrigido';
@@ -14045,7 +14055,7 @@ function buildValidadesPage(container, goTo) {
 
   function build() {
     const wrap = h('div', { class: 'animate-in' });
-    wrap.appendChild(withBackButton(buildPageHeader('hourglass', 'Validades', 'Produtos a escoar prioritariamente — validade inferior a 1 ano.', STATE.validades.length), goTo));
+    wrap.appendChild(withBackButton(buildPageHeader('hourglass', 'Validades', 'Produtos a escoar prioritariamente — validade inferior a 1 ano.', STATE.validades.length), goTo, showForm ? cancel : undefined));
 
     if (showForm) { wrap.appendChild(buildForm()); return wrap; }
 
@@ -16257,7 +16267,7 @@ function buildLembretesPage(container, goTo, embedded) {
     const pendingCount = meusLembretes.filter(r => r.estado !== 'Concluído').length;
     const resolvedCount = historicoLinhas().length;
     if (!embedded) {
-      wrap.appendChild(withBackButton(buildPageHeader('bell', 'Lembretes', 'Lembretes pessoais e de equipa, com repetição.', meusLembretes.length), goTo));
+      wrap.appendChild(withBackButton(buildPageHeader('bell', 'Lembretes', 'Lembretes pessoais e de equipa, com repetição.', meusLembretes.length), goTo, showForm ? cancel : undefined));
     }
 
     if (showForm) wrap.appendChild(buildLembreteFormCustom());
@@ -16446,7 +16456,7 @@ function buildReclamacoesPage(container, goTo) {
     const wrap = h('div', { class: 'animate-in' });
     const pendingCount = STATE.reclamacoes.filter(r => r.estado !== 'Resolvido').length;
     const resolvedCount = STATE.reclamacoes.filter(r => r.estado === 'Resolvido').length;
-    wrap.appendChild(withBackButton(buildPageHeader('bookOpen', 'Reclamações', 'Registo e devolução de produtos reclamados pelos clientes.', STATE.reclamacoes.length), goTo));
+    wrap.appendChild(withBackButton(buildPageHeader('bookOpen', 'Reclamações', 'Registo e devolução de produtos reclamados pelos clientes.', STATE.reclamacoes.length), goTo, showForm ? cancel : undefined));
 
     if (showForm) {
       const pendenteAgora = editingId && draft.estado !== 'Resolvido';
@@ -18049,7 +18059,7 @@ function buildDesafiosPage(container, goTo, embedded) {
   function build() {
     const wrap = h('div', { class: 'animate-in' });
     if (!embedded) {
-      wrap.appendChild(withBackButton(buildPageHeader('award', 'Prémios', 'Prémios e incentivos para a equipa.', STATE.desafios.length), goTo));
+      wrap.appendChild(withBackButton(buildPageHeader('award', 'Prémios', 'Prémios e incentivos para a equipa.', STATE.desafios.length), goTo, showForm ? cancel : undefined));
     }
 
     if (showForm) {
@@ -18326,7 +18336,7 @@ function buildObjetivosPage(container, goTo, embedded) {
   function build() {
     const wrap = h('div', { class: 'animate-in' });
     if (!embedded) {
-      wrap.appendChild(withBackButton(buildPageHeader('target', 'Objetivos', 'Metas de vendas da equipa, com período e progresso.', STATE.objetivos.length), goTo));
+      wrap.appendChild(withBackButton(buildPageHeader('target', 'Objetivos', 'Metas de vendas da equipa, com período e progresso.', STATE.objetivos.length), goTo, showForm ? cancel : undefined));
     }
 
     if (showForm) {
@@ -20332,7 +20342,7 @@ function buildDefinicoesPage(container, goTo) {
 
   function build() {
     const wrap = h('div', { class: 'animate-in' });
-    wrap.appendChild(withBackButton(buildPageHeader('users', 'Utilizadores', 'Gestão de utilizadores, perfis e credenciais de acesso.', (STATE.usuarios || []).filter(usuarioVisivelParaAtual).length), goTo));
+    wrap.appendChild(withBackButton(buildPageHeader('users', 'Utilizadores', 'Gestão de utilizadores, perfis e credenciais de acesso.', (STATE.usuarios || []).filter(usuarioVisivelParaAtual).length), goTo, showForm ? cancel : undefined));
 
     if (!isMasterUser()) {
       wrap.appendChild(h('p', { class: 'readonly-notice', style: 'margin-bottom:16px;' }, 'O seu perfil é Básico: pode consultar Nome Completo e Categoria Profissional, mas não pode ver, editar ou eliminar credenciais de acesso.'));
@@ -23224,23 +23234,31 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
 
   const tipoSelect = h('select', { class: 'select' }, ESCALA_TIPOS_DIA.map(t => h('option', { value: t.key, selected: diaAtual.tipo === t.key ? 'selected' : undefined }, t.label)));
   tipoSelect.value = diaAtual.tipo || 'normal';
-  // Campo de hora com 2 seletores próprios (Horas 00-23 + Minutos 00/30,
+  // Campo de hora com 2 seletores próprios (Horas + Minutos 00/30,
   // pedido explícito 2026-08-09): o `step` do <input type="time"> nativo
   // não resultava — o relógio/scroll do browser continuava a mostrar
   // todos os 60 minutos, ignorando o step. Construído à mão para nunca
-  // permitir escolher um minuto fora de 00/30. O elemento devolvido
-  // (`wrap`) continua a comportar-se como um campo normal para o resto
-  // do código: `.value` lê/escreve sempre "HH:MM" (ou "" sem valor) via
+  // permitir escolher um minuto fora de 00/30 (continuam a suportar
+  // escolher por rato/dedo E escrever o número diretamente — comportamento
+  // nativo de qualquer <select>, não precisa de código à parte). Horas
+  // restritas a 08-23 (horário da farmácia, nunca faz sentido entrada/
+  // pausa fora disso) — `permitirMeiaNoite` acrescenta também "00" no
+  // fundo da lista, só para Saída/Fim Pausa, a representar meia-noite no
+  // fim do dia (convenção já usada no resto do horário — ver
+  // ESCALA_DIAS/buildVistaVertical). O elemento devolvido (`wrap`)
+  // continua a comportar-se como um campo normal para o resto do código:
+  // `.value` lê/escreve sempre "HH:MM" (ou "" sem valor) via
   // getter/setter, e vive dentro de um .field para o toggle de
   // visibilidade (atualizarVisibilidade) continuar a funcionar sem
   // alterações.
-  function campoHora(valorInicial) {
+  function campoHora(valorInicial, permitirMeiaNoite) {
     const wrap = h('div', { class: 'time-picker-custom' });
     const horaSel = h('select', { class: 'time-picker-select' }, [h('option', { value: '' }, '--')]);
-    for (let hVal = 0; hVal < 24; hVal += 1) {
+    for (let hVal = 8; hVal < 24; hVal += 1) {
       const hStr = String(hVal).padStart(2, '0');
       horaSel.appendChild(h('option', { value: hStr }, hStr));
     }
+    if (permitirMeiaNoite) horaSel.appendChild(h('option', { value: '00' }, '00 (meia-noite)'));
     const minSel = h('select', { class: 'time-picker-select' }, [
       h('option', { value: '' }, '--'), h('option', { value: '00' }, '00'), h('option', { value: '30' }, '30'),
     ]);
@@ -23260,14 +23278,15 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     horaSel.addEventListener('change', () => { if (horaSel.value && !minSel.value) minSel.value = '00'; });
     Object.defineProperty(wrap, 'value', {
       get() { return (horaSel.value && minSel.value) ? `${horaSel.value}:${minSel.value}` : ''; },
+
       set(v) { aplicarValor(v); },
     });
     return wrap;
   }
   const entradaInput = campoHora(diaAtual.entrada);
-  const saidaInput = campoHora(diaAtual.saida);
+  const saidaInput = campoHora(diaAtual.saida, true);
   const pausaInicioInput = campoHora(diaAtual.pausaInicio);
-  const pausaFimInput = campoHora(diaAtual.pausaFim);
+  const pausaFimInput = campoHora(diaAtual.pausaFim, true);
   // Caixotes do lixo (pedido explícito 2026-08-09): 1 só ícone limpa
   // Entrada+Saída de uma vez, outro limpa Início+Fim de Pausa/Almoço de
   // uma vez — mais rápido do que apagar campo a campo à mão. Ficam ao
@@ -28202,7 +28221,7 @@ function buildMapa48hPage(container, goTo) {
 
   function build() {
     const wrap = h('div', { class: 'animate-in' });
-    wrap.appendChild(withBackButton(buildPageHeader('heartPulseClock', 'Mapa 48H', 'Agendamento do aparelho MAPA — aparelho único da farmácia.', STATE.mapa48h.length), goTo));
+    wrap.appendChild(withBackButton(buildPageHeader('heartPulseClock', 'Mapa 48H', 'Agendamento do aparelho MAPA — aparelho único da farmácia.', STATE.mapa48h.length), goTo, showForm ? cancel : undefined));
 
     if (showForm) {
       wrap.appendChild(buildRecordForm(mapa48hFormSchema(), draft, {
@@ -29070,7 +29089,7 @@ function buildMapaTarefasPage(container, goTo) {
       container.appendChild(wrap);
       return wrap;
     }
-    wrap.appendChild(withBackButton(buildPageHeader('clipboardCheck', 'Mapa de Tarefas', 'Mapa de responsabilidades da farmácia — quem trata de cada área, e quem substitui.', STATE.mapaTarefas.length), goTo));
+    wrap.appendChild(withBackButton(buildPageHeader('clipboardCheck', 'Mapa de Tarefas', 'Mapa de responsabilidades da farmácia — quem trata de cada área, e quem substitui.', STATE.mapaTarefas.length), goTo, showForm ? cancel : undefined));
 
     if (!podeEditar()) {
       wrap.appendChild(h('p', { class: 'readonly-notice' }, 'Consulta disponível para toda a equipa — adicionar, editar ou eliminar está reservado a Administradores.'));
@@ -29219,7 +29238,7 @@ function buildEmpresasParceirasPage(container, goTo, farmaciaAtiva) {
 
   function build() {
     const wrap = h('div', { class: 'animate-in' });
-    wrap.appendChild(withCustomBackButton(buildPageHeader('briefcase', `Empresas Parceiras · ${farmaciaAtiva}`, `Gestão de Empresas Parceiras da Farmácia ${farmaciaAtiva} — preenchimento automático das entregas desta farmácia.`, undefined), () => goTo('entregas')));
+    wrap.appendChild(withCustomBackButton(buildPageHeader('briefcase', `Empresas Parceiras · ${farmaciaAtiva}`, `Gestão de Empresas Parceiras da Farmácia ${farmaciaAtiva} — preenchimento automático das entregas desta farmácia.`, undefined), () => goTo('entregas'), showForm ? cancel : undefined));
 
     if (showForm) {
       wrap.appendChild(buildRecordForm(empresaParceiraSchema, draft, {
@@ -30199,9 +30218,9 @@ function buildEntregasPage(container, goTo) {
     // farmácia, o nível acima é o ecrã de escolha (não a Página Principal);
     // para os restantes, a Juncal já é o próprio topo da hierarquia local.
     if (isEstafeta() || isAdministrador()) {
-      wrap.appendChild(withCustomBackButton(header, voltarSelecaoFarmacia));
+      wrap.appendChild(withCustomBackButton(header, voltarSelecaoFarmacia, showForm ? cancel : undefined));
     } else {
-      wrap.appendChild(withBackButton(header, goTo));
+      wrap.appendChild(withBackButton(header, goTo, showForm ? cancel : undefined));
     }
     wrap.appendChild(h('h3', { class: 'home-section-title', style: 'margin-bottom:12px;' }, `Farmácia ${farmaciaAtiva}`));
 
@@ -30393,7 +30412,7 @@ function buildRecolhasPage(container, goTo) {
     const wrap = h('div', { class: 'animate-in' });
     const pendentesCount = STATE.recolhas.filter(r => r.estado !== 'Concluída').length;
     const concluidasCount = STATE.recolhas.filter(r => r.estado === 'Concluída').length;
-    wrap.appendChild(withBackButton(buildPageHeader('returnBox', 'Recolhas', 'Gestão de devoluções de produtos.', STATE.recolhas.length), goTo));
+    wrap.appendChild(withBackButton(buildPageHeader('returnBox', 'Recolhas', 'Gestão de devoluções de produtos.', STATE.recolhas.length), goTo, showForm ? cancel : undefined));
 
     if (showForm) {
       const pendenteAgora = editingId && draft.estado !== 'Concluída';
@@ -30537,7 +30556,7 @@ function buildTarefasPage(container, goTo) {
 
   function build() {
     const wrap = h('div', { class: 'animate-in' });
-    wrap.appendChild(withBackButton(buildPageHeader('clipboard', 'Tarefas', 'Lista de tarefas de trabalho da equipa.', STATE.tarefas.length), goTo));
+    wrap.appendChild(withBackButton(buildPageHeader('clipboard', 'Tarefas', 'Lista de tarefas de trabalho da equipa.', STATE.tarefas.length), goTo, showForm ? cancel : undefined));
 
     if (!isMasterUser()) {
       wrap.appendChild(h('p', { class: 'readonly-notice', style: 'margin-bottom:16px;' }, 'Só os perfis Master e Administrador podem criar, editar ou eliminar tarefas. O seu perfil só pode consultar.'));
@@ -30866,7 +30885,7 @@ function buildFormacoesPage(container, goTo) {
   }
   function build() {
     const wrap = h('div', { class: 'animate-in' });
-    wrap.appendChild(withBackButton(buildPageHeader('graduation', 'Formações', 'Registo e acompanhamento de formações realizadas pela equipa.', STATE.formacoes.length), goTo));
+    wrap.appendChild(withBackButton(buildPageHeader('graduation', 'Formações', 'Registo e acompanhamento de formações realizadas pela equipa.', STATE.formacoes.length), goTo, showForm ? cancel : undefined));
 
     if (showForm) {
       wrap.appendChild(buildFormacaoForm());
