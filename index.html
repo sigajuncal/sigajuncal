@@ -807,8 +807,8 @@
      PREFIXO_NUMERO_PEDIDO) — compacta, sempre centrada, nunca deve
      "alargar" a tabela. */
   .cell-numero-pedido{white-space:nowrap;}
-  .badge-numero-pedido{display:inline-block;font-size:11px;font-weight:700;
-    color:var(--pharm-600);letter-spacing:.2px;}
+  .badge-numero-pedido{display:inline-block;font-size:11px;font-weight:500;
+    color:var(--pharm-300);letter-spacing:.1px;}
   /* Truncagem com reticências para campos de texto potencialmente longos
      nas tabelas de Pedidos (Nome do Cliente, Produto, Nome do Artigo,
      Manipulado) — o title nativo do browser mostra o texto completo ao
@@ -2940,6 +2940,7 @@ const ICONS = {
   plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
   trash: '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-.9 14a2 2 0 0 1-2 1.9H7.9a2 2 0 0 1-2-1.9L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
   eye: '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>',
+  eyeOff: '<path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M2 2l20 20"/>',
   pencil: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>',
   shoppingBag: '<path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="m9 13 2 2 4-4"/>',
   message: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/>',
@@ -4364,9 +4365,10 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   async function bloquearIntervalosPersonalizados(pares) {
     const ocupadas = new Set(marcacoesDoDia().map(m => m.hora));
     const grade = agendaSlotsPara(prestadorKey);
-    // Junta as vagas LIVRES de todos os intervalos [de, ate) num único
+    // Junta as vagas LIVRES de todos os intervalos [de, ate] (fechado dos
+    // dois lados — "Até" inclusive, pedido explícito 2026-08-09) num único
     // conjunto (sem duplicar horas se os intervalos se tocarem).
-    const porBloquear = [...new Set(pares.flatMap(par => grade.filter(hora => hora >= par.de && hora < par.ate)))].filter(hora => !ocupadas.has(hora));
+    const porBloquear = [...new Set(pares.flatMap(par => grade.filter(hora => hora >= par.de && hora <= par.ate)))].filter(hora => !ocupadas.has(hora));
     if (!porBloquear.length) { showDbErrorToast('Não há vagas livres nesses intervalos para bloquear'); return; }
     const criados = await Promise.all(porBloquear.map(hora =>
       dbInsert('agendaMarcacoes', { prestadorKey, data: dateISO, hora, duracaoMin: agendaSlotMinPara(prestadorKey), tipoLinha: 'bloqueado', responsavel: currentUserName() })
@@ -4396,7 +4398,10 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     function validarPar(de, ate, rotulo) {
       if (!de && !ate) return null; // por preencher (só válido no 2.º)
       if (!de || !ate) return { erro: `${rotulo}: preencha as duas horas (ou deixe ambas vazias).` };
-      if (de >= ate) return { erro: `${rotulo}: a hora inicial tem de ser anterior à final.` };
+      // "Até" é INCLUSIVE (pedido explícito 2026-08-09 — o slot da hora
+      // "Até" também fica bloqueado): de === ate é válido, bloqueia só
+      // esse único slot; só de > ate é que não faz sentido.
+      if (de > ate) return { erro: `${rotulo}: a hora inicial não pode ser depois da final.` };
       return { de, ate };
     }
     const aplicarBtn = h('button', { class: 'btn btn-primary' }, 'Bloquear');
@@ -4423,7 +4428,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
         h('p', { style: 'font-size:12px;font-weight:800;color:var(--pharm-700);margin:0 0 4px;' }, rotulo + (nota ? ` ${nota}` : '')),
         h('div', { style: 'display:flex;gap:12px;align-items:end;justify-content:center;' }, [
           h('div', { class: 'field field-xs' }, [h('label', {}, 'Das'), de]),
-          h('div', { class: 'field field-xs' }, [h('label', {}, 'Até (exclusive)'), ate]),
+          h('div', { class: 'field field-xs' }, [h('label', {}, 'Até'), ate]),
         ]),
       ]);
     }
@@ -23837,9 +23842,9 @@ function buildHorariosPage(container, goTo) {
   // um Seletor de Data nativo para saltar diretamente para qualquer semana
   // (a app ajusta sempre para a Segunda-feira dessa semana).
   function buildNavegacaoSemanas(extraBotoes) {
-    const btnAnterior = h('button', { class: 'btn-fab-sm', title: 'Semana anterior', 'aria-label': 'Semana anterior' }, Icon('arrowleft', { size: 15, strokeWidth: 2.2 }));
+    const btnAnterior = h('button', { class: 'btn-fab-sm tone-gray', title: 'Semana anterior', 'aria-label': 'Semana anterior' }, Icon('arrowleft', { size: 15, strokeWidth: 2.2 }));
     btnAnterior.addEventListener('click', irSemanaAnterior);
-    const btnSeguinte = h('button', { class: 'btn-fab-sm', title: 'Semana seguinte', 'aria-label': 'Semana seguinte' }, Icon('arrowright', { size: 15, strokeWidth: 2.2 }));
+    const btnSeguinte = h('button', { class: 'btn-fab-sm tone-gray', title: 'Semana seguinte', 'aria-label': 'Semana seguinte' }, Icon('arrowright', { size: 15, strokeWidth: 2.2 }));
     btnSeguinte.addEventListener('click', irSemanaSeguinte);
     const dateInput = h('input', { class: 'input', type: 'date', style: 'max-width:165px;' });
     dateInput.value = dataSemanaSelecionada();
@@ -23858,19 +23863,31 @@ function buildHorariosPage(container, goTo) {
     //      já esteja ligado ou não, para o gestor saber de imediato se
     //      um colaborador comum já consegue ver este rascunho ou não.
     //   🟢 verde — publicado, visível para toda a gente.
+    // Pedido explícito 2026-08-09: "(Não Visível para a Equipa)"/"(Em
+    // Teste)" reduzidos a um pequeno ícone de olho (aberto = visível,
+    // traçado = não visível) em vez de texto extra — menos poluição
+    // visual; o significado completo fica sempre disponível no title
+    // (hover), nunca só "adivinhado" pelo ícone sozinho.
     const estadoBadge = (() => {
       const s = semanaSelecionada();
       if (!s) return h('span', { class: 'badge badge-gray' }, '⚪ Sem Horário Definido');
       if (s.estado === 'publicado') return h('span', { class: 'badge badge-green' }, '🟢 Horário Oficial Publicado');
-      return h('span', { class: 'badge badge-orange' }, escalaMostrarRascunhosEquipa(s)
-        ? '🟠 Rascunho Visível (Em Teste)'
-        : '🟠 Rascunho em Edição (Não Visível para a Equipa)');
+      const visivel = escalaMostrarRascunhosEquipa(s);
+      return h('span', { class: 'badge badge-orange', style: 'display:inline-flex;align-items:center;gap:5px;', title: visivel ? 'Rascunho visível à equipa (Em Teste)' : 'Rascunho não visível à equipa' }, [
+        '🟠 Rascunho em Edição',
+        Icon(visivel ? 'eye' : 'eyeOff', { size: 13, strokeWidth: 2.2 }),
+      ]);
     })();
     const varianteBadge = (() => {
       const s = semanaSelecionada();
       if (!s || !s.variante || s.variante === 'com_mariana') return null;
+      // Rótulo curto de propósito (pedido explícito 2026-08-09) — o
+      // significado completo ("Aplica BASE 2") já está explicado no
+      // dropdown de "Gerir Posições"/"Gerador", onde a variante é
+      // escolhida; aqui só interessa identificar de relance.
+      const ROTULOS_CURTOS_VARIANTE = { sem_mariana: 'Mariana FDS' };
       const info = ESCALA_VARIANTES.find(v => v.key === s.variante);
-      return h('span', { class: 'badge badge-purple', title: 'Variante usada ao gerar esta semana' }, info ? info.label : s.variante);
+      return h('span', { class: 'badge badge-purple', title: info ? info.label : 'Variante usada ao gerar esta semana' }, ROTULOS_CURTOS_VARIANTE[s.variante] || (info ? info.label : s.variante));
     })();
     // Rótulo bem visível com o intervalo completo da semana selecionada
     // (ex: "Semana de 3 a 9 de Agosto de 2026") — junto aos botões de
@@ -24349,12 +24366,22 @@ function buildHorariosPage(container, goTo) {
     // editável nesta vista — "A Minha Semana"/"Escala da Equipa" são
     // estritamente de leitura; toda a edição vive no separador "Gerador
     // de Horário" (ver buildVistaGerador).
-    const viewToggleEquipa = h('div', { class: 'tabs-row', style: 'margin-bottom:14px;' }, [
+    // Organização (pedido explícito 2026-08-09): já não é uma linha só
+    // sua — em modo Timeline soma-se à MESMA linha dos botões de dia
+    // (Segunda/Terça/…), à direita, para não "empilhar" linhas de botões
+    // sem necessidade (ver extraBotoesDireita em buildVistaVertical). Em
+    // Vista em Tabela não há botões de dia — fica sozinho, alinhado à
+    // direita da mesma forma.
+    const botoesViewToggleEquipa = [
       h('button', { class: 'tab-btn tone-blue' + (viewModeEquipa === 'vertical' ? ' active' : ''), onclick: () => { definirViewModeEquipa('vertical'); rerender(); } }, [Icon('clock', { size: 14 }), h('span', {}, 'Timeline')]),
       h('button', { class: 'tab-btn tone-blue' + (viewModeEquipa === 'tabela' ? ' active' : ''), onclick: () => { definirViewModeEquipa('tabela'); rerender(); } }, 'Vista em Tabela'),
-    ]);
-    wrap.appendChild(viewToggleEquipa);
-    wrap.appendChild(viewModeEquipa === 'vertical' ? buildVistaVertical(semana, false) : buildGrelhaEquipa(semana, false));
+    ];
+    if (viewModeEquipa === 'vertical') {
+      wrap.appendChild(buildVistaVertical(semana, false, botoesViewToggleEquipa));
+    } else {
+      wrap.appendChild(h('div', { style: 'display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-bottom:14px;' }, botoesViewToggleEquipa));
+      wrap.appendChild(buildGrelhaEquipa(semana, false));
+    }
     // Feed partilhado (múltiplas entradas, criar/editar/eliminar próprias
     // notas, validação exclusiva da Direção) — substitui o antigo bloco
     // único de "Observações" que era comum a todo o módulo.
@@ -26666,7 +26693,7 @@ function buildHorariosPage(container, goTo) {
         onclick: () => requireAuth(() => limparRascunhoSemana(semana)),
       }, [Icon('trash', { size: 14, strokeWidth: 2.2 }), ' Limpar Horário']));
     }
-    return h('div', { style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;' }, kids);
+    return h('div', { style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;margin-bottom:14px;' }, kids);
   }
 
   // ---- Separador "Gerador / Vista Vertical" (reservado à gestão) ----
@@ -26682,18 +26709,20 @@ function buildHorariosPage(container, goTo) {
     const semConfiguracao = escalaConfiguracaoEmFalta();
     const semana = semanaSelecionada();
     const semanaJaExiste = !!semana;
-    // Botão principal de estado (Publicar/Voltar a Rascunho) — passado
-    // como botão extra da MESMA linha de navegação semanal (← Data →
-    // Hoje + badge de estado), nunca numa barra própria por baixo:
-    // cabeçalho limpo, uma única linha de ação/navegação. Nunca aparece
-    // numa semana já passada (congelada para sempre, ver
-    // escalaSemanaCongelada) nem antes de a semana existir.
+    // Botão principal de estado (Publicar/Voltar a Rascunho) — construído
+    // aqui mas só usado mais abaixo, junto ao alternador Timeline/Vista em
+    // Tabela (grupo "botoesDireitaGerador", sempre alinhado à direita —
+    // pedido explícito 2026-08-09; antes vivia na linha de navegação
+    // semanal, ← Data → Hoje/badges, com risco de quebrar linha em ecrãs
+    // mais estreitos). Nunca aparece numa semana já passada (congelada
+    // para sempre, ver escalaSemanaCongelada) nem antes de a semana
+    // existir.
     const acaoEstadoBtn = (semana && !escalaSemanaNoPassado(semana))
       ? (semana.estado === 'publicado'
           ? h('button', { class: 'btn-revert', onclick: () => requireAuth(() => reabrirSemana(semana)) }, [Icon('undo', { size: 15, strokeWidth: 2.2 }), ' ↩️ Voltar a Rascunho'])
           : h('button', { class: 'btn btn-primary', onclick: () => requireAuth(() => publicarSemana(semana)) }, [Icon('checkcircle', { size: 15, strokeWidth: 2.2 }), ' 📣 Publicar Horário Oficial']))
       : null;
-    const nav = buildNavegacaoSemanas(acaoEstadoBtn ? [acaoEstadoBtn] : []);
+    const nav = buildNavegacaoSemanas();
     const topRow = h('div', { style: 'display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px;' });
     topRow.appendChild(nav);
     if (!semanaJaExiste) {
@@ -26722,17 +26751,28 @@ function buildHorariosPage(container, goTo) {
       return wrap;
     }
 
-    const viewToggle = h('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:14px;' }, [
-      h('div', { class: 'tabs-row', style: 'margin:0;' }, [
-        h('button', { class: 'tab-btn tone-blue' + (viewModeGerador === 'vertical' ? ' active' : ''), onclick: () => { definirViewModeGerador('vertical'); rerender(); } }, [Icon('clock', { size: 14 }), h('span', {}, 'Timeline')]),
-        h('button', { class: 'tab-btn tone-blue' + (viewModeGerador === 'tabela' ? ' active' : ''), onclick: () => { definirViewModeGerador('tabela'); rerender(); } }, 'Vista em Tabela'),
-      ]),
-      buildControlosGeradorBarra(semana, semConfiguracao),
-    ]);
-    wrap.appendChild(viewToggle);
+    // Organização (pedido explícito 2026-08-09): Publicar/Voltar a
+    // Rascunho já não vive na linha de navegação semanal (arrastava o
+    // botão para o meio de ← data → Hoje/badges, com risco de quebrar
+    // linha em ecrãs mais estreitos) — junta-se agora ao alternador
+    // Timeline/Vista em Tabela, os dois SEMPRE alinhados à direita. Em
+    // modo Timeline, este grupo soma-se à MESMA linha dos botões de dia
+    // (à esquerda, como já estavam — ver extraBotoesDireita em
+    // buildVistaVertical); em Vista em Tabela, que não tem botões de dia,
+    // fica sozinho, alinhado à direita da mesma forma — nunca muda de
+    // sítio consoante a vista escolhida.
+    const timelineBtn = h('button', { class: 'tab-btn tone-blue' + (viewModeGerador === 'vertical' ? ' active' : ''), onclick: () => { definirViewModeGerador('vertical'); rerender(); } }, [Icon('clock', { size: 14 }), h('span', {}, 'Timeline')]);
+    const vistaTabelaBtn = h('button', { class: 'tab-btn tone-blue' + (viewModeGerador === 'tabela' ? ' active' : ''), onclick: () => { definirViewModeGerador('tabela'); rerender(); } }, 'Vista em Tabela');
+    const botoesDireitaGerador = [acaoEstadoBtn, timelineBtn, vistaTabelaBtn].filter(Boolean);
+    wrap.appendChild(buildControlosGeradorBarra(semana, semConfiguracao));
 
     const permitirEdicao = true; // este separador é sempre de gestão (só Master chega aqui — ver build())
-    wrap.appendChild(viewModeGerador === 'vertical' ? buildVistaVertical(semana, permitirEdicao) : buildGrelhaEquipa(semana, permitirEdicao));
+    wrap.appendChild(viewModeGerador === 'vertical'
+      ? buildVistaVertical(semana, permitirEdicao, botoesDireitaGerador)
+      : h('div', {}, [
+          h('div', { style: 'display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-bottom:14px;' }, botoesDireitaGerador),
+          buildGrelhaEquipa(semana, permitirEdicao),
+        ]));
     wrap.appendChild(buildNotasDirecao(semana, permitirEdicao));
     return wrap;
   }
@@ -26894,7 +26934,7 @@ function buildHorariosPage(container, goTo) {
       alertas.map(a => h('div', { class: 'escala-cobertura-barra', style: 'margin:0;' + (a.nivel === 'critico' ? 'background:#fef2f2;border:1px solid #fecaca;color:#991b1b;' : 'background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;') }, a.texto)));
   }
 
-  function buildVistaVertical(semana, permitirEdicao) {
+  function buildVistaVertical(semana, permitirEdicao, extraBotoesDireita) {
     const editavel = !!permitirEdicao && !escalaSemanaCongelada(semana);
     const HORA_INICIO = 8, HORA_FIM = 24; // 08:00 às 24:00
     const totalHoras = HORA_FIM - HORA_INICIO;
@@ -26903,8 +26943,18 @@ function buildHorariosPage(container, goTo) {
     // rótulo "Semana de X a Y..." acima, nunca a semana já gerada em si
     // (que pode ainda nem existir — "Gerar Rascunho" por clicar).
     const diasDoMesVertical = escalaDiasDoMesDaSemanaISO(dataSemanaSelecionada());
-    const diaTabs = h('div', { class: 'tabs-row', style: 'margin-bottom:14px;' },
-      ESCALA_DIAS.map(d => h('button', { class: 'tab-btn tone-green' + (diaVerticalSelecionado === d.key ? ' active' : ''), onclick: () => { diaVerticalSelecionado = d.key; rerender(); } }, `${d.label}, ${diasDoMesVertical[d.key]}`)));
+    const diaTabsBotoes = ESCALA_DIAS.map(d => h('button', { class: 'tab-btn tone-green' + (diaVerticalSelecionado === d.key ? ' active' : ''), onclick: () => { diaVerticalSelecionado = d.key; rerender(); } }, `${d.label}, ${diasDoMesVertical[d.key]}`));
+    // extraBotoesDireita (opcional — Publicar/Timeline/Vista em Tabela,
+    // ver buildVistaGerador/buildVistaEquipa): pedido explícito
+    // 2026-08-09 para nunca "empilhar" mais uma linha de botões só para
+    // isto — soma-se à MESMA linha dos dias, sempre à direita, os dias
+    // continuam exatamente onde estavam (só à esquerda).
+    const diaTabs = (extraBotoesDireita && extraBotoesDireita.length)
+      ? h('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:14px;' }, [
+          h('div', { class: 'tabs-row', style: 'margin:0;' }, diaTabsBotoes),
+          h('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;' }, extraBotoesDireita),
+        ])
+      : h('div', { class: 'tabs-row', style: 'margin-bottom:14px;' }, diaTabsBotoes);
     const diaKey = ESCALA_DIAS.some(d => d.key === diaVerticalSelecionado) ? diaVerticalSelecionado : 'seg';
     // Data ISO exata do dia selecionado — necessária para cruzar com
     // escala_ferias (que guarda intervalos de datas, não "dias da
