@@ -22060,9 +22060,36 @@ function escalaDataDoDia(semanaInicioISO, diaKey) {
 // Ausência (Férias/Extra/Falta/Baixa/Indisponibilidade) de um colaborador
 // que cobre uma data exata — usada tanto na geração automática da semana
 // como no aviso de sobreposições do painel Férias.
+// Fim de semana "arrastado" por uma semana completa de férias (pedido
+// explícito): quem tira os 5 dias úteis de uma semana (Segunda a Sexta,
+// contando só dias úteis reais — um feriado no meio não exige marcação)
+// também não trabalha nesse Sábado e Domingo, mesmo que a app nunca
+// precise (nem deva) marcar esses 2 dias no calendário de férias — não
+// contam para o saldo (escalaContarDiasUteis já exclui Sábado/Domingo).
+// Por isso, quando a data cai a Sábado/Domingo sem nenhum registo
+// explícito em escala_ferias, mas TODOS os dias úteis de Segunda a Sexta
+// dessa mesma semana estão cobertos por Férias/Dia Extra, esse fim de
+// semana é tratado como a mesma ausência (devolve o registo da Sexta) —
+// só afeta a apresentação/geração do horário, nunca escreve nada em
+// escala_ferias nem nos saldos.
 function escalaAusenciaDoDia(utilizadorId, dataISO) {
   if (!utilizadorId || !dataISO) return null;
-  return (STATE.escalaFerias || []).find(f => f.utilizadorId === utilizadorId && f.dataInicio <= dataISO && dataISO <= f.dataFim) || null;
+  const direta = (STATE.escalaFerias || []).find(f => f.utilizadorId === utilizadorId && f.dataInicio <= dataISO && dataISO <= f.dataFim);
+  if (direta) return direta;
+  const dow = new Date(dataISO + 'T12:00:00').getDay(); // 0=Dom, 6=Sáb
+  if (dow !== 0 && dow !== 6) return null;
+  const segunda = escalaSegundaFeiraDaSemanaDeISO(dataISO);
+  let ausenciaSemanaCompleta = null;
+  for (let i = 0; i < 5; i += 1) {
+    const d = new Date(segunda + 'T12:00:00');
+    d.setDate(d.getDate() + i);
+    const diaISO = dateToISO(d);
+    if (!escalaDiaUtil(diaISO)) continue; // feriado no meio da semana não exige marcação própria
+    const ausenciaDia = (STATE.escalaFerias || []).find(f => f.utilizadorId === utilizadorId && ESCALA_TIPOS_CONTAM_SOBREPOSICAO.includes(f.tipo) && f.dataInicio <= diaISO && diaISO <= f.dataFim);
+    if (!ausenciaDia) return null;
+    ausenciaSemanaCompleta = ausenciaDia;
+  }
+  return ausenciaSemanaCompleta;
 }
 // Emoji a mostrar quando um turno já atribuído na escala fica sobreposto
 // por uma ausência registada em escala_ferias (ver escalaAusenciaDoDia) —
@@ -22918,7 +22945,15 @@ function escalaAtribuirGrupoRotativo(grupo, lista, semanaInicioISO) {
       let idx = -1;
       if (linhaAnterior.colaboradorId) idx = lista.findIndex(e => e.utilizadorId === linhaAnterior.colaboradorId);
       if (idx === -1 && linhaAnterior.colaboradorNome) idx = lista.findIndex(e => String(e.nome || '').trim() === String(linhaAnterior.colaboradorNome || '').trim());
-      indiceInicial = idx === -1 ? 0 : (idx + 1) % n;
+      // Direção da rotação (pedido explícito): quem ocupava A1 numa semana
+      // deve passar a ocupar A2 na semana seguinte (não o contrário) — ou
+      // seja, cada colaborador AVANÇA de posição (A1→A2→A3...) semana a
+      // semana. Andar para trás na Lista Única (idx-1, não idx+1) produz
+      // exatamente esse efeito: o cursor que define quem entra em A1 na
+      // semana nova recua 1 posição na lista, o que empurra quem estava em
+      // A1 para A2 (e assim sucessivamente) em vez de trazer quem estava
+      // em A2 para A1.
+      indiceInicial = idx === -1 ? 0 : (idx - 1 + n) % n;
     }
   }
   // Percorre a lista a partir de "cursor", posição a posição, e nunca pára
@@ -23185,8 +23220,12 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   // "HH:MM" de cada vez. Só aplicado aqui, no editor de célula do
   // Horário (ligarFormatacaoHoraInteligente, o padrão de texto livre
   // usado no resto da app, mantém-se inalterado nos outros módulos).
+  // step=1800 (30 min, pedido explícito 2026-08-09): o seletor nativo de
+  // hora passa a saltar só entre :00 e :30 em vez de minuto a minuto —
+  // não impede escrever à mão um valor fora dessa grelha, só torna o
+  // relógio/scroll do browser mais rápido de usar para o caso comum.
   function campoHora(valorInicial) {
-    const el = h('input', { class: 'input', type: 'time' });
+    const el = h('input', { class: 'input', type: 'time', step: '1800' });
     el.value = valorInicial || '';
     return el;
   }
@@ -23194,6 +23233,13 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   const saidaInput = campoHora(diaAtual.saida);
   const pausaInicioInput = campoHora(diaAtual.pausaInicio);
   const pausaFimInput = campoHora(diaAtual.pausaFim);
+  // Caixotes do lixo (pedido explícito 2026-08-09): 1 só ícone limpa
+  // Entrada+Saída de uma vez, outro limpa Início+Fim de Pausa/Almoço de
+  // uma vez — mais rápido do que apagar campo a campo à mão.
+  const limparEntradaSaidaBtn = h('button', { type: 'button', class: 'btn-fab-sm tone-gray', title: 'Limpar Entrada e Saída', 'aria-label': 'Limpar Entrada e Saída' }, Icon('trash', { size: 12, strokeWidth: 2.2 }));
+  limparEntradaSaidaBtn.addEventListener('click', () => { entradaInput.value = ''; saidaInput.value = ''; });
+  const limparPausaBtn = h('button', { type: 'button', class: 'btn-fab-sm tone-gray', title: 'Limpar Início e Fim de Pausa/Almoço', 'aria-label': 'Limpar Início e Fim de Pausa/Almoço' }, Icon('trash', { size: 12, strokeWidth: 2.2 }));
+  limparPausaBtn.addEventListener('click', () => { pausaInicioInput.value = ''; pausaFimInput.value = ''; });
   // Item 2 (Horas Extra — HE): quantidade em incrementos de meia hora
   // (select fechado, nunca texto livre, para nunca gravar um valor tipo
   // "1.3h" por engano) + intervalo Início/Fim em que foi realizada.
@@ -23503,6 +23549,15 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     return h('div', { class: 'span2', style: 'margin-top:4px;padding-top:10px;border-top:1px dashed var(--pharm-150,#e2e8f0);' },
       h('div', { class: 'form-grid' }, filhos));
   }
+  // Caixa cinzenta para a Pausa/Almoço (pedido explícito 2026-08-09):
+  // mesmo tratamento visual (caixa com fundo) das Tarefas, mas em tom
+  // acizentado neutro em vez do verde da app — a Pausa é preenchimento
+  // pontual (nem todos os dias têm), tal como as Tarefas, mas não deve
+  // competir visualmente com Entrada/Saída (sempre preenchidos).
+  function secaoBoxCinza(filhos) {
+    return h('div', { class: 'span2', style: 'background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:14px 16px 16px;margin-top:6px;' },
+      h('div', { class: 'form-grid' }, filhos));
+  }
   const tarefaBlocosFields = tarefaBlocos.flatMap((bloco, i) => [
     h('div', { class: 'field span2' }, [
       h('label', { style: 'display:flex;align-items:center;justify-content:space-between;' }, [`Tarefa ${i + 1}`, bloco.removerBtn]),
@@ -23536,9 +23591,17 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       overrideRow,
       h('div', { class: 'field span2' }, [h('label', {}, 'Tipo'), tipoSelect]),
       h('div', { class: 'field' }, [h('label', {}, 'Entrada'), entradaInput]),
-      h('div', { class: 'field' }, [h('label', {}, 'Saída'), saidaInput]),
-      h('div', { class: 'field' }, [h('label', {}, 'Início Pausa/Almoço'), pausaInicioInput]),
-      h('div', { class: 'field' }, [h('label', {}, 'Fim Pausa/Almoço'), pausaFimInput]),
+      h('div', { class: 'field' }, [
+        h('label', { style: 'display:flex;align-items:center;justify-content:space-between;' }, ['Saída', limparEntradaSaidaBtn]),
+        saidaInput,
+      ]),
+      secaoBoxCinza([
+        h('div', { class: 'field' }, [h('label', {}, 'Início Pausa/Almoço'), pausaInicioInput]),
+        h('div', { class: 'field' }, [
+          h('label', { style: 'display:flex;align-items:center;justify-content:space-between;' }, ['Fim Pausa/Almoço', limparPausaBtn]),
+          pausaFimInput,
+        ]),
+      ]),
       ...(podeBancoHoras ? [
         secaoBoxMuda([heSecaoTitulo, ...blocosHoraFields(heSecao.blocos)]),
         secaoBoxMuda([bancoSecaoTitulo, ...blocosHoraFields(bancoSecao.blocos)]),
