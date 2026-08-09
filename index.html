@@ -23050,6 +23050,10 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   heFimInput.value = diaAtual.heFim || '';
   ligarFormatacaoHoraInteligente(heFimInput);
   const bancoIntervalosIniciais = Array.isArray(diaAtual.bancoHorasIntervalos) ? diaAtual.bancoHorasIntervalos : [];
+  // Mesma divulgação progressiva das Tarefas (pedido explícito
+  // 2026-08-09) — começa só com o Intervalo 1 visível; "+ Adicionar
+  // Intervalo" revela o 2º, até ao máximo de 2.
+  let bancoIntervalosVisiveis = Math.max(1, bancoIntervalosIniciais.length);
   const bancoHorasBlocos = [0, 1].map(i => {
     const inicial = bancoIntervalosIniciais[i] || { inicio: '', fim: '' };
     const inicioInput = h('input', { class: 'input', placeholder: 'HH:MM', maxlength: '5' });
@@ -23058,8 +23062,16 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     const fimInput = h('input', { class: 'input', placeholder: 'HH:MM', maxlength: '5' });
     fimInput.value = inicial.fim || '';
     ligarFormatacaoHoraInteligente(fimInput);
-    return { inicioInput, fimInput };
+    const removerBtn = h('button', { type: 'button', class: 'btn-link del' }, 'Remover');
+    removerBtn.addEventListener('click', () => {
+      inicioInput.value = ''; fimInput.value = '';
+      bancoIntervalosVisiveis = Math.max(1, i);
+      atualizarVisibilidade();
+    });
+    return { inicioInput, fimInput, removerBtn };
   });
+  const addIntervaloBtn = h('button', { type: 'button', class: 'btn btn-secondary', style: 'padding:6px 12px;font-size:12.5px;' }, [Icon('plus', { size: 13 }), ' Adicionar Intervalo']);
+  addIntervaloBtn.addEventListener('click', () => { if (bancoIntervalosVisiveis < 2) { bancoIntervalosVisiveis++; atualizarVisibilidade(); } });
   // ---- Tarefas/Cargos Especiais (Chefe de Turno, Encomenda, Conferência,
   // Reunião, ou "Outro" com texto livre) — ATÉ 3 no mesmo turno, cada uma
   // com o seu próprio intervalo Início/Fim. Opcional, só faz sentido num
@@ -23070,6 +23082,12 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   // ver definição da função — nunca perde dados gravados antes desta
   // funcionalidade existir). ----
   const tarefasIniciais = escalaTarefasDoDia(diaAtual);
+  // Divulgação progressiva (pedido explícito 2026-08-09): começa só com 1
+  // campo de Tarefa visível — "+ Adicionar Tarefa" revela o 2º/3º só
+  // quando for mesmo preciso, em vez de mostrar sempre os 3 vazios de
+  // uma vez. Ao reabrir um dia que já tinha 2 ou 3 tarefas gravadas,
+  // aparecem logo todas as que já tinham valor (nunca escondidas).
+  let tarefasVisiveis = Math.max(1, tarefasIniciais.length);
   const tarefaBlocos = [0, 1, 2].map(i => {
     const inicial = tarefasIniciais[i] || { tipo: '', outro: '', inicio: '', fim: '' };
     // Chaves "legado:true" (ex: "encomenda" antiga) nunca aparecem como
@@ -23101,19 +23119,47 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
         tarefaFimInput.value = info.horaSugerida.fim;
       }
     });
-    return { tarefaSelect, tarefaOutroInput, tarefaInicioInput, tarefaFimInput };
+    // "Remover" (só aparece no ÚLTIMO bloco visível, quando há mais do
+    // que 1) — limpa os campos e recolhe de volta a lista, em vez de
+    // deixar uma linha "Nenhuma" pendurada a ocupar espaço.
+    const removerBtn = h('button', { type: 'button', class: 'btn-link del' }, 'Remover');
+    removerBtn.addEventListener('click', () => {
+      tarefaSelect.value = ''; tarefaOutroInput.value = ''; tarefaInicioInput.value = ''; tarefaFimInput.value = '';
+      tarefasVisiveis = Math.max(1, i);
+      atualizarVisibilidade();
+    });
+    return { tarefaSelect, tarefaOutroInput, tarefaInicioInput, tarefaFimInput, removerBtn };
   });
-  const tarefasSecaoTitulo = h('p', { class: 'field-helper-text', style: 'grid-column:1/-1;margin:6px 0 -4px;font-weight:700;color:var(--pharm-600);' }, 'Tarefas / Cargos Especiais (até 3, opcional)');
-  const heSecaoTitulo = h('p', { class: 'field-helper-text', style: 'grid-column:1/-1;margin:6px 0 -4px;font-weight:700;color:var(--pharm-600);' }, '⏱️ Horas Extra (HE)');
-  const bancoSecaoTitulo = h('p', { class: 'field-helper-text', style: 'grid-column:1/-1;margin:6px 0 -4px;font-weight:700;color:var(--pharm-600);' }, '🏦 Descontar Horas de Banco (até 2 intervalos)');
+  const addTarefaBtn = h('button', { type: 'button', class: 'btn btn-secondary', style: 'padding:6px 12px;font-size:12.5px;' }, [Icon('plus', { size: 13 }), ' Adicionar Tarefa']);
+  addTarefaBtn.addEventListener('click', () => { if (tarefasVisiveis < 3) { tarefasVisiveis++; atualizarVisibilidade(); } });
+  const tarefasSecaoTitulo = h('div', { class: 'span2', style: 'display:flex;align-items:center;justify-content:space-between;gap:10px;margin:10px 0 -2px;' }, [
+    h('p', { class: 'field-helper-text', style: 'margin:0;font-weight:700;color:var(--pharm-600);' }, 'Tarefas / Cargos Especiais (opcional, até 3)'),
+    addTarefaBtn,
+  ]);
+  const heSecaoTitulo = h('p', { class: 'field-helper-text', style: 'grid-column:1/-1;margin:10px 0 -2px;font-weight:700;color:var(--pharm-600);' }, '⏱️ Horas Extra (HE)');
+  const bancoSecaoTitulo = h('div', { class: 'span2', style: 'display:flex;align-items:center;justify-content:space-between;gap:10px;margin:10px 0 -2px;' }, [
+    h('p', { class: 'field-helper-text', style: 'margin:0;font-weight:700;color:var(--pharm-600);' }, '🏦 Descontar Horas de Banco (opcional, até 2 intervalos)'),
+    addIntervaloBtn,
+  ]);
   const errorEl = h('p', { class: 'form-error', style: 'display:none;' }, '');
 
   function camposHorarioVisiveis() { return tipoSelect.value === 'normal'; }
-  function atualizarVisibilidadeTarefaBloco(bloco) {
-    const temTarefa = camposHorarioVisiveis() && !!bloco.tarefaSelect.value;
+  function atualizarVisibilidadeTarefaBloco(bloco, i) {
+    const visivel = camposHorarioVisiveis() && i < tarefasVisiveis;
+    bloco.tarefaSelect.closest('.field').style.display = visivel ? '' : 'none';
+    const temTarefa = visivel && !!bloco.tarefaSelect.value;
     bloco.tarefaOutroInput.closest('.field').style.display = (temTarefa && bloco.tarefaSelect.value === 'outro') ? '' : 'none';
     bloco.tarefaInicioInput.closest('.field').style.display = temTarefa ? '' : 'none';
     bloco.tarefaFimInput.closest('.field').style.display = temTarefa ? '' : 'none';
+    // "Remover" só no último bloco visível (e só quando há mais do que 1
+    // — nunca no único campo de Tarefa, que fica sempre disponível).
+    bloco.removerBtn.style.display = (visivel && i === tarefasVisiveis - 1 && tarefasVisiveis > 1) ? '' : 'none';
+  }
+  function atualizarVisibilidadeBancoBloco(bloco, i) {
+    const visivel = camposHorarioVisiveis() && i < bancoIntervalosVisiveis;
+    bloco.inicioInput.closest('.field').style.display = visivel ? '' : 'none';
+    bloco.fimInput.closest('.field').style.display = visivel ? '' : 'none';
+    bloco.removerBtn.style.display = (visivel && i === bancoIntervalosVisiveis - 1 && bancoIntervalosVisiveis > 1) ? '' : 'none';
   }
   function atualizarVisibilidade() {
     const on = camposHorarioVisiveis();
@@ -23122,24 +23168,20 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     pausaInicioInput.closest('.field').style.display = on ? '' : 'none';
     pausaFimInput.closest('.field').style.display = on ? '' : 'none';
     tarefasSecaoTitulo.style.display = on ? '' : 'none';
-    tarefaBlocos.forEach(bloco => {
-      bloco.tarefaSelect.closest('.field').style.display = on ? '' : 'none';
-      atualizarVisibilidadeTarefaBloco(bloco);
-    });
+    addTarefaBtn.style.display = tarefasVisiveis < 3 ? '' : 'none';
+    tarefaBlocos.forEach((bloco, i) => atualizarVisibilidadeTarefaBloco(bloco, i));
     if (podeBancoHoras) {
       heSecaoTitulo.style.display = on ? '' : 'none';
       heQtdSelect.closest('.field').style.display = on ? '' : 'none';
       heInicioInput.closest('.field').style.display = on ? '' : 'none';
       heFimInput.closest('.field').style.display = on ? '' : 'none';
       bancoSecaoTitulo.style.display = on ? '' : 'none';
-      bancoHorasBlocos.forEach(bloco => {
-        bloco.inicioInput.closest('.field').style.display = on ? '' : 'none';
-        bloco.fimInput.closest('.field').style.display = on ? '' : 'none';
-      });
+      addIntervaloBtn.style.display = bancoIntervalosVisiveis < 2 ? '' : 'none';
+      bancoHorasBlocos.forEach((bloco, i) => atualizarVisibilidadeBancoBloco(bloco, i));
     }
   }
   tipoSelect.addEventListener('change', atualizarVisibilidade);
-  tarefaBlocos.forEach(bloco => bloco.tarefaSelect.addEventListener('change', () => atualizarVisibilidadeTarefaBloco(bloco)));
+  tarefaBlocos.forEach((bloco, i) => bloco.tarefaSelect.addEventListener('change', () => atualizarVisibilidadeTarefaBloco(bloco, i)));
   if (overrideCheckbox) {
     overrideCheckbox.addEventListener('change', () => {
       overrideAtivo = overrideCheckbox.checked;
@@ -23272,11 +23314,29 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   const guardarBtn = h('button', { class: 'btn btn-primary', onclick: () => requireAuth(guardar) }, 'Guardar');
   const cancelarBtn = h('button', { class: 'btn btn-secondary', onclick: fechar }, 'Cancelar');
 
+  // Caixa visual (fundo suave + cantos arredondados) para cada secção
+  // opcional — separa claramente Tarefas/HE/Banco de Horas do bloco fixo
+  // de Entrada/Saída/Pausa acima, sem precisar de mais texto (pedido
+  // explícito 2026-08-09: "tornar a janela visualmente mais apelativa").
+  function secaoBox(filhos) {
+    return h('div', { class: 'span2', style: 'background:var(--pharm-50);border:1px solid var(--pharm-100);border-radius:12px;padding:14px 16px 16px;margin-top:6px;' },
+      h('div', { class: 'form-grid' }, filhos));
+  }
   const tarefaBlocosFields = tarefaBlocos.flatMap((bloco, i) => [
-    h('div', { class: 'field span2' }, [h('label', {}, `Tarefa ${i + 1}`), bloco.tarefaSelect]),
+    h('div', { class: 'field span2' }, [
+      h('label', { style: 'display:flex;align-items:center;justify-content:space-between;' }, [`Tarefa ${i + 1}`, bloco.removerBtn]),
+      bloco.tarefaSelect,
+    ]),
     h('div', { class: 'field span2' }, [h('label', {}, 'Qual? (Outro)'), bloco.tarefaOutroInput]),
     h('div', { class: 'field field-sm' }, [h('label', {}, 'Início'), bloco.tarefaInicioInput]),
     h('div', { class: 'field field-sm' }, [h('label', {}, 'Fim'), bloco.tarefaFimInput]),
+  ]);
+  const bancoBlocosFields = bancoHorasBlocos.flatMap((bloco, i) => [
+    h('div', { class: 'field' }, [
+      h('label', { style: 'display:flex;align-items:center;justify-content:space-between;' }, [`Intervalo ${i + 1} — Início`, bloco.removerBtn]),
+      bloco.inicioInput,
+    ]),
+    h('div', { class: 'field' }, [h('label', {}, `Intervalo ${i + 1} — Fim`), bloco.fimInput]),
   ]);
   const panel = h('div', { class: 'modal-panel' }, [
     h('h3', { class: 'page-eyebrow', style: 'margin-bottom:4px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, `${codigoVaga} — ${(diaAtual.colaboradorNome || linha.colaboradorNome) || 'Vaga por preencher'}`),
@@ -23285,22 +23345,19 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       overrideBanner,
       overrideRow,
       h('div', { class: 'field span2' }, [h('label', {}, 'Tipo'), tipoSelect]),
-      h('div', { class: 'field field-sm' }, [h('label', {}, 'Entrada'), entradaInput]),
-      h('div', { class: 'field field-sm' }, [h('label', {}, 'Saída'), saidaInput]),
-      h('div', { class: 'field field-sm' }, [h('label', {}, 'Início Pausa/Almoço'), pausaInicioInput]),
-      h('div', { class: 'field field-sm' }, [h('label', {}, 'Fim Pausa/Almoço'), pausaFimInput]),
-      tarefasSecaoTitulo,
-      ...tarefaBlocosFields,
+      h('div', { class: 'field' }, [h('label', {}, 'Entrada'), entradaInput]),
+      h('div', { class: 'field' }, [h('label', {}, 'Saída'), saidaInput]),
+      h('div', { class: 'field' }, [h('label', {}, 'Início Pausa/Almoço'), pausaInicioInput]),
+      h('div', { class: 'field' }, [h('label', {}, 'Fim Pausa/Almoço'), pausaFimInput]),
+      secaoBox([tarefasSecaoTitulo, ...tarefaBlocosFields]),
       ...(podeBancoHoras ? [
-        heSecaoTitulo,
-        h('div', { class: 'field field-sm' }, [h('label', {}, 'Quantidade (HE)'), heQtdSelect]),
-        h('div', { class: 'field field-sm' }, [h('label', {}, 'Início (HE)'), heInicioInput]),
-        h('div', { class: 'field field-sm' }, [h('label', {}, 'Fim (HE)'), heFimInput]),
-        bancoSecaoTitulo,
-        h('div', { class: 'field field-sm' }, [h('label', {}, 'Intervalo 1 — Início'), bancoHorasBlocos[0].inicioInput]),
-        h('div', { class: 'field field-sm' }, [h('label', {}, 'Intervalo 1 — Fim'), bancoHorasBlocos[0].fimInput]),
-        h('div', { class: 'field field-sm' }, [h('label', {}, 'Intervalo 2 — Início'), bancoHorasBlocos[1].inicioInput]),
-        h('div', { class: 'field field-sm' }, [h('label', {}, 'Intervalo 2 — Fim'), bancoHorasBlocos[1].fimInput]),
+        secaoBox([
+          heSecaoTitulo,
+          h('div', { class: 'field field-sm' }, [h('label', {}, 'Quantidade (HE)'), heQtdSelect]),
+          h('div', { class: 'field field-sm' }, [h('label', {}, 'Início (HE)'), heInicioInput]),
+          h('div', { class: 'field field-sm' }, [h('label', {}, 'Fim (HE)'), heFimInput]),
+        ]),
+        secaoBox([bancoSecaoTitulo, ...bancoBlocosFields]),
       ] : []),
     ]),
     errorEl,
@@ -26597,9 +26654,31 @@ function buildHorariosPage(container, goTo) {
     if (!cicloMarianaDraft) {
       cicloMarianaDraft = { dataReferencia: cfg ? cfg.dataReferencia : escalaSegundaFeiraHoje(), tipoNaData: cfg ? cfg.tipoNaData : 'com_mariana' };
     }
-    const dataInput = h('input', { class: 'input', type: 'date' });
+    // Seletor de semana consistente com o resto do módulo Horários (pedido
+    // explícito 2026-08-09) — mesmo padrão de buildNavegacaoSemanas: ◀
+    // data ▶ + "Hoje", sempre Segunda-feira (a data escolhida "salta"
+    // logo para a Segunda dessa semana, tal como lá). Um <input type=date>
+    // sozinho obrigava a acertar exatamente numa Segunda-feira à mão.
+    const dataInput = h('input', { class: 'input', type: 'date', style: 'max-width:165px;' });
     dataInput.value = cicloMarianaDraft.dataReferencia || '';
-    dataInput.addEventListener('input', () => { cicloMarianaDraft.dataReferencia = dataInput.value; });
+    dataInput.addEventListener('change', () => {
+      if (!dataInput.value) return;
+      cicloMarianaDraft.dataReferencia = escalaSegundaFeiraDaSemanaDeISO(dataInput.value);
+      rerender();
+    });
+    function irSemanaCicloMariana(deltaDias) {
+      const base = cicloMarianaDraft.dataReferencia || escalaSegundaFeiraHoje();
+      const d = new Date(base + 'T12:00:00');
+      d.setDate(d.getDate() + deltaDias);
+      cicloMarianaDraft.dataReferencia = dateToISO(d);
+      rerender();
+    }
+    const btnAnteriorMariana = h('button', { class: 'btn-fab-sm tone-gray', title: 'Semana anterior', 'aria-label': 'Semana anterior' }, Icon('arrowleft', { size: 15, strokeWidth: 2.2 }));
+    btnAnteriorMariana.addEventListener('click', () => irSemanaCicloMariana(-7));
+    const btnSeguinteMariana = h('button', { class: 'btn-fab-sm tone-gray', title: 'Semana seguinte', 'aria-label': 'Semana seguinte' }, Icon('arrowright', { size: 15, strokeWidth: 2.2 }));
+    btnSeguinteMariana.addEventListener('click', () => irSemanaCicloMariana(7));
+    const hojeBtnMariana = h('button', { class: 'btn btn-secondary', style: 'padding:6px 12px;font-size:12.5px;' }, 'Hoje');
+    hojeBtnMariana.addEventListener('click', () => { cicloMarianaDraft.dataReferencia = escalaSegundaFeiraHoje(); rerender(); });
     const tipoSelect = h('select', { class: 'select' }, ESCALA_VARIANTES.map(v => h('option', { value: v.key, selected: cicloMarianaDraft.tipoNaData === v.key ? 'selected' : undefined }, v.label)));
     tipoSelect.value = cicloMarianaDraft.tipoNaData;
     tipoSelect.addEventListener('change', () => { cicloMarianaDraft.tipoNaData = tipoSelect.value; });
@@ -26612,18 +26691,19 @@ function buildHorariosPage(container, goTo) {
       else escalaShowErro('Não foi possível guardar o ciclo da Mariana');
       rerender();
     }) }, cicloMarianaSaving ? 'A guardar…' : 'Guardar Ciclo');
-    const segundaEscolhida = cicloMarianaDraft.dataReferencia ? escalaSegundaFeiraDaSemanaDeISO(cicloMarianaDraft.dataReferencia) : '';
     const exemplo = cfg ? h('p', { class: 'field-helper-text', style: 'margin:10px 0 0;' },
       `Configuração atual: semana de ${formatDate(escalaSegundaFeiraDaSemanaDeISO(cfg.dataReferencia))} → ${ESCALA_VARIANTES.find(v => v.key === cfg.tipoNaData)?.label || cfg.tipoNaData}.`) : null;
     return h('div', { class: 'card card-pad', style: 'margin-bottom:20px;background:var(--pharm-50);' }, [
       h('h3', { class: 'page-eyebrow', style: 'margin-bottom:6px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, [Icon('clock', { size: 15, strokeWidth: 2.2 }), ' Semana de Referência para a Mariana']),
       h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' },
         'Ponto de partida do ciclo alternado (1 semana sim, 1 semana não). A partir daqui, a app calcula sozinha qual a variante certa para qualquer semana futura ou passada.'),
-      h('div', { class: 'form-grid' }, [
-        h('div', { class: 'field field-sm' }, [h('label', {}, 'Semana de'), dataInput]),
-        h('div', { class: 'field span2' }, [h('label', {}, 'Nessa semana'), tipoSelect]),
+      h('div', { style: 'display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;' }, [
+        h('div', { class: 'field field-sm', style: 'margin:0;' }, [
+          h('label', {}, 'Semana de'),
+          h('div', { style: 'display:flex;align-items:center;gap:8px;' }, [btnAnteriorMariana, dataInput, btnSeguinteMariana, hojeBtnMariana]),
+        ]),
+        h('div', { class: 'field span2', style: 'margin:0;' }, [h('label', {}, 'Nessa semana'), tipoSelect]),
       ]),
-      segundaEscolhida ? h('p', { class: 'field-helper-text', style: 'margin:8px 0 0;' }, `Considerada a semana de ${formatDate(segundaEscolhida)} (Segunda-feira).`) : null,
       exemplo,
       h('div', { class: 'form-actions', style: 'margin-top:14px;' }, [guardarBtn]),
     ]);
