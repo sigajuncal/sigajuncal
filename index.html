@@ -479,12 +479,10 @@
     font-family:Arial,Helvetica,sans-serif;color:#0f172a;background:#fff;
     page-break-inside:avoid;break-inside:avoid;page-break-after:avoid;page-break-before:avoid;}
   /* Folha do Horário Semanal (Descarregar PDF, Gerador de Horário) —
-     pedido explícito 2026-08-09: margens confortáveis (já não precisa de
-     caber tudo numa única folha A4 — o documento pagina livremente,
-     cada dia individual é que nunca parte a meio, ver .doc-horario-dia),
-     visual mais cuidado, e ESTRITAMENTE a preto e branco/cinzentos (sem
-     nenhuma cor da paleta da app — nem o azul-marinho #0f172a herdado
-     por omissão do resto da app, só preto/cinza puros a partir daqui).
+     pedido explícito 2026-08-09: margens confortáveis, visual mais
+     cuidado, e ESTRITAMENTE a preto e branco/cinzentos (sem nenhuma cor
+     da paleta da app — nem o azul-marinho #0f172a herdado por omissão
+     do resto da app, só preto/cinza puros a partir daqui).
      Reforço 2026-08-09 (tarde) — bug de desformatação: as regras
      genéricas `th{font-size:10px;text-transform:uppercase;...}` e
      `td{color:var(--pharm-800);...}` usadas no resto da app (ver tabelas
@@ -494,10 +492,21 @@
      (maior do que o previsto) e cortados pelo overflow:hidden, células
      saíam a azul em vez de preto. Corrigido definindo TODAS as
      propriedades relevantes (font-size/text-transform/letter-spacing/
-     color) explicitamente aqui, nunca dependendo do valor herdado. */
-  .doc-a4-horario{width:210mm;min-height:297mm;height:auto;box-sizing:border-box;
-    padding:18mm 16mm 14mm;font-family:Arial,Helvetica,sans-serif;color:#111;background:#fff;}
-  .doc-horario-dia{margin-bottom:6mm;page-break-inside:avoid;break-inside:avoid;}
+     color) explicitamente aqui, nunca dependendo do valor herdado.
+     Reforço 2026-08-09 (2ª tarde) — o motor de PDF (html2pdf/html2canvas)
+     pagina automaticamente por altura de pixel e NÃO respeita de forma
+     fiável o page-break-inside:avoid num documento tão comprido — cortava
+     tabelas de dia a meio e produzia uma margem enorme/inconsistente
+     entre páginas (só a 1ª ficava com o padding a mais, as seguintes sem
+     nenhum). Corrigido com paginação manual determinística — mesma
+     técnica já validada nos outros documentos-lista multi-página da app
+     (ver buildListaMultiPaginaDoc): cada página passa a ser um bloco
+     .doc-a4-horario-pagina PRÉ-CONSTRUÍDO com a MESMA margem física fixa
+     em todas, nunca deixado ao critério do motor de impressão — um dia
+     inteiro nunca é dividido entre duas páginas. */
+  .doc-a4-horario-pagina{width:210mm;box-sizing:border-box;padding:15mm;
+    font-family:Arial,Helvetica,sans-serif;color:#111;background:#fff;}
+  .doc-horario-dia{margin-bottom:5mm;}
   .doc-horario-dia h4{font-size:12px;margin:0 0 2.5mm;padding:0 0 2mm;
     border-bottom:1.5px solid #000;color:#000;font-weight:800;letter-spacing:.02em;text-transform:none;}
   /* Largura fixa por coluna — Posição/Entrada/Saída bem estreitas
@@ -28173,7 +28182,10 @@ function checkEntregaRequired(d) {
 function buildHorarioSemanaTimelinePDFDoc(semana) {
   const posicoes = ESCALA_GRUPOS.flatMap(g => escalaVagasGrupoOrdenadas(g.key));
   const diasDoMesSemana = escalaDiasDoMesDaSemanaISO(semana.semanaInicio);
-  const diasEl = ESCALA_DIAS.map(d => {
+  // 1) Pré-calcula só o CONTEÚDO de cada dia (linhas da tabela) — a
+  // decisão de em que página cada dia entra é feita a seguir, à parte
+  // (ver paginação manual determinística mais abaixo).
+  const diasInfo = ESCALA_DIAS.map(d => {
     const linhasDia = [];
     posicoes.forEach(v => {
       const linha = semana.dados[v.codigo] || { dias: {} };
@@ -28205,6 +28217,43 @@ function buildHorarioSemanaTimelinePDFDoc(semana) {
         ]));
       }
     });
+    return { d, linhasDia };
+  });
+  const infoLinhas = [];
+  if (semana.estado === 'publicado' && semana.publicadoEm) infoLinhas.push(`Publicado${semana.publicadoPor ? ` por ${semana.publicadoPor}` : ''} em ${formatDateTime(semana.publicadoEm)}`);
+  if (semana.ultimaEdicaoEm) infoLinhas.push(`Última edição${semana.ultimaEdicaoPor ? ` por ${semana.ultimaEdicaoPor}` : ''} em ${formatDateTime(semana.ultimaEdicaoEm)}`);
+
+  // 2) Paginação manual determinística (pedido explícito 2026-08-09: "a
+  // tabela de dia não pode ficar truncada" + "margem inicial imensa,
+  // todas as páginas têm que ter margem equivalente") — em vez de
+  // deixar o motor de PDF decidir onde corta (pouco fiável em documentos
+  // longos, como se viu), calcula-se aqui uma altura ESTIMADA por dia
+  // (título + linhas da tabela) e agrupam-se os dias em páginas sem
+  // nunca dividir a tabela de um dia ao meio. Constantes calibradas de
+  // forma generosa (sobra margem de segurança) para nunca subestimar e
+  // voltar a cortar uma tabela.
+  const MARGEM_PAGINA_MM = 15;
+  const ALTURA_UTIL_MM = 297 - MARGEM_PAGINA_MM * 2;
+  const ALTURA_LINHA_MM = 4.6;
+  const ALTURA_TITULO_DIA_MM = 14; // título do dia + margin-bottom entre dias (.doc-horario-dia)
+  const ALTURA_CABECALHO_DOC_MM = 16 + (infoLinhas.length ? 4 : 0);
+  const paginas = [];
+  let paginaAtual = [];
+  let alturaAtual = ALTURA_CABECALHO_DOC_MM; // o cabeçalho do documento só entra na 1ª página
+  diasInfo.forEach(info => {
+    const numLinhasTabela = info.linhasDia.length ? info.linhasDia.length + 1 : 1; // +1 pelo <thead>
+    const alturaDia = ALTURA_TITULO_DIA_MM + numLinhasTabela * ALTURA_LINHA_MM;
+    if (paginaAtual.length && (alturaAtual + alturaDia) > ALTURA_UTIL_MM) {
+      paginas.push(paginaAtual);
+      paginaAtual = [];
+      alturaAtual = 0;
+    }
+    paginaAtual.push(info);
+    alturaAtual += alturaDia;
+  });
+  if (paginaAtual.length) paginas.push(paginaAtual);
+
+  function buildDiaNode(d, linhasDia) {
     const conteudoDia = linhasDia.length
       ? h('table', { class: 'doc-horario-tabela' }, [
           h('thead', {}, h('tr', {}, ['Pos.', 'Colaborador', 'Entrada', 'Saída', 'Pausa', 'Banco Horas', 'Horas Extra'].map(t => h('th', {}, t)))),
@@ -28215,17 +28264,27 @@ function buildHorarioSemanaTimelinePDFDoc(semana) {
       h('h4', {}, `${d.label} — ${diasDoMesSemana[d.key]}`),
       conteudoDia,
     ]);
+  }
+
+  // 3) Cada página é um bloco .doc-a4-horario-pagina PRÉ-CONSTRUÍDO, com
+  // a MESMA margem física em todas (ver CSS) — nunca deixado ao critério
+  // do motor de impressão, tal como já validado noutros documentos-lista
+  // multi-página da app (ver buildListaMultiPaginaDoc).
+  const paginasHtml = paginas.map((diasDaPagina, i) => {
+    const primeira = i === 0;
+    const ultima = i === paginas.length - 1;
+    const filhos = [];
+    if (primeira) {
+      filhos.push(h('div', { style: 'border-bottom:2px solid #000;padding-bottom:3mm;margin-bottom:6mm;' }, [
+        h('h3', { style: 'margin:0 0 1mm;font-size:16px;color:#000;font-weight:800;' }, `Horário Semanal — ${escalaIntervaloSemanaTexto(semana.semanaInicio)}`),
+        infoLinhas.length ? h('p', { style: 'margin:0;font-size:8px;color:#888;' }, infoLinhas.join(' · ')) : null,
+      ]));
+    }
+    diasDaPagina.forEach(info => filhos.push(buildDiaNode(info.d, info.linhasDia)));
+    const estiloPagina = ultima ? '' : 'page-break-after:always;break-after:page;';
+    return h('div', { class: 'doc-a4-horario-pagina', style: estiloPagina }, filhos);
   });
-  const infoLinhas = [];
-  if (semana.estado === 'publicado' && semana.publicadoEm) infoLinhas.push(`Publicado${semana.publicadoPor ? ` por ${semana.publicadoPor}` : ''} em ${formatDateTime(semana.publicadoEm)}`);
-  if (semana.ultimaEdicaoEm) infoLinhas.push(`Última edição${semana.ultimaEdicaoPor ? ` por ${semana.ultimaEdicaoPor}` : ''} em ${formatDateTime(semana.ultimaEdicaoEm)}`);
-  return h('div', { class: 'doc-a4-horario' }, [
-    h('div', { style: 'border-bottom:2px solid #000;padding-bottom:3mm;margin-bottom:6mm;' }, [
-      h('h3', { style: 'margin:0 0 1mm;font-size:16px;color:#000;font-weight:800;' }, `Horário Semanal — ${escalaIntervaloSemanaTexto(semana.semanaInicio)}`),
-      infoLinhas.length ? h('p', { style: 'margin:0;font-size:8px;color:#888;' }, infoLinhas.join(' · ')) : null,
-    ]),
-    ...diasEl,
-  ]);
+  return h('div', {}, paginasHtml);
 }
 
 // ---- Formulário de Entrega imprimível — reaproveita o cabeçalho/rodapé
