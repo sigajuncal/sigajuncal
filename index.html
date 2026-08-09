@@ -1010,6 +1010,17 @@
   .textarea{resize:vertical;min-height:56px;}
   .input:focus,.select:focus,.textarea:focus{outline:none;border-color:var(--pharm-400);
     box-shadow:0 0 0 3px rgba(54,136,176,.15);}
+  /* Campo de hora com 2 seletores (Horas/Minutos, pedido explícito
+     2026-08-09) — usado só no editor de célula do Horário (campoHora).
+     Visualmente igual a um .input normal, mas por dentro são 2 <select>
+     sem contorno próprio, separados por ":", para nunca ficar
+     visualmente cortado a meio. */
+  .time-picker-custom{display:flex;align-items:center;gap:2px;border:1px solid var(--pharm-200);
+    background:#fff;border-radius:10px;padding:0 8px;color-scheme:light;}
+  .time-picker-custom:focus-within{border-color:var(--pharm-400);box-shadow:0 0 0 3px rgba(54,136,176,.15);}
+  .time-picker-select{border:none;background:transparent;outline:none;font-size:14px;
+    color:var(--pharm-950);font-family:inherit;padding:9px 2px;cursor:pointer;}
+  .time-picker-sep{color:var(--pharm-400);font-weight:700;}
   /* Bug conhecido do Safari/WebKit: com o sistema em Modo Escuro, o
      preenchimento automático (autofill) e as sugestões do <datalist>
      nativo dos campos "combo" (Farmácia/Fornecedor, Tipo/Cor, etc.) podem
@@ -23213,21 +23224,45 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
 
   const tipoSelect = h('select', { class: 'select' }, ESCALA_TIPOS_DIA.map(t => h('option', { value: t.key, selected: diaAtual.tipo === t.key ? 'selected' : undefined }, t.label)));
   tipoSelect.value = diaAtual.tipo || 'normal';
-  // Campos de hora nativos (type="time", pedido explícito 2026-08-09):
-  // clicar só na parte das horas ou dos minutos e escrever por cima
-  // substitui logo só esse segmento (avança sozinho de horas para
-  // minutos ao escrever) — deixa de ser preciso apagar tudo e reescrever
-  // "HH:MM" de cada vez. Só aplicado aqui, no editor de célula do
-  // Horário (ligarFormatacaoHoraInteligente, o padrão de texto livre
-  // usado no resto da app, mantém-se inalterado nos outros módulos).
-  // step=1800 (30 min, pedido explícito 2026-08-09): o seletor nativo de
-  // hora passa a saltar só entre :00 e :30 em vez de minuto a minuto —
-  // não impede escrever à mão um valor fora dessa grelha, só torna o
-  // relógio/scroll do browser mais rápido de usar para o caso comum.
+  // Campo de hora com 2 seletores próprios (Horas 00-23 + Minutos 00/30,
+  // pedido explícito 2026-08-09): o `step` do <input type="time"> nativo
+  // não resultava — o relógio/scroll do browser continuava a mostrar
+  // todos os 60 minutos, ignorando o step. Construído à mão para nunca
+  // permitir escolher um minuto fora de 00/30. O elemento devolvido
+  // (`wrap`) continua a comportar-se como um campo normal para o resto
+  // do código: `.value` lê/escreve sempre "HH:MM" (ou "" sem valor) via
+  // getter/setter, e vive dentro de um .field para o toggle de
+  // visibilidade (atualizarVisibilidade) continuar a funcionar sem
+  // alterações.
   function campoHora(valorInicial) {
-    const el = h('input', { class: 'input', type: 'time', step: '1800' });
-    el.value = valorInicial || '';
-    return el;
+    const wrap = h('div', { class: 'time-picker-custom' });
+    const horaSel = h('select', { class: 'time-picker-select' }, [h('option', { value: '' }, '--')]);
+    for (let hVal = 0; hVal < 24; hVal += 1) {
+      const hStr = String(hVal).padStart(2, '0');
+      horaSel.appendChild(h('option', { value: hStr }, hStr));
+    }
+    const minSel = h('select', { class: 'time-picker-select' }, [
+      h('option', { value: '' }, '--'), h('option', { value: '00' }, '00'), h('option', { value: '30' }, '30'),
+    ]);
+    wrap.appendChild(horaSel);
+    wrap.appendChild(h('span', { class: 'time-picker-sep' }, ':'));
+    wrap.appendChild(minSel);
+    function aplicarValor(v) {
+      const partes = String(v || '').split(':');
+      const hNum = parseInt(partes[0], 10);
+      horaSel.value = (v && !isNaN(hNum)) ? String(hNum).padStart(2, '0') : '';
+      const mNum = parseInt(partes[1], 10);
+      minSel.value = (v && !isNaN(mNum)) ? (mNum >= 30 ? '30' : '00') : '';
+    }
+    aplicarValor(valorInicial);
+    // Ao escolher a hora, se ainda não houver minuto escolhido assume
+    // logo "00" — poupa 1 clique no caso mais comum (à hora certa).
+    horaSel.addEventListener('change', () => { if (horaSel.value && !minSel.value) minSel.value = '00'; });
+    Object.defineProperty(wrap, 'value', {
+      get() { return (horaSel.value && minSel.value) ? `${horaSel.value}:${minSel.value}` : ''; },
+      set(v) { aplicarValor(v); },
+    });
+    return wrap;
   }
   const entradaInput = campoHora(diaAtual.entrada);
   const saidaInput = campoHora(diaAtual.saida);
@@ -23235,12 +23270,23 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   const pausaFimInput = campoHora(diaAtual.pausaFim);
   // Caixotes do lixo (pedido explícito 2026-08-09): 1 só ícone limpa
   // Entrada+Saída de uma vez, outro limpa Início+Fim de Pausa/Almoço de
-  // uma vez — mais rápido do que apagar campo a campo à mão.
+  // uma vez — mais rápido do que apagar campo a campo à mão. Ficam ao
+  // lado do próprio campo (nunca dentro da linha do rótulo — isso
+  // desnivelava os campos entre si, por a linha do rótulo com botão
+  // ficar mais alta do que a linha do rótulo sem botão ao lado).
   const limparEntradaSaidaBtn = h('button', { type: 'button', class: 'btn-fab-sm tone-gray', title: 'Limpar Entrada e Saída', 'aria-label': 'Limpar Entrada e Saída' }, Icon('trash', { size: 12, strokeWidth: 2.2 }));
   limparEntradaSaidaBtn.addEventListener('click', () => { entradaInput.value = ''; saidaInput.value = ''; });
   const limparPausaBtn = h('button', { type: 'button', class: 'btn-fab-sm tone-gray', title: 'Limpar Início e Fim de Pausa/Almoço', 'aria-label': 'Limpar Início e Fim de Pausa/Almoço' }, Icon('trash', { size: 12, strokeWidth: 2.2 }));
   limparPausaBtn.addEventListener('click', () => { pausaInicioInput.value = ''; pausaFimInput.value = ''; });
+  // Junta um campoHora ao respetivo caixote do lixo, lado a lado e
+  // alinhados ao centro — usado nos 2 campos "da direita" de cada par
+  // (Saída / Fim Pausa) para o rótulo em cima se manter só texto, igual
+  // ao do campo "da esquerda" do mesmo par (Entrada / Início Pausa).
+  function campoComLixo(campoEl, lixoBtn) {
+    return h('div', { style: 'display:flex;align-items:center;gap:6px;' }, [campoEl, lixoBtn]);
+  }
   // Item 2 (Horas Extra — HE): quantidade em incrementos de meia hora
+
   // (select fechado, nunca texto livre, para nunca gravar um valor tipo
   // "1.3h" por engano) + intervalo Início/Fim em que foi realizada.
   // Item 2 (Banco de Horas): até 2 blocos no mesmo dia onde o
@@ -23591,16 +23637,10 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       overrideRow,
       h('div', { class: 'field span2' }, [h('label', {}, 'Tipo'), tipoSelect]),
       h('div', { class: 'field' }, [h('label', {}, 'Entrada'), entradaInput]),
-      h('div', { class: 'field' }, [
-        h('label', { style: 'display:flex;align-items:center;justify-content:space-between;' }, ['Saída', limparEntradaSaidaBtn]),
-        saidaInput,
-      ]),
+      h('div', { class: 'field' }, [h('label', {}, 'Saída'), campoComLixo(saidaInput, limparEntradaSaidaBtn)]),
       secaoBoxCinza([
         h('div', { class: 'field' }, [h('label', {}, 'Início Pausa/Almoço'), pausaInicioInput]),
-        h('div', { class: 'field' }, [
-          h('label', { style: 'display:flex;align-items:center;justify-content:space-between;' }, ['Fim Pausa/Almoço', limparPausaBtn]),
-          pausaFimInput,
-        ]),
+        h('div', { class: 'field' }, [h('label', {}, 'Fim Pausa/Almoço'), campoComLixo(pausaFimInput, limparPausaBtn)]),
       ]),
       ...(podeBancoHoras ? [
         secaoBoxMuda([heSecaoTitulo, ...blocosHoraFields(heSecao.blocos)]),
