@@ -1588,6 +1588,28 @@
     align-items:center;height:100%;padding:4px 2px;}
   .escala-vertical-bloco-clicavel{cursor:pointer;transition:filter .12s ease,transform .12s ease;}
   .escala-vertical-bloco-clicavel:hover{filter:brightness(1.1);transform:scale(1.02);}
+  /* Arrastar/redimensionar turnos diretamente na Timeline (pedido
+     explícito 2026-08-10). Pegas finas (topo=Entrada, fundo=Saída) só
+     aparecem no hover do bloco — arrastar o CORPO do bloco desloca
+     Entrada+Saída juntas (mantém a duração); um duplo-clique continua a
+     abrir o editor completo (um clique simples deixou de fazer nada, por
+     causa do arrasto). A tesoura (só quando ainda não há Pausa) marca uma
+     Pausa/Almoço com 2 cliques (início, depois fim). */
+  .escala-vertical-bloco-arrastavel{cursor:grab;}
+  .escala-vertical-bloco-arrastavel:active{cursor:grabbing;}
+  .escala-vertical-handle{position:absolute;left:0;right:0;height:9px;cursor:ns-resize;opacity:0;
+    transition:opacity .12s ease;z-index:3;}
+  .escala-vertical-handle-topo{top:-3px;}
+  .escala-vertical-handle-fundo{bottom:-3px;}
+  .escala-vertical-handle::after{content:'';position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+    width:22px;height:3px;border-radius:2px;background:rgba(255,255,255,.9);}
+  .escala-vertical-bloco:hover .escala-vertical-handle{opacity:1;}
+  .escala-vertical-tesoura{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:20px;height:20px;
+    border-radius:50%;border:none;background:rgba(255,255,255,.92);color:var(--pharm-700);display:flex;
+    align-items:center;justify-content:center;cursor:pointer;opacity:0;transition:opacity .12s ease;z-index:3;
+    box-shadow:0 1px 3px rgba(0,0,0,.25);padding:0;}
+  .escala-vertical-bloco:hover .escala-vertical-tesoura{opacity:1;}
+  .escala-vertical-tesoura:hover{background:#fff;}
   /* Ausência (Férias/Baixa/Falta/...) sobreposta a um turno já desenhado
      na timeline — mesmo padrão de riscas diagonais da Vista em Tabela
      (.escala-cell-ausencia-sobreposta), aqui com !important porque o
@@ -2605,6 +2627,12 @@
     display:flex;align-items:center;justify-content:center;}
   .obs-popover-close:hover{color:var(--pharm-700);}
   .obs-popover-text{font-size:13px;color:var(--pharm-800);line-height:1.55;white-space:pre-wrap;margin:0;}
+  /* Popover da tesoura (marcar Pausa/Almoço na Timeline, pedido explícito
+     2026-08-10) — reaproveita a caixa/sombra/animação do .obs-popover,
+     só o conteúdo interno é próprio (2 seletores de hora + Guardar/
+     Cancelar, em vez de texto solto). */
+  .escala-pausa-popover-linha{display:flex;align-items:center;gap:8px;margin-bottom:7px;}
+  .escala-pausa-popover-rotulo{font-size:11.5px;color:var(--pharm-500);width:38px;flex-shrink:0;}
 
   /* Calculadoras de PVP */
   .calc-page-grid{display:grid;grid-template-columns:1fr;gap:18px;}
@@ -3063,6 +3091,8 @@ const ICONS = {
   arrowright: '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
   sidebarLeft: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
   chevrondown: '<path d="m6 9 6 6 6-6"/>',
+  chevronup: '<path d="m18 15-6-6-6 6"/>',
+  scissors: '<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88"/><path d="M14.47 14.48 20 20"/><path d="M8.12 8.12 12 12"/>',
   chevronright: '<path d="m9 18 6-6-6-6"/>',
   undo: '<path d="M3 7v6h6"/><path d="M3 13a9 9 0 1 0 3-7.7L3 7"/>',
   utensils: '<path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/>',
@@ -21830,6 +21860,212 @@ function escalaMinutosAbsolutos(horaStr, ehFim) {
   if (ehFim && str === '00:00') minutos = 24 * 60;
   return minutos;
 }
+// Inverso de escalaMinutosAbsolutos — arredonda sempre a 30 em 30 minutos
+// (grelha do editor/arrasto na Timeline, ver escalaInstalarInteracaoTurno)
+// e devolve "00:00" quando cai em 1440 (meia-noite no fim do dia).
+function escalaAbsMinParaHora(absMin) {
+  const m = Math.max(0, Math.min(1440, Math.round(absMin / 30) * 30));
+  if (m >= 1440) return '00:00';
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+}
+// Arrastar/redimensionar um turno diretamente na Timeline (pedido
+// explícito 2026-08-10): ao passar o rato sobre um turno já preenchido
+// (dia.tipo === 'normal'), surgem 2 pegas finas (topo/fundo) que
+// arrastadas alteram só a Entrada ou só a Saída; arrastar o CORPO do
+// bloco desloca Entrada+Saída (e Pausa, se houver) juntas, mantendo a
+// duração; um botão de tesoura ao centro (só quando ainda não há Pausa)
+// marca uma Pausa/Almoço com 2 cliques (início, depois fim). Duplo-clique
+// continua a abrir o editor completo (abrirEditorCelulaEscala, ver
+// buildVistaVertical) — um clique simples deixou de abrir nada, para não
+// conflituar com o início do arrasto. Tudo arredondado a 30 em 30 minutos
+// (mesma grelha do editor, ver escalaAbsMinParaHora). Só grava no
+// Supabase ao soltar o rato (mouseup) — o arrasto em si é só uma
+// pré-visualização local via CSS (transform/top/height), nunca toca em
+// `semana.dados` a meio do gesto.
+function escalaInstalarInteracaoTurno(opts) {
+  const { blocosSegmentos, dia, semana, codigoVaga, diaKey, trilhoEl, minOffsetMin, totalMin, rerenderFn } = opts;
+  if (!blocosSegmentos.length) return;
+  const primeiroSeg = blocosSegmentos[0];
+  const ultimoSeg = blocosSegmentos[blocosSegmentos.length - 1];
+  const temPausa = blocosSegmentos.length > 1;
+
+  async function persistir(campos) {
+    const novoDados = JSON.parse(JSON.stringify(semana.dados));
+    if (!novoDados[codigoVaga] || !novoDados[codigoVaga].dias[diaKey]) { rerenderFn(); return; }
+    const atual = novoDados[codigoVaga].dias[diaKey];
+    Object.assign(atual, campos);
+    atual.horas = escalaCalcularHorasComPausa(atual.entrada, atual.saida, atual.pausaInicio || '', atual.pausaFim || '');
+    const updated = await dbUpdate('escalaSemanas', semana.id, { dados: novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() });
+    if (updated) STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
+    else showToast(`Não foi possível guardar. ${escalaMensagemErroAmigavel(lastDbError)}`, 'error');
+    rerenderFn();
+  }
+
+  // ---- Arrastar o corpo do bloco: move Entrada+Saída (e Pausa) juntas ----
+  function onMouseDownCorpo(e) {
+    if (e.button !== 0 || e.target.closest('.escala-vertical-handle') || e.target.closest('.escala-vertical-tesoura')) return;
+    e.preventDefault(); e.stopPropagation();
+    const startY = e.clientY;
+    const entradaOrig = escalaMinutosAbsolutos(dia.entrada, false);
+    const saidaOrig = escalaMinutosAbsolutos(dia.saida, true);
+    const pausaInicioOrig = dia.pausaInicio ? escalaMinutosAbsolutos(dia.pausaInicio, false) : null;
+    const pausaFimOrig = dia.pausaFim ? escalaMinutosAbsolutos(dia.pausaFim, true) : null;
+    let moveu = false, deltaFinal = 0;
+    function onMove(ev) {
+      if (Math.abs(ev.clientY - startY) > 3) moveu = true;
+      const deltaRel = ((ev.clientY - startY) / trilhoEl.getBoundingClientRect().height) * totalMin;
+      let deltaMin = Math.round(deltaRel / 30) * 30;
+      deltaMin = Math.max(minOffsetMin - entradaOrig, Math.min((minOffsetMin + totalMin) - saidaOrig, deltaMin));
+      deltaFinal = deltaMin;
+      blocosSegmentos.forEach(seg => { seg.style.transform = `translateY(${(deltaMin / totalMin) * 100}%)`; });
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      blocosSegmentos.forEach(seg => { seg.style.transform = ''; });
+      if (!moveu || deltaFinal === 0) return;
+      const campos = { entrada: escalaAbsMinParaHora(entradaOrig + deltaFinal), saida: escalaAbsMinParaHora(saidaOrig + deltaFinal) };
+      if (pausaInicioOrig !== null) campos.pausaInicio = escalaAbsMinParaHora(pausaInicioOrig + deltaFinal);
+      if (pausaFimOrig !== null) campos.pausaFim = escalaAbsMinParaHora(pausaFimOrig + deltaFinal);
+      persistir(campos);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+  blocosSegmentos.forEach(seg => {
+    seg.classList.add('escala-vertical-bloco-arrastavel');
+    seg.addEventListener('mousedown', onMouseDownCorpo);
+  });
+
+  // ---- Pegas de redimensionar: topo ajusta Entrada, fundo ajusta Saída ----
+  function instalarPega(segEl, ehTopo) {
+    const pega = h('div', {
+      class: 'escala-vertical-handle ' + (ehTopo ? 'escala-vertical-handle-topo' : 'escala-vertical-handle-fundo'),
+      title: ehTopo ? 'Arrastar para ajustar a Entrada' : 'Arrastar para ajustar a Saída',
+    });
+    pega.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault(); e.stopPropagation();
+      const startY = e.clientY;
+      // Extremo fixo desta pega (nunca se mexe durante ESTE arrasto): se
+      // há Pausa, é a fronteira da Pausa mais próxima; senão é a outra
+      // ponta do turno.
+      const extremoFixo = ehTopo
+        ? (temPausa ? escalaMinutosAbsolutos(dia.pausaInicio, false) : escalaMinutosAbsolutos(dia.saida, true))
+        : (temPausa ? escalaMinutosAbsolutos(dia.pausaFim, true) : escalaMinutosAbsolutos(dia.entrada, false));
+      const valorOrig = ehTopo ? escalaMinutosAbsolutos(dia.entrada, false) : escalaMinutosAbsolutos(dia.saida, true);
+      function onMove(ev) {
+        const deltaRel = ((ev.clientY - startY) / trilhoEl.getBoundingClientRect().height) * totalMin;
+        const deltaMin = Math.round(deltaRel / 30) * 30;
+        let novoValor = ehTopo
+          ? Math.max(minOffsetMin, Math.min(extremoFixo - 30, valorOrig + deltaMin))
+          : Math.min(minOffsetMin + totalMin, Math.max(extremoFixo + 30, valorOrig + deltaMin));
+        const topoAbs = ehTopo ? novoValor : extremoFixo;
+        const fimAbs = ehTopo ? extremoFixo : novoValor;
+        segEl.style.top = ((topoAbs - minOffsetMin) / totalMin * 100) + '%';
+        segEl.style.height = Math.max(2, (fimAbs - topoAbs) / totalMin * 100) + '%';
+        segEl._novoValorPendente = novoValor;
+      }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        const novoValor = segEl._novoValorPendente;
+        delete segEl._novoValorPendente;
+        if (novoValor === undefined) return;
+        persistir(ehTopo ? { entrada: escalaAbsMinParaHora(novoValor) } : { saida: escalaAbsMinParaHora(novoValor) });
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+    segEl.appendChild(pega);
+  }
+  instalarPega(primeiroSeg, true);
+  instalarPega(ultimoSeg, false);
+
+  // ---- Tesoura: marcar Pausa/Almoço num popover (só sem Pausa ainda) ----
+  // Pedido explícito 2026-08-10: o fluxo anterior (2 cliques "às cegas"
+  // no bloco, sem qualquer marcador visual) não dava a sensação de estar
+  // realmente a acontecer nada — substituído por um popover pequeno com
+  // 2 seletores de hora (Início/Fim) já pré-preenchidos a meio do turno,
+  // igual em espírito ao popover das Observações (obsEyeButton). A
+  // tesoura tem SEMPRE prioridade sobre o arrasto do corpo do bloco —
+  // além do filtro já existente em onMouseDownCorpo (closest), o próprio
+  // mousedown da tesoura também para a propagação, para nunca chegar a
+  // iniciar um arrasto por engano ao clicar nela.
+  if (!temPausa) {
+    const tesoura = h('button', {
+      type: 'button', class: 'escala-vertical-tesoura',
+      title: 'Marcar Pausa/Almoço',
+    }, Icon('scissors', { size: 11, strokeWidth: 2.4 }));
+    tesoura.addEventListener('mousedown', (e) => { e.stopPropagation(); });
+    tesoura.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      abrirPopoverPausa(tesoura);
+    });
+    primeiroSeg.appendChild(tesoura);
+  }
+  function abrirPopoverPausa(anchorBtn) {
+    document.querySelectorAll('.escala-pausa-popover-instancia').forEach(el => el.remove());
+    const entradaAbs = escalaMinutosAbsolutos(dia.entrada, false);
+    const saidaAbs = escalaMinutosAbsolutos(dia.saida, true);
+    const horaMin = Math.floor(entradaAbs / 30) * 30 / 60;
+    const horaMax = Math.ceil(saidaAbs / 30) * 30 / 60;
+    // Sugestão por defeito: 30 min a meio do turno, sempre dentro dos
+    // limites de Entrada/Saída (nunca colado a nenhuma das duas pontas).
+    const meio = Math.round(((entradaAbs + saidaAbs) / 2) / 30) * 30;
+    const sugIni = Math.max(entradaAbs + 30, Math.min(saidaAbs - 60, meio - 15));
+    function criarSeletorHora(absMinInicial) {
+      const wrap = h('div', { class: 'time-picker-custom' });
+      const horaSel = h('select', { class: 'time-picker-select' });
+      for (let hVal = horaMin; hVal <= horaMax; hVal += 1) horaSel.appendChild(h('option', { value: String(hVal) }, String(hVal).padStart(2, '0')));
+      const minSel = h('select', { class: 'time-picker-select' }, [h('option', { value: '0' }, '00'), h('option', { value: '30' }, '30')]);
+      wrap.appendChild(horaSel); wrap.appendChild(h('span', { class: 'time-picker-sep' }, ':')); wrap.appendChild(minSel);
+      horaSel.value = String(Math.min(horaMax, Math.max(horaMin, Math.floor(absMinInicial / 60))));
+      minSel.value = (absMinInicial % 60) >= 30 ? '30' : '0';
+      Object.defineProperty(wrap, 'value', { get() { return parseInt(horaSel.value, 10) * 60 + parseInt(minSel.value, 10); } });
+      return wrap;
+    }
+    const inicioSel = criarSeletorHora(sugIni);
+    const fimSel = criarSeletorHora(sugIni + 30);
+    const erroEl = h('p', { style: 'color:var(--red);font-size:11.5px;margin:2px 0 8px;display:none;' });
+    const guardarBtn = h('button', { type: 'button', class: 'btn btn-primary', style: 'padding:6px 12px;font-size:12px;' }, 'Guardar');
+    const cancelarBtn = h('button', { type: 'button', class: 'btn btn-secondary', style: 'padding:6px 12px;font-size:12px;' }, 'Cancelar');
+    const pop = h('div', { class: 'obs-popover escala-pausa-popover-instancia' }, [
+      h('p', { class: 'obs-popover-head' }, h('span', { class: 'obs-popover-title' }, 'Pausa/Almoço')),
+      h('div', { class: 'escala-pausa-popover-linha' }, [h('span', { class: 'escala-pausa-popover-rotulo' }, 'Início'), inicioSel]),
+      h('div', { class: 'escala-pausa-popover-linha' }, [h('span', { class: 'escala-pausa-popover-rotulo' }, 'Fim'), fimSel]),
+      erroEl,
+      h('div', { style: 'display:flex;gap:8px;justify-content:flex-end;' }, [cancelarBtn, guardarBtn]),
+    ]);
+    function fechar() {
+      pop.remove();
+      document.removeEventListener('mousedown', onDocMouseDown, true);
+      document.removeEventListener('keydown', onDocKeydown);
+    }
+    function onDocMouseDown(e) { if (!pop.contains(e.target) && e.target !== anchorBtn && !anchorBtn.contains(e.target)) fechar(); }
+    function onDocKeydown(e) { if (e.key === 'Escape') fechar(); }
+    guardarBtn.addEventListener('click', () => {
+      const ini = inicioSel.value, fim = fimSel.value;
+      if (fim - ini < 30) { erroEl.textContent = 'O Fim tem de ser pelo menos 30 min depois do Início.'; erroEl.style.display = ''; return; }
+      fechar();
+      persistir({ pausaInicio: escalaAbsMinParaHora(ini), pausaFim: escalaAbsMinParaHora(fim) });
+    });
+    cancelarBtn.addEventListener('click', fechar);
+    document.body.appendChild(pop);
+    const rect = anchorBtn.getBoundingClientRect();
+    const popRect = pop.getBoundingClientRect();
+    let left = rect.left + rect.width / 2 - popRect.width / 2;
+    left = Math.max(10, Math.min(left, window.innerWidth - popRect.width - 10));
+    let top = rect.top - popRect.height - 8;
+    if (top < 10) top = rect.bottom + 8;
+    pop.style.left = left + 'px';
+    pop.style.top = Math.max(10, top) + 'px';
+    setTimeout(() => {
+      document.addEventListener('mousedown', onDocMouseDown, true);
+      document.addEventListener('keydown', onDocKeydown);
+    }, 0);
+  }
+}
 // Segmentos do turno (excluindo a pausa/almoço, se válida) em minutos
 // absolutos — mesma lógica de escalaSegmentosTurno (Vista Vertical), só
 // que sem depender do recorte [HORA_INICIO,HORA_FIM] dessa vista.
@@ -22047,7 +22283,7 @@ function escalaConfiguracaoEmFalta() { return escalaTodasVagasOrdenadas().length
 // de ser lido). Sem argumento (semana indisponível/ainda não gerada)
 // devolve sempre false — nunca há nada para mostrar antes de existir
 // semana. Só o Diretor Técnico/Administrador consegue ligar/desligar
-// (ver checkbox em buildControlosGeradorBarra, dentro do separador
+// (ver checkbox em buildBarraGestaoSemana, dentro do separador
 // "Gerador de Horário").
 function escalaMostrarRascunhosEquipa(semana) {
   return !!(semana && semana.mostrarRascunhoEquipa);
@@ -23172,10 +23408,16 @@ async function escalaGerarOuAbrirSemana(semanaInicioISO, variante) {
 // utilizador confirmar explicitamente (ver confirmDialog em
 // recalcularHorarioSemana). Nunca chamada para semanas congeladas
 // (passadas ou publicadas) — mesma regra de escalaSemanaCongelada.
-async function escalaRecalcularDadosSemana(semana) {
+async function escalaRecalcularDadosSemana(semana, opts) {
   const varianteFinal = ESCALA_VARIANTES.some(v => v.key === semana.variante) ? semana.variante : 'com_mariana';
   const { dados, vagasLibertadas, vagasComCobertura } = escalaConstruirDadosSemana(semana.semanaInicio, varianteFinal, semana.dados);
-  const updated = await dbUpdate('escalaSemanas', semana.id, { dados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() });
+  const campos = { dados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() };
+  // Recalcular uma semana já Publicada (pedido explícito 2026-08-09):
+  // devolve-a a Rascunho na mesma escrita — nunca faz sentido substituir
+  // a grelha de um horário que a equipa já vê como oficial sem primeiro
+  // deixar de o ser.
+  if (opts && opts.despublicar) Object.assign(campos, { estado: 'rascunho', publicadoEm: null, publicadoPor: null });
+  const updated = await dbUpdate('escalaSemanas', semana.id, campos);
   if (!updated) return { semana: null, vagasLibertadas: [], vagasComCobertura: [] };
   STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
   return { semana: updated, vagasLibertadas, vagasComCobertura };
@@ -23241,7 +23483,19 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     h('span', { style: 'font-weight:700;color:#92400e;' }, 'Tornar Disponível neste Dia (Override) — atribui turno sem alterar a marcação de Férias/Ausências'),
   ]) : null;
 
-  const tipoSelect = h('select', { class: 'select' }, ESCALA_TIPOS_DIA.map(t => h('option', { value: t.key, selected: diaAtual.tipo === t.key ? 'selected' : undefined }, t.label)));
+  // Prestadores de Serviço (Mickael Amaral, André Sousa, Vânia Maia, Diogo
+  // Ferraz — estatuto_colaborador='prestador', ver escalaUtilizadorEh
+  // Prestador) só têm 2 estados possíveis: Normal ou Indisponibilidade —
+  // o resto (Férias/Dia Extra/Aniversário/Outras Licenças/Folga/Baixa/
+  // Falta) não se aplica, são conceitos do Quadro (pedido explícito
+  // 2026-08-10). O tipo já gravado fica sempre selecionável mesmo que
+  // fora desta lista (registo antigo antes desta restrição) — nunca
+  // troca silenciosamente por baixo do gestor.
+  const colaboradorObjCelula = colaboradorIdCelula ? (STATE.usuarios || []).find(u => u.id === colaboradorIdCelula) : null;
+  const tiposDisponiveisCelula = escalaUtilizadorEhPrestador(colaboradorObjCelula)
+    ? ESCALA_TIPOS_DIA.filter(t => t.key === 'normal' || t.key === 'indisponivel' || t.key === diaAtual.tipo)
+    : ESCALA_TIPOS_DIA;
+  const tipoSelect = h('select', { class: 'select' }, tiposDisponiveisCelula.map(t => h('option', { value: t.key, selected: diaAtual.tipo === t.key ? 'selected' : undefined }, t.label)));
   tipoSelect.value = diaAtual.tipo || 'normal';
   // Campo de hora com 2 seletores próprios (Horas + Minutos 00/30,
   // pedido explícito 2026-08-09): o `step` do <input type="time"> nativo
@@ -24144,12 +24398,13 @@ function buildHorariosPage(container, goTo) {
   async function recalcularHorarioSemana() {
     if (!isMasterUser() || recalculando) return;
     const semana = semanaSelecionada();
-    if (!semana || escalaSemanaCongelada(semana)) return;
+    if (!semana || escalaSemanaNoPassado(semana)) return;
+    const eraPublicado = semana.estado === 'publicado';
     confirmDialog(
-      `Isto vai voltar a calcular TODO o horário de ${formatDate(semana.semanaInicio)} a partir das Posições e Rotações atuais, substituindo o que está na grelha agora (incluindo qualquer edição manual já feita célula a célula). Continuar?`,
+      `Isto vai voltar a calcular TODO o horário de ${formatDate(semana.semanaInicio)} a partir das Posições e Rotações atuais, substituindo o que está na grelha agora (incluindo qualquer edição manual já feita célula a célula).${eraPublicado ? ' Este horário está publicado — ao recalcular volta a Rascunho e terá de ser publicado de novo.' : ''} Continuar?`,
       async () => {
         recalculando = true; rerender();
-        const { semana: atualizada, vagasLibertadas, vagasComCobertura } = await escalaRecalcularDadosSemana(semana);
+        const { semana: atualizada, vagasLibertadas, vagasComCobertura } = await escalaRecalcularDadosSemana(semana, { despublicar: eraPublicado });
         recalculando = false;
         if (atualizada) {
           const avisos = [];
@@ -24157,7 +24412,7 @@ function buildHorariosPage(container, goTo) {
           if (vagasComCobertura.length) avisos.push(`${vagasComCobertura.join(', ')} têm dias de férias/extra/indisponibilidade nesta semana — pode precisar de reforçar a cobertura`);
           showToast(avisos.length
             ? `Horário recalculado. Atenção: ${avisos.join('; ')}.`
-            : 'Horário recalculado a partir das Posições e Rotações atuais.', avisos.length ? 'info' : 'success');
+            : `Horário recalculado a partir das Posições e Rotações atuais.${eraPublicado ? ' Voltou a Rascunho — publique de novo quando estiver pronto.' : ''}`, avisos.length ? 'info' : 'success');
         } else {
           showToast(`Não foi possível recalcular o horário. ${escalaMensagemErroAmigavel(lastDbError)}`, 'error');
         }
@@ -24180,53 +24435,45 @@ function buildHorariosPage(container, goTo) {
   }
   async function reabrirSemana(semana) {
     if (escalaSemanaNoPassado(semana)) { showToast('Esta semana já passou — o histórico está congelado e não pode ser reaberto.', 'error'); return; }
+    const visivel = escalaMostrarRascunhosEquipa(semana);
     confirmDialog(
-      `Desfazer a publicação de ${formatDate(semana.semanaInicio)} e voltar a Rascunho? A equipa deixa de ver este horário como oficial (a menos que "Mostrar rascunhos à equipa" esteja ligado) até voltar a publicar. Continuar?`,
+      `Editar o horário de ${formatDate(semana.semanaInicio)}? Volta a Rascunho para poder editar célula a célula — ${visivel ? 'a equipa continua a ver este rascunho (opção "Permitir à equipa ver o rascunho" ligada), mas deixa de ser o horário oficial' : 'a equipa deixa de ver este horário (opção "Permitir à equipa ver o rascunho" desligada)'} até voltar a publicar. Continuar?`,
       async () => {
         const updated = await dbUpdate('escalaSemanas', semana.id, { estado: 'rascunho', publicadoEm: null, publicadoPor: null });
-        if (updated) { STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s); showToast('Publicação desfeita — horário de volta a Rascunho.', 'success'); }
-        else escalaShowErro('Não foi possível reverter o horário para rascunho');
+        if (updated) {
+          STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
+          showToast(`Horário de volta a Rascunho — ${visivel ? 'a equipa continua a vê-lo, mas já não como oficial' : 'deixou de ser visível à equipa'}. Publique de novo quando terminar de editar.`, 'success');
+        } else escalaShowErro('Não foi possível reverter o horário para rascunho');
         rerender();
-      }, { danger: true, confirmLabel: 'Voltar a Rascunho' },
+      }, { danger: true, confirmLabel: 'Editar' },
     );
   }
-  // Elimina PARA SEMPRE um Rascunho (nunca uma semana Publicada — essas só
-  // se revertem para rascunho primeiro, com reabrirSemana). Ação
-  // destrutiva: pede sempre confirmação. Semanas já passadas continuam
-  // congeladas mesmo em rascunho (ver escalaSemanaCongelada) — nunca
-  // chega a mostrar-se o botão para essas.
+  // Elimina PARA SEMPRE a semana — Rascunho OU Publicada (pedido explícito
+  // 2026-08-09: antes só dava para eliminar Rascunhos, tinha de se reverter
+  // primeiro com reabrirSemana; passou a funcionar sempre, com um aviso
+  // mais forte quando a semana está publicada porque é o horário que a
+  // equipa vê como oficial neste preciso momento). Ação destrutiva: pede
+  // sempre confirmação. Semanas já passadas continuam congeladas mesmo em
+  // rascunho (ver escalaSemanaCongelada) — nunca chega a mostrar-se o
+  // botão para essas.
   function eliminarSemanaRascunho(semana) {
-    if (semana.estado === 'publicado') { showToast('Só é possível eliminar Rascunhos — reverte primeiro para rascunho.', 'error'); return; }
-    confirmDialog(`Tem a certeza de que quer eliminar o rascunho de ${formatDate(semana.semanaInicio)}? Toda a grelha gerada para essa semana perde-se. Esta ação não pode ser desfeita.`, async () => {
-      const ok = await dbDelete('escalaSemanas', semana.id);
-      if (ok) {
-        STATE.escalaSemanas = STATE.escalaSemanas.filter(s => s.id !== semana.id);
-        showToast('Rascunho eliminado.', 'success');
-      } else {
-        escalaShowErro('Não foi possível eliminar o rascunho');
-      }
-      rerender();
-    }, { danger: true, confirmLabel: 'Eliminar Rascunho' });
-  }
-  // "🗑️ Limpar Horário" — botão direto na barra de ações do Gerador
-  // (substitui o antigo pop-up "Opções do Gerador"). Diferente de
-  // eliminarSemanaRascunho (que apaga o registo da semana inteiro): esta
-  // ação MANTÉM a semana (estado, variante, observações, visibilidade de
-  // rascunho) e só limpa `dados` — todas as atribuições da grelha —
-  // deixando a semana pronta para recomeçar a preencher do zero, célula
-  // a célula ou com "Recalcular a partir das Posições" a seguir.
-  function limparRascunhoSemana(semana) {
-    if (!isMasterUser() || escalaSemanaCongelada(semana)) return;
-    confirmDialog('Tem a certeza de que deseja apagar o rascunho desta semana para recomeçar do zero?', async () => {
-      const updated = await dbUpdate('escalaSemanas', semana.id, { dados: {}, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() });
-      if (updated) {
-        STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
-        showToast('Rascunho desta semana foi apagado — a grelha está vazia para recomeçar.', 'success');
-      } else {
-        escalaShowErro('Não foi possível apagar o rascunho desta semana');
-      }
-      rerender();
-    }, { danger: true, confirmLabel: 'Sim, apagar rascunho' });
+    if (escalaSemanaNoPassado(semana)) { showToast('Esta semana já passou — o histórico está congelado.', 'error'); return; }
+    const publicado = semana.estado === 'publicado';
+    confirmDialog(
+      publicado
+        ? `Tem a certeza de que quer eliminar o horário PUBLICADO de ${formatDate(semana.semanaInicio)}? É o horário oficial que a equipa vê neste momento — depois de eliminado deixa de existir para todos e será preciso gerar um novo do zero. Esta ação não pode ser desfeita.`
+        : `Tem a certeza de que quer eliminar o rascunho de ${formatDate(semana.semanaInicio)}? Toda a grelha gerada para essa semana perde-se. Esta ação não pode ser desfeita.`,
+      async () => {
+        const ok = await dbDelete('escalaSemanas', semana.id);
+        if (ok) {
+          STATE.escalaSemanas = STATE.escalaSemanas.filter(s => s.id !== semana.id);
+          showToast('Horário desta semana eliminado.', 'success');
+        } else {
+          escalaShowErro('Não foi possível eliminar o horário desta semana');
+        }
+        rerender();
+      }, { danger: true, confirmLabel: publicado ? 'Sim, eliminar horário publicado' : 'Sim, eliminar rascunho' },
+    );
   }
   async function guardarNotasSemana(semana, observacoes) {
     if (escalaSemanaCongelada(semana)) { showToast('Esta semana está congelada e não pode ser editada.', 'error'); return; }
@@ -24424,9 +24671,6 @@ function buildHorariosPage(container, goTo) {
       const actionsRow = [
         h('button', { class: 'btn btn-secondary', onclick: () => requireAuth(() => guardarNotasSemana(semana, obsInput.value)) }, 'Guardar Notas'),
       ];
-      if (semana.estado !== 'publicado') {
-        actionsRow.push(h('button', { class: 'btn-fab-sm form-delete-btn', title: 'Eliminar Rascunho', 'aria-label': 'Eliminar Rascunho', onclick: () => requireAuth(() => eliminarSemanaRascunho(semana)) }, Icon('trash', { size: 15, strokeWidth: 2.2 })));
-      }
       kids.push(h('div', { class: 'form-actions' }, actionsRow));
     } else if (isMasterUser() && escalaSemanaNoPassado(semana)) {
       kids.push(h('p', { class: 'field-helper-text', style: 'margin-top:10px;' }, 'Semana já passada — fica congelada como histórico e não pode ser reaberta nem editada.'));
@@ -25334,7 +25578,7 @@ function buildHorariosPage(container, goTo) {
     anoInput.addEventListener('change', () => { const v = parseInt(anoInput.value, 10); if (!isNaN(v)) { feriasAnoSaldos = v; editingSaldoUserId = null; rerender(); } });
     const anoCongelado = escalaAnoSaldoBaseCongelado(feriasAnoSaldos);
     const anoPermanentementeCongelado = Number(feriasAnoSaldos) >= ESCALA_ANO_SALDO_CONGELAMENTO_FIXO;
-    const thead = h('thead', {}, h('tr', {}, ['Colaborador', 'Dias Base', 'Prémio do Ano', 'Ajuste Transitado', 'Saldo Transitado', 'Marcados', 'Restantes Ano Anterior', 'Restantes Totais', ''].map(t => h('th', {}, t))));
+    const thead = h('thead', {}, h('tr', {}, ['Colaborador', 'Dias Base', 'Dias Prémio', 'Saldo Transitado', 'Total a Gozar', 'Marcados', 'Por Marcar', 'A Transitar', ''].map(t => h('th', {}, t))));
     const rows = usuariosQuadroAtivos().map(u => {
       const saldo = escalaSaldoAnual(u.id, feriasAnoSaldos);
       if (editingSaldoUserId === u.id) {
@@ -25353,20 +25597,23 @@ function buildHorariosPage(container, goTo) {
         // ou positivo, ao contrário do Prémio do Ano), soma-se ao cálculo
         // automático em vez de o substituir (ver escalaSaldoAnual) — para
         // reconciliar com registos de férias anteriores à app, sem ter de
-        // reconstruir o histórico inteiro em escala_ferias.
-        const ajusteInput = h('input', { class: 'input', type: 'number', step: '1', style: 'max-width:80px;', title: 'Correção manual (+ ou −) somada ao cálculo automático do Saldo Transitado.' });
+        // reconstruir o histórico inteiro em escala_ferias. A tabela em
+        // modo de leitura já não mostra esta correção como coluna à parte
+        // (pedido explícito 2026-08-10 — só uma coluna "Saldo Transitado"),
+        // mas continua editável aqui, dentro da própria célula, com o
+        // automático por baixo como referência.
+        const ajusteInput = h('input', { class: 'input', type: 'number', step: '1', style: 'max-width:70px;', title: 'Correção manual (+ ou −) somada ao cálculo automático do Saldo Transitado.' });
         ajusteInput.value = String(Math.round(saldoDraft.ajusteSaldoTransitado ?? saldo.ajusteSaldoTransitado));
         ajusteInput.addEventListener('input', () => { saldoDraft.ajusteSaldoTransitado = ajusteInput.value; });
         return h('tr', {}, [
           h('td', { class: 'cell-strong' }, u.nomeCompleto || u.username),
           h('td', {}, baseInput),
           h('td', {}, bonusInput),
-          h('td', {}, ajusteInput),
-          // Saldo Transitado em si nunca é um campo de formulário — é
-          // sempre auto (recursivo) + ajuste acima, ver escalaSaldoAnual;
-          // fica read-only aqui mesmo em modo de edição da linha, e
-          // reflete já ao vivo o valor do input de Ajuste em cima.
-          h('td', { class: 'cell-muted' }, String(saldo.saldoTransitadoAuto + Math.round(parseFloat(saldoDraft.ajusteSaldoTransitado ?? saldo.ajusteSaldoTransitado) || 0))),
+          h('td', {}, [
+            ajusteInput,
+            h('div', { class: 'field-helper-text', style: 'margin-top:2px;' }, `automático: ${saldo.saldoTransitadoAuto}`),
+          ]),
+          h('td', { class: 'cell-strong' }, '—'),
           h('td', {}, String(saldo.diasGozados)),
           h('td', { class: 'cell-strong' }, '—'),
           h('td', { class: 'cell-strong' }, '—'),
@@ -25380,14 +25627,27 @@ function buildHorariosPage(container, goTo) {
             btn.addEventListener('click', () => { editingSaldoUserId = u.id; saldoDraft = { diasBase: saldo.diasLei, diasBonus: saldo.diasBonusBase, ajusteSaldoTransitado: saldo.ajusteSaldoTransitado }; saldoError = ''; rerender(); });
             return btn;
           })();
+      // "Total a Gozar" (novo, pedido explícito 2026-08-10) — soma completa
+      // disponível este ano: Base + Prémio + Dia de Aniversário (quando
+      // aplicável) + Saldo Transitado, ANTES de descontar o que já foi
+      // marcado (é exatamente diasRestantes + diasGozados, nunca calculado
+      // à parte — mesma fonte única de verdade de sempre, ver
+      // escalaSaldoAnual). "Por Marcar" e "A Transitar" mostram o MESMO
+      // número (diasRestantes) — o que sobra por marcar este ano É
+      // exatamente o que transita para o ano seguinte se não for marcado a
+      // tempo (ver escalaSaldoTransitadoAutomatico, que usa sempre
+      // diasRestantes do ano anterior); duas colunas só porque a pergunta
+      // que respondem é diferente ("ainda tenho de marcar quê?" vs "o que
+      // segue para o próximo ano?"), não porque o valor difira.
+      const totalAGozar = saldo.diasRestantes + saldo.diasGozados;
       return h('tr', {}, [
         h('td', { class: 'cell-strong' }, u.nomeCompleto || u.username),
         h('td', {}, String(saldo.diasLei)),
         h('td', {}, String(saldo.diasBonus)),
-        h('td', { class: saldo.ajusteSaldoTransitado ? 'cell-strong' : 'cell-muted' }, saldo.ajusteSaldoTransitado > 0 ? `+${saldo.ajusteSaldoTransitado}` : String(saldo.ajusteSaldoTransitado)),
-        h('td', { class: 'cell-muted', title: saldo.ajusteSaldoTransitado ? `Automático: ${saldo.saldoTransitadoAuto} · Ajuste: ${saldo.ajusteSaldoTransitado > 0 ? '+' : ''}${saldo.ajusteSaldoTransitado}` : undefined }, String(saldo.saldoTransitado)),
+        h('td', { title: `Automático: ${saldo.saldoTransitadoAuto}${saldo.ajusteSaldoTransitado ? ` · Ajuste: ${saldo.ajusteSaldoTransitado > 0 ? '+' : ''}${saldo.ajusteSaldoTransitado}` : ''}` }, String(saldo.saldoTransitado)),
+        h('td', {}, String(totalAGozar)),
         h('td', {}, String(saldo.diasGozados)),
-        h('td', {}, String(saldo.restantesAnoAnterior)),
+        h('td', { class: 'cell-strong' }, String(saldo.diasRestantes)),
         h('td', { class: 'cell-strong' }, String(saldo.diasRestantes)),
         h('td', {}, editBtn),
       ]);
@@ -27190,7 +27450,7 @@ function buildHorariosPage(container, goTo) {
   // Versões Publicadas continuam sempre visíveis à equipa, com ou sem
   // este toggle (só controla a pré-visualização de um Rascunho ainda não
   // publicado). Vive diretamente na barra de ações do Gerador — ver
-  // buildControlosGeradorBarra — nunca atrás de um botão/pop-up. Tooltip
+  // buildBarraGestaoSemana — nunca atrás de um botão/pop-up. Tooltip
   // nativo (title) explica o alcance exato da opção ao passar o rato.
   function buildToggleMostrarRascunhosCompacto(semana) {
     const ligado = configVisibilidadeDraft !== null ? configVisibilidadeDraft : escalaMostrarRascunhosEquipa(semana);
@@ -27207,36 +27467,87 @@ function buildHorariosPage(container, goTo) {
       } else escalaShowErro('Não foi possível guardar esta definição');
       rerender();
     }));
+    // Ícone de olho em vez de emoji (pedido explícito 2026-08-09) — mesmo
+    // símbolo usado nas Observações da tabela (ver obsEyeButton); texto
+    // completo só no title (hover), a checkbox+ícone já bastam para o
+    // significado ficar claro de relance.
     return h('label', {
-      style: 'display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700;color:var(--pharm-700);cursor:pointer;white-space:nowrap;',
-      title: 'Versões oficiais/publicadas ficam sempre disponíveis. Esta opção aplica-se apenas à semana ativa.',
-    }, [cb, '👁️ Permitir à equipa ver o rascunho desta semana']);
+      style: 'display:flex;align-items:center;gap:5px;cursor:pointer;color:var(--pharm-500);',
+      title: 'Permitir à equipa ver o rascunho desta semana. Versões oficiais/publicadas ficam sempre disponíveis. Esta opção aplica-se apenas à semana ativa.',
+    }, [cb, Icon('eye', { size: 14, strokeWidth: 2.2 })]);
   }
-  // Controlos do Gerador expostos DIRETAMENTE na barra de ações superior
-  // (substitui por completo o antigo botão+pop-up "⚙️ Opções do
-  // Gerador") — checkbox de visibilidade, "↻ Recalcular" e
-  // "🗑️ Limpar Horário", alinhados à direita, junto ao alternador
-  // Timeline/Vista em Tabela.
-  function buildControlosGeradorBarra(semana, semConfiguracao) {
-    const podeRecalcular = semana && !escalaSemanaCongelada(semana) && !semConfiguracao;
-    const podeLimpar = semana && !escalaSemanaCongelada(semana);
-    const kids = [buildToggleMostrarRascunhosCompacto(semana)];
-    if (podeRecalcular) {
-      kids.push(h('button', {
-        class: 'btn btn-secondary', style: 'padding:8px 12px;font-size:12.5px;', disabled: recalculando ? 'disabled' : undefined,
-        title: 'Útil se alterou horários/rotação em "Gerir Posições" depois de gerar este rascunho — substitui a grelha atual (perde edições manuais já feitas).',
-        onclick: () => requireAuth(recalcularHorarioSemana),
-      }, [Icon('rotatecw', { size: 14, strokeWidth: 2.2 }), ' ' + (recalculando ? 'A recalcular…' : 'Recalcular')]));
+  // Barra única de gestão da semana (pedido explícito 2026-08-09): reúne
+  // tudo o que muda o ESTADO da semana — gerar, recalcular, eliminar,
+  // publicar/editar — sempre no mesmo sítio e com o mesmo aspeto visual
+  // em qualquer estado (só ícones, btn-fab-sm, texto completo sempre por
+  // hover, nunca emoji). Antes estava espalhado por 3 sítios diferentes:
+  // "Gerar Rascunho" (texto, na linha de navegação), checkbox+Recalcular+
+  // "Limpar Horário" (texto, buildControlosGeradorBarra) e Publicar/
+  // Voltar a Rascunho (junto ao alternador Timeline/Vista em Tabela,
+  // longe do resto). "Limpar Horário" foi retirado — sobrepunha-se
+  // confusamente com Recalcular (regenera a grelha a partir das Posições
+  // atuais) e Eliminar (apaga a semana toda, ver eliminarSemanaRascunho);
+  // esse botão "Eliminar", antes enterrado dentro de "Notas de
+  // Planeamento" e só permitido em Rascunho, subiu para aqui e passou a
+  // funcionar também com a semana já Publicada.
+  function buildBarraGestaoSemana(semana, semConfiguracao) {
+    if (!semana) {
+      // Estado "Sem Horário Definido": só a variante + um "+" (ícone só,
+      // pedido explícito — antes tinha o texto "Gerar Rascunho").
+      const varianteSelect = h('select', { class: 'select', style: 'max-width:260px;' },
+        ESCALA_VARIANTES.map(v => h('option', { value: v.key, selected: varianteSelecionada === v.key ? 'selected' : undefined }, v.label)));
+      varianteSelect.value = varianteSelecionada;
+      varianteSelect.addEventListener('change', () => { varianteSelecionada = varianteSelect.value; });
+      const gerarBtn = h('button', {
+        class: 'btn-fab tone-green', disabled: (gerando || semConfiguracao) ? 'disabled' : undefined,
+        title: semConfiguracao ? 'Configure primeiro as Posições em "Gerir Posições".' : (gerando ? 'A gerar…' : 'Gerar Rascunho'),
+        'aria-label': 'Gerar Rascunho',
+        onclick: () => { if (semConfiguracao) return; requireAuth(criarOuAbrirSemana); },
+      }, Icon('plus', { size: 18, strokeWidth: 2.4 }));
+      return h('div', { style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px;' }, [varianteSelect, gerarBtn]);
     }
-    if (podeLimpar) {
+    const publicado = semana.estado === 'publicado';
+    const noPassado = escalaSemanaNoPassado(semana);
+    const kids = [buildToggleMostrarRascunhosCompacto(semana)];
+    if (!noPassado) {
+      if (!semConfiguracao) {
+        kids.push(h('button', {
+          class: 'btn-fab-sm tone-gray', disabled: recalculando ? 'disabled' : undefined,
+          title: publicado
+            ? 'Recalcular a grelha a partir das Posições e Rotações atuais. Este horário está publicado — ao recalcular volta a Rascunho e terá de ser publicado de novo.'
+            : 'Recalcular a grelha a partir das Posições e Rotações atuais (útil se as alterou depois de gerar este rascunho) — substitui a grelha atual, perde-se qualquer edição manual já feita.',
+          'aria-label': 'Recalcular',
+          onclick: () => requireAuth(recalcularHorarioSemana),
+        }, Icon('rotatecw', { size: 14, strokeWidth: 2.2 })));
+      }
       kids.push(h('button', {
-        class: 'btn btn-secondary', style: 'padding:8px 12px;font-size:12.5px;color:#b91c1c;',
-        title: 'Apaga todas as atribuições da grelha desta semana para recomeçar do zero.',
-        onclick: () => requireAuth(() => limparRascunhoSemana(semana)),
-      }, [Icon('trash', { size: 14, strokeWidth: 2.2 }), ' Limpar Horário']));
+        class: 'btn-fab-sm tone-red',
+        title: publicado ? 'Eliminar o horário publicado desta semana — não pode ser desfeito.' : 'Eliminar o rascunho desta semana — não pode ser desfeito.',
+        'aria-label': 'Eliminar Horário da Semana',
+        onclick: () => requireAuth(() => eliminarSemanaRascunho(semana)),
+      }, Icon('trash', { size: 14, strokeWidth: 2.2 })));
+      kids.push(publicado
+        ? h('button', {
+            class: 'btn-fab-sm tone-orange',
+            title: 'Editar horário publicado — volta a Rascunho para poder editar célula a célula; terá de ser publicado de novo para a equipa voltar a vê-lo como oficial.',
+            'aria-label': 'Editar Horário Publicado',
+            onclick: () => requireAuth(() => reabrirSemana(semana)),
+          }, Icon('pencil', { size: 14, strokeWidth: 2.2 }))
+        : h('button', {
+            // Icon('check') em vez de 'checkcircle' (pedido explícito
+            // 2026-08-10): checkcircle desenha o SEU PRÓPRIO círculo à
+            // volta do visto, que dentro de um botão já circular ficava
+            // a parecer um anel branco duplicado por cima do verde — só
+            // o visto sozinho resolve, sem precisar de aumentar o botão.
+            class: 'btn-fab-sm tone-green',
+            title: 'Publicar como horário oficial — fica imediatamente visível para toda a equipa e a grelha passa a congelada.',
+            'aria-label': 'Publicar Horário Oficial',
+            onclick: () => requireAuth(() => publicarSemana(semana)),
+          }, Icon('check', { size: 14, strokeWidth: 2.6 })));
     }
     return h('div', { style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;margin-bottom:14px;' }, kids);
   }
+
 
   // ---- Separador "Gerador / Vista Vertical" (reservado à gestão) ----
   // Único sítio onde se gera, edita, publica ou elimina uma semana — "A
@@ -27250,36 +27561,8 @@ function buildHorariosPage(container, goTo) {
     const wrap = h('div', {});
     const semConfiguracao = escalaConfiguracaoEmFalta();
     const semana = semanaSelecionada();
-    const semanaJaExiste = !!semana;
-    // Botão principal de estado (Publicar/Voltar a Rascunho) — construído
-    // aqui mas só usado mais abaixo, junto ao alternador Timeline/Vista em
-    // Tabela (grupo "botoesDireitaGerador", sempre alinhado à direita —
-    // pedido explícito 2026-08-09; antes vivia na linha de navegação
-    // semanal, ← Data → Hoje/badges, com risco de quebrar linha em ecrãs
-    // mais estreitos). Nunca aparece numa semana já passada (congelada
-    // para sempre, ver escalaSemanaCongelada) nem antes de a semana
-    // existir.
-    const acaoEstadoBtn = (semana && !escalaSemanaNoPassado(semana))
-      ? (semana.estado === 'publicado'
-          ? h('button', { class: 'btn-revert', onclick: () => requireAuth(() => reabrirSemana(semana)) }, [Icon('undo', { size: 15, strokeWidth: 2.2 }), ' ↩️ Voltar a Rascunho'])
-          : h('button', { class: 'btn btn-primary', onclick: () => requireAuth(() => publicarSemana(semana)) }, [Icon('checkcircle', { size: 15, strokeWidth: 2.2 }), ' 📣 Publicar Horário Oficial']))
-      : null;
     const nav = buildNavegacaoSemanas();
-    const topRow = h('div', { style: 'display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px;' });
-    topRow.appendChild(nav);
-    if (!semanaJaExiste) {
-      const varianteSelect = h('select', { class: 'select', style: 'max-width:260px;' },
-        ESCALA_VARIANTES.map(v => h('option', { value: v.key, selected: varianteSelecionada === v.key ? 'selected' : undefined }, v.label)));
-      varianteSelect.value = varianteSelecionada;
-      varianteSelect.addEventListener('change', () => { varianteSelecionada = varianteSelect.value; });
-      topRow.appendChild(varianteSelect);
-      topRow.appendChild(h('button', {
-        class: 'btn btn-primary', style: 'margin-left:auto;', disabled: (gerando || semConfiguracao) ? 'disabled' : undefined,
-        title: semConfiguracao ? 'Configure primeiro as Posições em "Gerir Posições".' : undefined,
-        onclick: () => { if (semConfiguracao) return; requireAuth(criarOuAbrirSemana); },
-      }, [Icon('plus', { size: 14 }), ' ' + (gerando ? 'A gerar…' : 'Gerar Rascunho')]));
-    }
-    wrap.appendChild(topRow);
+    wrap.appendChild(nav);
     if (semConfiguracao) {
       wrap.appendChild(h('div', {
         style: 'display:flex;gap:10px;align-items:flex-start;background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;line-height:1.5;',
@@ -27288,21 +27571,16 @@ function buildHorariosPage(container, goTo) {
         h('span', {}, 'Ainda não existem Posições ou elementos na Rotação configurados. Por favor, aceda a "Gerir Posições" para configurar os turnos base antes de gerar a semana.'),
       ]));
     }
+    wrap.appendChild(buildBarraGestaoSemana(semana, semConfiguracao));
     if (!semana) {
-      wrap.appendChild(EmptyState('Sem horário gerado para esta semana — use "Gerar Rascunho" acima.'));
+      wrap.appendChild(EmptyState('Sem horário gerado para esta semana — use "+" acima.'));
       return wrap;
     }
 
-    // Organização (pedido explícito 2026-08-09): Publicar/Voltar a
-    // Rascunho já não vive na linha de navegação semanal (arrastava o
-    // botão para o meio de ← data → Hoje/badges, com risco de quebrar
-    // linha em ecrãs mais estreitos) — junta-se agora ao alternador
-    // Timeline/Vista em Tabela, os dois SEMPRE alinhados à direita. Em
-    // modo Timeline, este grupo soma-se à MESMA linha dos botões de dia
-    // (à esquerda, como já estavam — ver extraBotoesDireita em
-    // buildVistaVertical); em Vista em Tabela, que não tem botões de dia,
-    // fica sozinho, alinhado à direita da mesma forma — nunca muda de
-    // sítio consoante a vista escolhida.
+    // Timeline/Vista em Tabela + Descarregar PDF sempre alinhados à
+    // direita (pedido explícito 2026-08-09); Publicar/Editar deixou de
+    // viver aqui — ver buildBarraGestaoSemana, logo acima, junto ao
+    // Recalcular/Eliminar (uniformizado, pedido explícito).
     const timelineBtn = h('button', { class: 'tab-btn tone-blue' + (viewModeGerador === 'vertical' ? ' active' : ''), onclick: () => { definirViewModeGerador('vertical'); rerender(); } }, [Icon('clock', { size: 14 }), h('span', {}, 'Timeline')]);
     const vistaTabelaBtn = h('button', { class: 'tab-btn tone-blue' + (viewModeGerador === 'tabela' ? ' active' : ''), onclick: () => { definirViewModeGerador('tabela'); rerender(); } }, 'Vista em Tabela');
     // Descarregar PDF (pedido explícito 2026-08-09) — folha A4 vertical
@@ -27313,8 +27591,7 @@ function buildHorariosPage(container, goTo) {
     // (pedido explícito 2026-08-09: "reduz ruído") — o title já explica.
     const baixarPdfBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Descarregar horário semanal em PDF', 'aria-label': 'Descarregar horário semanal em PDF' }, Icon('download', { size: 15, strokeWidth: 2.2 }));
     baixarPdfBtn.addEventListener('click', () => baixarPdfDocumento(buildHorarioSemanaTimelinePDFDoc(semana), `horario_semanal_${semana.semanaInicio}.pdf`));
-    const botoesDireitaGerador = [acaoEstadoBtn, baixarPdfBtn, timelineBtn, vistaTabelaBtn].filter(Boolean);
-    wrap.appendChild(buildControlosGeradorBarra(semana, semConfiguracao));
+    const botoesDireitaGerador = [baixarPdfBtn, timelineBtn, vistaTabelaBtn];
 
     const permitirEdicao = true; // este separador é sempre de gestão (só Master chega aqui — ver build())
     wrap.appendChild(viewModeGerador === 'vertical'
@@ -27598,7 +27875,7 @@ function buildHorariosPage(container, goTo) {
               title: `Banco de Horas descontado: -${escalaFormatarHoras(dia.bancoHorasDesconto)}`,
             }, `-${escalaFormatarHoras(dia.bancoHorasDesconto)} Banco`) : null,
           ]);
-          if (editavel) segBloco.addEventListener('click', aoClicarPosicao);
+          if (editavel) segBloco.addEventListener('dblclick', aoClicarPosicao);
           return segBloco;
         });
         // Tarefas/Cargos Especiais (Chefe de Turno, Encomenda, etc.) — até
@@ -27619,29 +27896,36 @@ function buildHorariosPage(container, goTo) {
             title: `${escalaTarefaTextoItem(t)} · ${t.inicio}-${t.fim}`,
           }, tarefaInfo ? tarefaInfo.icon : '★'));
         });
-      } else if (dia.tipo === 'folga') {
+      } else if (dia.tipo === 'folga' || dia.tipo === 'indisponivel') {
         // Folga — estilização suave e minimalista (pedido à parte de
         // Férias/Baixa/etc.): nunca mostra ícone/texto no bloco (nem
         // sequer "Folga" por extenso) para não rivalizar visualmente com
         // turnos reais nem com ausências que pedem atenção — cinzento
         // ultra ténue/translúcido (escala-vertical-bloco-folga), quase
-        // invisível. Identificação (colaborador + "Folga") só ao passar o
-        // cursor, através do MESMO tooltip escuro flutuante do resto da
-        // coluna (mostrarTooltipColaborador, ver abaixo) — nunca um
-        // tooltip nativo (title) à parte, que duplicava a informação num
-        // segundo balão branco, com estilo diferente, redundante.
+        // invisível. Identificação (colaborador + "Folga"/"Indisponibi-
+        // lidade") só ao passar o cursor, através do MESMO tooltip escuro
+        // flutuante do resto da coluna (mostrarTooltipColaborador, ver
+        // abaixo) — nunca um tooltip nativo (title) à parte, que
+        // duplicava a informação num segundo balão branco, com estilo
+        // diferente, redundante.
+        // Indisponibilidade (Prestadores de Serviço) segue o MESMO
+        // tratamento visual da Folga (pedido explícito 2026-08-10) — não
+        // é uma ausência formal como Férias/Baixa (não consome saldo, não
+        // compete por cobertura, ver ESCALA_TIPOS_CONTAM_SOBREPOSICAO),
+        // por isso não deve chamar a mesma atenção visual (riscas
+        // diagonais) dessas.
         const blocoFolga = h('div', {
           class: 'escala-vertical-bloco escala-vertical-bloco-folga' + (editavel ? ' escala-vertical-bloco-clicavel' : ''),
           style: 'top:0%;height:100%;',
         });
-        if (editavel) blocoFolga.addEventListener('click', aoClicarPosicao);
+        if (editavel) blocoFolga.addEventListener('dblclick', aoClicarPosicao);
         blocos = [blocoFolga];
       } else if (dia.tipo && dia.tipo !== 'normal') {
         // Item 1 (Estilização Visual): Tipo diferente de "Normal" —
-        // Férias/Baixa/Falta/Indisponibilidade/Licença/Aniversário/
-        // Extra (Folga tem tratamento próprio, ver ramo acima) — nunca
-        // tem horário próprio para desenhar um intervalo real, por isso
-        // preenche a coluna do dia inteira a cinzento
+        // Férias/Baixa/Falta/Licença/Aniversário/Extra (Folga e
+        // Indisponibilidade têm tratamento próprio, ver ramo acima) —
+        // nunca tem horário próprio para desenhar um intervalo real, por
+        // isso preenche a coluna do dia inteira a cinzento
         // (escala-vertical-bloco-tipo-ausencia), com a etiqueta do tipo
         // ao centro (sem emoji — pedido explícito) — sinaliza de imediato
         // "não está ao serviço em turno regular", sem precisar de passar
@@ -27651,7 +27935,7 @@ function buildHorariosPage(container, goTo) {
           class: 'escala-vertical-bloco escala-vertical-bloco-tipo-ausencia' + (editavel ? ' escala-vertical-bloco-clicavel' : ''),
           style: 'top:0%;height:100%;',
         }, h('span', {}, infoTipo ? infoTipo.label : dia.tipo));
-        if (editavel) blocoAusencia.addEventListener('click', aoClicarPosicao);
+        if (editavel) blocoAusencia.addEventListener('dblclick', aoClicarPosicao);
         blocos = [blocoAusencia];
       }
       // Tooltip do Colaborador: hover no cabeçalho ('A1') OU em qualquer
@@ -27686,6 +27970,16 @@ function buildHorariosPage(container, goTo) {
       const textoTooltipColaborador = colaboradorNome + (situacaoDia ? ` (${situacaoDia})` : '');
       const trilho = h('div', { class: 'escala-vertical-trilho' + (editavel && !blocos.length ? ' escala-vertical-trilho-vazio' : '') }, [...blocos, ...tarefaOverlays].filter(Boolean));
       if (editavel && !blocos.length) trilho.addEventListener('click', aoClicarPosicao);
+      // Arrastar/redimensionar/tesoura na Timeline (pedido explícito
+      // 2026-08-10) — só num turno normal já com Entrada+Saída definidas;
+      // `blocos` aqui é sempre a mesma referência de array usada acima
+      // (1 ou 2 segmentos, consoante haja Pausa), já anexada ao `trilho`.
+      if (editavel && dia.tipo === 'normal' && dia.entrada && dia.saida) {
+        escalaInstalarInteracaoTurno({
+          blocosSegmentos: blocos, dia, semana, codigoVaga: v.codigo, diaKey, trilhoEl: trilho,
+          minOffsetMin: HORA_INICIO * 60, totalMin: totalHoras * 60, rerenderFn: rerender,
+        });
+      }
       if (colaboradorNome) {
         // Com o turno dividido em dois blocos (pausa/almoço), o tooltip
         // segue o cursor em qualquer um dos dois segmentos — nunca só no
