@@ -22079,24 +22079,32 @@ function escalaMoverBadgeArrasto(evento) {
 function escalaEsconderBadgeArrasto() {
   if (escalaArrastoBadgeEl) escalaArrastoBadgeEl.style.display = 'none';
 }
-// Arrastar/redimensionar um turno diretamente na Timeline (pedido
-// explícito 2026-08-10): ao passar o rato sobre um turno já preenchido
-// (dia.tipo === 'normal'), surgem pegas finas (topo/fundo) em CADA
-// segmento visível — com Pausa/Almoço já marcada (2 blocos), isso dá 4
-// pegas no total: Entrada (topo do 1º bloco), Início Pausa (fundo do 1º
-// bloco), Fim Pausa (topo do 2º bloco) e Saída (fundo do 2º bloco), cada
-// uma só ajusta o SEU campo; arrastar o CORPO de qualquer um dos blocos
-// desloca Entrada+Saída+Pausa juntas, mantendo a duração de tudo. A
-// tesoura (marcar Pausa/Almoço) só aparece quando ainda NÃO há Pausa —
-// com os 2 blocos já não faz sentido (já existe, edita-se pelas pegas
-// do meio ou pelo duplo-clique). Duplo-clique continua a abrir o editor
-// completo — um clique simples deixou de abrir nada, para não
-// conflituar com o início do arrasto. Tudo arredondado a 30 em 30
-// minutos (mesma grelha do editor, ver escalaAbsMinParaHora). Só grava
-// no Supabase ao soltar o rato (mouseup) — o arrasto em si é só uma
-// pré-visualização local via CSS (transform/top/height) + o badge de
-// hora em tempo real (ver escalaMostrarBadgeArrasto), nunca toca em
-// `semana.dados` a meio do gesto.
+// Arrastar/redimensionar um turno diretamente na Timeline: ao passar o
+// rato sobre um turno já preenchido (dia.tipo === 'normal'), surgem pegas
+// finas (topo/fundo) em CADA segmento visível — com Pausa/Almoço já
+// marcada (2 blocos), isso dá 4 pegas no total: Entrada (topo do 1º
+// bloco), Início Pausa (fundo do 1º bloco), Fim Pausa (topo do 2º bloco)
+// e Saída (fundo do 2º bloco), cada uma só ajusta o SEU campo. A tesoura
+// (marcar Pausa/Almoço) só aparece quando ainda NÃO há Pausa — com os 2
+// blocos já não faz sentido (já existe, edita-se pelas pegas do meio ou
+// pelo duplo-clique). Duplo-clique continua a abrir o editor completo —
+// um clique simples deixou de abrir nada, para não conflituar com o
+// início do arrasto. Tudo arredondado a 30 em 30 minutos (mesma grelha
+// do editor, ver escalaAbsMinParaHora). Só grava no Supabase ao soltar o
+// rato (mouseup) — o arrasto em si é só uma pré-visualização local via
+// CSS (transform/top/height) + o badge de hora em tempo real (ver
+// escalaMostrarBadgeArrasto), nunca toca em `semana.dados` a meio do
+// gesto.
+// Arrastar o CORPO de um bloco (pedido explícito 2026-08-10, revisto):
+// sem Pausa, é um único bloco e arrasta-se inteiro (Entrada+Saída
+// juntas). COM Pausa, os 2 blocos passaram a arrastar-se em SEPARADO —
+// cada um só desloca a SUA metade (1º bloco: Entrada+Início Pausa; 2º
+// bloco: Fim Pausa+Saída), preservando sempre a sua própria duração —
+// nunca ultrapassa nem sobrepõe o outro bloco (limite rígido no próprio
+// extremo do bloco parado). Se for arrastado até TOCAR no outro bloco
+// (gap chega a 0), entende-se como "juntar os dois outra vez" e a Pausa/
+// Almoço é removida por completo, voltando a um único turno contínuo —
+// mesma lógica de fusão já usada nas pegas de Início/Fim de Pausa.
 function escalaInstalarInteracaoTurno(opts) {
   const { blocosSegmentos, dia, semana, codigoVaga, diaKey, trilhoEl, minOffsetMin, totalMin, rerenderFn } = opts;
   if (!blocosSegmentos.length) return;
@@ -22116,43 +22124,85 @@ function escalaInstalarInteracaoTurno(opts) {
     rerenderFn();
   }
 
-  // ---- Arrastar o corpo do bloco: move Entrada+Saída (e Pausa) juntas ----
-  function onMouseDownCorpo(e) {
-    if (e.button !== 0 || e.target.closest('.escala-vertical-handle') || e.target.closest('.escala-vertical-tesoura')) return;
-    e.preventDefault(); e.stopPropagation();
-    const startY = e.clientY;
-    const entradaOrig = escalaMinutosAbsolutos(dia.entrada, false);
-    const saidaOrig = escalaMinutosAbsolutos(dia.saida, true);
-    const pausaInicioOrig = dia.pausaInicio ? escalaMinutosAbsolutos(dia.pausaInicio, false) : null;
-    const pausaFimOrig = dia.pausaFim ? escalaMinutosAbsolutos(dia.pausaFim, true) : null;
-    let moveu = false, deltaFinal = 0;
-    function onMove(ev) {
-      if (Math.abs(ev.clientY - startY) > 3) moveu = true;
-      const deltaRel = ((ev.clientY - startY) / trilhoEl.getBoundingClientRect().height) * totalMin;
-      let deltaMin = Math.round(deltaRel / 30) * 30;
-      deltaMin = Math.max(minOffsetMin - entradaOrig, Math.min((minOffsetMin + totalMin) - saidaOrig, deltaMin));
-      deltaFinal = deltaMin;
-      blocosSegmentos.forEach(seg => { seg.style.transform = `translateY(${(deltaMin / totalMin) * 100}%)`; });
-      escalaMostrarBadgeArrasto(`${escalaAbsMinParaHora(entradaOrig + deltaMin)} – ${escalaAbsMinParaHora(saidaOrig + deltaMin)}`, ev);
-    }
-    function onUp() {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      blocosSegmentos.forEach(seg => { seg.style.transform = ''; });
-      escalaEsconderBadgeArrasto();
-      if (!moveu || deltaFinal === 0) return;
-      const campos = { entrada: escalaAbsMinParaHora(entradaOrig + deltaFinal), saida: escalaAbsMinParaHora(saidaOrig + deltaFinal) };
-      if (pausaInicioOrig !== null) campos.pausaInicio = escalaAbsMinParaHora(pausaInicioOrig + deltaFinal);
-      if (pausaFimOrig !== null) campos.pausaFim = escalaAbsMinParaHora(pausaFimOrig + deltaFinal);
-      persistir(campos);
-    }
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
+  // ---- Arrastar o corpo de UM segmento — 'unico' (sem Pausa, move
+  // Entrada+Saída), 'primeiro' (com Pausa, move Entrada+Início Pausa) ou
+  // 'ultimo' (com Pausa, move Fim Pausa+Saída) ----
+  function instalarArrastoCorpo(segEl, tipoSegmento) {
+    segEl.classList.add('escala-vertical-bloco-arrastavel');
+    segEl.addEventListener('mousedown', (e) => {
+      if (e.button !== 0 || e.target.closest('.escala-vertical-handle') || e.target.closest('.escala-vertical-tesoura')) return;
+      e.preventDefault(); e.stopPropagation();
+      const startY = e.clientY;
+      const entradaOrig = escalaMinutosAbsolutos(dia.entrada, false);
+      const saidaOrig = escalaMinutosAbsolutos(dia.saida, true);
+      const pausaInicioOrig = dia.pausaInicio ? escalaMinutosAbsolutos(dia.pausaInicio, false) : null;
+      const pausaFimOrig = dia.pausaFim ? escalaMinutosAbsolutos(dia.pausaFim, true) : null;
+      // Limites do delta: nunca sair do trilho e, com Pausa, nunca deixar
+      // este segmento ultrapassar o extremo do OUTRO segmento (que fica
+      // parado) — no máximo TOCAR nele (gap 0), o que dispara a fusão em
+      // onUp; nunca sobrepor.
+      let limiteMin, limiteMax;
+      if (tipoSegmento === 'unico') {
+        limiteMin = minOffsetMin - entradaOrig;
+        limiteMax = (minOffsetMin + totalMin) - saidaOrig;
+      } else if (tipoSegmento === 'primeiro') {
+        limiteMin = minOffsetMin - entradaOrig;
+        limiteMax = pausaFimOrig - pausaInicioOrig;
+      } else {
+        limiteMin = pausaInicioOrig - pausaFimOrig;
+        limiteMax = (minOffsetMin + totalMin) - saidaOrig;
+      }
+      let moveu = false, deltaFinal = 0;
+      function onMove(ev) {
+        if (Math.abs(ev.clientY - startY) > 3) moveu = true;
+        const deltaRel = ((ev.clientY - startY) / trilhoEl.getBoundingClientRect().height) * totalMin;
+        let deltaMin = Math.round(deltaRel / 30) * 30;
+        deltaMin = Math.max(limiteMin, Math.min(limiteMax, deltaMin));
+        deltaFinal = deltaMin;
+        segEl.style.transform = `translateY(${(deltaMin / totalMin) * 100}%)`;
+        const horaIni = tipoSegmento === 'ultimo' ? pausaFimOrig + deltaMin : entradaOrig + deltaMin;
+        const horaFim = tipoSegmento === 'primeiro' ? pausaInicioOrig + deltaMin : saidaOrig + deltaMin;
+        escalaMostrarBadgeArrasto(`${escalaAbsMinParaHora(horaIni)} – ${escalaAbsMinParaHora(horaFim)}`, ev);
+      }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        segEl.style.transform = '';
+        escalaEsconderBadgeArrasto();
+        if (!moveu || deltaFinal === 0) return;
+        if (tipoSegmento === 'unico') {
+          persistir({ entrada: escalaAbsMinParaHora(entradaOrig + deltaFinal), saida: escalaAbsMinParaHora(saidaOrig + deltaFinal) });
+          return;
+        }
+        if (tipoSegmento === 'primeiro') {
+          const novaEntrada = entradaOrig + deltaFinal, novaPausaInicio = pausaInicioOrig + deltaFinal;
+          if (novaPausaInicio >= pausaFimOrig) {
+            persistir({ entrada: escalaAbsMinParaHora(novaEntrada), pausaInicio: '', pausaFim: '' });
+            showToast('Pausa/Almoço removida — turno unificado.', 'success');
+          } else {
+            persistir({ entrada: escalaAbsMinParaHora(novaEntrada), pausaInicio: escalaAbsMinParaHora(novaPausaInicio) });
+          }
+          return;
+        }
+        // 'ultimo'
+        const novaSaida = saidaOrig + deltaFinal, novaPausaFim = pausaFimOrig + deltaFinal;
+        if (novaPausaFim <= pausaInicioOrig) {
+          persistir({ saida: escalaAbsMinParaHora(novaSaida), pausaInicio: '', pausaFim: '' });
+          showToast('Pausa/Almoço removida — turno unificado.', 'success');
+        } else {
+          persistir({ saida: escalaAbsMinParaHora(novaSaida), pausaFim: escalaAbsMinParaHora(novaPausaFim) });
+        }
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
   }
-  blocosSegmentos.forEach(seg => {
-    seg.classList.add('escala-vertical-bloco-arrastavel');
-    seg.addEventListener('mousedown', onMouseDownCorpo);
-  });
+  if (!temPausa) {
+    instalarArrastoCorpo(primeiroSeg, 'unico');
+  } else {
+    instalarArrastoCorpo(primeiroSeg, 'primeiro');
+    instalarArrastoCorpo(ultimoSeg, 'ultimo');
+  }
 
   // ---- Pegas de redimensionar — 1 por campo (Entrada/Início Pausa/Fim
   // Pausa/Saída), cada uma na sua ponta do respetivo segmento ----
@@ -22249,7 +22299,7 @@ function escalaInstalarInteracaoTurno(opts) {
   // 2 seletores de hora (Início/Fim) já pré-preenchidos a meio do turno,
   // igual em espírito ao popover das Observações (obsEyeButton). A
   // tesoura tem SEMPRE prioridade sobre o arrasto do corpo do bloco —
-  // além do filtro já existente em onMouseDownCorpo (closest), o próprio
+  // além do filtro já existente em instalarArrastoCorpo (closest), o próprio
   // mousedown da tesoura também para a propagação, para nunca chegar a
   // iniciar um arrasto por engano ao clicar nela.
   if (!temPausa) {
