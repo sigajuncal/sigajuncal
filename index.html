@@ -1027,8 +1027,17 @@
      seletor de horas visivelmente maior do que o da Entrada, mesmo os
      dois mostrando só 2 dígitos. Com largura fixa nunca mais depende do
      texto das opções. */
+  /* Legibilidade dos números (corrigido 2026-08-10): a seta nativa do
+     <select> (visível em vários browsers/mobile mesmo sem estilo próprio)
+     comia espaço dentro dos 38px, cortando o 2º dígito — "17" e "30"
+     apareciam como só "1"/"3" com a seta colada a seguir. appearance:none
+     remove essa seta nativa (não faz falta, o valor já muda por clique
+     e as opções são poucas) e a largura sobe para os 2 dígitos nunca
+     mais ficarem espremidos. */
   .time-picker-select{border:none;background:transparent;outline:none;font-size:14px;
-    color:var(--pharm-950);font-family:inherit;padding:9px 0;cursor:pointer;width:38px;text-align:center;}
+    color:var(--pharm-950);font-family:inherit;padding:9px 0;cursor:pointer;width:30px;text-align:center;
+    -webkit-appearance:none;-moz-appearance:none;appearance:none;}
+  .time-picker-select::-ms-expand{display:none;}
   .time-picker-sep{color:var(--pharm-400);font-weight:700;}
   /* Bug conhecido do Safari/WebKit: com o sistema em Modo Escuro, o
      preenchimento automático (autofill) e as sugestões do <datalist>
@@ -1637,6 +1646,13 @@
      quase invisível; identificação (Folga + colaborador) só aparece via
      tooltip nativo (title) ao passar o cursor. */
   .escala-vertical-bloco-folga{background:rgba(0,0,0,.04)!important;box-shadow:none;}
+  /* Horas Extra reivindicadas (pedido explícito 2026-08-10) — amarelo,
+     cor exclusiva desta camada (nunca usada por mais nada na Timeline),
+     para nunca se confundir com o turno base por baixo. Texto escuro
+     (não branco, ao contrário dos outros blocos) — amarelo claro precisa
+     de contraste escuro para ficar legível. Nunca arrastável/
+     redimensionável (gerido só pelo painel "Horas Extra Disponíveis").*/
+  .escala-vertical-bloco-extra{background:#facc15!important;color:#78350f!important;box-shadow:0 1px 3px rgba(0,0,0,.15);}
   /* Item 2 (Banco de Horas): selo compacto no bloco do turno indicando
      que foram descontadas horas de banco nesse dia — visível para toda
      a equipa (só a EDIÇÃO é restrita a Hugo/Paulo, a leitura não). */
@@ -1693,6 +1709,12 @@
   .colaborador-tooltip-flutuante{position:fixed;z-index:200;background:var(--pharm-900);color:#fff;
     font-size:12px;font-weight:700;padding:6px 11px;border-radius:7px;white-space:nowrap;
     pointer-events:none;box-shadow:0 4px 14px rgba(0,0,0,.28);}
+  /* Badge de hora em tempo real durante arrasto/redimensionamento na
+     Timeline (pedido explícito 2026-08-10) — mesmo padrão/CSS do balão
+     do colaborador acima, só que azul (nunca se confunde com esse). */
+  .escala-arrasto-badge{position:fixed;z-index:210;background:var(--blue);color:#fff;
+    font-size:13px;font-weight:800;padding:7px 13px;border-radius:8px;white-space:nowrap;
+    pointer-events:none;box-shadow:0 4px 14px rgba(37,99,235,.35);}
   /* Legenda "Código: Colaborador" abaixo da Timeline — compacta e
      discreta (tom mais claro que o texto normal), em linha com wrap
      automático quando não cabe tudo na largura disponível. */
@@ -6639,6 +6661,8 @@ const TABLES = {
   escalaNotasSemana: 'escala_notas_semana',
   escalaNotasPessoais: 'escala_notas_pessoais',
   escalaPedidosEspeciais: 'escala_pedidos_especiais',
+  escalaHorasExtra: 'escala_horas_extra',
+  escalaHorasExtraReivindicacoes: 'escala_horas_extra_reivindicacoes',
   escalaDiasOperacionaisEspeciais: 'escala_dias_operacionais_especiais',
   clientesHabituais: 'clientes_habituais',
 };
@@ -7816,6 +7840,8 @@ const STATE = {
   escalaNotasSemana: [],
   escalaNotasPessoais: [],
   escalaPedidosEspeciais: [],
+  escalaHorasExtra: [],
+  escalaHorasExtraReivindicacoes: [],
   escalaDiasOperacionaisEspeciais: [],
   mensagemDia: null,
   mensagensChat: [],
@@ -11753,24 +11779,33 @@ function contarLembretesPendentesDoUtilizador() {
 // futuro, mesmo que "ativos"/pendentes em geral); fica A PISCAR
 // (classe .lembretes-bell-piscar) sempre que o badge aparece, já que os
 // dois só existem juntos agora.
+// NOTA (revertido 2026-08-10): chegou a ter "duplo propósito" (acender
+// também por Horas Extra/notas de "Escala da Equipa" por tratar) — voltou
+// atrás por ser redundante: a Gaveta de Recados já é quem avisa e recebe
+// a ação real (validar/marcar como visto) para estes eventos, exatamente
+// como já acontecia para Pedidos Especiais e tudo o resto. Este sino é
+// só sobre Lembretes.
 function buildLembretesBellHome() {
   if (!activeUser) return null;
   const { total, urgentes } = contarLembretesPendentesDoUtilizador();
-  const inativa = urgentes.length === 0;
+  const badgeCount = urgentes.length;
+  const inativa = badgeCount === 0;
   const btn = h('button', {
     class: 'lembretes-bell-btn' + (inativa ? ' lembretes-bell-inativa' : ' lembretes-bell-piscar'),
-    title: urgentes.length ? `${urgentes.length} lembrete(s) urgente(s)!` : (total > 0 ? `${total} lembrete(s) ativo(s) — nenhum vencido hoje` : 'Os teus Lembretes'),
+    title: urgentes.length
+      ? `${urgentes.length} lembrete(s) urgente(s)!`
+      : (total > 0 ? `${total} lembrete(s) ativo(s) — nenhum vencido hoje` : 'Os teus Lembretes'),
     'aria-label': 'Lembretes',
   }, [
     Icon('bell', { size: 18, strokeWidth: 2.2 }),
-    inativa ? null : h('span', { class: 'lembretes-bell-badge' }, String(urgentes.length)),
+    inativa ? null : h('span', { class: 'lembretes-bell-badge' }, String(badgeCount)),
   ]);
   // Sem nada urgente, a campainha funciona como atalho direto para a área
   // de Lembretes (mesmo havendo ativos futuros); havendo urgentes, abre
   // logo o popup.
   btn.addEventListener('click', () => {
-    if (urgentes.length > 0) abrirModalLembretesUrgentes();
-    else { STATE.navFrom = STATE.page; STATE.page = 'lembretes'; STATE.sidebarOpen = false; render(); }
+    if (urgentes.length > 0) { abrirModalLembretesUrgentes(); return; }
+    STATE.navFrom = STATE.page; STATE.page = 'lembretes'; STATE.sidebarOpen = false; render();
   });
   return btn;
 }
@@ -12093,6 +12128,7 @@ function abrirModalGaveta(abrirThreadInicial) {
     STATE.escalaNotasSemana = (STATE.escalaNotasSemana || []).map(n => n.id === r.referenciaId ? updatedNota : n);
     const updatedRecado = await dbMarcarRecadoTratado(r.id);
     if (updatedRecado) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === r.id ? updatedRecado : x);
+    await notificarAutorNotaValidada(updatedNota);
     showToast('Nota validada pela Direção.', 'success');
     render();
   }
@@ -15890,7 +15926,12 @@ function lembreteRepeticaoTexto(l) {
 function buildLembretesPage(container, goTo, embedded) {
   let showForm = false, editingId = null, draft = criarRascunhoLembreteVazio();
   let searchQuery = '';
-  let activeTab = 'pending';
+  // "Notificações" (pedido explícito 2026-08-10): abre diretamente aqui
+  // quando se chega pelo sino da Página Inicial sem nenhum lembrete
+  // vencido mas com Notificações por tratar (ver buildLembretesBellHome)
+  // — STATE.lembretesTabInicial é consumido (lido e limpo) uma única vez.
+  let activeTab = STATE.lembretesTabInicial || 'pending';
+  STATE.lembretesTabInicial = null;
   let formError = '';
   let saving = false;
   let selectedIds = new Set();
@@ -16300,6 +16341,56 @@ function buildLembretesPage(container, goTo, embedded) {
     ]);
   }
 
+  // ---- Notificações — registo de consulta (revisto 2026-08-10) ----
+  // A ação real (validar uma nota, marcar como visto) já acontece na
+  // Gaveta de Recados, exatamente como sempre aconteceu para Pedidos
+  // Especiais e tudo o resto — este separador não repete botões, é só um
+  // registo agrupado destes eventos: data, utilizador que fez, resultado
+  // e quem validou/rejeitou (quando aplicável).
+  function nomeUtilizadorNotificacao(id) {
+    const u = (STATE.usuarios || []).find(x => String(x.id) === String(id));
+    return u ? (u.nomeCompleto || u.username) : 'Utilizador removido';
+  }
+  // Descreve uma notificação em campos estruturados a partir do registo
+  // de gaveta_recados + (quando ainda existir) do registo original a que
+  // se refere — nunca depende só do texto livre da mensagem.
+  function detalhesNotificacao(r) {
+    if (r.referenciaTabela === 'escala_notas_semana') {
+      const nota = (STATE.escalaNotasSemana || []).find(n => n.id === r.referenciaId);
+      if (nota) {
+        return {
+          utilizador: nota.autorNome || nomeUtilizadorNotificacao(nota.autorId),
+          resultado: nota.validadoDirecao ? 'Nota validada' : 'Nota a aguardar validação',
+          validadoPor: nota.validadoDirecao ? (nota.validadoPor || null) : null,
+          validadoEm: nota.validadoDirecao ? nota.validadoEm : null,
+        };
+      }
+      return { utilizador: nomeUtilizadorNotificacao(r.remetenteId), resultado: r.mensagem, validadoPor: null, validadoEm: null };
+    }
+    // Horas Extra (bloco ou reivindicação): sem passo de aprovação — é só
+    // aviso à Direção de que alguém reivindicou/desistiu; o texto já vem
+    // pronto de notificarDirecaoHorasExtra.
+    return { utilizador: nomeUtilizadorNotificacao(r.remetenteId), resultado: r.mensagem, validadoPor: null, validadoEm: null };
+  }
+  function buildNotificacaoCartao(r) {
+    const d = detalhesNotificacao(r);
+    return h('div', { class: 'card card-pad', style: 'margin-bottom:10px;' }, [
+      h('div', { style: 'display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap;' }, [
+        h('div', {}, [
+          h('p', { style: 'margin:0 0 3px;font-size:12px;font-weight:600;color:var(--pharm-500);' }, d.utilizador),
+          h('p', { style: 'margin:0;font-size:13px;color:var(--pharm-800);line-height:1.5;' }, d.resultado),
+          d.validadoPor ? h('p', { class: 'field-helper-text', style: 'margin:4px 0 0;' }, `Validado por ${d.validadoPor}${d.validadoEm ? ` em ${formatDateTime(d.validadoEm)}` : ''}`) : null,
+        ]),
+        h('p', { class: 'field-helper-text', style: 'margin:0;flex-shrink:0;white-space:nowrap;' }, formatDateTime(r.createdAt)),
+      ]),
+    ]);
+  }
+  function buildListaNotificacoes() {
+    const lista = minhasNotificacoes();
+    if (!lista.length) return EmptyState('Sem notificações — Horas Extra e notas de "Escala da Equipa" aparecem aqui, para consulta (as ações continuam na Gaveta de Recados).');
+    return h('div', {}, lista.map(buildNotificacaoCartao));
+  }
+
   function build() {
     const wrap = h('div', { class: 'animate-in' });
     const meusLembretes = STATE.lembretes.filter(lembreteEhMeuOuDaEquipa);
@@ -16311,6 +16402,7 @@ function buildLembretesPage(container, goTo, embedded) {
 
     if (showForm) wrap.appendChild(buildLembreteFormCustom());
 
+    const notificacoesCount = minhasNotificacoes().length;
     const tabsRow = h('div', { class: 'tabs-row' }, [
       h('button', { class: 'tab-btn tone-orange' + (activeTab === 'pending' ? ' active' : ''), onclick: () => { activeTab = 'pending'; selectedIds = new Set(); rerender(); } }, [
         Icon('bell', { size: 14 }), h('span', {}, 'Lembretes Ativos'), h('span', { class: 'tab-count' }, String(pendingCount)),
@@ -16318,8 +16410,22 @@ function buildLembretesPage(container, goTo, embedded) {
       h('button', { class: 'tab-btn tone-green' + (activeTab === 'resolved' ? ' active' : ''), onclick: () => { activeTab = 'resolved'; selectedIds = new Set(); rerender(); } }, [
         Icon('checkcircle', { size: 14 }), h('span', {}, 'Histórico de Concluídos'), h('span', { class: 'tab-count' }, String(resolvedCount)),
       ]),
+      h('button', { class: 'tab-btn tone-blue' + (activeTab === 'notificacoes' ? ' active' : ''), onclick: () => { activeTab = 'notificacoes'; selectedIds = new Set(); rerender(); } }, [
+        Icon('inbox', { size: 14 }), h('span', {}, 'Notificações'), h('span', { class: 'tab-count' }, String(notificacoesCount)),
+      ]),
     ]);
     wrap.appendChild(tabsRow);
+
+    // "Notificações" não tem pesquisa nem formulário de novo registo — é
+    // só um registo de consulta (Horas Extra reivindicadas/desistidas,
+    // notas de "Escala da Equipa" e o respetivo estado de validação), sem
+    // ações próprias — a ação real já acontece na Gaveta de Recados (ver
+    // buildNotificacaoCartao) — sai aqui, antes de montar a pesquisa e a
+    // barra de ações inferior (que só fazem sentido para Lembretes em si).
+    if (activeTab === 'notificacoes') {
+      wrap.appendChild(buildListaNotificacoes());
+      return wrap;
+    }
 
     const searchInput = h('input', { class: 'search-input', type: 'text', placeholder: 'Pesquisar por responsável ou informação...' });
     searchInput.value = searchQuery;
@@ -21203,6 +21309,84 @@ BEGIN
   END IF;
 END $$;
 
+-- 22) escala_horas_extra + escala_horas_extra_reivindicacoes — "Horas
+--     Extra Disponíveis" (pedido explícito 2026-08-10): o Diretor
+--     Técnico/Administrador disponibiliza um bloco de horas (com Pausa
+--     opcional) para um dia concreto de uma semana já gerada, porque
+--     falta gente nesse período; qualquer colaborador com turno nesse
+--     dia pode "reivindicar" uma parte (ou tudo) desse bloco, sempre
+--     fora do seu próprio horário base já atribuído (nunca sobrepõe).
+--     Reversível — o próprio colaborador pode desistir mais tarde
+--     (ativo=false, nunca apaga o registo, fica histórico). Nunca escreve
+--     em escala_semanas.dados — a Timeline lê os dois lados (horário
+--     base + reivindicações ativas) e desenha as horas extra por cima,
+--     numa cor própria (amarelo), sempre em separado do horário base.
+CREATE TABLE IF NOT EXISTS escala_horas_extra (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  semana_id uuid NOT NULL REFERENCES escala_semanas(id) ON DELETE CASCADE,
+  dia_key text NOT NULL, -- 'seg'..'dom', ver ESCALA_DIAS
+  hora_inicio text NOT NULL,
+  hora_fim text NOT NULL,
+  pausa_inicio text DEFAULT '',
+  pausa_fim text DEFAULT '',
+  descricao text DEFAULT '',
+  criado_por text DEFAULT '',
+  eliminado boolean NOT NULL DEFAULT false,
+  data_eliminacao timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_escala_horas_extra_semana ON escala_horas_extra (semana_id, dia_key);
+ALTER TABLE escala_horas_extra ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS anon_select_escala_horas_extra ON escala_horas_extra;
+DROP POLICY IF EXISTS anon_insert_escala_horas_extra ON escala_horas_extra;
+DROP POLICY IF EXISTS anon_update_escala_horas_extra ON escala_horas_extra;
+DROP POLICY IF EXISTS anon_delete_escala_horas_extra ON escala_horas_extra;
+CREATE POLICY anon_select_escala_horas_extra ON escala_horas_extra FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY anon_insert_escala_horas_extra ON escala_horas_extra FOR INSERT TO anon, authenticated WITH CHECK (true);
+CREATE POLICY anon_update_escala_horas_extra ON escala_horas_extra FOR UPDATE TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY anon_delete_escala_horas_extra ON escala_horas_extra FOR DELETE TO anon, authenticated USING (true);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables
+    WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'escala_horas_extra'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE escala_horas_extra;
+  END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS escala_horas_extra_reivindicacoes (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  bloco_id uuid NOT NULL REFERENCES escala_horas_extra(id) ON DELETE CASCADE,
+  utilizador_id bigint NOT NULL REFERENCES usuarios_app(id) ON DELETE CASCADE,
+  utilizador_nome text DEFAULT '',
+  intervalo_inicio text NOT NULL,
+  intervalo_fim text NOT NULL,
+  ativo boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_escala_he_reiv_bloco ON escala_horas_extra_reivindicacoes (bloco_id);
+ALTER TABLE escala_horas_extra_reivindicacoes ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS anon_select_escala_he_reiv ON escala_horas_extra_reivindicacoes;
+DROP POLICY IF EXISTS anon_insert_escala_he_reiv ON escala_horas_extra_reivindicacoes;
+DROP POLICY IF EXISTS anon_update_escala_he_reiv ON escala_horas_extra_reivindicacoes;
+DROP POLICY IF EXISTS anon_delete_escala_he_reiv ON escala_horas_extra_reivindicacoes;
+CREATE POLICY anon_select_escala_he_reiv ON escala_horas_extra_reivindicacoes FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY anon_insert_escala_he_reiv ON escala_horas_extra_reivindicacoes FOR INSERT TO anon, authenticated WITH CHECK (true);
+CREATE POLICY anon_update_escala_he_reiv ON escala_horas_extra_reivindicacoes FOR UPDATE TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY anon_delete_escala_he_reiv ON escala_horas_extra_reivindicacoes FOR DELETE TO anon, authenticated USING (true);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables
+    WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'escala_horas_extra_reivindicacoes'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE escala_horas_extra_reivindicacoes;
+  END IF;
+END $$;
+
 -- 22) bloco_notas_pessoal — item 8: módulo independente de Bloco de Notas
 --     Pessoal, separado por completo dos Lembretes/Notas de "A Minha
 --     Semana" — sem ligação a semana_inicio, cada nota tem a sua própria
@@ -21868,19 +22052,50 @@ function escalaAbsMinParaHora(absMin) {
   if (m >= 1440) return '00:00';
   return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 }
+// Badge flutuante com a hora em tempo real durante um arrasto/
+// redimensionamento na Timeline (pedido explícito 2026-08-10) — o
+// arrasto nem sempre é preciso ("nem sempre fica logo onde quero"), por
+// isso mostra sempre, a seguir ao cursor, para que horário se está
+// mesmo a ir antes de soltar o rato. Mesmo padrão de singleton/CSS do
+// balão do colaborador (mostrarTooltipColaborador), cor diferente
+// (azul) para nunca se confundir com esse.
+let escalaArrastoBadgeEl = null;
+function escalaMostrarBadgeArrasto(texto, evento) {
+  if (!escalaArrastoBadgeEl) { escalaArrastoBadgeEl = document.createElement('div'); escalaArrastoBadgeEl.className = 'escala-arrasto-badge'; document.body.appendChild(escalaArrastoBadgeEl); }
+  escalaArrastoBadgeEl.textContent = texto;
+  escalaArrastoBadgeEl.style.display = 'block';
+  escalaMoverBadgeArrasto(evento);
+}
+function escalaMoverBadgeArrasto(evento) {
+  if (!escalaArrastoBadgeEl || escalaArrastoBadgeEl.style.display !== 'block') return;
+  const rect = escalaArrastoBadgeEl.getBoundingClientRect();
+  let left = evento.clientX + 18;
+  left = Math.min(left, window.innerWidth - rect.width - 6);
+  let top = evento.clientY - rect.height / 2;
+  top = Math.max(6, Math.min(top, window.innerHeight - rect.height - 6));
+  escalaArrastoBadgeEl.style.left = Math.round(left) + 'px';
+  escalaArrastoBadgeEl.style.top = Math.round(top) + 'px';
+}
+function escalaEsconderBadgeArrasto() {
+  if (escalaArrastoBadgeEl) escalaArrastoBadgeEl.style.display = 'none';
+}
 // Arrastar/redimensionar um turno diretamente na Timeline (pedido
 // explícito 2026-08-10): ao passar o rato sobre um turno já preenchido
-// (dia.tipo === 'normal'), surgem 2 pegas finas (topo/fundo) que
-// arrastadas alteram só a Entrada ou só a Saída; arrastar o CORPO do
-// bloco desloca Entrada+Saída (e Pausa, se houver) juntas, mantendo a
-// duração; um botão de tesoura ao centro (só quando ainda não há Pausa)
-// marca uma Pausa/Almoço com 2 cliques (início, depois fim). Duplo-clique
-// continua a abrir o editor completo (abrirEditorCelulaEscala, ver
-// buildVistaVertical) — um clique simples deixou de abrir nada, para não
-// conflituar com o início do arrasto. Tudo arredondado a 30 em 30 minutos
-// (mesma grelha do editor, ver escalaAbsMinParaHora). Só grava no
-// Supabase ao soltar o rato (mouseup) — o arrasto em si é só uma
-// pré-visualização local via CSS (transform/top/height), nunca toca em
+// (dia.tipo === 'normal'), surgem pegas finas (topo/fundo) em CADA
+// segmento visível — com Pausa/Almoço já marcada (2 blocos), isso dá 4
+// pegas no total: Entrada (topo do 1º bloco), Início Pausa (fundo do 1º
+// bloco), Fim Pausa (topo do 2º bloco) e Saída (fundo do 2º bloco), cada
+// uma só ajusta o SEU campo; arrastar o CORPO de qualquer um dos blocos
+// desloca Entrada+Saída+Pausa juntas, mantendo a duração de tudo. A
+// tesoura (marcar Pausa/Almoço) só aparece quando ainda NÃO há Pausa —
+// com os 2 blocos já não faz sentido (já existe, edita-se pelas pegas
+// do meio ou pelo duplo-clique). Duplo-clique continua a abrir o editor
+// completo — um clique simples deixou de abrir nada, para não
+// conflituar com o início do arrasto. Tudo arredondado a 30 em 30
+// minutos (mesma grelha do editor, ver escalaAbsMinParaHora). Só grava
+// no Supabase ao soltar o rato (mouseup) — o arrasto em si é só uma
+// pré-visualização local via CSS (transform/top/height) + o badge de
+// hora em tempo real (ver escalaMostrarBadgeArrasto), nunca toca em
 // `semana.dados` a meio do gesto.
 function escalaInstalarInteracaoTurno(opts) {
   const { blocosSegmentos, dia, semana, codigoVaga, diaKey, trilhoEl, minOffsetMin, totalMin, rerenderFn } = opts;
@@ -21918,11 +22133,13 @@ function escalaInstalarInteracaoTurno(opts) {
       deltaMin = Math.max(minOffsetMin - entradaOrig, Math.min((minOffsetMin + totalMin) - saidaOrig, deltaMin));
       deltaFinal = deltaMin;
       blocosSegmentos.forEach(seg => { seg.style.transform = `translateY(${(deltaMin / totalMin) * 100}%)`; });
+      escalaMostrarBadgeArrasto(`${escalaAbsMinParaHora(entradaOrig + deltaMin)} – ${escalaAbsMinParaHora(saidaOrig + deltaMin)}`, ev);
     }
     function onUp() {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
       blocosSegmentos.forEach(seg => { seg.style.transform = ''; });
+      escalaEsconderBadgeArrasto();
       if (!moveu || deltaFinal === 0) return;
       const campos = { entrada: escalaAbsMinParaHora(entradaOrig + deltaFinal), saida: escalaAbsMinParaHora(saidaOrig + deltaFinal) };
       if (pausaInicioOrig !== null) campos.pausaInicio = escalaAbsMinParaHora(pausaInicioOrig + deltaFinal);
@@ -21937,50 +22154,93 @@ function escalaInstalarInteracaoTurno(opts) {
     seg.addEventListener('mousedown', onMouseDownCorpo);
   });
 
-  // ---- Pegas de redimensionar: topo ajusta Entrada, fundo ajusta Saída ----
-  function instalarPega(segEl, ehTopo) {
+  // ---- Pegas de redimensionar — 1 por campo (Entrada/Início Pausa/Fim
+  // Pausa/Saída), cada uma na sua ponta do respetivo segmento ----
+  const ROTULOS_CAMPO = { entrada: 'Entrada', pausaInicio: 'Início Pausa', pausaFim: 'Fim Pausa', saida: 'Saída' };
+  function instalarPega(segEl, campo) {
+    const ehTopo = campo === 'entrada' || campo === 'pausaFim';
     const pega = h('div', {
       class: 'escala-vertical-handle ' + (ehTopo ? 'escala-vertical-handle-topo' : 'escala-vertical-handle-fundo'),
-      title: ehTopo ? 'Arrastar para ajustar a Entrada' : 'Arrastar para ajustar a Saída',
+      title: `Arrastar para ajustar — ${ROTULOS_CAMPO[campo]}`,
     });
     pega.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       e.preventDefault(); e.stopPropagation();
       const startY = e.clientY;
-      // Extremo fixo desta pega (nunca se mexe durante ESTE arrasto): se
-      // há Pausa, é a fronteira da Pausa mais próxima; senão é a outra
-      // ponta do turno.
-      const extremoFixo = ehTopo
-        ? (temPausa ? escalaMinutosAbsolutos(dia.pausaInicio, false) : escalaMinutosAbsolutos(dia.saida, true))
-        : (temPausa ? escalaMinutosAbsolutos(dia.pausaFim, true) : escalaMinutosAbsolutos(dia.entrada, false));
-      const valorOrig = ehTopo ? escalaMinutosAbsolutos(dia.entrada, false) : escalaMinutosAbsolutos(dia.saida, true);
+      const entradaAbs = escalaMinutosAbsolutos(dia.entrada, false);
+      const saidaAbs = escalaMinutosAbsolutos(dia.saida, true);
+      const pausaInicioAbs = dia.pausaInicio ? escalaMinutosAbsolutos(dia.pausaInicio, false) : null;
+      const pausaFimAbs = dia.pausaFim ? escalaMinutosAbsolutos(dia.pausaFim, true) : null;
+      // Extremo fixo do SEGMENTO desta pega (nunca se mexe durante ESTE
+      // arrasto) + limites [min,max] do valor que esta pega ajusta —
+      // cada campo tem a sua própria vizinhança (nunca pode cruzar a
+      // Pausa nem sair de Entrada/Saída).
+      let valorOrig, limiteMin, limiteMax, extremoFixoSeg;
+      if (campo === 'entrada') {
+        valorOrig = entradaAbs; limiteMin = minOffsetMin;
+        extremoFixoSeg = temPausa ? pausaInicioAbs : saidaAbs;
+        limiteMax = extremoFixoSeg - 30;
+      } else if (campo === 'pausaInicio') {
+        // limiteMax até pausaFimAbs (sem a folga de 30min que havia antes)
+        // — permite arrastar até TOCAR no Fim da Pausa, para depois se
+        // detetar a fusão automática em onUp (ver comentário ali).
+        valorOrig = pausaInicioAbs; extremoFixoSeg = entradaAbs;
+        limiteMin = entradaAbs + 30; limiteMax = pausaFimAbs;
+      } else if (campo === 'pausaFim') {
+        valorOrig = pausaFimAbs; extremoFixoSeg = saidaAbs;
+        limiteMin = pausaInicioAbs; limiteMax = saidaAbs - 30;
+      } else {
+        valorOrig = saidaAbs; limiteMax = minOffsetMin + totalMin;
+        extremoFixoSeg = temPausa ? pausaFimAbs : entradaAbs;
+        limiteMin = extremoFixoSeg + 30;
+      }
       function onMove(ev) {
         const deltaRel = ((ev.clientY - startY) / trilhoEl.getBoundingClientRect().height) * totalMin;
         const deltaMin = Math.round(deltaRel / 30) * 30;
-        let novoValor = ehTopo
-          ? Math.max(minOffsetMin, Math.min(extremoFixo - 30, valorOrig + deltaMin))
-          : Math.min(minOffsetMin + totalMin, Math.max(extremoFixo + 30, valorOrig + deltaMin));
-        const topoAbs = ehTopo ? novoValor : extremoFixo;
-        const fimAbs = ehTopo ? extremoFixo : novoValor;
+        const novoValor = Math.max(limiteMin, Math.min(limiteMax, valorOrig + deltaMin));
+        const topoAbs = ehTopo ? novoValor : extremoFixoSeg;
+        const fimAbs = ehTopo ? extremoFixoSeg : novoValor;
         segEl.style.top = ((topoAbs - minOffsetMin) / totalMin * 100) + '%';
         segEl.style.height = Math.max(2, (fimAbs - topoAbs) / totalMin * 100) + '%';
         segEl._novoValorPendente = novoValor;
+        escalaMostrarBadgeArrasto(`${ROTULOS_CAMPO[campo]}: ${escalaAbsMinParaHora(novoValor)}`, ev);
       }
       function onUp() {
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
+        escalaEsconderBadgeArrasto();
         const novoValor = segEl._novoValorPendente;
         delete segEl._novoValorPendente;
         if (novoValor === undefined) return;
-        persistir(ehTopo ? { entrada: escalaAbsMinParaHora(novoValor) } : { saida: escalaAbsMinParaHora(novoValor) });
+        // Fusão automática (pedido explícito 2026-08-10): arrastando o
+        // Início da Pausa até TOCAR no Fim da Pausa (ou vice-versa) —
+        // gap chega a 0 — entende-se como "juntar os dois blocos outra
+        // vez" e remove-se a Pausa/Almoço por completo, em vez de gravar
+        // um intervalo de 0 minutos (que não apareceria como nada visível
+        // e deixaria o turno artificialmente "partido" para sempre).
+        if (campo === 'pausaInicio' && novoValor >= pausaFimAbs) {
+          persistir({ pausaInicio: '', pausaFim: '' });
+          showToast('Pausa/Almoço removida — turno unificado.', 'success');
+          return;
+        }
+        if (campo === 'pausaFim' && novoValor <= pausaInicioAbs) {
+          persistir({ pausaInicio: '', pausaFim: '' });
+          showToast('Pausa/Almoço removida — turno unificado.', 'success');
+          return;
+        }
+        persistir({ [campo]: escalaAbsMinParaHora(novoValor) });
       }
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
     });
     segEl.appendChild(pega);
   }
-  instalarPega(primeiroSeg, true);
-  instalarPega(ultimoSeg, false);
+  instalarPega(primeiroSeg, 'entrada');
+  if (temPausa) {
+    instalarPega(primeiroSeg, 'pausaInicio');
+    instalarPega(ultimoSeg, 'pausaFim');
+  }
+  instalarPega(ultimoSeg, 'saida');
 
   // ---- Tesoura: marcar Pausa/Almoço num popover (só sem Pausa ainda) ----
   // Pedido explícito 2026-08-10: o fluxo anterior (2 cliques "às cegas"
@@ -22407,6 +22667,92 @@ async function notificarDirecaoPedidoEspecial(pedido, acaoTexto) {
     remetenteId: pedido.colaboradorId, destinatarioId: u.id, mensagem, tratado: false, tipo: 'tarefa',
     referenciaTabela: 'escala_pedidos_especiais', referenciaId: pedido.id,
   })));
+}
+// ---- Horas Extra Disponíveis (pedido explícito 2026-08-10) ----
+// O Diretor Técnico/Administrador disponibiliza um bloco de horas (com
+// Pausa opcional) para um dia de uma semana já gerada; qualquer
+// colaborador com — ou sem — turno nesse dia pode reivindicar uma parte
+// (ou tudo), sempre fora do seu próprio horário base já atribuído (nunca
+// sobrepõe). Reversível — pode desistir mais tarde. Nunca escreve em
+// escala_semanas.dados — a Timeline lê os dois lados (horário base +
+// reivindicações ativas) e desenha as horas extra por cima, numa cor
+// própria (amarelo), sempre em separado do horário base (ver
+// escalaInstalarInteracaoTurno/buildVistaVertical — os blocos de hora
+// extra não são arrastáveis, só geridos por este painel).
+function escalaHorasExtraDaSemana(semanaId) {
+  return (STATE.escalaHorasExtra || []).filter(b => !b.eliminado && String(b.semanaId) === String(semanaId));
+}
+function escalaHorasExtraDoDia(semanaId, diaKey) {
+  return escalaHorasExtraDaSemana(semanaId).filter(b => b.diaKey === diaKey);
+}
+function escalaReivindicacoesDoBloco(blocoId) {
+  return (STATE.escalaHorasExtraReivindicacoes || []).filter(r => r.ativo && !r.eliminado && String(r.blocoId) === String(blocoId));
+}
+// O turno "normal" (Entrada/Saída) que ESTE colaborador já tem nesse dia,
+// em qualquer vaga da semana — para nunca deixar reivindicar horas que já
+// fazem parte do horário base dele (ex: Vanessa 08:00-18:00, não pode
+// reivindicar as 17:00, essa hora já é dela).
+function escalaHorarioProprioNoDia(semana, diaKey, utilizadorId) {
+  if (!utilizadorId) return null;
+  for (const codigo of Object.keys(semana.dados || {})) {
+    const linha = semana.dados[codigo];
+    const dia = linha && linha.dias && linha.dias[diaKey];
+    if (!dia || dia.tipo !== 'normal' || !dia.entrada || !dia.saida) continue;
+    const idDoDia = dia.colaboradorId || linha.colaboradorId;
+    if (String(idDoDia) === String(utilizadorId)) return { entrada: dia.entrada, saida: dia.saida };
+  }
+  return null;
+}
+async function notificarDirecaoHorasExtra(bloco, utilizador, intervaloTexto, acaoTexto) {
+  const destinatarios = escalaUsuariosDirecao().filter(u => String(u.id) !== String(utilizador.id));
+  if (!destinatarios.length) return;
+  const diaInfo = ESCALA_DIAS.find(d => d.key === bloco.diaKey);
+  const mensagem = `${utilizador.nomeCompleto || utilizador.username} ${acaoTexto} ${intervaloTexto} das Horas Extra de ${diaInfo ? diaInfo.label : bloco.diaKey} (${bloco.horaInicio}-${bloco.horaFim}).`;
+  await Promise.all(destinatarios.map(u => dbInsert('gavetaRecados', {
+    remetenteId: utilizador.id, destinatarioId: u.id, mensagem, tratado: false, tipo: 'tarefa',
+    referenciaTabela: 'escala_horas_extra', referenciaId: bloco.id,
+  })));
+}
+// Notifica o AUTOR de uma nota de "Escala da Equipa" assim que a Direção
+// a valida — usada tanto pela validação rápida via Gaveta
+// (marcarNotaEquipaVistaViaGaveta, buildChatPage) como pelo checkbox
+// direto no feed (alternarValidacaoNotaEquipa, buildHorariosPage). A
+// notificação em si é mais um registo em gaveta_recados (mesma
+// infraestrutura de sempre — ver
+// notificarDirecaoPedidoEspecial/notificarDirecaoHorasExtra), o que a
+// torna visível de imediato na Gaveta do autor (é aí que a ação/aviso
+// realmente vive) e, em segundo plano, no separador "Notificações" de
+// Lembretes (ver buildLembretesPage), que é só uma vista de consulta —
+// não repete a ação. Só ao VALIDAR (nunca ao desmarcar) — desfazer uma
+// validação não é um evento que precise de aviso.
+async function notificarAutorNotaValidada(nota) {
+  if (!nota || !nota.autorId || String(nota.autorId) === String(activeUser.id)) return;
+  const resumo = (nota.texto || '').slice(0, 80) + ((nota.texto || '').length > 80 ? '…' : '');
+  await dbInsert('gavetaRecados', {
+    remetenteId: activeUser.id, destinatarioId: nota.autorId,
+    mensagem: `A sua nota em "Escala da Equipa" foi validada pela Direção: "${resumo}"`,
+    tratado: false, tipo: 'tarefa', referenciaTabela: 'escala_notas_semana', referenciaId: nota.id,
+  });
+}
+// Referências de gaveta_recados que aparecem também no separador
+// "Notificações" de Lembretes — Horas Extra Disponíveis
+// (reivindicar/desistir) e notas de "Escala da Equipa" (pedido de
+// validação para a Direção + aviso ao autor quando validada). Nunca
+// inclui Pedidos Especiais nem mensagens diretas — essas continuam só
+// na Gaveta, como sempre. IMPORTANTE (corrigido 2026-08-10): esta lista é
+// só de CONSULTA — a Gaveta de Recados já é, desde sempre, quem avisa e
+// onde a ação (validar/marcar como visto) realmente acontece; o
+// separador "Notificações" apenas agrupa estes eventos num sítio mais
+// visível, com data, autor e resultado — não duplica botões de ação nem
+// acende o sino de Lembretes (ver buildLembretesBellHome).
+const REFERENCIAS_NOTIFICACOES_LEMBRETES = ['escala_horas_extra', 'escala_horas_extra_reivindicacoes', 'escala_notas_semana'];
+function minhasNotificacoes() {
+  if (!activeUser) return [];
+  return (STATE.gavetaRecados || []).filter(r =>
+    String(r.destinatarioId) === String(activeUser.id) &&
+    (r.tipo || 'mensagem') === 'tarefa' &&
+    REFERENCIAS_NOTIFICACOES_LEMBRETES.includes(r.referenciaTabela)
+  ).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
 }
 function escalaPedidosEspeciaisAtivos() { return STATE.escalaPedidosEspeciais || []; }
 // Pedidos que cobrem um mês (YYYY-MM) — usa sobreposição de intervalo
@@ -24205,6 +24551,9 @@ function buildHorariosPage(container, goTo) {
   function irMesAnteriorValidacao() { const d = new Date(mesValidacaoAtual() + 'T12:00:00'); d.setDate(1); d.setMonth(d.getMonth() - 1); definirMesValidacao(dateToISO(d)); rerender(); }
   function irMesSeguinteValidacao() { const d = new Date(mesValidacaoAtual() + 'T12:00:00'); d.setDate(1); d.setMonth(d.getMonth() + 1); definirMesValidacao(dateToISO(d)); rerender(); }
   let gerando = false;
+  // ---- Horas Extra Disponíveis (pedido explícito 2026-08-10) ----
+  let mostrarFormHorasExtra = false, horasExtraDraft = {}, horasExtraError = '', horasExtraSaving = false;
+  let reivindicandoBlocoId = null, reivindicarDraft = {}, reivindicarError = '', reivindicarSaving = false;
   let showVagaForm = false, editingVagaId = null, vagaDraft = {}, vagaFormError = '', vagaSaving = false;
   let varianteSelecionada = 'com_mariana'; // 'com_mariana' | 'sem_mariana' — só relevante ao CRIAR uma semana nova
   let cicloMarianaDraft = null; // preenchido só quando o card de configuração abre (ver buildSecaoCicloMariana)
@@ -24368,7 +24717,10 @@ function buildHorariosPage(container, goTo) {
     gerando = false;
     if (semana) {
       definirSemanaSelecionada(semana.semanaInicio);
-      definirActiveTab('equipa');
+      // Pedido explícito 2026-08-10: fica no separador "Gerador de
+      // Horário" depois de gerar — antes saltava sempre para "Escala da
+      // Equipa" (definirActiveTab('equipa')), o que tirava quem estava a
+      // gerir de onde estava a trabalhar.
       if (!criada) {
         showToast(`Horário de ${formatDate(semana.semanaInicio)} já existia — a mostrar.`, 'success');
       } else {
@@ -24751,7 +25103,10 @@ function buildHorariosPage(container, goTo) {
       ? { validadoDirecao: true, validadoPor: activeUser.nomeCompleto || activeUser.username, validadoEm: new Date().toISOString() }
       : { validadoDirecao: false, validadoPor: '', validadoEm: null };
     const updated = await dbUpdate('escalaNotasSemana', nota.id, patch);
-    if (updated) STATE.escalaNotasSemana = STATE.escalaNotasSemana.map(n => n.id === nota.id ? updated : n);
+    if (updated) {
+      STATE.escalaNotasSemana = STATE.escalaNotasSemana.map(n => n.id === nota.id ? updated : n);
+      if (novoEstado) await notificarAutorNotaValidada(updated);
+    }
     else escalaShowErro('Não foi possível atualizar a validação');
     rerender();
   }
@@ -25051,6 +25406,222 @@ function buildHorariosPage(container, goTo) {
     return wrap;
   }
 
+  // ---- Horas Extra Disponíveis: criação (Master) ----
+  function abrirFormHorasExtra(semana) {
+    if (!isMasterUser()) return;
+    horasExtraDraft = { diaKey: (ESCALA_DIAS.some(d => d.key === diaVerticalSelecionado) ? diaVerticalSelecionado : 'seg'), horaInicio: '', horaFim: '', pausaInicio: '', pausaFim: '', descricao: '' };
+    horasExtraError = '';
+    mostrarFormHorasExtra = true;
+    rerender();
+  }
+  function fecharFormHorasExtra() { mostrarFormHorasExtra = false; horasExtraError = ''; rerender(); }
+  async function guardarHorasExtra(semana) {
+    if (!isMasterUser() || horasExtraSaving) return;
+    const { diaKey, horaInicio, horaFim, pausaInicio, pausaFim, descricao } = horasExtraDraft;
+    if (!/^\d{1,2}:\d{2}$/.test(horaInicio) || !/^\d{1,2}:\d{2}$/.test(horaFim)) { horasExtraError = 'Indique Início e Fim no formato HH:MM.'; rerender(); return; }
+    if (escalaMinutosAbsolutos(horaFim, true) <= escalaMinutosAbsolutos(horaInicio, false)) { horasExtraError = 'O Fim tem de ser depois do Início.'; rerender(); return; }
+    if ((pausaInicio && !pausaFim) || (!pausaInicio && pausaFim)) { horasExtraError = 'A Pausa tem de ter Início e Fim, ou ficar em branco.'; rerender(); return; }
+    horasExtraSaving = true; rerender();
+    const created = await dbInsert('escalaHorasExtra', {
+      semanaId: semana.id, diaKey, horaInicio, horaFim,
+      pausaInicio: pausaInicio || '', pausaFim: pausaFim || '',
+      descricao: (descricao || '').trim(), criadoPor: currentUserName(),
+    });
+    horasExtraSaving = false;
+    if (created) {
+      STATE.escalaHorasExtra = [...(STATE.escalaHorasExtra || []), created];
+      mostrarFormHorasExtra = false;
+      showToast('Horas Extra disponibilizadas.', 'success');
+    } else {
+      horasExtraError = `Não foi possível guardar. ${escalaMensagemErroAmigavel(lastDbError)}`;
+    }
+    rerender();
+  }
+  function eliminarBlocoHorasExtra(bloco) {
+    if (!isMasterUser()) return;
+    confirmDialog('Eliminar este bloco de Horas Extra? Quem já tiver reivindicado alguma parte perde-a de imediato.', async () => {
+      const ok = await dbDelete('escalaHorasExtra', bloco.id);
+      if (ok) {
+        STATE.escalaHorasExtra = (STATE.escalaHorasExtra || []).filter(b => b.id !== bloco.id);
+        showToast('Bloco de Horas Extra eliminado.', 'success');
+      } else {
+        escalaShowErro('Não foi possível eliminar');
+      }
+      rerender();
+    }, { danger: true, confirmLabel: 'Sim, eliminar' });
+  }
+  // ---- Horas Extra Disponíveis: reivindicar (colaborador) ----
+  function abrirReivindicar(bloco, semana) {
+    if (!activeUser) return;
+    const proprio = escalaHorarioProprioNoDia(semana, bloco.diaKey, activeUser.id);
+    const blocoIni = escalaMinutosAbsolutos(bloco.horaInicio, false), blocoFim = escalaMinutosAbsolutos(bloco.horaFim, true);
+    let sugIni = blocoIni, sugFim = blocoFim;
+    if (proprio) {
+      const pIni = escalaMinutosAbsolutos(proprio.entrada, false), pFim = escalaMinutosAbsolutos(proprio.saida, true);
+      const antesLivre = Math.max(0, Math.min(blocoFim, pIni) - blocoIni);
+      const depoisLivre = Math.max(0, blocoFim - Math.max(blocoIni, pFim));
+      if (depoisLivre >= antesLivre && depoisLivre > 0) { sugIni = Math.max(blocoIni, pFim); sugFim = blocoFim; }
+      else if (antesLivre > 0) { sugIni = blocoIni; sugFim = Math.min(blocoFim, pIni); }
+      else { sugIni = blocoIni; sugFim = blocoIni; }
+    }
+    reivindicarDraft = { horaInicio: escalaAbsMinParaHora(sugIni), horaFim: escalaAbsMinParaHora(sugFim) };
+    reivindicarError = '';
+    reivindicandoBlocoId = bloco.id;
+    rerender();
+  }
+  function fecharReivindicar() { reivindicandoBlocoId = null; reivindicarError = ''; rerender(); }
+  async function guardarReivindicacao(bloco, semana) {
+    if (!activeUser || reivindicarSaving) return;
+    const dataDoDia = escalaDataDoDia(semana.semanaInicio, bloco.diaKey);
+    if (escalaAusenciaDoDia(activeUser.id, dataDoDia)) { reivindicarError = 'Está registado como ausente nesse dia — não é possível reivindicar horas extra.'; rerender(); return; }
+    const { horaInicio, horaFim } = reivindicarDraft;
+    if (!/^\d{1,2}:\d{2}$/.test(horaInicio) || !/^\d{1,2}:\d{2}$/.test(horaFim)) { reivindicarError = 'Indique Início e Fim no formato HH:MM.'; rerender(); return; }
+    const ini = escalaMinutosAbsolutos(horaInicio, false), fim = escalaMinutosAbsolutos(horaFim, true);
+    const blocoIni = escalaMinutosAbsolutos(bloco.horaInicio, false), blocoFim = escalaMinutosAbsolutos(bloco.horaFim, true);
+    if (fim <= ini) { reivindicarError = 'O Fim tem de ser depois do Início.'; rerender(); return; }
+    if (ini < blocoIni || fim > blocoFim) { reivindicarError = `Tem de ficar dentro do bloco disponibilizado (${bloco.horaInicio}-${bloco.horaFim}).`; rerender(); return; }
+    const proprio = escalaHorarioProprioNoDia(semana, bloco.diaKey, activeUser.id);
+    if (proprio) {
+      const pIni = escalaMinutosAbsolutos(proprio.entrada, false), pFim = escalaMinutosAbsolutos(proprio.saida, true);
+      if (ini < pFim && fim > pIni) { reivindicarError = `Esse intervalo sobrepõe-se ao seu horário base (${proprio.entrada}-${proprio.saida}).`; rerender(); return; }
+    }
+    reivindicarSaving = true; rerender();
+    const created = await dbInsert('escalaHorasExtraReivindicacoes', {
+      blocoId: bloco.id, utilizadorId: activeUser.id, utilizadorNome: activeUser.nomeCompleto || activeUser.username,
+      intervaloInicio: horaInicio, intervaloFim: horaFim, ativo: true,
+    });
+    reivindicarSaving = false;
+    if (created) {
+      STATE.escalaHorasExtraReivindicacoes = [...(STATE.escalaHorasExtraReivindicacoes || []), created];
+      reivindicandoBlocoId = null;
+      showToast('Hora extra reivindicada — já entra no seu horário.', 'success');
+      notificarDirecaoHorasExtra(bloco, activeUser, `${horaInicio}-${horaFim}`, 'reivindicou');
+    } else {
+      reivindicarError = `Não foi possível guardar. ${escalaMensagemErroAmigavel(lastDbError)}`;
+    }
+    rerender();
+  }
+  function desistirReivindicacao(reivindicacao, bloco) {
+    confirmDialog('Desistir desta hora extra? Deixa de contar no seu horário — pode voltar a reivindicar mais tarde se mudar de ideias.', async () => {
+      const updated = await dbUpdate('escalaHorasExtraReivindicacoes', reivindicacao.id, { ativo: false });
+      if (updated) {
+        STATE.escalaHorasExtraReivindicacoes = STATE.escalaHorasExtraReivindicacoes.map(r => r.id === updated.id ? updated : r);
+        showToast('Desistiu dessa hora extra.', 'success');
+        if (activeUser) notificarDirecaoHorasExtra(bloco, activeUser, `${reivindicacao.intervaloInicio}-${reivindicacao.intervaloFim}`, 'desistiu de');
+      } else {
+        escalaShowErro('Não foi possível guardar');
+      }
+      rerender();
+    }, { danger: true, confirmLabel: 'Sim, desistir' });
+  }
+  // ehGestor=true (Gerador): cria/elimina blocos, pode cancelar qualquer
+  // reivindicação. ehGestor=false ("A Minha Semana"): só vê e reivindica/
+  // desiste das SUAS próprias.
+  function buildPainelHorasExtra(semana, ehGestor) {
+    const blocos = escalaHorasExtraDaSemana(semana.id).sort((a, b) =>
+      ESCALA_DIAS.findIndex(d => d.key === a.diaKey) - ESCALA_DIAS.findIndex(d => d.key === b.diaKey) || String(a.horaInicio).localeCompare(String(b.horaInicio)));
+    const congelada = escalaSemanaCongelada(semana);
+    const tituloRow = h('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;' }, [
+      h('h3', { class: 'page-eyebrow', style: 'margin:0;color:var(--pharm-800);font-size:14px;text-transform:none;letter-spacing:0;display:flex;align-items:center;gap:7px;' }, [
+        Icon('zap', { size: 15, strokeWidth: 2.3 }),
+        h('span', {}, 'Horas Extra Disponíveis'),
+      ]),
+      (ehGestor && isMasterUser() && !congelada && !mostrarFormHorasExtra) ? (() => {
+        const btn = h('button', { class: 'btn btn-secondary', style: 'padding:6px 12px;font-size:12.5px;' }, [Icon('plus', { size: 13 }), ' Nova']);
+        btn.addEventListener('click', () => requireAuth(() => abrirFormHorasExtra(semana)));
+        return btn;
+      })() : null,
+    ]);
+    const corpo = [];
+    if (mostrarFormHorasExtra && ehGestor) {
+      const diaSelect = h('select', { class: 'select' }, ESCALA_DIAS.map(d => h('option', { value: d.key, selected: horasExtraDraft.diaKey === d.key ? 'selected' : undefined }, d.label)));
+      diaSelect.value = horasExtraDraft.diaKey; diaSelect.addEventListener('change', () => { horasExtraDraft.diaKey = diaSelect.value; });
+      const iniInput = h('input', { class: 'input', placeholder: 'HH:MM' }); iniInput.value = horasExtraDraft.horaInicio || '';
+      iniInput.addEventListener('input', () => { horasExtraDraft.horaInicio = iniInput.value; });
+      const fimInput = h('input', { class: 'input', placeholder: 'HH:MM' }); fimInput.value = horasExtraDraft.horaFim || '';
+      fimInput.addEventListener('input', () => { horasExtraDraft.horaFim = fimInput.value; });
+      const pausaIniInput = h('input', { class: 'input', placeholder: 'HH:MM (opcional)' }); pausaIniInput.value = horasExtraDraft.pausaInicio || '';
+      pausaIniInput.addEventListener('input', () => { horasExtraDraft.pausaInicio = pausaIniInput.value; });
+      const pausaFimInput = h('input', { class: 'input', placeholder: 'HH:MM (opcional)' }); pausaFimInput.value = horasExtraDraft.pausaFim || '';
+      pausaFimInput.addEventListener('input', () => { horasExtraDraft.pausaFim = pausaFimInput.value; });
+      const descInput = h('input', { class: 'input', placeholder: 'Observações (opcional) — ex: falta gente ao balcão' }); descInput.value = horasExtraDraft.descricao || '';
+      descInput.addEventListener('input', () => { horasExtraDraft.descricao = descInput.value; });
+      const guardarBtn = h('button', { class: 'btn btn-primary', disabled: horasExtraSaving ? 'disabled' : undefined }, horasExtraSaving ? 'A guardar…' : 'Disponibilizar');
+      guardarBtn.addEventListener('click', () => requireAuth(() => guardarHorasExtra(semana)));
+      const cancelarBtn = h('button', { class: 'btn btn-secondary' }, 'Cancelar');
+      cancelarBtn.addEventListener('click', fecharFormHorasExtra);
+      corpo.push(h('div', { class: 'card card-pad', style: 'margin-bottom:12px;background:#fffbeb;border-color:#fde68a;' }, [
+        horasExtraError ? h('p', { class: 'form-error' }, horasExtraError) : null,
+        h('div', { class: 'form-grid' }, [
+          h('div', { class: 'field' }, [h('label', {}, 'Dia'), diaSelect]),
+          h('div', {}),
+          h('div', { class: 'field' }, [h('label', {}, 'Início'), iniInput]),
+          h('div', { class: 'field' }, [h('label', {}, 'Fim'), fimInput]),
+          h('div', { class: 'field' }, [h('label', {}, 'Início Pausa (opcional)'), pausaIniInput]),
+          h('div', { class: 'field' }, [h('label', {}, 'Fim Pausa (opcional)'), pausaFimInput]),
+          h('div', { class: 'field span2' }, [h('label', {}, 'Observações'), descInput]),
+        ]),
+        h('div', { class: 'form-actions' }, [guardarBtn, cancelarBtn]),
+      ]));
+    }
+    if (!blocos.length && !mostrarFormHorasExtra) {
+      corpo.push(h('p', { class: 'field-helper-text' }, ehGestor ? 'Sem horas extra disponibilizadas para esta semana.' : 'Sem horas extra disponíveis esta semana.'));
+    }
+    blocos.forEach(bloco => {
+      const diaInfo = ESCALA_DIAS.find(d => d.key === bloco.diaKey);
+      const reivindicacoes = escalaReivindicacoesDoBloco(bloco.id);
+      const minhaReivindicacao = activeUser ? reivindicacoes.find(r => String(r.utilizadorId) === String(activeUser.id)) : null;
+      const linhaTopo = h('div', { style: 'display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap;' }, [
+        h('div', {}, [
+          h('span', { class: 'cell-strong' }, `${diaInfo ? diaInfo.label : bloco.diaKey} · ${bloco.horaInicio}–${bloco.horaFim}`),
+          bloco.pausaInicio ? h('span', { class: 'field-helper-text', style: 'margin-left:8px;' }, `pausa ${bloco.pausaInicio}-${bloco.pausaFim}`) : null,
+          bloco.descricao ? h('p', { class: 'field-helper-text', style: 'margin:2px 0 0;' }, bloco.descricao) : null,
+        ]),
+        (ehGestor && isMasterUser() && !congelada) ? (() => {
+          const btn = h('button', { class: 'btn-fab-sm tone-red', title: 'Eliminar bloco', 'aria-label': 'Eliminar bloco' }, Icon('trash', { size: 13, strokeWidth: 2.2 }));
+          btn.addEventListener('click', () => requireAuth(() => eliminarBlocoHorasExtra(bloco)));
+          return btn;
+        })() : null,
+      ]);
+      const listaReivindicacoes = reivindicacoes.length
+        ? h('div', { style: 'margin-top:8px;display:flex;flex-direction:column;gap:5px;' }, reivindicacoes.map(r => {
+            const podeDesistir = !congelada && (ehGestor ? isMasterUser() : (activeUser && String(r.utilizadorId) === String(activeUser.id)));
+            const desistirBtn = podeDesistir ? (() => {
+              const btn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Desistir/cancelar', 'aria-label': 'Desistir/cancelar' }, Icon('x', { size: 12, strokeWidth: 2.4 }));
+              btn.addEventListener('click', () => requireAuth(() => desistirReivindicacao(r, bloco)));
+              return btn;
+            })() : null;
+            return h('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:8px;background:#fffbeb;border-radius:8px;padding:5px 10px;font-size:12.5px;' }, [
+              h('span', {}, `${r.utilizadorNome || '—'} — ${r.intervaloInicio}-${r.intervaloFim}`),
+              desistirBtn,
+            ]);
+          }))
+        : null;
+      const reivindicarBtn = (!ehGestor && activeUser && !minhaReivindicacao && !congelada) ? (() => {
+        const btn = h('button', { class: 'btn btn-secondary', style: 'margin-top:8px;padding:6px 12px;font-size:12.5px;' }, 'Quero fazer esta hora extra');
+        btn.addEventListener('click', () => abrirReivindicar(bloco, semana));
+        return btn;
+      })() : null;
+      const formReivindicar = (reivindicandoBlocoId === bloco.id) ? (() => {
+        const iniInput = h('input', { class: 'input', placeholder: 'HH:MM' }); iniInput.value = reivindicarDraft.horaInicio || '';
+        iniInput.addEventListener('input', () => { reivindicarDraft.horaInicio = iniInput.value; });
+        const fimInput = h('input', { class: 'input', placeholder: 'HH:MM' }); fimInput.value = reivindicarDraft.horaFim || '';
+        fimInput.addEventListener('input', () => { reivindicarDraft.horaFim = fimInput.value; });
+        const guardarBtn = h('button', { class: 'btn btn-primary', style: 'padding:6px 12px;font-size:12.5px;', disabled: reivindicarSaving ? 'disabled' : undefined }, reivindicarSaving ? 'A guardar…' : 'Confirmar');
+        guardarBtn.addEventListener('click', () => guardarReivindicacao(bloco, semana));
+        const cancelarBtn = h('button', { class: 'btn btn-secondary', style: 'padding:6px 12px;font-size:12.5px;' }, 'Cancelar');
+        cancelarBtn.addEventListener('click', fecharReivindicar);
+        return h('div', { style: 'margin-top:8px;padding:10px;background:#fffbeb;border-radius:8px;' }, [
+          reivindicarError ? h('p', { class: 'form-error', style: 'margin:0 0 6px;' }, reivindicarError) : null,
+          h('p', { class: 'field-helper-text', style: 'margin:0 0 6px;' }, 'Escolha o intervalo que quer fazer — nunca pode sobrepor o seu horário base.'),
+          h('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;' }, [iniInput, h('span', {}, '–'), fimInput, guardarBtn, cancelarBtn]),
+        ]);
+      })() : null;
+      corpo.push(h('div', { class: 'card card-pad', style: 'margin-bottom:10px;' }, [linhaTopo, listaReivindicacoes, reivindicarBtn, formReivindicar]));
+    });
+    return h('div', { style: 'margin-top:16px;' }, [tituloRow, ...corpo]);
+  }
+
   function buildVistaPessoal(semana) {
     if (!activeUser) return EmptyState('Inicie sessão para ver o seu horário pessoal.');
     if (!semana) return EmptyState('Ainda não existe nenhum horário gerado para esta semana.');
@@ -25094,6 +25665,7 @@ function buildHorariosPage(container, goTo) {
     // buildNotasPessoaisSemana). Substitui o antigo bloco único de
     // "Observações" (esse ficou exclusivo de "Escala da Equipa", agora
     // como feed partilhado — ver buildFeedNotasEquipa).
+    wrap.appendChild(buildPainelHorasExtra(semana, false));
     wrap.appendChild(buildNotasPessoaisSemana(semana));
     return wrap;
   }
@@ -27600,6 +28172,7 @@ function buildHorariosPage(container, goTo) {
           h('div', { style: 'display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-bottom:14px;' }, botoesDireitaGerador),
           buildGrelhaEquipa(semana, permitirEdicao),
         ]));
+    wrap.appendChild(buildPainelHorasExtra(semana, true));
     wrap.appendChild(buildNotasDirecao(semana, permitirEdicao));
     return wrap;
   }
@@ -27835,6 +28408,32 @@ function buildHorariosPage(container, goTo) {
       // abaixo, que já excluem estes turnos das contagens de presença).
       const colaboradorIdDoDia = (dia && dia.colaboradorId) || linha.colaboradorId;
       const ausenciaSobreposta = dia.tipo === 'normal' ? escalaAusenciaDoDia(colaboradorIdDoDia, dataDoDiaSelecionado) : null;
+      // Horas Extra reivindicadas (pedido explícito 2026-08-10): sempre
+      // que o colaborador desta vaga+dia tem uma reivindicação ATIVA de
+      // um bloco de Horas Extra Disponíveis para este dia (ver
+      // buildPainelHorasExtra), desenha-se aqui por cima como um bloco
+      // amarelo à parte — nunca escrito em `dia` (não faz parte da
+      // grelha base, é só uma camada visual, gerida inteiramente pelo
+      // painel "Horas Extra Disponíveis"). Aparece em qualquer dia
+      // (mesmo Folga/Férias/etc.), desde que o colaborador tenha alguma
+      // vaga atribuída nesse dia — não aparece para quem reivindicou
+      // sem ter nenhuma vaga nesse dia (limitação conhecida: a Timeline
+      // é sempre organizada por vaga, não há onde a desenhar nesse caso;
+      // continua visível no painel de qualquer forma).
+      const horasExtraOverlays = colaboradorIdDoDia
+        ? escalaHorasExtraDoDia(semana.id, diaKey).flatMap(bloco =>
+            escalaReivindicacoesDoBloco(bloco.id)
+              .filter(r => String(r.utilizadorId) === String(colaboradorIdDoDia))
+              .map(r => {
+                const topPctHE = (minutosNoIntervalo(r.intervaloInicio, false) / (totalHoras * 60)) * 100;
+                const alturaPctHE = Math.max(2, ((minutosNoIntervalo(r.intervaloFim, true) - minutosNoIntervalo(r.intervaloInicio, false)) / (totalHoras * 60)) * 100);
+                return h('div', {
+                  class: 'escala-vertical-bloco escala-vertical-bloco-extra',
+                  style: `top:${topPctHE}%;height:${alturaPctHE}%;`,
+                  title: `Hora Extra reivindicada: ${r.intervaloInicio}-${r.intervaloFim}`,
+                }, h('div', { class: 'escala-vertical-bloco-horas' }, [h('span', {}, r.intervaloInicio), h('span', {}, r.intervaloFim)]));
+              }))
+        : [];
       // `blocos` substitui o antigo `bloco` único — um turno com pausa/
       // almoço configurada (dia.pausaInicio/dia.pausaFim) desenha DOIS
       // blocos verticais separados na mesma coluna (ver
@@ -27968,7 +28567,7 @@ function buildHorariosPage(container, goTo) {
       // visível e só polui o balão.
       const situacaoDia = dia.tipo === 'folga' ? 'Folga' : (dia.tipo && dia.tipo !== 'normal' ? (ESCALA_TIPOS_DIA.find(t => t.key === dia.tipo)?.label || dia.tipo) : (ausenciaSobreposta ? (ESCALA_TIPOS_DIA.find(t => t.key === ausenciaSobreposta.tipo)?.label || 'Ausência') : ''));
       const textoTooltipColaborador = colaboradorNome + (situacaoDia ? ` (${situacaoDia})` : '');
-      const trilho = h('div', { class: 'escala-vertical-trilho' + (editavel && !blocos.length ? ' escala-vertical-trilho-vazio' : '') }, [...blocos, ...tarefaOverlays].filter(Boolean));
+      const trilho = h('div', { class: 'escala-vertical-trilho' + (editavel && !blocos.length ? ' escala-vertical-trilho-vazio' : '') }, [...blocos, ...tarefaOverlays, ...horasExtraOverlays].filter(Boolean));
       if (editavel && !blocos.length) trilho.addEventListener('click', aoClicarPosicao);
       // Arrastar/redimensionar/tesoura na Timeline (pedido explícito
       // 2026-08-10) — só num turno normal já com Entrada+Saída definidas;
