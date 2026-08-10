@@ -25839,7 +25839,7 @@ function buildHorariosPage(container, goTo) {
   async function submeterPedidoFerias(forcarComSobreposicao) {
     if (!activeUser || !isMasterUser()) return;
     feriasError = '';
-    const alvo = feriasDraft.utilizadorId ? (STATE.usuarios || []).find(u => u.id === feriasDraft.utilizadorId) : activeUser;
+    const alvo = feriasDraft.utilizadorId ? (STATE.usuarios || []).find(u => String(u.id) === String(feriasDraft.utilizadorId)) : activeUser;
     if (!alvo) { feriasError = 'Escolha o colaborador.'; rerender(); return; }
     const validacao = feriasPeriodosValidos();
     if (!validacao.ok) { feriasError = validacao.erro; rerender(); return; }
@@ -25942,15 +25942,23 @@ function buildHorariosPage(container, goTo) {
     periodo.dataInicio = segunda; periodo.dataFim = dateToISO(sexta);
   }
   // Abre o Modal Contextual de Marcação a partir de um clique num dia
-  // vazio do Calendário — predefine automaticamente um bloco de 5 dias
-  // úteis (Segunda a Sexta, a semana do dia clicado, já a descontar
-  // Fim de Semana/feriados no cálculo de dias úteis mostrado no resumo).
-  // Só o Diretor Técnico/Administrador pode abrir este modal.
+  // vazio do Calendário. Pedido explícito 2026-08-10: só predefine o
+  // bloco de 5 dias úteis (Segunda a Sexta) quando o dia CLICADO já é
+  // uma Segunda-feira — clicando em qualquer outro dia da semana,
+  // sugere-se só ESSE dia isolado (Início=Fim), sem alargar sozinho à
+  // semana toda. O botão "Bloco 5 dias úteis" de cada período continua
+  // sempre disponível para aplicar o bloco manualmente a partir de
+  // qualquer Início escolhido. Só o Diretor Técnico/Administrador pode
+  // abrir este modal.
   function abrirModalMarcacaoFerias(dataISO) {
     if (!isMasterUser() || horariosEhMobile) return; // gestão avançada — nunca em mobile/tablet, mesmo para Hugo/Paulo
     feriasDraft = feriasNovoDraft();
     feriasEditandoId = null;
-    if (dataISO) feriasAplicarBlocoSemanaUtil(feriasDraft.periodos[0], dataISO);
+    if (dataISO) {
+      const ehSegundaFeira = new Date(dataISO + 'T12:00:00').getDay() === 1;
+      if (ehSegundaFeira) feriasAplicarBlocoSemanaUtil(feriasDraft.periodos[0], dataISO);
+      else { feriasDraft.periodos[0].dataInicio = dataISO; feriasDraft.periodos[0].dataFim = dataISO; }
+    }
     feriasError = ''; feriasConflitosPendentes = null;
     mostrarModalMarcacaoFerias = true;
     rerender();
@@ -25979,14 +25987,14 @@ function buildHorariosPage(container, goTo) {
     rerender();
   }
   function buildFormPedidoFerias() {
-    const alvoAtual = feriasDraft.utilizadorId ? (STATE.usuarios || []).find(u => u.id === feriasDraft.utilizadorId) : activeUser;
+    const alvoAtual = feriasDraft.utilizadorId ? (STATE.usuarios || []).find(u => String(u.id) === String(feriasDraft.utilizadorId)) : activeUser;
     const prestador = escalaUtilizadorEhPrestador(alvoAtual);
     const opcoesTipo = prestador ? ESCALA_TIPOS_AUSENCIA_PRESTADOR : ESCALA_TIPOS_AUSENCIA_QUADRO;
     if (!opcoesTipo.find(t => t.key === feriasDraft.tipo)) feriasDraft.tipo = opcoesTipo[0].key;
     if (!feriasDraft.periodos || !feriasDraft.periodos.length) feriasDraft.periodos = [{ dataInicio: '', dataFim: '' }];
     const colaboradorSelect = h('select', { class: 'select' }, [
       h('option', { value: '', selected: !feriasDraft.utilizadorId ? 'selected' : undefined }, activeUser ? `Eu — ${activeUser.nomeCompleto || activeUser.username}` : '—'),
-      ...usuariosAtivosParaVaga().filter(u => !activeUser || u.id !== activeUser.id).map(u => h('option', { value: u.id, selected: feriasDraft.utilizadorId === u.id ? 'selected' : undefined }, `${u.nomeCompleto || u.username}${escalaUtilizadorEhPrestador(u) ? ' (Prestador de Serviço)' : ''}`)),
+      ...usuariosAtivosParaVaga().filter(u => !activeUser || u.id !== activeUser.id).map(u => h('option', { value: u.id, selected: String(feriasDraft.utilizadorId) === String(u.id) ? 'selected' : undefined }, `${u.nomeCompleto || u.username}${escalaUtilizadorEhPrestador(u) ? ' (Prestador de Serviço)' : ''}`)),
     ]);
     colaboradorSelect.value = feriasDraft.utilizadorId || '';
     colaboradorSelect.addEventListener('change', () => { feriasDraft.utilizadorId = colaboradorSelect.value; feriasDraft.tipo = ''; feriasConflitosPendentes = null; rerender(); });
@@ -26103,7 +26111,7 @@ function buildHorariosPage(container, goTo) {
         h('p', { class: 'modal-title', style: 'margin:0;' }, feriasEditandoId ? '✎ Editar Período' : '🏖️ Marcar Férias / Ausência'),
         closeBtn,
       ]),
-      h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, feriasEditandoId ? 'Ajuste a tipologia, as datas ou as observações e guarde.' : 'Predefinido com um bloco de 5 dias úteis a partir do dia escolhido — ajuste as datas e a tipologia livremente.'),
+      h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, feriasEditandoId ? 'Ajuste a tipologia, as datas ou as observações e guarde.' : 'Predefinido a partir do dia escolhido (bloco de 5 dias úteis se for Segunda-feira, ou só esse dia) — ajuste as datas e a tipologia livremente.'),
       buildFormPedidoFerias(),
     ]);
     overlay.appendChild(panel);
