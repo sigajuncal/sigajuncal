@@ -3942,11 +3942,10 @@ const vacinacaoListaEsperaSchema = [
   { name: 'numeroUtente', label: 'Nº de Utente', type: 'text', size: 'sm', maxLength: 9, inputmode: 'numeric', pattern: '[0-9]{9}', digitsOnly: true, placeholder: '9 dígitos' },
   { name: 'gripe', label: 'Gripe', type: 'checkbox', size: 'xs' },
   { name: 'covid', label: 'COVID', type: 'checkbox', size: 'xs' },
-  // Mesma exceção de elegibilidade da Marcação (ver colaboradorFarmacia em
-  // vacinacaoMarcacaoSchema) — colaboradores da farmácia têm direito às
-  // vacinas do contingente, independentemente da idade; dispensa o
-  // bloqueio de >84 anos também na Lista de Espera.
-  { name: 'colaboradorFarmacia', label: 'Colaborador da Farmácia Juncal (vacina do contingente)', type: 'checkbox', col: 2, help: 'Exceção de elegibilidade — colaboradores da farmácia têm direito às vacinas do contingente, independentemente da idade.' },
+  // Sem "Colaborador da Farmácia Juncal" aqui (pedido explícito
+  // 2026-08-11): um(a) colaborador(a) nunca entra na Lista de Espera — vai
+  // sempre direto(a) a uma Marcação (onde a exceção de elegibilidade
+  // continua a existir, ver colaboradorFarmacia em vacinacaoMarcacaoSchema).
   { name: 'observacoes', label: 'Observações', type: 'textarea', col: 2, maxLength: 200 },
 ];
 // Responsável pela Vacinação — quem está encarregue de gerir a agenda num
@@ -8572,6 +8571,7 @@ function dateToISO(d) {
 }
 function todayISO() { return dateToISO(new Date()); }
 function ontemISO() { const d = new Date(); d.setDate(d.getDate() - 1); return dateToISO(d); }
+function amanhaISO() { const d = new Date(); d.setDate(d.getDate() + 1); return dateToISO(d); }
 function formatDateTime(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -30319,10 +30319,14 @@ function buildVacinacaoPage(container, goTo) {
   // só pergunta.
   function ofertarReporNaListaEspera(m) {
     confirmDialog(`Colocar ${m.nome || 'este utente'} de novo na Lista de Espera desta campanha?`, async () => {
+      // Observação leva sempre a data e a(s) vacina(s) da marcação
+      // cancelada, para nossa informação — uma marcação cancelada e um
+      // novo registo na Lista de Espera NÃO são duplicados (pedido
+      // explícito 2026-08-11), por isso isto é só contexto, nunca bloqueia.
       const created = await dbInsert('vacinacaoListaEspera', {
         campanhaId, nome: m.nome || '', contacto: m.contacto || '', numeroUtente: m.numeroUtente || '', gripe: !!m.gripe, covid: !!m.covid,
         dataNascimento: m.dataNascimento || '',
-        observacoes: 'Reposto na lista após cancelamento de marcação.',
+        observacoes: `Reposto na lista após cancelamento da marcação de ${m.data ? formatDate(m.data) : 'data desconhecida'}${m.hora ? ` às ${m.hora}` : ''} (${vacinacaoLabelVacinas(m) || 'sem vacina(s) definida(s)'}).`,
       });
       if (created) { STATE.vacinacaoListaEspera = [created, ...STATE.vacinacaoListaEspera]; rerender(); }
       else showDbErrorToast('Não foi possível adicionar à Lista de Espera');
@@ -30529,13 +30533,15 @@ function buildVacinacaoPage(container, goTo) {
     if (!esperaDraft.gripe && !esperaDraft.covid) { esperaFormError = 'Selecione pelo menos uma vacina (Gripe e/ou COVID).'; rerender(); return; }
     // >84 anos: tanto a vacina da Gripe como a da COVID passam a ser
     // sempre feitas no Centro de Saúde — nem sequer entra na Lista de
-    // Espera (pedido explícito 2026-08-11), exceto Colaborador da
-    // Farmácia (vacina do contingente). Só à CRIAÇÃO — nunca bloqueia
-    // editar um registo já existente (ex: corrigir um contacto).
-    if (!esperaEditId && !esperaDraft.colaboradorFarmacia) {
+    // Espera (pedido explícito 2026-08-11). Sem exceção de Colaborador da
+    // Farmácia aqui: um(a) colaborador(a) nunca passa pela Lista de Espera,
+    // vai sempre direto(a) a uma Marcação (a exceção vive só lá). Só à
+    // CRIAÇÃO — nunca bloqueia editar um registo já existente (ex: corrigir
+    // um contacto).
+    if (!esperaEditId) {
       const idadeEspera = vacinacaoCalcularIdade(esperaDraft.dataNascimento);
       if (idadeEspera !== null && idadeEspera > 84) {
-        esperaFormError = '⚠️ Não é possível adicionar à Lista de Espera: idade acima dos 84 anos deve realizar a vacinação (Gripe e COVID) no Centro de Saúde onde está inscrito(a). Se se tratar de um(a) colaborador(a) da farmácia, assinale "Colaborador da Farmácia Juncal".';
+        esperaFormError = '⚠️ Não é possível adicionar à Lista de Espera: idade acima dos 84 anos deve realizar a vacinação (Gripe e COVID) no Centro de Saúde onde está inscrito(a). Tratando-se de um(a) colaborador(a) da farmácia, crie diretamente uma Marcação (não passa pela Lista de Espera).';
         rerender();
         return;
       }
@@ -30756,7 +30762,10 @@ function buildVacinacaoPage(container, goTo) {
       h('td', {}, avisoBtn),
       h('td', { title: m.responsavel || undefined }, m.responsavel ? formatarNomeResponsavelTabela(m.responsavel, STATE.usuarios) : '—'),
     ]);
-    row.addEventListener('click', (e) => { if (e.target.closest('.aviso-toggle') || e.target.closest('input[type=checkbox]')) return; openEditMarcacao(m); });
+    // Clicar na linha só SELECIONA (mesmo padrão do resto da app — já
+    // fica ligado por buildSelectionCheckbox acima); para ver/editar,
+    // selecionar e usar o botão "Editar" da barra inferior (pedido
+    // explícito 2026-08-11 — antes clicar abria logo o formulário).
     return row;
   }
   function buildMarcacoesTable(list, emptyMsg) {
@@ -30902,6 +30911,7 @@ function buildVacinacaoPage(container, goTo) {
     }
     function linhaOcupada(m, hora) {
       if (m.tipoLinha === 'bloqueado') return linhaBloqueada(m, hora);
+      const selecionada = marcacaoSelectedIds.has(m.id);
       // Encaixe (fora da grelha fixa de 10 em 10 min) — pequeno selo para
       // continuar fácil de distinguir de relance, agora que já não vive
       // isolado numa secção à parte (pedido explícito 2026-08-11).
@@ -30920,7 +30930,7 @@ function buildVacinacaoPage(container, goTo) {
             ? h('span', { class: 'agenda-slot-responsavel', title: 'Administrada por (definitivo)' }, m.administradoPor)
             : buildRespPeriodoBadge(hora))
         : buildRespPeriodoBadge(hora);
-      const row = h('div', { class: 'agenda-slot-row agenda-slot-ocupado' }, [
+      const row = h('div', { class: 'agenda-slot-row agenda-slot-ocupado selectable-row' + (selecionada ? ' row-selected' : '') }, [
         h('span', { class: 'agenda-slot-hora' }, [hora, ehEncaixe ? h('span', { class: 'badge-encaixe', title: 'Encaixe — fora da grelha fixa de 10 em 10 minutos' }, 'ENCAIXE') : null]),
         h('span', { class: 'agenda-slot-label cell-strong' }, [
           h('span', { class: 'agenda-slot-nome' }, m.nome || '—'),
@@ -30930,7 +30940,12 @@ function buildVacinacaoPage(container, goTo) {
         m.aviso ? h('span', { title: 'Utente avisado' }, Icon('bell', { size: 14, strokeWidth: 2.2 })) : null,
         buildEstadoBadgeVaga(m),
       ]);
-      row.addEventListener('click', () => openEditMarcacao(m));
+      // Clicar na vaga só SELECIONA — deixa de abrir logo o formulário
+      // (pedido explícito 2026-08-11: "quero saber que marcação estou a
+      // selecionar" antes de ver/editar). Para abrir, selecionar e usar o
+      // botão "Editar" da barra inferior (ver buildBottomActionBar mais
+      // abaixo, agora também presente nesta vista).
+      row.addEventListener('click', () => toggleMarcacaoSelect(m.id));
       return row;
     }
     // Uma vaga "bloqueada" (indisponibilizada manualmente) não é uma
@@ -31200,7 +31215,7 @@ function buildVacinacaoPage(container, goTo) {
   function buildAgendaDiaView(dateISO) {
     const wrap = h('div', {});
     const cabecalho = h('div', { style: 'display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px;' }, [
-      h('button', { class: 'btn btn-secondary', onclick: () => { agendaDiaSelecionado = null; rerender(); } }, [Icon('arrowleft', { size: 14, strokeWidth: 2.4 }), ' Voltar ao Calendário']),
+      h('button', { class: 'btn btn-secondary', onclick: () => { agendaDiaSelecionado = null; marcacaoSelectedIds = new Set(); rerender(); } }, [Icon('arrowleft', { size: 14, strokeWidth: 2.4 }), ' Voltar ao Calendário']),
       h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;' }, [
         buildAbrirFecharDiaBtn(dateISO),
         (() => {
@@ -31248,20 +31263,26 @@ function buildVacinacaoPage(container, goTo) {
       ]));
     }
     wrap.appendChild(h('div', { class: 'tabs-row', style: 'margin-bottom:10px;' }, [
-      h('button', { class: 'tab-btn' + (agendaDiaVista === 'grelha' ? ' active' : ''), onclick: () => { agendaDiaVista = 'grelha'; rerender(); } }, [Icon('calendar', { size: 14 }), h('span', {}, 'Vagas')]),
-      h('button', { class: 'tab-btn' + (agendaDiaVista === 'tabela' ? ' active' : ''), onclick: () => { agendaDiaVista = 'tabela'; rerender(); } }, [Icon('clipboard', { size: 14 }), h('span', {}, 'Tabela Detalhada')]),
+      h('button', { class: 'tab-btn' + (agendaDiaVista === 'grelha' ? ' active' : ''), onclick: () => { agendaDiaVista = 'grelha'; marcacaoSelectedIds = new Set(); rerender(); } }, [Icon('calendar', { size: 14 }), h('span', {}, 'Vagas')]),
+      h('button', { class: 'tab-btn' + (agendaDiaVista === 'tabela' ? ' active' : ''), onclick: () => { agendaDiaVista = 'tabela'; marcacaoSelectedIds = new Set(); rerender(); } }, [Icon('clipboard', { size: 14 }), h('span', {}, 'Tabela Detalhada')]),
     ]));
     if (agendaDiaVista === 'grelha') {
       wrap.appendChild(h('div', { class: 'vaga-dia-com-resumo' }, [
         buildVagasGrelhaDia(dateISO),
         buildResumoDoDiaCards(dateISO),
       ]));
-      // Na vista de Vagas a barra flutuante fica sem sentido (pedido
-      // explícito 2026-08-11): cada vaga já tem o seu próprio botão "+"
-      // (e "Adicionar Encaixe" no cabeçalho, agora destacado a laranja),
-      // e as linhas aqui não têm seleção (clicar abre logo a edição) —
-      // por isso Editar/Eliminar também ficariam sempre inativos. Só
-      // aparece na Tabela Detalhada, onde a seleção por linha existe mesmo.
+      // Barra inferior também presente na vista de Vagas (pedido explícito
+      // 2026-08-11 — antes ficava de fora, porque clicar numa vaga abria
+      // logo a edição e a seleção nem existia aqui). Sem botão "+" (cada
+      // vaga já tem o seu próprio, mais "Adicionar Encaixe" no cabeçalho) —
+      // só Editar/Eliminar, ativos quando se seleciona uma vaga ocupada.
+      wrap.appendChild(buildBottomActionBar({
+        selectedCount: marcacaoSelectedIds.size,
+        hideAdd: true,
+        onEdit: () => { if (marcacaoSelectedIds.size === 1) openEditMarcacao(STATE.vacinacaoMarcacoes.find(m => m.id === [...marcacaoSelectedIds][0])); },
+        onDelete: removeMarcacoesSelecionadas,
+        hideDelete: isEnfermeiro(),
+      }));
       return wrap;
     } else {
       const listDoDia = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO && m.tipoLinha !== 'bloqueado')
@@ -31332,7 +31353,7 @@ function buildVacinacaoPage(container, goTo) {
         style: `aspect-ratio:1/1;border-radius:6px;border:1.2px solid ${isToday ? 'var(--pharm-700)' : border};background:${bg};cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:${isToday ? '800' : '500'};${estiloEsbatido}`,
         title: doDia.length ? `${doDia.length} marcação${doDia.length > 1 ? 'ões' : ''}` + (avisoMultiplo ? ` · ⚠️ COVID: ${covidDoDia} (não múltiplo de 6)` : ' · ✅ COVID em múltiplo de 6') : (aberto ? 'Dia aberto, sem marcações' : (isSunday ? 'Domingo — pede confirmação ao abrir' : undefined)),
       }, String(d));
-      cell.addEventListener('click', () => { agendaDiaSelecionado = dateISO; rerender(); });
+      cell.addEventListener('click', () => { agendaDiaSelecionado = dateISO; marcacaoSelectedIds = new Set(); rerender(); });
       cells.push(cell);
     }
     const weekdayRow = h('div', { style: 'display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:3px;' },
@@ -31661,7 +31682,7 @@ function buildVacinacaoPage(container, goTo) {
       const toneEspera = vacinacaoElegibilidadeTone(idade, !!esperaDraft.gripe, !!esperaDraft.covid);
       wrap.appendChild(buildRecordFormEstreito(vacinacaoListaEsperaSchema.map(f => {
         if (f.name === 'dataNascimento') return Object.assign({}, f, { onChange: () => rerender(), helperText: avisoTxt || undefined, helperTone: toneEspera || undefined });
-        if (f.name === 'gripe' || f.name === 'covid' || f.name === 'colaboradorFarmacia') return Object.assign({}, f, { onChange: () => rerender() });
+        if (f.name === 'gripe' || f.name === 'covid') return Object.assign({}, f, { onChange: () => rerender() });
         return f;
       }), esperaDraft, {
         editing: !!esperaEditId, onSubmit: submitEspera, onCancel: cancelEsperaForm, errorMessage: esperaFormError, saving: esperaSaving,
@@ -31697,7 +31718,9 @@ function buildVacinacaoPage(container, goTo) {
           h('td', {}, vacinacaoLabelVacinas(e)),
           h('td', {}, h('span', { class: 'badge ' + (elegivel ? 'badge-green' : 'badge-orange') }, elegivel ? 'ELEGÍVEL (60–84)' : (idade === null ? '—' : (idade < 60 ? '< 60 ANOS' : '> 84 ANOS')))),
         ]);
-        row.addEventListener('click', (ev) => { if (ev.target.closest('input[type=checkbox]')) return; openEditEspera(e); });
+        // Clicar na linha só SELECIONA (já ligado por buildSelectionCheckbox
+        // acima) — ver/editar passa a exigir selecionar + botão "Editar" da
+        // barra inferior (pedido explícito 2026-08-11).
         return row;
       }));
       wrap.appendChild(h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', {}, [thead, tbody]))));
@@ -32203,10 +32226,18 @@ function entregasPendentesPorFarmacia() {
 // 60 min de vencer — ordenadas da mais urgente para a menos urgente. Ao
 // contrário da versão anterior (que só olhava para a mais urgente de todas),
 // esta lista é usada para identificar TODAS as entregas em risco, uma a uma.
+// Só entram aqui entregas cuja Data de Entrega é HOJE (ou de um dia
+// ANTERIOR, já claramente atrasadas) — uma entrega agendada para amanhã ou
+// mais tarde nunca conta como urgente, mesmo que a diferença de tempo até à
+// hora limite calculada caia por coincidência a menos de 60 min (ex: hoje às
+// 23h30 para uma entrega de amanhã às 00h15) — pedido explícito 2026-08-11:
+// as notificações não devem tratar entregas de outro dia como se fossem de hoje.
 function entregasUrgentesOuAtrasadas(lista) {
   const agora = Date.now();
+  const hoje = todayISO();
   return lista
     .map(r => {
+      if (r.dataEntrega && r.dataEntrega > hoje) return null;
       const limite = entregaLimiteTimestamp(r);
       if (!limite) return null;
       return { r, restante: limite.getTime() - agora };
@@ -32346,22 +32377,44 @@ function entregaLimiteTimestamp(r) {
   const d = new Date(`${r.dataEntrega}T${hora}:00`);
   return isNaN(d.getTime()) ? null : d;
 }
-function entregaTimerEstado(restanteMs) {
+// Prazo de uma entrega pendente — antes disto, o badge convertia sempre o
+// tempo restante para "Nh Nm", mesmo quando a Data de Entrega era amanhã ou
+// mais tarde (ex: "30h55"), o que lia mal e parecia urgência do próprio dia
+// (pedido explícito 2026-08-11). Agora: SÓ mostra contagem regressiva em
+// minutos/horas quando a Data de Entrega é HOJE; para amanhã diz "Amanhã,
+// até às HH:MM", para mais tarde mostra a data completa — nunca pisca/
+// vermelho nesses dois casos, porque ainda não há urgência nenhuma. Uma
+// entrega ainda Pendente com Data de Entrega de um dia ANTERIOR (já passou
+// o próprio dia, não só a hora) fica sempre vermelha/a piscar, com "Atrasada
+// desde DD/MM/AAAA" — mais claro do que uma contagem em horas gigante.
+function entregaPrazoEstado(r) {
+  const horaLabel = entregaHoraLimiteEfetiva(r);
+  const hoje = todayISO();
+  if (r.dataEntrega && r.dataEntrega > hoje) {
+    const quando = r.dataEntrega === amanhaISO() ? 'Amanhã' : formatDate(r.dataEntrega);
+    return { cor: 'verde', texto: `${quando}, até às ${horaLabel || '—'}`, piscar: false };
+  }
+  if (r.dataEntrega && r.dataEntrega < hoje) {
+    return { cor: 'vermelho', texto: `Atrasada desde ${formatDate(r.dataEntrega)}`, piscar: true };
+  }
+  // Data de Entrega é hoje — contagem regressiva normal.
+  const limite = entregaLimiteTimestamp(r);
+  const restanteMs = limite ? limite.getTime() - Date.now() : null;
+  if (restanteMs === null) return { cor: 'verde', texto: '—', piscar: false };
   const restanteMin = Math.round(restanteMs / 60000);
-  if (restanteMs <= 0) return { cor: 'vermelho', texto: 'Expirado', piscar: true };
-  if (restanteMin <= 15) return { cor: 'vermelho', texto: `${restanteMin} min`, piscar: true };
-  if (restanteMin < 60) return { cor: 'amarelo', texto: `${restanteMin} min`, piscar: false };
-  const h = Math.floor(restanteMin / 60), m = restanteMin % 60;
-  return { cor: 'verde', texto: m ? `${h}h${pad2(m)}` : `${h}h`, piscar: false };
+  if (restanteMs <= 0) return { cor: 'vermelho', texto: `Expirado (até às ${horaLabel || '—'})`, piscar: true };
+  if (restanteMin <= 15) return { cor: 'vermelho', texto: `${restanteMin} min (até às ${horaLabel || '—'})`, piscar: true };
+  if (restanteMin < 60) return { cor: 'amarelo', texto: `${restanteMin} min (até às ${horaLabel || '—'})`, piscar: false };
+  const hh = Math.floor(restanteMin / 60), mm = restanteMin % 60;
+  return { cor: 'verde', texto: `${mm ? `${hh}h${pad2(mm)}` : `${hh}h`} (até às ${horaLabel || '—'})`, piscar: false };
 }
 function atualizarEntregaTimerBadge(badge) {
-  const limiteMs = Number(badge.dataset.limite);
-  const horaLabel = badge.dataset.horaLabel || '';
-  const estado = entregaTimerEstado(limiteMs - Date.now());
+  const r = { dataEntrega: badge.dataset.dataEntrega || '', horaLimite: badge.dataset.horaLimite || '', blocoHorario: badge.dataset.blocoHorario || '' };
+  const estado = entregaPrazoEstado(r);
   badge.className = 'entrega-timer-badge tone-' + estado.cor + (estado.piscar ? ' piscar' : '');
   clear(badge);
   badge.appendChild(Icon('clock', { size: 11, strokeWidth: 2.4 }));
-  badge.appendChild(document.createTextNode(` ${estado.texto} (até às ${horaLabel})`));
+  badge.appendChild(document.createTextNode(` ${estado.texto}`));
 }
 // Único intervalo global — percorre todos os badges de temporizador
 // atualmente na página (normalmente só os da tabela de Entregas Pendentes,
@@ -32371,11 +32424,15 @@ function atualizarTodosEntregaTimerBadges() {
   document.querySelectorAll('.entrega-timer-badge').forEach(atualizarEntregaTimerBadge);
 }
 function buildEntregaTimerBadge(r) {
-  const limite = entregaLimiteTimestamp(r);
-  if (!limite) return null;
+  if (!entregaHoraLimiteEfetiva(r) || !r.dataEntrega) return null;
   const badge = h('span', { class: 'entrega-timer-badge' });
-  badge.dataset.limite = String(limite.getTime());
-  badge.dataset.horaLabel = entregaHoraLimiteEfetiva(r);
+  // dataset guarda os dados de origem (não um timestamp já calculado) para
+  // que cada atualização periódica recalcule "hoje" de raiz — importante
+  // para o badge mudar sozinho de "Amanhã" para contagem regressiva à
+  // meia-noite, sem precisar de reconstruir a tabela.
+  badge.dataset.dataEntrega = r.dataEntrega || '';
+  badge.dataset.horaLimite = r.horaLimite || '';
+  badge.dataset.blocoHorario = r.blocoHorario || '';
   atualizarEntregaTimerBadge(badge);
   return badge;
 }
