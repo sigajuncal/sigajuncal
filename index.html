@@ -969,6 +969,12 @@
   @media (min-width:640px){.field-sm{grid-column:span 4;}}
   .field label{display:block;font-size:12px;font-weight:700;color:var(--pharm-600);margin-bottom:5px;}
   .field-helper-text{font-size:11.5px;color:var(--pharm-500);margin-top:5px;font-weight:600;}
+  /* Tons opcionais (field.helperTone) — usado ex: no aviso de
+     idade/elegibilidade da Vacinação, para o feedback ser visual e não só
+     por texto (pedido explícito 2026-08-11). */
+  .field-helper-text.tone-green{color:#15803d;}
+  .field-helper-text.tone-orange{color:#c2410c;}
+  .field-helper-text.tone-red{color:#b91c1c;}
   /* Frase informativa no topo de cada Agenda de prestador */
   .agenda-info-aviso{font-size:13px;color:#64748b;margin:8px 0 4px;line-height:1.5;}
   /* Badge/chip de cor da Agenda — fundo translúcido na cor do prestador,
@@ -3861,7 +3867,7 @@ const vacinacaoMarcacaoSchema = [
   { name: 'data', label: 'Data', type: 'date', size: 'xs', smartDate: true },
   { name: 'hora', label: 'Hora', type: 'text', placeholder: 'Ex: 10:00', size: 'xs' },
   { name: 'estado', label: 'Estado', type: 'select', options: ['Pendente', 'Administrada', 'Cancelada'], size: 'xs' },
-  { name: 'nome', label: 'Nome do Utente', type: 'text', col: 2 },
+  { name: 'nome', label: 'Nome do Utente', type: 'text', col: 2, maxLength: 80 },
   // Data de Nascimento — usada para o mesmo cálculo de idade/elegibilidade
   // já existente na Lista de Espera (ver vacinacaoCalcularIdade/
   // vacinacaoAvisoElegibilidade), agora também aplicado a marcações
@@ -3921,7 +3927,7 @@ const vacinacaoQuebraSchema = [
   { name: 'responsavel', label: 'Registado Por', type: 'text', size: 'sm' },
 ];
 const vacinacaoListaEsperaSchema = [
-  { name: 'nome', label: 'Nome do Utente', type: 'text', col: 2 },
+  { name: 'nome', label: 'Nome do Utente', type: 'text', col: 2, maxLength: 80 },
   { name: 'dataNascimento', label: 'Data de Nascimento', type: 'date', size: 'sm', smartDate: true },
   { name: 'contacto', label: 'Contacto', type: 'text', size: 'sm', maxLength: 11, inputmode: 'numeric', pattern: '[0-9]{9}', digitsOnly: true, phone: true, placeholder: '9 dígitos' },
   { name: 'numeroUtente', label: 'Nº de Utente', type: 'text', size: 'sm', maxLength: 9, inputmode: 'numeric', pattern: '[0-9]{9}', digitsOnly: true, placeholder: '9 dígitos' },
@@ -4039,12 +4045,27 @@ function vacinacaoCalcularIdade(dataNascISO) {
 // a pessoa pode simplesmente aparecer, sem precisar de ficar agendada.
 function vacinacaoAvisoElegibilidade(idade, gripe, covid) {
   if (idade === null || idade === undefined) return '';
-  if (idade > 84) return '⚠️ Idade acima dos 84 anos: deve realizar a vacinação no Centro de Saúde onde está inscrito(a).';
+  // Idade sempre à cabeça da mensagem (pedido explícito 2026-08-11: dar
+  // sempre feedback claro e imediato — ex: "63 anos — ✅ Idade
+  // elegível..." — logo por baixo do campo Data de Nascimento, mal se
+  // preenche, sem ter de ir calcular a idade à parte).
+  if (idade > 84) return `${idade} anos — ⚠️ Idade acima dos 84 anos: deve realizar a vacinação no Centro de Saúde onde está inscrito(a).`;
   if (idade < 60) {
-    if (gripe && !covid) return 'ℹ️ Idade abaixo dos 60 anos: para a vacina da Gripe (só com receita médica válida) não é preciso marcação — a pessoa pode simplesmente aparecer quando quiser, sem gestão de vaga (não há o mesmo problema de desperdício de frascos que a COVID tem). Sem indicação inicial para vacina COVID.';
-    return '⚠️ Idade abaixo dos 60 anos: sem indicação inicial para vacina COVID; vacina da Gripe só com receita médica válida e sem necessidade de marcação prévia.';
+    if (gripe && !covid) return `${idade} anos — ℹ️ Idade abaixo dos 60 anos: para a vacina da Gripe (só com receita médica válida) não é preciso marcação — a pessoa pode simplesmente aparecer quando quiser, sem gestão de vaga (não há o mesmo problema de desperdício de frascos que a COVID tem). Sem indicação inicial para vacina COVID.`;
+    return `${idade} anos — ⚠️ Idade abaixo dos 60 anos: sem indicação inicial para vacina COVID; vacina da Gripe só com receita médica válida e sem necessidade de marcação prévia.`;
   }
-  return '✅ Idade elegível para vacinação gratuita (60–84 anos).';
+  return `${idade} anos — ✅ Idade elegível para vacinação gratuita (60–84 anos).`;
+}
+// Cor do aviso de elegibilidade (ver field.helperTone em buildField) —
+// verde quando elegível, laranja quando é só um alerta informativo (<60
+// só Gripe, sem bloqueio nenhum), vermelho nos restantes casos de fora
+// dos critérios (pedido explícito 2026-08-11: "feedback visual", tipo
+// "63 anos ✅ a verde").
+function vacinacaoElegibilidadeTone(idade, gripe, covid) {
+  if (idade === null || idade === undefined) return '';
+  if (idade > 84) return 'red';
+  if (idade < 60) return (gripe && !covid) ? 'orange' : 'red';
+  return 'green';
 }
 function vacinacaoLabelVacinas(r) {
   const nomes = [];
@@ -9184,45 +9205,67 @@ function melhorarInputData(input) {
 }
 
 // Preenchimento inteligente de datas por dígitos corridos (pedido explícito
-// 2026-08-11, módulo Vacinação) — em vez de ter de ir campo a campo
-// (dia/mês/ano) com o rato, a pessoa escreve os dígitos todos seguidos e a
-// app interpreta sozinha: 8 dígitos = DD-MM-AAAA normal (ex: 20051990 =
-// 20/05/1990); 7 dígitos = dia SEM zero à esquerda (ex: 2051990 =
-// 2/05/1990); 6 dígitos = dia E mês sem zero à esquerda (ex: 251990 =
-// 2/5/1990). O aspeto do campo mantém-se sempre o mesmo <input type="date">
-// nativo (com o mesmo wrapper/ícone de sempre, ver melhorarInputData) — só a
-// forma de o preencher por teclado é que muda. Cada foco no campo começa um
-// "buffer" de dígitos do zero, para nunca misturar com o valor anterior.
-function instalarPreenchimentoInteligenteData(input) {
+// 2026-08-11) — em vez de ter de ir campo a campo (dia/mês/ano) com o
+// rato, a pessoa escreve os dígitos todos seguidos e a app interpreta
+// sozinha: 8 dígitos = DD-MM-AAAA normal (ex: 20051990 = 20/05/1990); 7
+// dígitos = dia SEM zero à esquerda (ex: 2051990 = 2/05/1990); 6 dígitos =
+// dia E mês sem zero à esquerda (ex: 251990 = 2/5/1990). O aspeto do campo
+// mantém-se sempre o mesmo <input type="date"> nativo (com o mesmo
+// wrapper/ícone de sempre, ver melhorarInputData).
+// NUNCA faz preventDefault ao escrever — o preenchimento nativo por
+// segmentos (dia/mês/ano) continua a funcionar exactamente como sempre,
+// dando logo feedback visual a cada tecla (é precisamente esse feedback
+// que faltava numa 1ª versão que bloqueava o teclado para calcular tudo
+// de uma vez só no fim). Em paralelo, guarda-se só uma cópia dos dígitos
+// escritos desde que o campo ganhou foco; a correção para os atalhos sem
+// zero à esquerda (que o preenchimento nativo por segmentos não sabe
+// interpretar) só é aplicada no BLUR — altura em que já se sabe que a
+// pessoa terminou de escrever essa data. `blockPast` (opcional): mesma
+// regra já aplicada no `change` nativo (nunca aceitar uma data passada,
+// ver mais abaixo) — repetida aqui porque a correção de blur pode
+// substituir o valor DEPOIS desse `change` já ter corrido.
+function instalarPreenchimentoInteligenteData(input, blockPast) {
   let buffer = '';
-  function commit() {
+  function calcularIso() {
     const n = buffer.length;
-    if (n < 6) return; // ainda incompleto — só decide ao chegar às 6-8 dígitos
+    if (n < 6) return null; // ainda incompleto — só decide ao chegar às 6-8 dígitos
     let diaStr, mesStr, anoStr;
     if (n >= 8) { diaStr = buffer.slice(0, 2); mesStr = buffer.slice(2, 4); anoStr = buffer.slice(4, 8); }
     else if (n === 7) { diaStr = buffer.slice(0, 1); mesStr = buffer.slice(1, 3); anoStr = buffer.slice(3, 7); }
     else { diaStr = buffer.slice(0, 1); mesStr = buffer.slice(1, 2); anoStr = buffer.slice(2, 6); }
     const dia = parseInt(diaStr, 10), mes = parseInt(mesStr, 10), ano = parseInt(anoStr, 10);
-    if (!dia || !mes || dia > 31 || mes > 12 || ano < 1900) return;
-    input.value = `${String(ano).padStart(4, '0')}-${pad2(mes)}-${pad2(dia)}`;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    if (!dia || !mes || dia > 31 || mes > 12 || ano < 1900) return null;
+    return `${String(ano).padStart(4, '0')}-${pad2(mes)}-${pad2(dia)}`;
   }
   input.addEventListener('focus', () => { buffer = ''; });
   input.addEventListener('keydown', (e) => {
     if (/^[0-9]$/.test(e.key)) {
-      e.preventDefault();
-      if (buffer.length >= 8) return;
-      buffer += e.key;
-      commit();
+      if (buffer.length < 8) buffer += e.key;
       return;
     }
-    if (e.key === 'Backspace' || e.key === 'Delete') {
-      e.preventDefault();
-      buffer = '';
-      input.value = '';
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    }
+    if (e.key === 'Backspace' || e.key === 'Delete') buffer = '';
     // Restantes teclas (Tab, setas, etc.) seguem o comportamento nativo normal.
+  });
+  input.addEventListener('blur', () => {
+    let iso = calcularIso();
+    // Sem correção a aplicar (menos de 6 dígitos escritos desde o foco,
+    // ex: só se mudou um segmento à mão) ou já bate certo com o que o
+    // preenchimento nativo já mostra (caso normal de 8 dígitos seguidos)
+    // — nunca mexe no valor por engano.
+    if (!iso || input.value === iso) return;
+    if (blockPast && iso < todayISO()) {
+      iso = todayISO();
+      showToast('Não é possível selecionar uma data passada — foi reposta a data de hoje.', 'info');
+    }
+    input.value = iso;
+    // Dispara tanto 'input' (sincroniza draft[field.name], ver listener
+    // genérico em buildField) como 'change' (dispara field.onChange,
+    // usado ex: para recalcular a idade/elegibilidade mostrada por baixo
+    // do campo "Data de Nascimento" nas Marcações/Lista de Espera da
+    // Vacinação) — sem o 'change', essa atualização só aconteceria à
+    // próxima interação, nunca logo ao sair do campo.
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
   });
 }
 
@@ -9339,10 +9382,13 @@ function buildField(field, draft) {
     if (field.type === 'date' && control.value) {
       requestAnimationFrame(() => { control.value = control.value; });
     }
-    // Preenchimento inteligente por dígitos corridos (field.smartDate) —
-    // usado no módulo de Vacinação (ver instalarPreenchimentoInteligenteData).
-    if (field.type === 'date' && field.smartDate) {
-      instalarPreenchimentoInteligenteData(control);
+    // Preenchimento inteligente por dígitos corridos — aplicado a todos os
+    // campos de data editáveis da app (pedido explícito 2026-08-11); nunca
+    // nos campos automáticos/não editáveis (field.disabled — ver
+    // buildCampoAutomaticoReadonly), onde a data é sempre calculada pela
+    // app e a pessoa nunca escreve nada ali.
+    if (field.type === 'date' && !field.disabled) {
+      instalarPreenchimentoInteligenteData(control, field.blockPast);
     }
     // do MAPA 48H, etc.) nunca aceitam um dia já passado — além do `min`
     // nativo (que já impede escolher no calendário do próprio browser),
@@ -9462,7 +9508,7 @@ function buildField(field, draft) {
   if (field.name === 'cnp' || /\bCNP\b|\bEAN\b/i.test(field.label || '')) control.classList.add('input-cnp');
   if (extra) kids.push(extra);
   if (telefoneErroEl) kids.push(telefoneErroEl);
-  if (field.helperText) kids.push(h('p', { class: 'field-helper-text' }, field.helperText));
+  if (field.helperText) kids.push(h('p', { class: 'field-helper-text' + (field.helperTone ? ' tone-' + field.helperTone : '') }, field.helperText));
   return h('div', { class: 'field' + colClass }, kids);
 }
 
@@ -31277,9 +31323,10 @@ function buildVacinacaoPage(container, goTo) {
       const slots = vacinacaoGerarSlotsHorario();
       const idadeMarcacaoDraft = vacinacaoCalcularIdade(marcacaoDraft.dataNascimento);
       const avisoElegibilidadeMarcacao = vacinacaoAvisoElegibilidade(idadeMarcacaoDraft, !!marcacaoDraft.gripe, !!marcacaoDraft.covid);
+      const toneElegibilidadeMarcacao = vacinacaoElegibilidadeTone(idadeMarcacaoDraft, !!marcacaoDraft.gripe, !!marcacaoDraft.covid);
       const camposComOverrides = (marcacaoEditId ? vacinacaoMarcacaoSchema : vacinacaoMarcacaoSchema.filter(f => f.name !== 'administradoPor')).map(f => {
         if (f.name === 'hora') return Object.assign({}, f, { type: 'combo', options: slots.map(s => s.hora), optionLabels: slots.map(s => s.label), placeholder: 'Ex: 08:20' });
-        if (f.name === 'dataNascimento') return Object.assign({}, f, { onChange: () => rerender(), helperText: avisoElegibilidadeMarcacao || undefined });
+        if (f.name === 'dataNascimento') return Object.assign({}, f, { onChange: () => rerender(), helperText: avisoElegibilidadeMarcacao || undefined, helperTone: toneElegibilidadeMarcacao || undefined });
         if (f.name === 'data' || f.name === 'gripe' || f.name === 'covid' || f.name === 'colaboradorFarmacia') return Object.assign({}, f, { onChange: () => rerender() });
         return f;
       });
@@ -31524,8 +31571,9 @@ function buildVacinacaoPage(container, goTo) {
     if (showEsperaForm) {
       const idade = vacinacaoCalcularIdade(esperaDraft.dataNascimento);
       const avisoTxt = vacinacaoAvisoElegibilidade(idade, !!esperaDraft.gripe, !!esperaDraft.covid);
+      const toneEspera = vacinacaoElegibilidadeTone(idade, !!esperaDraft.gripe, !!esperaDraft.covid);
       wrap.appendChild(buildRecordFormEstreito(vacinacaoListaEsperaSchema.map(f => {
-        if (f.name === 'dataNascimento') return Object.assign({}, f, { onChange: () => rerender(), helperText: avisoTxt || undefined });
+        if (f.name === 'dataNascimento') return Object.assign({}, f, { onChange: () => rerender(), helperText: avisoTxt || undefined, helperTone: toneEspera || undefined });
         if (f.name === 'gripe' || f.name === 'covid' || f.name === 'colaboradorFarmacia') return Object.assign({}, f, { onChange: () => rerender() });
         return f;
       }), esperaDraft, {
