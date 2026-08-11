@@ -4193,7 +4193,7 @@ function vacinacaoContarPeriodo(campanha, desde, ate) {
 // STATE.vacinacaoMarcacoes (edição de uma marcação existente). excluirEsperaId:
 // id da própria entrada a ignorar na comparação com STATE.vacinacaoListaEspera
 // (edição de um registo existente na Lista de Espera, OU a entrada de
-// ORIGEM quando se está a "Marcar" a partir dela — ver marcarDaListaEspera/
+// ORIGEM quando se está a "Marcar" a partir dela — ver escolherDaListaEsperaNoFormulario/
 // submitMarcacao — sem isto, marcar alguém a partir da própria Lista de
 // Espera dispararia sempre um falso aviso "já está na Lista de Espera",
 // porque a pessoa só sai de lá DEPOIS de a marcação ser gravada com sucesso).
@@ -10064,6 +10064,10 @@ const ORTOPEDIA_TABLE_ORDER = [
 // pela mesma letra.
 const PREFIXO_NUMERO_PEDIDO = {
   manipulados: 'M', ortopedia: 'OR', ervanaria: 'ER', veterinaria: 'V', outros: 'OU',
+  // Lista de Espera da Vacinação (pedido explícito 2026-08-11) — "LE" não
+  // colide com nenhum dos prefixos já existentes acima nem com "E"
+  // (Entregas) ou "R" (Reclamações).
+  vacinacaoListaEspera: 'LE',
 };
 function formatarNumeroPedido(listKey, r) {
   const prefixo = PREFIXO_NUMERO_PEDIDO[listKey];
@@ -30031,6 +30035,13 @@ function buildVacinacaoPage(container, goTo) {
   let agendaView = 'calendario'; // calendario | lista
   let agendaDiaVista = 'grelha'; // grelha (vagas, como a Agenda de Serviços) | tabela (detalhe completo)
   let agendaDiaSelecionado = null; // dateISO — quando definido, mostra a agenda desse dia
+  // Escolher alguém da Lista de Espera DE DENTRO do formulário de Nova
+  // Marcação (pedido explícito 2026-08-11 — substitui o antigo botão
+  // "Marcar" na própria Lista de Espera, que trocava de separador sem
+  // avisar e parecia não fazer nada): abre um pequeno painel de escolha
+  // por cima do formulário; escolher alguém preenche automaticamente
+  // Nome/Contacto/Vacinas/Data de Nascimento, só falta escolher Data/Hora.
+  let showEsperaPicker = false;
 
   // ---- Encomendas / Stock ----
   let showEncomendaForm = false, encomendaDraft = null, encomendaEditId = null, encomendaFormError = '', encomendaSaving = false;
@@ -30106,21 +30117,29 @@ function buildVacinacaoPage(container, goTo) {
   function marcacaoVazia() { return Object.assign(emptyRecord(vacinacaoMarcacaoSchema), { campanhaId, data: agendaDiaSelecionado || todayISO(), hora: pad2(Math.floor(VACINACAO_HORA_DEFAULT_INICIO / 60)) + ':' + pad2(VACINACAO_HORA_DEFAULT_INICIO % 60) }); }
   function openNewMarcacao(prefill) {
     marcacaoDraft = Object.assign(marcacaoVazia(), prefill || {});
-    marcacaoEditId = null; marcacaoFormError = ''; showMarcacaoForm = true; rerender();
+    marcacaoEditId = null; marcacaoFormError = ''; showMarcacaoForm = true; showEsperaPicker = false; rerender();
   }
-  function openEditMarcacao(m) { marcacaoDraft = Object.assign({}, m); marcacaoEditId = m.id; marcacaoOrigemEsperaId = null; marcacaoFormError = ''; showMarcacaoForm = true; rerender(); }
-  function cancelMarcacaoForm() { showMarcacaoForm = false; marcacaoFormError = ''; marcacaoOrigemEsperaId = null; rerender(); }
-  // "Marcar" a partir da Lista de Espera: abre já o formulário de nova
-  // marcação preenchido com Nome/Contacto/Vacinas pretendidas — só falta
-  // escolher Data/Hora. A pessoa só sai mesmo da Lista de Espera quando a
+  function openEditMarcacao(m) { marcacaoDraft = Object.assign({}, m); marcacaoEditId = m.id; marcacaoOrigemEsperaId = null; marcacaoFormError = ''; showMarcacaoForm = true; showEsperaPicker = false; rerender(); }
+  function cancelMarcacaoForm() { showMarcacaoForm = false; marcacaoFormError = ''; marcacaoOrigemEsperaId = null; showEsperaPicker = false; rerender(); }
+  // Escolher alguém da Lista de Espera DE DENTRO do formulário de Nova
+  // Marcação já aberto (ver showEsperaPicker) — preenche automaticamente
+  // Nome/Contacto/Vacinas/Data de Nascimento SEM apagar Data/Hora se já
+  // tiverem sido escolhidas (junta-se ao draft existente, nunca o
+  // substitui todo, ao contrário do antigo botão "Marcar" na própria
+  // Lista de Espera). A pessoa só sai mesmo da Lista de Espera quando a
   // marcação for gravada com sucesso (ver submitMarcacao).
-  function marcarDaListaEspera(esp) {
+  function escolherDaListaEsperaNoFormulario(esp) {
     const iniciar = () => {
       marcacaoOrigemEsperaId = esp.id;
-      // dataNascimento não é um campo do formulário de Marcação, mas viaja
-      // escondido no draft (ver recordToRow) para nunca se perder se a
-      // marcação vier a ser cancelada e a pessoa regressar à Lista de Espera.
-      openNewMarcacao({ nome: esp.nome, contacto: esp.contacto, numeroUtente: esp.numeroUtente || '', gripe: !!esp.gripe, covid: !!esp.covid, dataNascimento: esp.dataNascimento || '' });
+      showEsperaPicker = false;
+      // dataNascimento não é um campo mostrado sempre, mas viaja no draft
+      // (ver recordToRow) para nunca se perder se a marcação vier a ser
+      // cancelada e a pessoa regressar à Lista de Espera.
+      marcacaoDraft = Object.assign({}, marcacaoDraft, {
+        nome: esp.nome || '', contacto: esp.contacto || '', numeroUtente: esp.numeroUtente || '',
+        gripe: !!esp.gripe, covid: !!esp.covid, dataNascimento: esp.dataNascimento || '',
+      });
+      rerender();
     };
     // <60 anos + só Gripe: a Gripe (só com receita) não exige marcação nem
     // gestão de vaga — avisa antes de agendar, mas nunca bloqueia (o
@@ -30163,7 +30182,7 @@ function buildVacinacaoPage(container, goTo) {
     // seco, oferece-se colocar a pessoa na Lista de Espera desta campanha,
     // para o caso de os critérios de elegibilidade mudarem entretanto;
     // <60 anos só com Gripe nunca bloqueia (só precisa de receita médica,
-    // sem gestão de vaga — mesma exceção já aplicada em marcarDaListaEspera).
+    // sem gestão de vaga — mesma exceção já aplicada em escolherDaListaEsperaNoFormulario).
     if (!marcacaoEditId && !marcacaoDraft.colaboradorFarmacia) {
       const idadeMarcacao = vacinacaoCalcularIdade(marcacaoDraft.dataNascimento);
       if (idadeMarcacao !== null && idadeMarcacao > 84) {
@@ -30204,7 +30223,7 @@ function buildVacinacaoPage(container, goTo) {
     // utente já está na Lista de Espera desta campanha para a MESMA vacina
     // — em vez de só avisar, informa-se claramente que a pessoa vai ser
     // removida da Lista de Espera, e remove-se mesmo (reaproveita o mesmo
-    // mecanismo de marcarDaListaEspera: marcacaoOrigemEsperaId).
+    // mecanismo de escolherDaListaEsperaNoFormulario: marcacaoOrigemEsperaId).
     if (!marcacaoEditId && !marcacaoOrigemEsperaId) {
       const preDup = vacinacaoBuscarDuplicados(campanhaId, marcacaoDraft, marcacaoEditId, marcacaoOrigemEsperaId);
       if (preDup.naListaEspera) {
@@ -30551,7 +30570,13 @@ function buildVacinacaoPage(container, goTo) {
     const q = normalizarTexto(esperaSearch).trim();
     let list = STATE.vacinacaoListaEspera.filter(e => e.campanhaId === campanhaId);
     if (q) list = list.filter(e => [e.nome, e.contacto].some(v => normalizarTexto(v).includes(q)));
-    return list.slice().sort((a, b) => (a.nome || '').localeCompare(b.nome || ''));
+    // Ordem cronológica de registo (nº mais baixo = registado há mais
+    // tempo) — pedido explícito 2026-08-11: quem se inscreveu primeiro na
+    // Lista de Espera deve poder ser marcado primeiro (para a data/hora
+    // que estiver disponível, à escolha), por isso é este o critério de
+    // ordenação, não o nome. `numero` vem sempre da BD (sequência SQL,
+    // nunca calculado no browser — mesmo padrão de Pedidos/Entregas).
+    return list.slice().sort((a, b) => (a.numero || 0) - (b.numero || 0));
   }
 
   /* ============ RESPONSÁVEIS PELA VACINAÇÃO ============ */
@@ -31332,6 +31357,39 @@ function buildVacinacaoPage(container, goTo) {
       });
       const aviso = buildAvisoFrascoNaMarcacao();
       if (aviso) wrap.appendChild(aviso);
+      // Escolher da Lista de Espera — só faz sentido numa marcação NOVA
+      // ainda não ligada a ninguém da lista (pedido explícito 2026-08-11:
+      // substitui o antigo botão "Marcar" na própria Lista de Espera).
+      if (!marcacaoEditId && !marcacaoOrigemEsperaId) {
+        const listaEspera = listaEsperaDaCampanha();
+        const toggleBtn = h('button', { class: 'btn btn-secondary', style: 'margin-bottom:14px;' },
+          [Icon('users', { size: 14, strokeWidth: 2.2 }), showEsperaPicker ? ' Fechar Lista de Espera' : ' Escolher da Lista de Espera']);
+        toggleBtn.addEventListener('click', () => { showEsperaPicker = !showEsperaPicker; rerender(); });
+        wrap.appendChild(toggleBtn);
+        if (showEsperaPicker) {
+          if (!listaEspera.length) {
+            wrap.appendChild(EmptyState('Lista de espera vazia nesta campanha.'));
+          } else {
+            // Já vem ordenada por ordem de registo (listaEsperaDaCampanha)
+            // — quem se inscreveu primeiro aparece primeiro aqui também,
+            // reforçado pelo Nº visível na linha.
+            const thead = h('thead', {}, h('tr', {}, ['Nº', 'Nome', 'Idade', 'Vacina(s)', ''].map(t => h('th', {}, t))));
+            const tbody = h('tbody', {}, listaEspera.map(esp => {
+              const idadeEsp = vacinacaoCalcularIdade(esp.dataNascimento);
+              const escolherBtn = h('button', { class: 'btn btn-secondary', style: 'padding:6px 10px;font-size:12px;' }, 'Escolher');
+              escolherBtn.addEventListener('click', (ev) => { ev.stopPropagation(); requireAuth(() => escolherDaListaEsperaNoFormulario(esp)); });
+              return h('tr', { class: 'selectable-row' }, [
+                h('td', { class: 'cell-numero-pedido' }, h('span', { class: 'badge-numero-pedido' }, formatarNumeroPedido('vacinacaoListaEspera', esp))),
+                h('td', { class: 'cell-strong' }, esp.nome || '—'),
+                h('td', {}, idadeEsp === null ? '—' : `${idadeEsp} anos`),
+                h('td', {}, vacinacaoLabelVacinas(esp)),
+                h('td', {}, escolherBtn),
+              ]);
+            }));
+            wrap.appendChild(h('div', { class: 'card', style: 'margin-bottom:14px;' }, h('div', { class: 'table-wrap' }, h('table', {}, [thead, tbody]))));
+          }
+        }
+      }
       wrap.appendChild(buildRecordFormEstreito(camposComOverrides, marcacaoDraft, {
         editing: !!marcacaoEditId, onSubmit: submitMarcacao, onCancel: cancelMarcacaoForm, errorMessage: marcacaoFormError, saving: marcacaoSaving,
         fieldOverrides: { responsavel: buildCampoAutomaticoReadonly },
@@ -31591,23 +31649,26 @@ function buildVacinacaoPage(container, goTo) {
     if (!list.length) {
       wrap.appendChild(EmptyState(esperaSearch ? 'Nenhum resultado para essa pesquisa.' : 'Lista de espera vazia nesta campanha.'));
     } else {
-      const thead = h('thead', {}, h('tr', {}, ['', 'Nome', 'Idade', 'Contacto', 'Vacina(s)', 'Elegibilidade', ''].map(t => h('th', {}, t))));
+      // Botão "Marcar" removido daqui (pedido explícito 2026-08-11) — a
+      // escolha de alguém da Lista de Espera passa a fazer-se de dentro do
+      // próprio formulário de Nova Marcação (ver showEsperaPicker em
+      // buildAgendaTab), onde faz mais sentido: já se está a preencher a
+      // marcação, só falta escolher a pessoa.
+      const thead = h('thead', {}, h('tr', {}, ['', 'Nº', 'Nome', 'Idade', 'Contacto', 'Vacina(s)', 'Elegibilidade'].map(t => h('th', {}, t))));
       const tbody = h('tbody', {}, list.map(e => {
         const selected = esperaSelectedIds.has(e.id);
         const idade = vacinacaoCalcularIdade(e.dataNascimento);
         const elegivel = idade !== null && idade >= 60 && idade <= 84;
-        const marcarBtn = h('button', { class: 'btn btn-secondary', style: 'padding:6px 10px;font-size:12px;' }, 'Marcar');
-        marcarBtn.addEventListener('click', (ev) => { ev.stopPropagation(); requireAuth(() => marcarDaListaEspera(e)); });
         const row = h('tr', { class: 'selectable-row' + (selected ? ' row-selected' : '') }, [
           buildSelectionCheckbox(e.id, esperaSelectedIds, toggleEsperaSelect),
+          h('td', { class: 'cell-numero-pedido' }, h('span', { class: 'badge-numero-pedido', title: 'Nº sequencial de registo na Lista de Espera — critério de ordem de marcação' }, formatarNumeroPedido('vacinacaoListaEspera', e))),
           h('td', { class: 'cell-strong' }, e.nome || '—'),
           h('td', {}, idade === null ? '—' : `${idade} anos`),
           h('td', {}, e.contacto ? formatarTelefonePT(e.contacto) : '—'),
           h('td', {}, vacinacaoLabelVacinas(e)),
           h('td', {}, h('span', { class: 'badge ' + (elegivel ? 'badge-green' : 'badge-orange') }, elegivel ? 'ELEGÍVEL (60–84)' : (idade === null ? '—' : (idade < 60 ? '< 60 ANOS' : '> 84 ANOS')))),
-          h('td', {}, marcarBtn),
         ]);
-        row.addEventListener('click', (ev) => { if (ev.target.closest('button') || ev.target.closest('input[type=checkbox]')) return; openEditEspera(e); });
+        row.addEventListener('click', (ev) => { if (ev.target.closest('input[type=checkbox]')) return; openEditEspera(e); });
         return row;
       }));
       wrap.appendChild(h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', {}, [thead, tbody]))));
