@@ -4266,7 +4266,7 @@ const entregasSchema = [
   { name: 'morada', label: 'Morada', type: 'text', col: 2 },
   { name: 'localidade', label: 'Localidade', type: 'text', size: 'sm' },
   { name: 'contacto', label: 'Contacto', type: 'text', size: 'sm', maxLength: 11, inputmode: 'numeric', pattern: '[0-9]{9}', digitsOnly: true, phone: true, placeholder: '9 dígitos' },
-  { name: 'registadoPor', label: 'Responsável pela Entrega', type: 'text', size: 'sm' },
+  { name: 'registadoPor', label: 'Responsável pelo Pedido', type: 'text', size: 'sm' },
   { name: 'ultimaAtualizacaoPor', label: 'Última Atualização Por', type: 'text', size: 'sm' },
   { name: 'dataEntrega', label: 'Data de Entrega', type: 'date', size: 'xs' },
   { name: 'blocoHorario', label: 'Bloco Horário', type: 'select', options: [...BLOCOS_HORARIOS, BLOCO_SABADO], size: 'sm' },
@@ -31879,10 +31879,10 @@ function checkEntregaRequired(d) {
   if (!String(d.estadoPagamento || '').trim()) missing.push('Estado de Pagamento');
   if (!String(d.metodoPagamento || '').trim()) missing.push('Método de Pagamento');
   // Farmácia Boa Nova: conta genérica partilhada (sem credenciais próprias
-  // por funcionário) — "Responsável pela Entrega" deixa de ser automático
+  // por funcionário) — "Responsável pelo Pedido" deixa de ser automático
   // e passa a ser preenchimento manual, por isso tem de ser obrigatório
   // (nunca pode ficar em branco/adivinhado pela app).
-  if (d.farmacia === 'Boa Nova' && !String(d.registadoPor || '').trim()) missing.push('Responsável pela Entrega');
+  if (d.farmacia === 'Boa Nova' && !String(d.registadoPor || '').trim()) missing.push('Responsável pelo Pedido');
   return missing;
 }
 
@@ -32060,7 +32060,10 @@ function buildFormularioEntregaDoc(r) {
     ['Bloco Horário', r.blocoHorario || '—'],
     ['Hora Limite', entregaHoraLimiteEfetiva(r) || '—'],
     ['Entregue por', r.entreguePor || '—'],
-    ['Responsável pela Entrega', r.registadoPor ? formatarNomeResponsavelTabela(r.registadoPor, STATE.usuarios) : '—'],
+    // Mostrado sempre por extenso, nunca abreviado por formatarNomeResponsavelTabela
+    // (essa função assume "Nome Apelido" simples — quebraria o formato "Nome
+    // Completo - Cargo" usado aqui na Juncal, igual ao das Declarações).
+    ['Responsável pelo Pedido', r.registadoPor || '—'],
     ['Urgente', r.urgente ? 'SIM — Entrega Imediata' : 'Não'],
   ];
   const pago = r.estadoPagamento === 'Pago';
@@ -32512,7 +32515,7 @@ function abrirModalEntregasAtrasadas(itensIniciais, opts) {
         ]),
         h('p', { class: 'cell-muted', style: 'margin:0 0 3px;font-size:12.5px;' }, `📍 ${r.morada || '—'}`),
         h('p', { class: 'cell-muted', style: 'margin:0 0 3px;font-size:12.5px;' }, `🕒 ${r.blocoHorario || '—'} · ${formatDate(r.dataEntrega)}`),
-        h('p', { class: 'cell-muted', style: 'margin:0 0 8px;font-size:12.5px;' }, `🚴 Estafeta/Responsável: ${r.entreguePor || (r.registadoPor ? formatarNomeResponsavelTabela(r.registadoPor, STATE.usuarios) : '') || '—'}`),
+        h('p', { class: 'cell-muted', style: 'margin:0 0 8px;font-size:12.5px;' }, `🚴 Estafeta/Responsável: ${r.entreguePor || r.registadoPor || '—'}`),
         h('div', { style: 'display:flex;gap:8px;' }, [confirmarBtn, detalhesBtn]),
       ]));
     });
@@ -33148,10 +33151,12 @@ function buildEntregasPage(container, goTo) {
       nomeCliente: '', docReserva: '', entregaEmpresaParceira: false, enderecoEmpresaParceiraId: '',
       morada: '', localidade: '', contacto: '',
       // Farmácia Boa Nova: conta genérica partilhada, sem login individual
-      // — "Responsável pela Entrega" nasce em branco para preenchimento
+      // — "Responsável pelo Pedido" nasce em branco para preenchimento
       // manual (ver entregasFieldOverrides). Restantes farmácias/perfis:
-      // continua a vir automaticamente preenchido com quem tem sessão.
-      registadoPor: farmaciaAtiva === 'Boa Nova' ? '' : ((activeUser && (activeUser.nomeCompleto || activeUser.username)) || ''),
+      // continua a vir automaticamente preenchido com quem tem sessão —
+      // Nome Completo + Cargo, tal como nas Declarações (nomeResponsavelComCargo),
+      // não só o nome (pedido explícito 2026-08-11).
+      registadoPor: farmaciaAtiva === 'Boa Nova' ? '' : nomeResponsavelComCargo(),
       dataEntrega: hoje,
       blocoHorario: entregaEhSabado(hoje) ? BLOCO_SABADO : '', horaLimite: '', urgente: false,
       entreguePor: estafetaPredefinidoNome(), estadoPagamento: '', metodoPagamento: '', levarTerminalMb: false,
@@ -33225,7 +33230,7 @@ function buildEntregasPage(container, goTo) {
       }
       if (f.name === 'registadoPor' && farmaciaAtiva === 'Boa Nova') {
         return Object.assign({}, f, {
-          placeholder: 'Nome de quem está a registar esta entrega',
+          placeholder: 'Nome de quem está a registar este pedido',
           helperText: 'Farmácia Boa Nova: preenchimento manual — escreva o nome de quem está de serviço.',
         });
       }
@@ -33468,13 +33473,13 @@ function buildEntregasPage(container, goTo) {
     if (f.helperText) kids.push(h('p', { class: 'field-helper-text' }, f.helperText));
     return h('div', { class: 'field' + (f.size ? ' field-' + f.size : '') }, kids);
   }
-  // Responsável pela Entrega e Última Atualização Por: decididos pela app
+  // Responsável pelo Pedido e Última Atualização Por: decididos pela app
   // (nunca editáveis à mão) EM TODAS as farmácias/perfis com credenciais
   // próprias — ver buildCampoAutomaticoReadonly e o reforço em submit()
   // logo abaixo. EXCEÇÃO: Farmácia Boa Nova usa uma conta genérica
   // partilhada por todo o posto (sem login individual), por isso "quem
-  // registou a entrega" não pode ser deduzido pela app — nessa farmácia,
-  // "Responsável pela Entrega" passa a ser preenchimento manual (o próprio
+  // registou o pedido" não pode ser deduzido pela app — nessa farmácia,
+  // "Responsável pelo Pedido" passa a ser preenchimento manual (o próprio
   // operador escreve o nome de quem está de serviço), enquanto "Última
   // Atualização Por" continua sempre automático em todas as farmácias.
   function entregasFieldOverrides() {
@@ -33524,17 +33529,19 @@ function buildEntregasPage(container, goTo) {
     // Atualização Por: gravado de novo em CADA edição.
     if (!editingId) {
       draft.responsavel = currentUserName();
-      // "Responsável pela Entrega" (registadoPor) é sempre recalculado aqui,
+      // "Responsável pelo Pedido" (registadoPor) é sempre recalculado aqui,
       // no momento da submissão — nunca fica preso a quem tinha sessão
       // ativa quando o formulário foi ABERTO (openNew()). Isto cobre o caso
       // de a sessão mudar a meio do preenchimento (ex: bloqueio automático
       // por inatividade seguido de outro colega a autenticar-se — ver
       // clearSessionSilently, que nunca fecha o formulário) sem deixar o
-      // registo associado à pessoa errada. NUNCA para a Boa Nova: aí o
+      // registo associado à pessoa errada. Nome Completo + Cargo, tal como
+      // nas Declarações (nomeResponsavelComCargo, pedido explícito
+      // 2026-08-11) — nunca só o nome. NUNCA para a Boa Nova: aí o
       // campo é manual e já é obrigatório (ver checkEntregaRequired) —
-      // substituir por currentUserName() (o nome da conta genérica
+      // substituir por nomeResponsavelComCargo() (a conta genérica
       // partilhada) anularia o propósito do campo.
-      if (farmaciaAtiva !== 'Boa Nova') draft.registadoPor = currentUserName();
+      if (farmaciaAtiva !== 'Boa Nova') draft.registadoPor = nomeResponsavelComCargo();
     } else {
       draft.ultimaAtualizacaoPor = valorUltimaAtualizacao();
     }
@@ -33799,7 +33806,10 @@ function buildEntregasPage(container, goTo) {
         h('td', {}, r.contacto ? formatarTelefonePT(r.contacto) : '—'),
         h('td', {}, moradaCell),
         h('td', {}, formatDate(r.dataEntrega)),
-        h('td', {}, r.registadoPor ? h('span', { title: r.registadoPor }, formatarNomeResponsavelTabela(r.registadoPor, STATE.usuarios)) : '—'),
+        // Mostrado por extenso com elipse (nunca abreviado por
+        // formatarNomeResponsavelTabela — quebraria o formato "Nome
+        // Completo - Cargo" que a Juncal passou a gravar aqui, ver submitEntrega).
+        h('td', {}, r.registadoPor ? h('span', { class: 'cell-truncate', title: r.registadoPor }, r.registadoPor) : '—'),
         h('td', {}, r.blocoHorario ? h('span', { class: 'badge-bloco', title: r.blocoHorario }, blocoHorarioCurto(r.blocoHorario)) : '—'),
         h('td', {}, pagamentoCell),
         h('td', {}, printRowBtn),
