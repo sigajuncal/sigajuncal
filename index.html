@@ -3877,6 +3877,33 @@ function vacinacaoLabelVacinas(r) {
   if (r.covid) nomes.push('COVID');
   return nomes.length ? nomes.join(' e ') : '—';
 }
+// Campanhas de vacinação nascem sozinhas, por temporada (Setembro a Abril)
+// — nunca é preciso "criar" nenhuma à mão. A partir de julho já se
+// considera a temporada seguinte (dá tempo a preparar: stock, responsáveis,
+// etc.), mesmo a época real só começando em setembro — ex: em julho de
+// 2027 a temporada corrente passa já a ser 2027/2028, tornando-se a
+// campanha predefinida, sem apagar nem esconder a anterior (2026/2027
+// continua sempre acessível, tal como qualquer campanha mais antiga).
+function vacinacaoTemporadaAtual(dataRef) {
+  const d = dataRef || new Date();
+  const mes = d.getMonth() + 1; // 1-12
+  const ano = d.getFullYear();
+  return mes >= 7 ? { inicio: ano, fim: ano + 1 } : { inicio: ano - 1, fim: ano };
+}
+function vacinacaoNomeTemporada(temporada) { return `${temporada.inicio}/${temporada.fim}`; }
+// Semeia (só se ainda não existir) a campanha da temporada corrente —
+// idêntico em espírito ao escalaAutoSemearFeriados: silencioso, nunca
+// bloqueia nada, e nunca duplica se já existir uma campanha com este nome.
+async function vacinacaoAutoSemearCampanha() {
+  const temporada = vacinacaoTemporadaAtual();
+  const nome = vacinacaoNomeTemporada(temporada);
+  if ((STATE.vacinacaoCampanhas || []).some(c => c.nome === nome)) return;
+  const created = await dbInsert('vacinacaoCampanhas', {
+    nome, dataInicio: `${temporada.inicio}-09-01`, dataFim: `${temporada.fim}-04-30`,
+    stockInicialGripe: 0, stockInicialCovid: 0,
+  });
+  if (created) STATE.vacinacaoCampanhas = [created, ...STATE.vacinacaoCampanhas];
+}
 // A vacina COVID vem em frascos de 6 doses — para nunca desperdiçar um
 // frasco aberto, o ideal é que o número de vacinas COVID dadas num dia seja
 // sempre múltiplo de 6 (6, 12, 18...). A Gripe vem em doses individuais,
@@ -29608,7 +29635,17 @@ function abrirModalVacinacaoAtrasadas(itensIniciais, onFechar) {
   document.body.appendChild(overlay);
 }
 function buildVacinacaoPage(container, goTo) {
-  let campanhaId = null; // null => escolha/gestão de campanhas
+  // A campanha da temporada corrente já nasce escolhida automaticamente —
+  // nunca é preciso passar pelo ecrã de escolha só para lá chegar (ver
+  // vacinacaoAutoSemearCampanha/vacinacaoNomeTemporada). Continua sempre
+  // possível "viajar" para outra campanha (mais antiga, ou futura já
+  // semeada) a partir do botão Voltar.
+  function campanhaTemporadaAtualId() {
+    const nome = vacinacaoNomeTemporada(vacinacaoTemporadaAtual());
+    const c = STATE.vacinacaoCampanhas.find(x => x.nome === nome);
+    return c ? c.id : null;
+  }
+  let campanhaId = campanhaTemporadaAtualId(); // null só no instante antes da 1ª autossemeadura terminar
   let activeSubTab = 'agenda'; // agenda | stock | espera
 
   // ---- Campanhas ----
@@ -29644,9 +29681,31 @@ function buildVacinacaoPage(container, goTo) {
   function campanhaAtual() { return STATE.vacinacaoCampanhas.find(c => c.id === campanhaId) || null; }
 
   /* ============ CAMPANHAS ============ */
-  function abrirCampanha(c) { campanhaId = c.id; activeSubTab = 'agenda'; marcacaoTab = 'pendentes'; rerender(); }
+  function abrirCampanha(c) {
+    campanhaId = c.id;
+    activeSubTab = 'agenda';
+    marcacaoTab = 'pendentes';
+    // Reset total de qualquer estado local ao trocar de campanha — nada
+    // (seleções, dia do calendário aberto, pesquisas, formulários a meio)
+    // pode sobreviver à troca. Cada campanha tem sempre a sua própria
+    // Agenda, Stock/Encomendas, Lista de Espera e Responsáveis, nunca
+    // partilhados nem migrados entre campanhas — o stock de uma campanha
+    // (com validade própria) nunca conta para outra.
+    agendaView = 'calendario';
+    agendaDiaSelecionado = null;
+    marcacaoSelectedIds = new Set();
+    marcacaoSearch = '';
+    showMarcacaoForm = false; marcacaoDraft = null; marcacaoEditId = null; marcacaoOrigemEsperaId = null;
+    encomendaSelectedIds = new Set();
+    showEncomendaForm = false; encomendaDraft = null; encomendaEditId = null;
+    esperaSelectedIds = new Set();
+    esperaSearch = '';
+    showEsperaForm = false; esperaDraft = null; esperaEditId = null;
+    responsavelSelectedIds = new Set();
+    showResponsavelForm = false; responsavelDraft = null; responsavelEditId = null;
+    rerender();
+  }
   function voltarCampanhas() { campanhaId = null; rerender(); }
-  function openNewCampanha() { campanhaDraft = emptyRecord(vacinacaoCampanhaSchema); campanhaEditId = null; campanhaFormError = ''; showCampanhaForm = true; rerender(); }
   function openEditCampanha(c) { campanhaDraft = Object.assign({}, c); campanhaEditId = c.id; campanhaFormError = ''; showCampanhaForm = true; rerender(); }
   function cancelCampanha() { showCampanhaForm = false; campanhaFormError = ''; rerender(); }
   async function submitCampanha() {
@@ -29959,7 +30018,7 @@ function buildVacinacaoPage(container, goTo) {
 
   function buildCampanhasView() {
     const wrap = h('div', { class: 'animate-in' });
-    wrap.appendChild(withBackButton(buildPageHeader('syringe', 'Vacinação', 'Escolha a campanha de vacinação.', STATE.vacinacaoCampanhas.length), goTo, showCampanhaForm ? cancelCampanha : undefined));
+    wrap.appendChild(withBackButton(buildPageHeader('syringe', 'Vacinação', 'Todas as campanhas (criadas automaticamente por temporada — Setembro a Abril).', STATE.vacinacaoCampanhas.length), goTo, showCampanhaForm ? cancelCampanha : undefined));
     if (showCampanhaForm) {
       wrap.appendChild(buildRecordForm(vacinacaoCampanhaSchema, campanhaDraft, {
         editing: !!campanhaEditId, onSubmit: submitCampanha, onCancel: cancelCampanha, errorMessage: campanhaFormError, saving: campanhaSaving,
@@ -29968,7 +30027,7 @@ function buildVacinacaoPage(container, goTo) {
     }
     const lista = campanhas();
     if (!lista.length) {
-      wrap.appendChild(EmptyState('Ainda não há nenhuma campanha de vacinação registada.'));
+      wrap.appendChild(EmptyState('A preparar a campanha desta temporada...'));
     } else {
       const cards = lista.map(c => {
         const stock = vacinacaoStockAtual(c);
@@ -29980,8 +30039,9 @@ function buildVacinacaoPage(container, goTo) {
             h('p', { class: 'field-helper-text', style: 'margin:0;' }, `${c.dataInicio ? formatDate(c.dataInicio) : '—'} a ${c.dataFim ? formatDate(c.dataFim) : '—'}`),
           ]),
         ];
-        // Enfermeiro: só consulta/marca — nunca cria nem edita campanhas
-        // (stock inicial, período, etc. são decisões de gestão).
+        // Enfermeiro: só consulta/marca — nunca edita campanhas (stock
+        // inicial, período, etc. são decisões de gestão). Ninguém "cria"
+        // campanhas à mão — nascem sozinhas por temporada.
         if (!isEnfermeiro()) {
           cardHeaderKids.push(h('button', { class: 'btn btn-secondary', style: 'flex-shrink:0;', onclick: (e) => { e.stopPropagation(); openEditCampanha(c); } }, [Icon('pencil', { size: 14, strokeWidth: 2.2 }), ' Editar']));
         }
@@ -29998,9 +30058,6 @@ function buildVacinacaoPage(container, goTo) {
         return card;
       });
       cards.forEach(c => wrap.appendChild(c));
-    }
-    if (!isEnfermeiro()) {
-      wrap.appendChild(h('div', { style: 'margin-top:8px;' }, h('button', { class: 'btn btn-primary', onclick: () => requireAuth(openNewCampanha) }, [Icon('plus', { size: 15, strokeWidth: 2.4 }), ' Nova Campanha'])));
     }
     return wrap;
   }
@@ -30615,6 +30672,18 @@ function buildVacinacaoPage(container, goTo) {
   }
   const watcherVacinacaoAtrasadas = setInterval(verificarVacinacaoAtrasadas, 60000);
   setTimeout(verificarVacinacaoAtrasadas, 400);
+
+  // Rede de segurança: se a campanha da temporada ainda não tiver sido
+  // semeada a tempo (ex: primeiro acesso logo após o arranque da app),
+  // garante-a aqui também e entra automaticamente assim que existir —
+  // sem isto, a pessoa via por instantes o ecrã "A preparar..." e tinha de
+  // recarregar à mão para a campanha aparecer.
+  if (!campanhaId) {
+    vacinacaoAutoSemearCampanha().then(() => {
+      const id = campanhaTemporadaAtualId();
+      if (id) { campanhaId = id; rerender(); }
+    });
+  }
 
   rerender();
 }
@@ -34465,6 +34534,9 @@ async function loadAllData() {
     // o arranque da app (fire-and-forget, com o seu próprio try/catch
     // interno); ver escalaAutoSemearFeriados.
     escalaAutoSemearFeriados();
+    // Idem para a campanha de Vacinação da temporada corrente — nunca é
+    // preciso "criar" campanhas à mão (ver vacinacaoAutoSemearCampanha).
+    vacinacaoAutoSemearCampanha();
   } catch (e) {
     console.error('[Arranque] falha inesperada ao carregar dados iniciais:', formatarErroSeguro(e));
   }
