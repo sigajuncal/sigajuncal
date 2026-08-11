@@ -1036,7 +1036,7 @@
      mais ficarem espremidos. */
   .time-picker-select{border:none;background:transparent;outline:none;font-size:14px;
     color:var(--pharm-950);font-family:inherit;padding:9px 0;cursor:pointer;width:30px;text-align:center;
-    -webkit-appearance:none;-moz-appearance:none;appearance:none;}
+    -webkit-appearance:none;-moz-appearance:none;appearance:none;overflow:hidden;white-space:nowrap;text-overflow:clip;}
   .time-picker-select::-ms-expand{display:none;}
   .time-picker-sep{color:var(--pharm-400);font-weight:700;}
   /* Bug conhecido do Safari/WebKit: com o sistema em Modo Escuro, o
@@ -1353,6 +1353,12 @@
   .tab-btn.tone-blue.active .tab-count{background:rgba(255,255,255,.25);color:#fff;}
   .tab-btn.tone-purple{color:#7c3aed;border-color:#ddd6fe;background:#f5f3ff;}
   .tab-btn.tone-purple .tab-count{background:#ede9fe;color:#7c3aed;}
+  /* Botão "Lista de Espera" da Vacinação — destacado a amarelo claro
+     (pedido explícito 2026-08-11) para ficar mais evidente nesta fase da
+     campanha; mantém-se amarelo mesmo inativo, só troca para o tom sólido
+     quando ativo (mesmo padrão dos restantes .tab-btn.tone-*). */
+  .tab-btn.tab-btn-highlight-amarelo{color:#92400e;border-color:#fde68a;background:#fffbeb;}
+  .tab-btn.tab-btn-highlight-amarelo.active{background:#f59e0b;border-color:#f59e0b;color:#fff;}
   .tab-btn.tone-purple.active{background:#7c3aed;border-color:#7c3aed;color:#fff;}
   .tab-btn.tone-purple.active .tab-count{background:rgba(255,255,255,.25);color:#fff;}
   /* Divisor vertical entre grupos de separadores (ex: antes de Férias, e
@@ -2481,6 +2487,17 @@
   .agenda-slot-ocupado{background:#eff6ff;}
   .agenda-slot-row.linha-selecionada{background:var(--pharm-100) !important;box-shadow:inset 3px 0 0 var(--pharm-500);}
   .agenda-slot-encaixe{background:#fdf4ff;border:1px dashed #d8b4fe;}
+  /* Selo "ENCAIXE" (pedido explícito 2026-08-11) — marcação fora da
+     grelha fixa de 10 em 10 minutos, agora misturada cronologicamente com
+     as restantes na grelha de Vagas; este selo continua a distingui-la
+     de relance sem precisar de secção à parte. */
+  .badge-encaixe{display:inline-block;margin-left:6px;font-size:8.5px;font-weight:800;letter-spacing:.03em;
+    color:#a21caf;background:#fae8ff;border:1px solid #f0abfc;border-radius:5px;padding:1px 5px;vertical-align:middle;}
+  /* Nome de quem regista/administra a marcação, visível diretamente na
+     grelha de Vagas (pedido explícito 2026-08-11) — discreto, não compete
+     com o nome do utente nem com o estado. */
+  .agenda-slot-responsavel{flex-shrink:0;font-size:11.5px;font-weight:700;color:var(--pharm-500);
+    background:var(--pharm-100);border-radius:7px;padding:2px 8px;white-space:nowrap;}
   /* Slots "arrastados" por uma marcação mais longa (ex: 60min a partir das
      12:15) — ligados visualmente à marcação principal por uma barra lateral
      na mesma cor do slot ocupado, mais estreitos/discretos que a linha
@@ -3816,8 +3833,8 @@ const mapa48hSchema = [
 const VACINAS_DISPONIVEIS = ['Gripe', 'COVID'];
 const vacinacaoCampanhaSchema = [
   { name: 'nome', label: 'Campanha', type: 'text', col: 2, placeholder: 'Ex: 2026/2027' },
-  { name: 'dataInicio', label: 'Início', type: 'date', size: 'xs' },
-  { name: 'dataFim', label: 'Fim', type: 'date', size: 'xs' },
+  { name: 'dataInicio', label: 'Início', type: 'date', size: 'xs', smartDate: true },
+  { name: 'dataFim', label: 'Fim', type: 'date', size: 'xs', smartDate: true },
   { name: 'stockInicialGripe', label: 'Stock Inicial — Gripe', type: 'number', size: 'xs' },
   { name: 'stockInicialCovid', label: 'Stock Inicial — COVID', type: 'number', size: 'xs' },
 ];
@@ -3826,10 +3843,15 @@ const vacinacaoCampanhaSchema = [
 // — as checkboxes (Gripe/COVID/Avisado) usam sempre 'xs', nunca o
 // tamanho por defeito (metade da linha), que as deixava desproporcionadas.
 const vacinacaoMarcacaoSchema = [
-  { name: 'data', label: 'Data', type: 'date', size: 'xs' },
+  { name: 'data', label: 'Data', type: 'date', size: 'xs', smartDate: true },
   { name: 'hora', label: 'Hora', type: 'text', placeholder: 'Ex: 10:00', size: 'xs' },
   { name: 'estado', label: 'Estado', type: 'select', options: ['Pendente', 'Administrada', 'Cancelada'], size: 'xs' },
   { name: 'nome', label: 'Nome do Utente', type: 'text', col: 2 },
+  // Data de Nascimento — usada para o mesmo cálculo de idade/elegibilidade
+  // já existente na Lista de Espera (ver vacinacaoCalcularIdade/
+  // vacinacaoAvisoElegibilidade), agora também aplicado a marcações
+  // diretas (ver validação de elegibilidade em submitMarcacao).
+  { name: 'dataNascimento', label: 'Data de Nascimento', type: 'date', size: 'sm', smartDate: true },
   { name: 'contacto', label: 'Contacto', type: 'text', size: 'sm', maxLength: 11, inputmode: 'numeric', pattern: '[0-9]{9}', digitsOnly: true, phone: true, placeholder: '9 dígitos' },
   // Nº de Utente (9 algarismos, exatamente como o Contacto em formato) —
   // usado para detetar duplicados (a mesma pessoa já marcada noutro dia,
@@ -3838,6 +3860,11 @@ const vacinacaoMarcacaoSchema = [
   { name: 'responsavel', label: 'Responsável pelo Registo', type: 'text', size: 'sm' },
   { name: 'gripe', label: 'Gripe', type: 'checkbox', size: 'xs' },
   { name: 'covid', label: 'COVID', type: 'checkbox', size: 'xs' },
+  // Exceção de elegibilidade: colaboradores da farmácia têm direito às
+  // vacinas do contingente, independentemente da idade — assinalar esta
+  // checkbox dispensa a validação de idade em submitMarcacao (nunca
+  // dispensa as restantes validações, como duplicados).
+  { name: 'colaboradorFarmacia', label: 'Colaborador da Farmácia Juncal (vacina do contingente)', type: 'checkbox', size: 'xs', help: 'Exceção de elegibilidade — colaboradores da farmácia têm direito às vacinas do contingente, independentemente da idade.' },
   { name: 'aviso', label: 'Utente foi avisado', type: 'checkbox', size: 'xs' },
   // Quem administrou de facto a(s) vacina(s) — normalmente o mesmo que
   // "Responsável pelo Registo", mas fica sempre editável à parte: qualquer
@@ -3847,9 +3874,9 @@ const vacinacaoMarcacaoSchema = [
   { name: 'observacoes', label: 'Observações', type: 'textarea', col: 2, maxLength: 200 },
 ];
 const vacinacaoEncomendaSchema = [
-  { name: 'data', label: 'Data da Encomenda', type: 'date', size: 'xs' },
+  { name: 'data', label: 'Data da Encomenda', type: 'date', size: 'xs', smartDate: true },
   { name: 'estado', label: 'Estado', type: 'select', options: ['Pendente', 'Rececionada'], size: 'xs' },
-  { name: 'dataRececao', label: 'Data de Receção', type: 'date', size: 'xs' },
+  { name: 'dataRececao', label: 'Data de Receção', type: 'date', size: 'xs', smartDate: true },
   { name: 'qtdGripe', label: 'Quantidade — Gripe', type: 'number', size: 'sm' },
   { name: 'qtdCovid', label: 'Quantidade — COVID', type: 'number', size: 'sm' },
   { name: 'responsavel', label: 'Registado Por', type: 'text', size: 'sm' },
@@ -3863,7 +3890,7 @@ const vacinacaoEncomendaSchema = [
 // vacinacaoQuebraCovid() — essa é só uma estimativa/aviso, esta é um
 // registo real e editável, com motivo.
 const vacinacaoQuebraSchema = [
-  { name: 'data', label: 'Data', type: 'date', size: 'xs' },
+  { name: 'data', label: 'Data', type: 'date', size: 'xs', smartDate: true },
   { name: 'hora', label: 'Hora', type: 'text', size: 'xs', placeholder: 'Ex: 10:15' },
   { name: 'qtdGripe', label: 'Quebra — Gripe', type: 'number', size: 'xs' },
   { name: 'qtdCovid', label: 'Quebra — COVID', type: 'number', size: 'xs' },
@@ -3875,11 +3902,16 @@ const vacinacaoQuebraSchema = [
 ];
 const vacinacaoListaEsperaSchema = [
   { name: 'nome', label: 'Nome do Utente', type: 'text', col: 2 },
-  { name: 'dataNascimento', label: 'Data de Nascimento', type: 'date', size: 'sm' },
+  { name: 'dataNascimento', label: 'Data de Nascimento', type: 'date', size: 'sm', smartDate: true },
   { name: 'contacto', label: 'Contacto', type: 'text', size: 'sm', maxLength: 11, inputmode: 'numeric', pattern: '[0-9]{9}', digitsOnly: true, phone: true, placeholder: '9 dígitos' },
   { name: 'numeroUtente', label: 'Nº de Utente', type: 'text', size: 'sm', maxLength: 9, inputmode: 'numeric', pattern: '[0-9]{9}', digitsOnly: true, placeholder: '9 dígitos' },
   { name: 'gripe', label: 'Gripe', type: 'checkbox', size: 'xs' },
   { name: 'covid', label: 'COVID', type: 'checkbox', size: 'xs' },
+  // Mesma exceção de elegibilidade da Marcação (ver colaboradorFarmacia em
+  // vacinacaoMarcacaoSchema) — colaboradores da farmácia têm direito às
+  // vacinas do contingente, independentemente da idade; dispensa o
+  // bloqueio de >84 anos também na Lista de Espera.
+  { name: 'colaboradorFarmacia', label: 'Colaborador da Farmácia Juncal (vacina do contingente)', type: 'checkbox', size: 'xs', help: 'Exceção de elegibilidade — colaboradores da farmácia têm direito às vacinas do contingente, independentemente da idade.' },
   { name: 'observacoes', label: 'Observações', type: 'textarea', col: 2, maxLength: 200 },
 ];
 // Responsável pela Vacinação — quem está encarregue de gerir a agenda num
@@ -3898,15 +3930,31 @@ function vacinacaoResponsaveisElegiveis() {
     (u.perfilNivel === 'Enfermeiro' || ['Farmacêutico', 'Farmacêutica', 'Diretor Técnico', 'Diretora Técnica', 'Diretor Técnico Adjunto', 'Diretora Técnica Adjunta'].includes(u.categoriaProfissional))
   )).map(u => u.nomeCompleto || u.username).filter(Boolean);
 }
+// Dia — restrito só aos dias ABERTOS desta campanha (ver
+// vacinacaoDiasAbertosDaCampanha), ordenados dos mais próximos para os mais
+// futuros; um responsável já não se define para um intervalo de datas
+// livre, mas sim para UM dia concreto (que já esteja mesmo em
+// funcionamento) + um intervalo de horas dentro desse dia (pedido
+// explícito 2026-08-11). O rótulo (dia da semana + data) é construído à
+// parte em buildCampoDiaAbertoResponsavel (fieldOverride em
+// buildResponsaveisTab) — este campo em si só guarda a data ISO.
+function vacinacaoLabelDiaAberto(iso) {
+  const dt = new Date(iso + 'T00:00:00');
+  return `${DIAS_SEMANA_PT[(dt.getDay() + 6) % 7]}, ${formatDate(iso)}`;
+}
 const vacinacaoResponsavelSchema = [
   { name: 'nome', label: 'Responsável', type: 'select', col: 2, options: vacinacaoResponsaveisElegiveis, allowEmpty: true },
-  { name: 'dataInicio', label: 'Início', type: 'date', size: 'xs' },
-  { name: 'dataFim', label: 'Fim', type: 'date', size: 'xs' },
-  // Período dentro do(s) dia(s) — vazios = responsável pelo dia inteiro;
-  // preenchidos = responsável só por essa janela horária (ex: um
-  // enfermeiro de manhã, outro à tarde no mesmo dia). Usam sempre o
-  // seletor por scroll (buildCampoHoraScrollVacinacao, via fieldOverrides
-  // em buildResponsaveisTab) — nunca texto livre.
+  // As opções reais (só dias abertos desta campanha) são construídas em
+  // tempo real por buildCampoDiaAbertoResponsavel (fieldOverride em
+  // buildResponsaveisTab, que tem campanhaId no seu closure) — aqui fica
+  // só a definição do campo em si (nome/label), nunca usado diretamente.
+  { name: 'data', label: 'Dia (só dias já abertos)', type: 'select', col: 2, options: [], allowEmpty: true },
+  // Período dentro do dia — baseado no horário da farmácia (08:00 à
+  // meia-noite); vazios = responsável pelo dia inteiro; preenchidos =
+  // responsável só por essa janela horária (ex: um enfermeiro de manhã,
+  // outro à tarde no mesmo dia). Usam sempre o seletor por scroll
+  // (buildCampoHoraScrollVacinacao, via fieldOverrides em
+  // buildResponsaveisTab) — nunca texto livre.
   { name: 'horaInicio', label: 'Hora Início', type: 'text', size: 'xs', placeholder: 'Vazio = dia inteiro' },
   { name: 'horaFim', label: 'Hora Fim', type: 'text', size: 'xs', placeholder: 'Vazio = dia inteiro' },
   { name: 'observacoes', label: 'Observações', type: 'textarea', col: 2, maxLength: 200 },
@@ -3922,7 +3970,12 @@ function buildCampoHoraScrollVacinacao(field, draft) {
   const colClass = field.col === 2 ? ' span2' : (field.size ? ' field-' + field.size : '');
   const horaOpts = [h('option', { value: '' }, '--')];
   for (let hVal = 8; hVal <= 23; hVal++) horaOpts.push(h('option', { value: pad2(hVal) }, pad2(hVal)));
-  horaOpts.push(h('option', { value: '00' }, '00 (meia-noite)'));
+  // "00 (meia-noite)" só faz sentido como HORA FIM (um período pode
+  // terminar à meia-noite) — nunca como Hora Início (pedido explícito:
+  // um período de responsabilidade não pode começar à meia-noite, e a
+  // opção de texto mais longo nesse seletor estava também a rebentar
+  // visualmente a caixa fechada, ver .time-picker-select).
+  if (field.name !== 'horaInicio') horaOpts.push(h('option', { value: '00' }, '00 (meia-noite)'));
   const horaSel = h('select', { class: 'time-picker-select' }, horaOpts);
   const minOpts = [h('option', { value: '' }, '--')];
   for (let mVal = 0; mVal < 60; mVal += 10) minOpts.push(h('option', { value: pad2(mVal) }, pad2(mVal)));
@@ -9110,6 +9163,49 @@ function melhorarInputData(input) {
   return wrapper;
 }
 
+// Preenchimento inteligente de datas por dígitos corridos (pedido explícito
+// 2026-08-11, módulo Vacinação) — em vez de ter de ir campo a campo
+// (dia/mês/ano) com o rato, a pessoa escreve os dígitos todos seguidos e a
+// app interpreta sozinha: 8 dígitos = DD-MM-AAAA normal (ex: 20051990 =
+// 20/05/1990); 7 dígitos = dia SEM zero à esquerda (ex: 2051990 =
+// 2/05/1990); 6 dígitos = dia E mês sem zero à esquerda (ex: 251990 =
+// 2/5/1990). O aspeto do campo mantém-se sempre o mesmo <input type="date">
+// nativo (com o mesmo wrapper/ícone de sempre, ver melhorarInputData) — só a
+// forma de o preencher por teclado é que muda. Cada foco no campo começa um
+// "buffer" de dígitos do zero, para nunca misturar com o valor anterior.
+function instalarPreenchimentoInteligenteData(input) {
+  let buffer = '';
+  function commit() {
+    const n = buffer.length;
+    if (n < 6) return; // ainda incompleto — só decide ao chegar às 6-8 dígitos
+    let diaStr, mesStr, anoStr;
+    if (n >= 8) { diaStr = buffer.slice(0, 2); mesStr = buffer.slice(2, 4); anoStr = buffer.slice(4, 8); }
+    else if (n === 7) { diaStr = buffer.slice(0, 1); mesStr = buffer.slice(1, 3); anoStr = buffer.slice(3, 7); }
+    else { diaStr = buffer.slice(0, 1); mesStr = buffer.slice(1, 2); anoStr = buffer.slice(2, 6); }
+    const dia = parseInt(diaStr, 10), mes = parseInt(mesStr, 10), ano = parseInt(anoStr, 10);
+    if (!dia || !mes || dia > 31 || mes > 12 || ano < 1900) return;
+    input.value = `${String(ano).padStart(4, '0')}-${pad2(mes)}-${pad2(dia)}`;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  input.addEventListener('focus', () => { buffer = ''; });
+  input.addEventListener('keydown', (e) => {
+    if (/^[0-9]$/.test(e.key)) {
+      e.preventDefault();
+      if (buffer.length >= 8) return;
+      buffer += e.key;
+      commit();
+      return;
+    }
+    if (e.key === 'Backspace' || e.key === 'Delete') {
+      e.preventDefault();
+      buffer = '';
+      input.value = '';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    // Restantes teclas (Tab, setas, etc.) seguem o comportamento nativo normal.
+  });
+}
+
 function buildField(field, draft) {
   const colClass = field.col === 2 ? ' span2' : (field.size ? ' field-' + field.size : '');
   if (field.type === 'checkbox') {
@@ -9222,6 +9318,11 @@ function buildField(field, draft) {
     // ("dd/mm/aaaa") apesar de já estar corretamente preenchido por dentro.
     if (field.type === 'date' && control.value) {
       requestAnimationFrame(() => { control.value = control.value; });
+    }
+    // Preenchimento inteligente por dígitos corridos (field.smartDate) —
+    // usado no módulo de Vacinação (ver instalarPreenchimentoInteligenteData).
+    if (field.type === 'date' && field.smartDate) {
+      instalarPreenchimentoInteligenteData(control);
     }
     // do MAPA 48H, etc.) nunca aceitam um dia já passado — além do `min`
     // nativo (que já impede escolher no calendário do próprio browser),
@@ -29741,16 +29842,26 @@ function vacinacaoStockAtual(campanha) {
 // quantidade que quisermos) — por isso a app NUNCA impede marcar por falta
 // de stock. Em vez disso, avisa sempre no registo de Encomendas quantas
 // marcações Pendentes (ainda por administrar) já existem para cada vacina,
-// contra o stock atual, e quanto falta encomendar no mínimo para as cobrir.
+// contra o stock atual MAIS o que já foi encomendado mas ainda não chegou
+// (encomendas em estado "Pendente" — por rececionar), para nunca soar o
+// alarme de "falta encomendar" quando já há uma encomenda a caminho
+// (pedido explícito 2026-08-11) — e quanto falta encomendar no mínimo,
+// depois de descontar isso, para cobrir as marcações já feitas.
 function vacinacaoNecessidadeEncomenda(campanha) {
   const stock = vacinacaoStockAtual(campanha);
   const pendentesGripe = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanha.id && m.estado === 'Pendente' && m.gripe).length;
   const pendentesCovid = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanha.id && m.estado === 'Pendente' && m.covid).length;
+  const encomendasPendentes = STATE.vacinacaoEncomendas.filter(e => e.campanhaId === campanha.id && e.estado === 'Pendente');
+  const aCaminhoGripe = encomendasPendentes.reduce((s, e) => s + (Number(e.qtdGripe) || 0), 0);
+  const aCaminhoCovid = encomendasPendentes.reduce((s, e) => s + (Number(e.qtdCovid) || 0), 0);
+  const coberturaGripe = stock.gripe + aCaminhoGripe;
+  const coberturaCovid = stock.covid + aCaminhoCovid;
   return {
     pendentesGripe, pendentesCovid,
     stockGripe: stock.gripe, stockCovid: stock.covid,
-    faltamGripe: Math.max(0, pendentesGripe - stock.gripe),
-    faltamCovid: Math.max(0, pendentesCovid - stock.covid),
+    aCaminhoGripe, aCaminhoCovid,
+    faltamGripe: Math.max(0, pendentesGripe - coberturaGripe),
+    faltamCovid: Math.max(0, pendentesCovid - coberturaCovid),
   };
 }
 
@@ -29906,6 +30017,7 @@ function buildVacinacaoPage(container, goTo) {
   function openEditCampanha(c) { campanhaDraft = Object.assign({}, c); campanhaEditId = c.id; campanhaFormError = ''; showCampanhaForm = true; rerender(); }
   function cancelCampanha() { showCampanhaForm = false; campanhaFormError = ''; rerender(); }
   async function submitCampanha() {
+    if (campanhaSaving) return; // trava duplo-submissão (ver nota em submit() de Entregas)
     const missing = checkRequiredFields(campanhaDraft, vacinacaoCampanhaSchema);
     if (missing.length) { campanhaFormError = buildRequiredMessage(missing, vacinacaoCampanhaSchema); rerender(); return; }
     campanhaFormError = '';
@@ -29955,6 +30067,7 @@ function buildVacinacaoPage(container, goTo) {
     iniciar();
   }
   async function submitMarcacao() {
+    if (marcacaoSaving) return; // trava duplo-submissão (ver nota em submit() de Entregas)
     const missing = checkRequiredFields(marcacaoDraft, vacinacaoMarcacaoSchema);
     if (missing.length) { marcacaoFormError = buildRequiredMessage(missing, vacinacaoMarcacaoSchema); rerender(); return; }
     // Barreira explícita: "hora" não entra na lista genérica de campos
@@ -29968,6 +30081,47 @@ function buildVacinacaoPage(container, goTo) {
     const formatoInvalido = checkFieldFormats(marcacaoDraft, vacinacaoMarcacaoSchema);
     if (formatoInvalido) { marcacaoFormError = formatoInvalido; rerender(); return; }
     if (!marcacaoDraft.gripe && !marcacaoDraft.covid) { marcacaoFormError = 'Selecione pelo menos uma vacina (Gripe e/ou COVID).'; rerender(); return; }
+    // Verificação de elegibilidade por idade — só se aplica à CRIAÇÃO de
+    // marcações diretas novas (nunca à edição de uma marcação já
+    // existente): editar Observações, Estado ou Hora de uma marcação
+    // criada antes desta regra existir — ou aprovada por outra via — não
+    // pode ficar impossível de gravar só por causa da idade. Ao contrário
+    // da Lista de Espera (que só avisa), aqui fica mesmo BLOQUEADA se a
+    // pessoa não cumprir os critérios (60-84 anos), exceto:
+    // (1) a checkbox "Colaborador da Farmácia Juncal" (vacinas do
+    // contingente, sem restrição de idade); (2) sem Data de Nascimento
+    // preenchida, não há como verificar — não bloqueia nesse caso.
+    // >84 anos bloqueia sempre (deve vacinar-se no Centro de Saúde),
+    // qualquer que seja a vacina. <60 anos só bloqueia quando COVID está
+    // selecionada (sem indicação inicial) — nesse caso, em vez de um erro
+    // seco, oferece-se colocar a pessoa na Lista de Espera desta campanha,
+    // para o caso de os critérios de elegibilidade mudarem entretanto;
+    // <60 anos só com Gripe nunca bloqueia (só precisa de receita médica,
+    // sem gestão de vaga — mesma exceção já aplicada em marcarDaListaEspera).
+    if (!marcacaoEditId && !marcacaoDraft.colaboradorFarmacia) {
+      const idadeMarcacao = vacinacaoCalcularIdade(marcacaoDraft.dataNascimento);
+      if (idadeMarcacao !== null && idadeMarcacao > 84) {
+        marcacaoFormError = '⚠️ Não é possível criar esta marcação direta: idade acima dos 84 anos deve realizar a vacinação no Centro de Saúde onde está inscrito(a). Se se tratar de um(a) colaborador(a) da farmácia, assinale "Colaborador da Farmácia Juncal".';
+        rerender();
+        return;
+      }
+      if (idadeMarcacao !== null && idadeMarcacao < 60 && marcacaoDraft.covid) {
+        confirmDialog(`Esta pessoa tem menos de 60 anos — sem indicação inicial para a vacina COVID, por isso não é possível criar uma marcação direta. Pode ser colocada na Lista de Espera desta campanha, para o caso de os critérios de elegibilidade mudarem entretanto. Deseja adicionar à Lista de Espera?`, async () => {
+          const created = await dbInsert('vacinacaoListaEspera', {
+            campanhaId, nome: marcacaoDraft.nome || '', contacto: marcacaoDraft.contacto || '', numeroUtente: marcacaoDraft.numeroUtente || '',
+            gripe: !!marcacaoDraft.gripe, covid: !!marcacaoDraft.covid, dataNascimento: marcacaoDraft.dataNascimento || '',
+            observacoes: 'Adicionado a partir de uma tentativa de marcação direta (idade fora dos critérios de elegibilidade).',
+          });
+          if (created) {
+            STATE.vacinacaoListaEspera = [created, ...STATE.vacinacaoListaEspera];
+            showMarcacaoForm = false; marcacaoFormError = '';
+            showToast(`${marcacaoDraft.nome || 'Utente'} adicionado(a) à Lista de Espera.`, 'success');
+            rerender();
+          } else showDbErrorToast('Não foi possível adicionar à Lista de Espera');
+        }, { confirmLabel: 'Adicionar à Lista de Espera' });
+        return;
+      }
+    }
     // Normalmente só há uma pessoa a vacinar de cada vez — por isso duas
     // marcações não podem ficar exatamente à mesma hora no mesmo dia. Para
     // encaixar alguém entre duas já existentes, basta escolher um minuto
@@ -30112,6 +30266,18 @@ function buildVacinacaoPage(container, goTo) {
       marcacaoSelectedIds = new Set(); showMarcacaoForm = false; rerender();
     }, { danger: true, confirmLabel: 'Eliminar' });
   }
+  // Eliminar uma única marcação diretamente a partir do formulário de
+  // edição (botão de lixo junto a "Guardar alterações") — mesma ação de
+  // removeMarcacoesSelecionadas, mas sem depender de a linha ficar
+  // selecionada na tabela (pedido explícito 2026-08-11).
+  function removeMarcacaoUnica(m) {
+    if (!m || isEnfermeiro()) return;
+    confirmDialog('Tem a certeza de que quer eliminar permanentemente esta marcação? Esta ação não pode ser desfeita!', async () => {
+      const apagados = await bulkSoftDelete('vacinacaoMarcacoes', [m.id]);
+      STATE.vacinacaoMarcacoes = STATE.vacinacaoMarcacoes.filter(x => !apagados.has(x.id));
+      marcacaoSelectedIds = new Set(); showMarcacaoForm = false; rerender();
+    }, { danger: true, confirmLabel: 'Eliminar' });
+  }
   function marcacoesDaCampanha() {
     const q = normalizarTexto(marcacaoSearch).trim();
     // tipoLinha 'bloqueado' (vagas indisponibilizadas manualmente — ver
@@ -30132,6 +30298,7 @@ function buildVacinacaoPage(container, goTo) {
   function cancelEncomendaForm() { showEncomendaForm = false; encomendaFormError = ''; rerender(); }
   async function submitEncomenda() {
     if (!isMasterUser()) return;
+    if (encomendaSaving) return; // trava duplo-submissão (ver nota em submit() de Entregas)
     const missing = checkRequiredFields(encomendaDraft, vacinacaoEncomendaSchema);
     if (missing.length) { encomendaFormError = buildRequiredMessage(missing, vacinacaoEncomendaSchema); rerender(); return; }
     if (!(Number(encomendaDraft.qtdGripe) > 0) && !(Number(encomendaDraft.qtdCovid) > 0)) {
@@ -30188,6 +30355,7 @@ function buildVacinacaoPage(container, goTo) {
   function openEditQuebra(q) { quebraDraft = Object.assign({}, q); quebraEditId = q.id; quebraFormError = ''; showQuebraForm = true; rerender(); }
   function cancelQuebraForm() { showQuebraForm = false; quebraFormError = ''; rerender(); }
   async function submitQuebra() {
+    if (quebraSaving) return; // trava duplo-submissão (ver nota em submit() de Entregas)
     const missing = checkRequiredFields(quebraDraft, vacinacaoQuebraSchema);
     if (missing.length) { quebraFormError = buildRequiredMessage(missing, vacinacaoQuebraSchema); rerender(); return; }
     if (!(Number(quebraDraft.qtdGripe) > 0) && !(Number(quebraDraft.qtdCovid) > 0)) {
@@ -30230,6 +30398,7 @@ function buildVacinacaoPage(container, goTo) {
   function openEditEspera(e) { esperaDraft = Object.assign({}, e); esperaEditId = e.id; esperaFormError = ''; showEsperaForm = true; rerender(); }
   function cancelEsperaForm() { showEsperaForm = false; esperaFormError = ''; rerender(); }
   async function submitEspera() {
+    if (esperaSaving) return; // trava duplo-submissão (ver nota em submit() de Entregas)
     const missing = checkRequiredFields(esperaDraft, vacinacaoListaEsperaSchema);
     if (missing.length) { esperaFormError = buildRequiredMessage(missing, vacinacaoListaEsperaSchema); rerender(); return; }
     // Barreira explícita, mesmo que a regra genérica de obrigatoriedade
@@ -30239,6 +30408,19 @@ function buildVacinacaoPage(container, goTo) {
     if (formatoInvalido) { esperaFormError = formatoInvalido; rerender(); return; }
     if (!esperaDraft.dataNascimento) { esperaFormError = 'Por favor, preencha: Data de Nascimento.'; rerender(); return; }
     if (!esperaDraft.gripe && !esperaDraft.covid) { esperaFormError = 'Selecione pelo menos uma vacina (Gripe e/ou COVID).'; rerender(); return; }
+    // >84 anos: tanto a vacina da Gripe como a da COVID passam a ser
+    // sempre feitas no Centro de Saúde — nem sequer entra na Lista de
+    // Espera (pedido explícito 2026-08-11), exceto Colaborador da
+    // Farmácia (vacina do contingente). Só à CRIAÇÃO — nunca bloqueia
+    // editar um registo já existente (ex: corrigir um contacto).
+    if (!esperaEditId && !esperaDraft.colaboradorFarmacia) {
+      const idadeEspera = vacinacaoCalcularIdade(esperaDraft.dataNascimento);
+      if (idadeEspera !== null && idadeEspera > 84) {
+        esperaFormError = '⚠️ Não é possível adicionar à Lista de Espera: idade acima dos 84 anos deve realizar a vacinação (Gripe e COVID) no Centro de Saúde onde está inscrito(a). Se se tratar de um(a) colaborador(a) da farmácia, assinale "Colaborador da Farmácia Juncal".';
+        rerender();
+        return;
+      }
+    }
     if (!esperaDraft.forcarDuplicado) {
       const dup = vacinacaoBuscarDuplicados(campanhaId, esperaDraft, null, esperaEditId);
       const avisoTxt = vacinacaoAvisoDuplicadoTexto(dup);
@@ -30274,6 +30456,18 @@ function buildVacinacaoPage(container, goTo) {
       esperaSelectedIds = new Set(); showEsperaForm = false; rerender();
     }, { danger: true, confirmLabel: 'Remover' });
   }
+  // Remover uma única pessoa diretamente a partir do formulário de edição
+  // (botão de lixo junto a "Guardar alterações") — mesma ação de
+  // removeEsperaSelecionados, mas sem depender de a linha ficar selecionada
+  // na tabela (pedido explícito 2026-08-11).
+  function removeEsperaUnica(e) {
+    if (!e) return;
+    confirmDialog(`Tem a certeza de que quer remover ${e.nome || 'esta pessoa'} da Lista de Espera?`, async () => {
+      const apagados = await bulkSoftDelete('vacinacaoListaEspera', [e.id]);
+      STATE.vacinacaoListaEspera = STATE.vacinacaoListaEspera.filter(x => !apagados.has(x.id));
+      esperaSelectedIds = new Set(); showEsperaForm = false; rerender();
+    }, { danger: true, confirmLabel: 'Remover' });
+  }
   function listaEsperaDaCampanha() {
     const q = normalizarTexto(esperaSearch).trim();
     let list = STATE.vacinacaoListaEspera.filter(e => e.campanhaId === campanhaId);
@@ -30282,25 +30476,46 @@ function buildVacinacaoPage(container, goTo) {
   }
 
   /* ============ RESPONSÁVEIS PELA VACINAÇÃO ============ */
-  function responsavelVazio() { return Object.assign(emptyRecord(vacinacaoResponsavelSchema), { campanhaId, dataInicio: todayISO() }); }
-  function openNewResponsavel() { responsavelDraft = responsavelVazio(); responsavelEditId = null; responsavelFormError = ''; showResponsavelForm = true; rerender(); }
-  function openEditResponsavel(r) { responsavelDraft = Object.assign({}, r); responsavelEditId = r.id; responsavelFormError = ''; showResponsavelForm = true; rerender(); }
+  // Um "período de responsabilidade" passa a ser sempre UM dia aberto +
+  // um intervalo de horas dentro desse dia (pedido explícito 2026-08-11) —
+  // guarda-se internamente em dataInicio/dataFim (ambas iguais ao dia
+  // escolhido) para não precisar de migração de esquema; responsaveisNoDia
+  // e o resto da app continuam a ler exatamente os mesmos campos de sempre.
+  function responsavelVazio() {
+    const dias = vacinacaoDiasAbertosDaCampanha();
+    // Pré-seleciona sempre o dia aberto mais próximo (hoje, se estiver
+    // aberto, senão o próximo já aberto) — poupa 1 escolha no caso mais comum.
+    const diaMaisProximo = dias.find(d => d >= todayISO()) || dias[dias.length - 1] || '';
+    return Object.assign(emptyRecord(vacinacaoResponsavelSchema), { campanhaId, data: diaMaisProximo });
+  }
+  function openNewResponsavel() {
+    if (!vacinacaoDiasAbertosDaCampanha().length) {
+      confirmDialog('Ainda não há nenhum dia aberto nesta campanha — abra primeiro um dia na Agenda (botão "Abrir Dia") antes de definir um responsável.', () => {}, { confirmLabel: 'Entendido' });
+      return;
+    }
+    responsavelDraft = responsavelVazio(); responsavelEditId = null; responsavelFormError = ''; showResponsavelForm = true; rerender();
+  }
+  function openEditResponsavel(r) {
+    responsavelDraft = Object.assign({}, r, { data: r.dataInicio || r.data || '' });
+    responsavelEditId = r.id; responsavelFormError = ''; showResponsavelForm = true; rerender();
+  }
   function cancelResponsavelForm() { showResponsavelForm = false; responsavelFormError = ''; rerender(); }
   async function submitResponsavel() {
-    const missing = checkRequiredFields(responsavelDraft, vacinacaoResponsavelSchema);
-    if (missing.length) { responsavelFormError = buildRequiredMessage(missing, vacinacaoResponsavelSchema); rerender(); return; }
-    if (!responsavelDraft.dataInicio) { responsavelFormError = 'Por favor, preencha: Início.'; rerender(); return; }
-    if (responsavelDraft.dataFim && responsavelDraft.dataFim < responsavelDraft.dataInicio) {
-      responsavelFormError = 'A data de Fim não pode ser anterior à data de Início.'; rerender(); return;
-    }
+    if (responsavelSaving) return; // trava duplo-submissão (ver nota em submit() de Entregas)
+    if (!String(responsavelDraft.nome || '').trim()) { responsavelFormError = 'Por favor, escolha um Responsável.'; rerender(); return; }
+    if (!responsavelDraft.data) { responsavelFormError = 'Por favor, escolha um dia (só dias já abertos).'; rerender(); return; }
     responsavelFormError = '';
+    // dataInicio/dataFim continuam a ser as colunas reais gravadas na BD —
+    // ambas ficam sempre iguais ao único dia escolhido no formulário.
+    const payload = Object.assign({}, responsavelDraft, { dataInicio: responsavelDraft.data, dataFim: responsavelDraft.data });
+    delete payload.data;
     responsavelSaving = true; rerender();
     if (responsavelEditId) {
-      const updated = await dbUpdate('vacinacaoResponsaveis', responsavelEditId, responsavelDraft);
+      const updated = await dbUpdate('vacinacaoResponsaveis', responsavelEditId, payload);
       if (updated) STATE.vacinacaoResponsaveis = STATE.vacinacaoResponsaveis.map(r => r.id === responsavelEditId ? updated : r);
       else responsavelFormError = `Não foi possível guardar as alterações. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
     } else {
-      const created = await dbInsert('vacinacaoResponsaveis', responsavelDraft);
+      const created = await dbInsert('vacinacaoResponsaveis', payload);
       if (created) STATE.vacinacaoResponsaveis = [created, ...STATE.vacinacaoResponsaveis];
       else responsavelFormError = `Não foi possível adicionar o responsável. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
     }
@@ -30319,8 +30534,21 @@ function buildVacinacaoPage(container, goTo) {
       responsavelSelectedIds = new Set(); showResponsavelForm = false; rerender();
     }, { danger: true, confirmLabel: 'Eliminar' });
   }
+  // Remover um único período diretamente a partir do formulário de edição
+  // (botão de lixo junto a "Guardar alterações") — mesma ação de
+  // removeResponsaveisSelecionados, mas sem depender de seleção na tabela.
+  function removeResponsavelUnico(r) {
+    if (!r) return;
+    confirmDialog('Tem a certeza de que quer eliminar este período de responsabilidade?', async () => {
+      const apagados = await bulkSoftDelete('vacinacaoResponsaveis', [r.id]);
+      STATE.vacinacaoResponsaveis = STATE.vacinacaoResponsaveis.filter(x => !apagados.has(x.id));
+      responsavelSelectedIds = new Set(); showResponsavelForm = false; rerender();
+    }, { danger: true, confirmLabel: 'Eliminar' });
+  }
+  // Ordenados dos mais próximos para os mais futuros (pedido explícito
+  // 2026-08-11) — mesma ordem usada na escolha do dia no formulário.
   function responsaveisDaCampanha() {
-    return STATE.vacinacaoResponsaveis.filter(r => r.campanhaId === campanhaId).slice().sort((a, b) => (b.dataInicio || '').localeCompare(a.dataInicio || ''));
+    return STATE.vacinacaoResponsaveis.filter(r => r.campanhaId === campanhaId).slice().sort((a, b) => (a.dataInicio || '').localeCompare(b.dataInicio || ''));
   }
   // Responsável(is) em funções num dia concreto — um período sem "Fim"
   // definido conta-se como ainda em curso (aberto). `hora` (opcional):
@@ -30498,8 +30726,16 @@ function buildVacinacaoPage(container, goTo) {
     // se for mesmo preciso, com confirmação explícita antes de avançar.
     const slots = vacinacaoGerarSlotsHorario();
     const grade = slots.map(s => s.hora);
-    const encaixes = doDia.filter(m => m.hora && m.estado !== 'Cancelada' && m.tipoLinha !== 'bloqueado' && !grade.includes(m.hora))
-      .slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || ''));
+    const slotInfoPorHora = {};
+    slots.forEach(s => { slotInfoPorHora[s.hora] = s; });
+    // Encaixes (marcações fora dos blocos fixos de 10 em 10 minutos, ex:
+    // 10:01, 10:02...) deixam de aparecer isolados numa secção à parte —
+    // entram na mesma grelha cronológica que os restantes horários,
+    // exatamente na posição (hora) que lhes corresponde (pedido explícito
+    // 2026-08-11). `todasHoras` é a união ordenada da grelha fixa com as
+    // horas de encaixe ainda ativas nesse dia.
+    const horasEncaixe = doDia.filter(m => m.hora && m.estado !== 'Cancelada' && m.tipoLinha !== 'bloqueado' && !grade.includes(m.hora)).map(m => m.hora);
+    const todasHoras = Array.from(new Set([...grade, ...horasEncaixe])).sort();
 
     // Badge de Estado clicável — troca-se, ali mesmo, por um <select> com
     // os 3 estados possíveis (mesmo padrão do módulo Pedidos, ver
@@ -30535,16 +30771,29 @@ function buildVacinacaoPage(container, goTo) {
     function linhaOcupada(m, hora) {
       if (m.tipoLinha === 'bloqueado') return linhaBloqueada(m, hora);
       const respNoPeriodo = responsaveisNoDia(dateISO, hora);
+      // Encaixe (fora da grelha fixa de 10 em 10 min) — pequeno selo para
+      // continuar fácil de distinguir de relance, agora que já não vive
+      // isolado numa secção à parte (pedido explícito 2026-08-11).
+      const ehEncaixe = !grade.includes(hora);
+      // Nome de quem trata desta marcação, visível diretamente na grelha
+      // (antes só aparecia ao passar o rato) — prioriza quem de facto
+      // administrou (administradoPor); antes de administrar, mostra quem
+      // registou (responsavel). Se a vacina tiver sido dada por outro
+      // colega, corrige-se em "Vacina(s) Administrada(s) Por", na edição
+      // (ver vacinacaoMarcacaoSchema) — nunca precisa de passar pelo
+      // Responsável do período para isso.
+      const nomeResponsavelLinha = m.administradoPor || m.responsavel || '';
       const row = h('div', { class: 'agenda-slot-row agenda-slot-ocupado' }, [
-        h('span', { class: 'agenda-slot-hora' }, hora),
+        h('span', { class: 'agenda-slot-hora' }, [hora, ehEncaixe ? h('span', { class: 'badge-encaixe', title: 'Encaixe — fora da grelha fixa de 10 em 10 minutos' }, 'ENCAIXE') : null]),
         h('span', { class: 'agenda-slot-label cell-strong' }, [
           h('span', { class: 'agenda-slot-nome' }, m.nome || '—'),
           h('span', { class: 'agenda-slot-servico' }, vacinacaoLabelVacinas(m)),
         ]),
+        nomeResponsavelLinha ? h('span', { class: 'agenda-slot-responsavel', title: m.administradoPor ? 'Administrada por' : 'Registada por' }, nomeResponsavelLinha) : null,
         m.aviso ? h('span', { title: 'Utente avisado' }, Icon('bell', { size: 14, strokeWidth: 2.2 })) : null,
         buildEstadoBadgeVaga(m),
       ]);
-      row.title = respNoPeriodo.length ? `Responsável: ${respNoPeriodo.map(r => r.nome).join(', ')}` : undefined;
+      row.title = respNoPeriodo.length ? `Responsável pela Vacinação: ${respNoPeriodo.map(r => r.nome).join(', ')}` : undefined;
       row.addEventListener('click', () => openEditMarcacao(m));
       return row;
     }
@@ -30604,16 +30853,17 @@ function buildVacinacaoPage(container, goTo) {
         h('div', { class: 'row-actions' }, [bookBtn]),
       ]);
     }
-    const linhas = slots.map(s => {
-      const m = ocupacao[s.hora];
-      if (m) return linhaOcupada(m, s.hora);
-      return s.dentroDefault ? linhaLivre(s.hora) : linhaIndisponivel(s.hora);
+    const linhas = todasHoras.map(hora => {
+      const m = ocupacao[hora];
+      if (m) return linhaOcupada(m, hora);
+      const slotInfo = slotInfoPorHora[hora];
+      return slotInfo && slotInfo.dentroDefault ? linhaLivre(hora) : linhaIndisponivel(hora);
     });
     // Manhã | Tarde lado a lado (em vez de uma única coluna comprida) —
     // aproveita a largura do ecrã e poupa scroll. Divisão às 14:00 (fim da
     // pausa de almoço típica da farmácia). Em ecrãs estreitos (telemóvel)
     // volta a empilhar em coluna única — ver .vagas-grelha-colunas no CSS.
-    const meio = slots.findIndex(s => s.hora >= '14:00');
+    const meio = todasHoras.findIndex(hh => hh >= '14:00');
     const colManha = linhas.slice(0, meio === -1 ? linhas.length : meio);
     const colTarde = meio === -1 ? [] : linhas.slice(meio);
     const corpo = [
@@ -30628,10 +30878,6 @@ function buildVacinacaoPage(container, goTo) {
         ]) : null,
       ]),
     ];
-    if (encaixes.length) {
-      corpo.push(h('p', { class: 'field-helper-text', style: 'margin:14px 0 6px;font-weight:700;' }, 'Encaixes (fora dos blocos de 10 minutos)'));
-      corpo.push(h('div', { class: 'agenda-slots-list', style: 'max-height:none;overflow-y:visible;' }, encaixes.map(m => linhaOcupada(m, m.hora))));
-    }
     return h('div', { class: 'card card-pad', style: 'margin-bottom:14px;max-width:1080px;' }, corpo);
   }
   // Banner de gestão de frascos COVID (6 doses/frasco) para um dia
@@ -30702,6 +30948,41 @@ function buildVacinacaoPage(container, goTo) {
 
   /* ============ ABRIR / FECHAR DIA (reaproveita a tabela agenda_dias já usada pelas Agendas — "prestadorKey" próprio da Vacinação) ============ */
   function vacinacaoPrestadorKey() { return `vacinacao-${campanhaId}`; }
+  // Dias ABERTOS desta campanha (ver "Abrir Dia"/agendaDias), ordenados dos
+  // mais próximos para os mais futuros — usado para restringir a escolha
+  // de dia no formulário de Responsáveis a dias que já estão mesmo em
+  // funcionamento (pedido explícito 2026-08-11: já não faz sentido definir
+  // um responsável para um dia que nem sequer está aberto).
+  function vacinacaoDiasAbertosDaCampanha() {
+    return (STATE.agendaDias || [])
+      .filter(d => d.prestadorKey === vacinacaoPrestadorKey())
+      .map(d => d.data)
+      .filter(Boolean)
+      .sort();
+  }
+  // Campo "Dia" do formulário de Responsáveis — <select> nativo com só os
+  // dias ABERTOS desta campanha, dos mais próximos para os mais futuros
+  // (ver vacinacaoDiasAbertosDaCampanha), rótulo com dia da semana + data
+  // (ver vacinacaoLabelDiaAberto). Precisa de campanhaId (do closure desta
+  // página), por isso vive aqui como fieldOverride e não no schema global.
+  function buildCampoDiaAbertoResponsavel(field, draft) {
+    const colClass = field.col === 2 ? ' span2' : (field.size ? ' field-' + field.size : '');
+    const dias = vacinacaoDiasAbertosDaCampanha();
+    const valorAtual = draft[field.name];
+    // Ao editar um período cujo dia entretanto deixou de estar aberto (foi
+    // Fechado depois de criado o registo), mantém-se essa data como opção
+    // extra — só assinalada como já fechada — para nunca perder/limpar a
+    // seleção só por abrir o formulário de edição.
+    const diasParaMostrar = (valorAtual && !dias.includes(valorAtual)) ? [valorAtual, ...dias] : dias;
+    const opts = [h('option', { value: '' }, dias.length ? 'Escolher...' : 'Sem dias abertos nesta campanha')]
+      .concat(diasParaMostrar.map(iso => h('option', { value: iso, selected: valorAtual === iso ? 'selected' : undefined },
+        iso === valorAtual && !dias.includes(iso) ? `${vacinacaoLabelDiaAberto(iso)} (dia entretanto fechado)` : vacinacaoLabelDiaAberto(iso))));
+    const sel = h('select', { class: 'select' }, opts);
+    sel.value = draft[field.name] || '';
+    sel.disabled = !dias.length;
+    sel.addEventListener('change', () => { draft[field.name] = sel.value; if (field.onChange) field.onChange(); });
+    return h('div', { class: 'field' + colClass }, [h('label', {}, field.label), sel]);
+  }
   function vacinacaoDiaAbertoRegisto(dateISO) { return agendaDiaAbertoRegisto(vacinacaoPrestadorKey(), dateISO); }
   function vacinacaoDiaAberto(dateISO) { return agendaDiaAberto(vacinacaoPrestadorKey(), dateISO); }
   function vacinacaoEhDomingo(dateISO) { return new Date(dateISO + 'T00:00:00').getDay() === 0; }
@@ -30950,9 +31231,12 @@ function buildVacinacaoPage(container, goTo) {
     const wrap = h('div', {});
     if (showMarcacaoForm) {
       const slots = vacinacaoGerarSlotsHorario();
+      const idadeMarcacaoDraft = vacinacaoCalcularIdade(marcacaoDraft.dataNascimento);
+      const avisoElegibilidadeMarcacao = vacinacaoAvisoElegibilidade(idadeMarcacaoDraft, !!marcacaoDraft.gripe, !!marcacaoDraft.covid);
       const camposComOverrides = (marcacaoEditId ? vacinacaoMarcacaoSchema : vacinacaoMarcacaoSchema.filter(f => f.name !== 'administradoPor')).map(f => {
         if (f.name === 'hora') return Object.assign({}, f, { type: 'combo', options: slots.map(s => s.hora), optionLabels: slots.map(s => s.label), placeholder: 'Ex: 08:20' });
-        if (f.name === 'data' || f.name === 'gripe' || f.name === 'covid') return Object.assign({}, f, { onChange: () => rerender() });
+        if (f.name === 'dataNascimento') return Object.assign({}, f, { onChange: () => rerender(), helperText: avisoElegibilidadeMarcacao || undefined });
+        if (f.name === 'data' || f.name === 'gripe' || f.name === 'covid' || f.name === 'colaboradorFarmacia') return Object.assign({}, f, { onChange: () => rerender() });
         return f;
       });
       const aviso = buildAvisoFrascoNaMarcacao();
@@ -30962,6 +31246,7 @@ function buildVacinacaoPage(container, goTo) {
         fieldOverrides: { responsavel: buildCampoAutomaticoReadonly },
         onConclude: (marcacaoEditId && marcacaoDraft.estado === 'Pendente') ? () => marcarAdministrada(marcacaoDraft) : null, concludeLabel: 'Marcar como Administrada',
         onRevert: (marcacaoEditId && marcacaoDraft.estado !== 'Cancelada') ? () => cancelarMarcacao(marcacaoDraft) : null, revertLabel: 'Cancelar Marcação',
+        onDelete: (marcacaoEditId && !isEnfermeiro()) ? () => removeMarcacaoUnica(marcacaoDraft) : null,
       }));
       return wrap;
     }
@@ -31046,11 +31331,12 @@ function buildVacinacaoPage(container, goTo) {
     const n = vacinacaoNecessidadeEncomenda(campanha);
     if (!n.faltamGripe && !n.faltamCovid) return null;
     const linhas = [];
-    if (n.faltamGripe) linhas.push(`Gripe: ${n.pendentesGripe} marcação${n.pendentesGripe > 1 ? 'ões' : ''} pendente${n.pendentesGripe > 1 ? 's' : ''} para ${n.stockGripe} em stock — falta encomendar pelo menos mais ${n.faltamGripe}.`);
-    if (n.faltamCovid) linhas.push(`COVID: ${n.pendentesCovid} marcação${n.pendentesCovid > 1 ? 'ões' : ''} pendente${n.pendentesCovid > 1 ? 's' : ''} para ${n.stockCovid} em stock — falta encomendar pelo menos mais ${n.faltamCovid}.`);
+    if (n.faltamGripe) linhas.push(`Gripe: ${n.pendentesGripe} marcação${n.pendentesGripe > 1 ? 'ões' : ''} pendente${n.pendentesGripe > 1 ? 's' : ''} para ${n.stockGripe} em stock${n.aCaminhoGripe ? ` + ${n.aCaminhoGripe} já encomendado(s) a caminho` : ''} — falta encomendar pelo menos mais ${n.faltamGripe}.`);
+    if (n.faltamCovid) linhas.push(`COVID: ${n.pendentesCovid} marcação${n.pendentesCovid > 1 ? 'ões' : ''} pendente${n.pendentesCovid > 1 ? 's' : ''} para ${n.stockCovid} em stock${n.aCaminhoCovid ? ` + ${n.aCaminhoCovid} já encomendado(s) a caminho` : ''} — falta encomendar pelo menos mais ${n.faltamCovid}.`);
     return h('div', { class: 'card card-pad', style: 'margin-bottom:16px;background:#fef2f2;border-color:#fecaca;' }, [
       h('p', { style: 'margin:0 0 4px;font-size:13px;font-weight:700;' }, '⚠️ Stock insuficiente para as marcações já feitas'),
       ...linhas.map(l => h('p', { style: 'margin:0;font-size:13px;' }, l)),
+      h('p', { class: 'field-helper-text', style: 'margin:6px 0 0;' }, 'Este cálculo já desconta encomendas em estado "Pendente" (por rececionar) — é o que falta encomendar PARA ALÉM do que já está a caminho.'),
     ]);
   }
   function buildStockTab() {
@@ -31195,10 +31481,11 @@ function buildVacinacaoPage(container, goTo) {
       const avisoTxt = vacinacaoAvisoElegibilidade(idade, !!esperaDraft.gripe, !!esperaDraft.covid);
       wrap.appendChild(buildRecordFormEstreito(vacinacaoListaEsperaSchema.map(f => {
         if (f.name === 'dataNascimento') return Object.assign({}, f, { onChange: () => rerender(), helperText: avisoTxt || undefined });
-        if (f.name === 'gripe' || f.name === 'covid') return Object.assign({}, f, { onChange: () => rerender() });
+        if (f.name === 'gripe' || f.name === 'covid' || f.name === 'colaboradorFarmacia') return Object.assign({}, f, { onChange: () => rerender() });
         return f;
       }), esperaDraft, {
         editing: !!esperaEditId, onSubmit: submitEspera, onCancel: cancelEsperaForm, errorMessage: esperaFormError, saving: esperaSaving,
+        onDelete: esperaEditId ? () => removeEsperaUnica(esperaDraft) : null,
       }));
       return wrap;
     }
@@ -31248,23 +31535,23 @@ function buildVacinacaoPage(container, goTo) {
     if (showResponsavelForm) {
       wrap.appendChild(buildRecordFormEstreito(vacinacaoResponsavelSchema, responsavelDraft, {
         editing: !!responsavelEditId, onSubmit: submitResponsavel, onCancel: cancelResponsavelForm, errorMessage: responsavelFormError, saving: responsavelSaving,
-        fieldOverrides: { horaInicio: buildCampoHoraScrollVacinacao, horaFim: buildCampoHoraScrollVacinacao },
+        fieldOverrides: { data: buildCampoDiaAbertoResponsavel, horaInicio: buildCampoHoraScrollVacinacao, horaFim: buildCampoHoraScrollVacinacao },
+        onDelete: responsavelEditId ? () => removeResponsavelUnico(responsavelDraft) : null,
       }));
       return wrap;
     }
-    wrap.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, 'Defina quem fica responsável pela gestão da agenda de vacinação em cada período — pode ser um colaborador do quadro da farmácia ou alguém externo (ex: enfermeiro).'));
+    wrap.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, 'Defina quem fica responsável pela gestão da agenda de vacinação em cada dia já aberto — pode ser um colaborador do quadro da farmácia ou alguém externo (ex: enfermeiro). O período horário baseia-se sempre no horário da farmácia (08:00 à meia-noite); dias ordenados dos mais próximos para os mais futuros.'));
     const list = responsaveisDaCampanha();
     if (!list.length) {
       wrap.appendChild(EmptyState('Ainda não há responsáveis definidos nesta campanha.'));
     } else {
-      const thead = h('thead', {}, h('tr', {}, ['', 'Responsável', 'Início', 'Fim', 'Período'].map(t => h('th', {}, t))));
+      const thead = h('thead', {}, h('tr', {}, ['', 'Responsável', 'Dia', 'Período'].map(t => h('th', {}, t))));
       const tbody = h('tbody', {}, list.map(r => {
         const selected = responsavelSelectedIds.has(r.id);
         const row = h('tr', { class: 'selectable-row' + (selected ? ' row-selected' : '') }, [
           buildSelectionCheckbox(r.id, responsavelSelectedIds, toggleResponsavelSelect),
           h('td', { class: 'cell-strong' }, r.nome || '—'),
-          h('td', {}, formatDate(r.dataInicio)),
-          h('td', {}, r.dataFim ? formatDate(r.dataFim) : 'Em aberto'),
+          h('td', {}, r.dataInicio ? vacinacaoLabelDiaAberto(r.dataInicio) : '—'),
           h('td', {}, (r.horaInicio || r.horaFim) ? `${r.horaInicio || 'início'}–${r.horaFim || 'fim'}` : 'Dia inteiro'),
         ]);
         row.addEventListener('click', (ev) => { if (ev.target.closest('input[type=checkbox]')) return; openEditResponsavel(r); });
@@ -31310,7 +31597,7 @@ function buildVacinacaoPage(container, goTo) {
         h('button', { class: 'tab-btn' + (activeSubTab === 'agenda' ? ' active' : ''), onclick: () => { activeSubTab = 'agenda'; rerender(); } }, [Icon('calendar', { size: 14 }), h('span', {}, 'Agenda')]),
         h('button', { class: 'tab-btn' + (activeSubTab === 'stock' ? ' active' : ''), onclick: () => { activeSubTab = 'stock'; rerender(); } }, [Icon('package', { size: 14 }), h('span', {}, 'Stock / Encomendas')]),
         h('button', { class: 'tab-btn' + (activeSubTab === 'quebras' ? ' active' : ''), onclick: () => { activeSubTab = 'quebras'; rerender(); } }, [Icon('alert', { size: 14 }), h('span', {}, 'Quebras')]),
-        h('button', { class: 'tab-btn' + (activeSubTab === 'espera' ? ' active' : ''), onclick: () => { activeSubTab = 'espera'; rerender(); } }, [Icon('users', { size: 14 }), h('span', {}, 'Lista de Espera')]),
+        h('button', { class: 'tab-btn tab-btn-highlight-amarelo' + (activeSubTab === 'espera' ? ' active' : ''), onclick: () => { activeSubTab = 'espera'; rerender(); } }, [Icon('users', { size: 14 }), h('span', {}, 'Lista de Espera')]),
       ];
       if (!enf) abas.push(h('button', { class: 'tab-btn' + (activeSubTab === 'responsaveis' ? ' active' : ''), onclick: () => { activeSubTab = 'responsaveis'; rerender(); } }, [Icon('idBadge', { size: 14 }), h('span', {}, 'Responsáveis')]));
       wrap.appendChild(h('div', { class: 'tabs-row' }, abas));
@@ -32953,6 +33240,14 @@ function buildEntregasPage(container, goTo) {
   }
 
   async function submit() {
+    // Rede de segurança extra contra duplo-submissão (para além do botão
+    // ficar visualmente desativado enquanto `saving` é true) — cobre o
+    // caso de o clique/Enter voltar a chegar aqui antes do re-render
+    // desativar o botão a tempo (ex: ligação lenta, pressa a repetir o
+    // clique). Sem isto, uma pessoa impaciente podia acabar por criar 2-3
+    // registos duplicados da mesma entrega (pedido explícito 2026-08-11,
+    // após reportar exatamente este sintoma).
+    if (saving) return;
     if (!String(draft.docReserva || '').trim()) {
       formError = 'Por favor, introduza o número do documento ou código de reserva.';
       rerender();
