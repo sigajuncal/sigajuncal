@@ -3404,7 +3404,7 @@ const ortopediaSchema = [
   { name: 'tipo', label: 'Tipo', type: 'combo', options: ['Joelho', 'Raiz da Coxa', 'Collant'], placeholder: 'Escrever ou escolher...', maxLength: 15, size: 'xs' },
   { name: 'cor', label: 'Cor', type: 'combo', options: ['Bege', 'Preto'], placeholder: 'Escrever ou escolher...', maxLength: 15, size: 'xs' },
   { name: 'biqueira', label: 'Biqueira', type: 'select', options: ['Aberta', 'Fechada'], size: 'xs' },
-  { name: 'fornecedor', label: 'Fornecedor', type: 'combo', options: ['Sr. Luís', 'Medi', 'Prim'], placeholder: 'Escrever ou escolher...', size: 'sm' },
+  { name: 'fornecedor', label: 'Fornecedor', type: 'combo', options: ['STOP Ortopedia', 'Medi', 'Prim'], placeholder: 'Escrever ou escolher...', size: 'sm' },
   { name: 'pvp', label: 'PVP (€)', type: 'number', size: 'xs' },
   { name: 'estado', label: 'Estado', type: 'select', options: ESTADOS, size: 'sm' },
   { name: 'responsavel', label: 'Responsável pelo Pedido', type: 'text', size: 'sm' },
@@ -16287,8 +16287,8 @@ function buildCalcSiloal() {
   ]);
 }
 
-/* 2. Sr. Luís — verde */
-function buildCalcSrLuis() {
+/* 2. STOP Ortopedia — verde */
+function buildCalcStopOrtopedia() {
   const pvpE = calcInputField('PVP* (€)', '');
   const iva = calcSelectField('IVA (%)', [23, 13, 6]);
   const margem = calcInputField('Margem (%)', 20);
@@ -16314,7 +16314,9 @@ function buildCalcSrLuis() {
   recompute();
 
   return h('div', { class: 'calc-card tone-green' }, [
-    ...calcCardHeader('green', 'Calculadora STOP Ortopedia', 'Sr. Luís'),
+    // Nome oficial uniformizado em toda a app (2026-08-11) — "Sr. Luís"
+    // era só uma forma informal de tratamento, não o nome do fornecedor.
+    ...calcCardHeader('green', 'Calculadora STOP Ortopedia', 'STOP Ortopedia'),
     h('div', { class: 'calc-fields' }, [pvpE.field, iva.field, margem.field, pvfE.field, lucro.field, pvpFinal.field]),
   ]);
 }
@@ -16387,7 +16389,7 @@ function buildCalculadorasPage(container, goTo) {
   wrap.appendChild(withBackButton(buildPageHeader('calculator', 'Calculadoras', 'Ferramentas de cálculo de preços de venda ao público.'), goTo));
   wrap.appendChild(h('div', { class: 'calc-page-grid' }, [
     buildCalcSiloal(),
-    buildCalcSrLuis(),
+    buildCalcStopOrtopedia(),
     buildCalcErvanaria(),
     buildCalcSolgar(),
   ]));
@@ -35730,6 +35732,26 @@ function normalizarTipoPremioDesafios() {
   if (!STATE.desafios) return;
   STATE.desafios.forEach(r => { Object.assign(r, desafioExtrairDeMarcadores(r.objetivo)); });
 }
+// Migração silenciosa e auto-limitada: uniformiza registos antigos de
+// Ortopedia gravados com o nome informal "Sr. Luís" para o nome oficial do
+// fornecedor, "STOP Ortopedia" (pedido explícito 2026-08-11 — os dois
+// nomes andavam a coexistir na mesma coluna, dando a ideia de dois
+// fornecedores diferentes quando é sempre o mesmo). Corre uma vez por
+// arranque, só sobre os registos que ainda tiverem o nome antigo — depois
+// da primeira vez que corrigir todos, deixa de encontrar nada para fazer
+// e fica silenciosamente inofensiva para sempre. Nunca bloqueia o
+// arranque nem mostra erro nenhum (mesmo perfis sem permissão de escrita
+// em Ortopedia só falham aqui em silêncio — tentam de novo no próximo
+// arranque, sem consequência nenhuma para quem está a usar a app).
+async function ortopediaMigrarFornecedorAntigo() {
+  try {
+    const antigos = (STATE.ortopedia || []).filter(r => String(r.fornecedor || '').trim() === 'Sr. Luís');
+    for (const r of antigos) {
+      const atualizado = await dbUpdate('ortopedia', r.id, { fornecedor: 'STOP Ortopedia' });
+      if (atualizado) STATE.ortopedia = STATE.ortopedia.map(x => (x.id === r.id ? atualizado : x));
+    }
+  } catch (e) { /* silencioso de propósito — ver comentário acima */ }
+}
 async function loadAllData() {
   // Rede de segurança final do arranque: mesmo que uma falha inesperada
   // (ex: uma exceção nunca prevista escapar a alguma função individual)
@@ -35792,6 +35814,10 @@ async function loadAllData() {
     // Idem para a campanha de Vacinação da temporada corrente — nunca é
     // preciso "criar" campanhas à mão (ver vacinacaoAutoSemearCampanha).
     vacinacaoAutoSemearCampanha();
+    // Uniformização silenciosa "Sr. Luís" → "STOP Ortopedia" nos registos
+    // antigos de Ortopedia (ver ortopediaMigrarFornecedorAntigo) — mesmo
+    // espírito fire-and-forget das duas linhas acima.
+    ortopediaMigrarFornecedorAntigo();
   } catch (e) {
     console.error('[Arranque] falha inesperada ao carregar dados iniciais:', formatarErroSeguro(e));
   }
