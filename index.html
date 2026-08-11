@@ -3831,6 +3831,22 @@ const vacinacaoEncomendaSchema = [
   { name: 'qtdCovid', label: 'Quantidade — COVID', type: 'number', size: 'sm' },
   { name: 'responsavel', label: 'Registado Por', type: 'text', size: 'sm' },
 ];
+// Quebras/Desperdício — vacinas partidas, contaminadas ou desperdiçadas
+// (nunca chegam a ser administradas a ninguém). Registadas por dia, contam
+// contra o stock exatamente como uma dose Administrada (ver
+// vacinacaoStockAtual) — sem isto, o stock ficava "a mais" em relação à
+// realidade sempre que uma dose se perdia. Não confundir com a quebra
+// AUTOMÁTICA de frascos COVID (múltiplos de 6) já calculada em
+// vacinacaoQuebraCovid() — essa é só uma estimativa/aviso, esta é um
+// registo real e editável, com motivo.
+const vacinacaoQuebraSchema = [
+  { name: 'data', label: 'Data', type: 'date', size: 'xs' },
+  { name: 'hora', label: 'Hora', type: 'text', size: 'xs', placeholder: 'Ex: 10:15' },
+  { name: 'qtdGripe', label: 'Quebra — Gripe', type: 'number', size: 'sm' },
+  { name: 'qtdCovid', label: 'Quebra — COVID', type: 'number', size: 'sm' },
+  { name: 'motivo', label: 'Motivo (opcional)', type: 'text', col: 2, placeholder: 'Ex: frasco caiu, seringa contaminada...' },
+  { name: 'responsavel', label: 'Registado Por', type: 'text', size: 'sm' },
+];
 const vacinacaoListaEsperaSchema = [
   { name: 'nome', label: 'Nome do Utente', type: 'text', col: 2 },
   { name: 'dataNascimento', label: 'Data de Nascimento', type: 'date', size: 'sm' },
@@ -3853,7 +3869,7 @@ const vacinacaoListaEsperaSchema = [
 function vacinacaoResponsaveisElegiveis() {
   return ordenarUsuariosPorHierarquia((STATE.usuarios || []).filter(u =>
     !usuarioOculto(u) && (u.ativo !== false) &&
-    (u.perfilNivel === 'Enfermeiro' || u.categoriaProfissional === 'Farmacêutico' || u.categoriaProfissional === 'Farmacêutica')
+    (u.perfilNivel === 'Enfermeiro' || ['Farmacêutico', 'Farmacêutica', 'Diretor Técnico', 'Diretora Técnica', 'Diretor Técnico Adjunto', 'Diretora Técnica Adjunta'].includes(u.categoriaProfissional))
   )).map(u => u.nomeCompleto || u.username).filter(Boolean);
 }
 const vacinacaoResponsavelSchema = [
@@ -3862,11 +3878,46 @@ const vacinacaoResponsavelSchema = [
   { name: 'dataFim', label: 'Fim', type: 'date', size: 'xs' },
   // Período dentro do(s) dia(s) — vazios = responsável pelo dia inteiro;
   // preenchidos = responsável só por essa janela horária (ex: um
-  // enfermeiro de manhã, outro à tarde no mesmo dia).
+  // enfermeiro de manhã, outro à tarde no mesmo dia). Usam sempre o
+  // seletor por scroll (buildCampoHoraScrollVacinacao, via fieldOverrides
+  // em buildResponsaveisTab) — nunca texto livre.
   { name: 'horaInicio', label: 'Hora Início', type: 'text', size: 'xs', placeholder: 'Vazio = dia inteiro' },
   { name: 'horaFim', label: 'Hora Fim', type: 'text', size: 'xs', placeholder: 'Vazio = dia inteiro' },
   { name: 'observacoes', label: 'Observações', type: 'textarea', col: 2, maxLength: 200 },
 ];
+// Seletor de hora por scroll (2 <select> nativos: Hora 08-23 + "00 (meia-
+// noite)", Minutos de 10 em 10) — usado nos campos Hora Início/Hora Fim
+// dos Responsáveis pela Vacinação, em vez de um campo de texto livre.
+// Devolve sempre "HH:MM" em draft[field.name], ou "" se incompleto (dia
+// inteiro). Assinatura compatível com fieldOverrides de buildRecordForm:
+// (field, draft) => nó DOM, mesma estrutura ('.field'+tamanho) que
+// buildField devolveria para o mesmo campo.
+function buildCampoHoraScrollVacinacao(field, draft) {
+  const colClass = field.col === 2 ? ' span2' : (field.size ? ' field-' + field.size : '');
+  const horaOpts = [h('option', { value: '' }, '--')];
+  for (let hVal = 8; hVal <= 23; hVal++) horaOpts.push(h('option', { value: pad2(hVal) }, pad2(hVal)));
+  horaOpts.push(h('option', { value: '00' }, '00 (meia-noite)'));
+  const horaSel = h('select', { class: 'time-picker-select' }, horaOpts);
+  const minOpts = [h('option', { value: '' }, '--')];
+  for (let mVal = 0; mVal < 60; mVal += 10) minOpts.push(h('option', { value: pad2(mVal) }, pad2(mVal)));
+  const minSel = h('select', { class: 'time-picker-select' }, minOpts);
+  function aplicarValor(v) {
+    const partes = String(v || '').split(':');
+    horaSel.value = horaOpts.some(o => o.value === partes[0]) ? partes[0] : '';
+    minSel.value = minOpts.some(o => o.value === partes[1]) ? partes[1] : '';
+  }
+  aplicarValor(draft[field.name]);
+  function sync() {
+    draft[field.name] = (horaSel.value && minSel.value) ? `${horaSel.value}:${minSel.value}` : '';
+    if (field.onChange) field.onChange();
+  }
+  // Ao escolher a hora, se ainda não houver minuto escolhido assume logo
+  // "00" — poupa 1 clique no caso mais comum (à hora certa).
+  horaSel.addEventListener('change', () => { if (horaSel.value && !minSel.value) minSel.value = '00'; sync(); });
+  minSel.addEventListener('change', sync);
+  const wrap = h('div', { class: 'time-picker-custom' }, [horaSel, h('span', { class: 'time-picker-sep' }, ':'), minSel]);
+  return h('div', { class: 'field' + colClass }, [h('label', {}, field.label), wrap]);
+}
 // Idade calculada a partir da Data de Nascimento (anos completos) — usada
 // para a Lista de Espera e para o alerta de elegibilidade nas Marcações.
 function vacinacaoCalcularIdade(dataNascISO) {
@@ -3963,18 +4014,9 @@ function vacinacaoGerarSlotsHorario() {
   for (let mins = 8 * 60; mins < 24 * 60; mins += 10) {
     const hora = `${pad2(Math.floor(mins / 60))}:${pad2(mins % 60)}`;
     const dentroDefault = mins >= VACINACAO_HORA_DEFAULT_INICIO && mins < VACINACAO_HORA_DEFAULT_FIM;
-    slots.push({ hora, label: dentroDefault ? hora : `${hora} (fora do horário habitual)` });
+    slots.push({ hora, label: dentroDefault ? hora : `${hora} (fora do horário habitual)`, dentroDefault });
   }
   return slots;
-}
-// Só as vagas "padrão" (dentro das definições estabelecidas — ver
-// VACINACAO_HORA_DEFAULT_INICIO/FIM) — usadas para a grelha de vagas ao
-// abrir o dia. Marcações fora deste intervalo continuam sempre possíveis
-// (encaixes), só não aparecem como vaga própria na grelha.
-function vacinacaoSlotsPadrao() {
-  return vacinacaoGerarSlotsHorario()
-    .filter(s => { const [hh, mm] = s.hora.split(':').map(Number); const mins = hh * 60 + mm; return mins >= VACINACAO_HORA_DEFAULT_INICIO && mins < VACINACAO_HORA_DEFAULT_FIM; })
-    .map(s => s.hora);
 }
 // Uma vaga está "expirada" quando o horário já passou — o dia inteiro, se
 // já passado, ou, no próprio dia de hoje, qualquer hora já ultrapassada
@@ -4024,25 +4066,43 @@ function vacinacaoContarPeriodo(campanha, desde, ate) {
 // dois lados), depois por Nome+Contacto como reforço para registos antigos
 // sem Nº de Utente. Devolve { outroDia, jaAdministrada } (ambos podem ser
 // null) — nunca bloqueia, só informa (quem decide é sempre a colega).
-function vacinacaoBuscarDuplicados(campanhaIdAtual, dados, excluirId) {
+// excluirMarcacaoId: id da própria marcação a ignorar na comparação com
+// STATE.vacinacaoMarcacoes (edição de uma marcação existente). excluirEsperaId:
+// id da própria entrada a ignorar na comparação com STATE.vacinacaoListaEspera
+// (edição de um registo existente na Lista de Espera, OU a entrada de
+// ORIGEM quando se está a "Marcar" a partir dela — ver marcarDaListaEspera/
+// submitMarcacao — sem isto, marcar alguém a partir da própria Lista de
+// Espera dispararia sempre um falso aviso "já está na Lista de Espera",
+// porque a pessoa só sai de lá DEPOIS de a marcação ser gravada com sucesso).
+function vacinacaoBuscarDuplicados(campanhaIdAtual, dados, excluirMarcacaoId, excluirEsperaId) {
   const numero = String(dados.numeroUtente || '').trim();
   const nome = normalizarTexto(dados.nome).trim();
   const contacto = String(dados.contacto || '').trim();
+  // Só conta como duplicado se houver pelo menos uma vacina em COMUM entre
+  // o que está a ser marcado agora e o registo já existente — uma pessoa
+  // marcar Gripe num dia e COVID noutro (muito frequente) NUNCA deve
+  // disparar aviso; só marcar a MESMA vacina outra vez é que é o erro real
+  // a evitar (duplicação de registo / contagem de stock a mais).
   const bateCerto = (r) => {
-    if (r.id === excluirId) return false;
+    const mesmaVacina = (dados.gripe && r.gripe) || (dados.covid && r.covid);
+    if (!mesmaVacina) return false;
     if (numero && r.numeroUtente && String(r.numeroUtente).trim() === numero) return true;
     if (nome && contacto && normalizarTexto(r.nome).trim() === nome && String(r.contacto || '').trim() === contacto) return true;
     return false;
   };
-  const marcs = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaIdAtual && m.estado !== 'Cancelada' && bateCerto(m));
-  const outroDia = marcs.find(m => m.data !== dados.data) || null;
-  const jaAdministrada = marcs.find(m => m.estado === 'Administrada' && ((m.gripe && dados.gripe) || (m.covid && dados.covid))) || null;
-  const naListaEspera = STATE.vacinacaoListaEspera.filter(e => e.campanhaId === campanhaIdAtual && e.id !== excluirId && bateCerto(e))[0] || null;
-  return { outroDia, jaAdministrada, naListaEspera };
+  const marcs = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaIdAtual && m.estado !== 'Cancelada' && m.id !== excluirMarcacaoId && bateCerto(m));
+  // Qualquer marcação ativa (Pendente) já existente para a MESMA vacina —
+  // seja noutro dia OU no mesmo dia a outra hora (ex: 2ª marcação criada
+  // por engano no mesmo dia). Antes só se comparava a data (m.data !==
+  // dados.data), o que deixava passar duplicados no mesmo dia — corrigido.
+  const jaMarcada = marcs.find(m => m.estado !== 'Administrada') || null;
+  const jaAdministrada = marcs.find(m => m.estado === 'Administrada') || null;
+  const naListaEspera = STATE.vacinacaoListaEspera.filter(e => e.campanhaId === campanhaIdAtual && e.id !== excluirEsperaId && bateCerto(e))[0] || null;
+  return { jaMarcada, jaAdministrada, naListaEspera };
 }
 function vacinacaoAvisoDuplicadoTexto(dup) {
   const linhas = [];
-  if (dup.outroDia) linhas.push(`já tem uma marcação para o dia ${formatDate(dup.outroDia.data)}${dup.outroDia.hora ? ' às ' + dup.outroDia.hora : ''}`);
+  if (dup.jaMarcada) linhas.push(`já tem uma marcação pendente para o dia ${formatDate(dup.jaMarcada.data)}${dup.jaMarcada.hora ? ' às ' + dup.jaMarcada.hora : ''}`);
   if (dup.jaAdministrada) linhas.push(`já foi administrada a vacina que está a selecionar, nesta mesma época`);
   if (dup.naListaEspera) linhas.push(`já está na Lista de Espera desta campanha`);
   return linhas.length ? `Esta pessoa ${linhas.join('; ')}. Deseja continuar mesmo assim?` : '';
@@ -6944,6 +7004,7 @@ const TABLES = {
   vacinacaoEncomendas: 'vacinacao_encomendas',
   vacinacaoListaEspera: 'vacinacao_lista_espera',
   vacinacaoResponsaveis: 'vacinacao_responsaveis',
+  vacinacaoQuebras: 'vacinacao_quebras',
   entregas: 'farmacia_entregas',
   recolhas: 'farmacia_recolhas',
   tarefas: 'farmacia_tarefas',
@@ -8132,6 +8193,7 @@ const STATE = {
   vacinacaoEncomendas: [],
   vacinacaoListaEspera: [],
   vacinacaoResponsaveis: [],
+  vacinacaoQuebras: [],
   entregas: [],
   recolhas: [],
   tarefas: [],
@@ -9340,6 +9402,14 @@ function buildRecordForm(schema, draft, opts) {
   }
   children.push(h('div', { class: 'form-actions' }, actionsRow));
   return h('div', { class: 'card card-pad animate-in', style: 'margin-bottom:24px;' }, children);
+}
+// Variante "estreita" de buildRecordForm — mesmo formulário, mas com
+// largura máxima limitada (em vez de esticar até à largura toda do ecrã,
+// o que em monitores largos deixava os campos com um aspeto desmedido).
+// Usada nos formulários do módulo de Vacinação, onde os campos são poucos
+// e curtos (datas, horas, números) e não fazem sentido a esticar.
+function buildRecordFormEstreito(schema, draft, opts, maxWidth) {
+  return h('div', { style: `max-width:${maxWidth || 820}px;` }, [buildRecordForm(schema, draft, opts)]);
 }
 
 // ---- Toasts: feedback visível e não-bloqueante, usado sobretudo para
@@ -29620,19 +29690,22 @@ function buildMapa48hPage(container, goTo) {
 // "Administrada"). Recalculado sempre em tempo real, nunca guardado à
 // parte, para nunca desalinhar do histórico real de marcações/encomendas.
 function vacinacaoStockAtual(campanha) {
-  if (!campanha) return { gripe: 0, covid: 0, administradasGripe: 0, administradasCovid: 0, recebidasGripe: 0, recebidasCovid: 0 };
+  if (!campanha) return { gripe: 0, covid: 0, administradasGripe: 0, administradasCovid: 0, recebidasGripe: 0, recebidasCovid: 0, quebrasGripe: 0, quebrasCovid: 0 };
   const marcs = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanha.id);
   const encs = STATE.vacinacaoEncomendas.filter(e => e.campanhaId === campanha.id && e.estado === 'Rececionada');
+  const quebras = STATE.vacinacaoQuebras.filter(q => q.campanhaId === campanha.id);
   const administradasGripe = marcs.filter(m => m.estado === 'Administrada' && m.gripe).length;
   const administradasCovid = marcs.filter(m => m.estado === 'Administrada' && m.covid).length;
   const recebidasGripe = encs.reduce((s, e) => s + (Number(e.qtdGripe) || 0), 0);
   const recebidasCovid = encs.reduce((s, e) => s + (Number(e.qtdCovid) || 0), 0);
+  const quebrasGripe = quebras.reduce((s, q) => s + (Number(q.qtdGripe) || 0), 0);
+  const quebrasCovid = quebras.reduce((s, q) => s + (Number(q.qtdCovid) || 0), 0);
   const inicialGripe = Number(campanha.stockInicialGripe) || 0;
   const inicialCovid = Number(campanha.stockInicialCovid) || 0;
   return {
-    gripe: inicialGripe + recebidasGripe - administradasGripe,
-    covid: inicialCovid + recebidasCovid - administradasCovid,
-    administradasGripe, administradasCovid, recebidasGripe, recebidasCovid,
+    gripe: inicialGripe + recebidasGripe - administradasGripe - quebrasGripe,
+    covid: inicialCovid + recebidasCovid - administradasCovid - quebrasCovid,
+    administradasGripe, administradasCovid, recebidasGripe, recebidasCovid, quebrasGripe, quebrasCovid,
   };
 }
 // As encomendas de vacinas vêm sempre limitadas (não conseguimos pedir a
@@ -29757,6 +29830,9 @@ function buildVacinacaoPage(container, goTo) {
   let showEncomendaForm = false, encomendaDraft = null, encomendaEditId = null, encomendaFormError = '', encomendaSaving = false;
   let encomendaSelectedIds = new Set();
 
+  // ---- Quebras / Desperdício (contam contra o stock, ver vacinacaoStockAtual) ----
+  let showQuebraForm = false, quebraDraft = null, quebraEditId = null, quebraFormError = '', quebraSaving = false;
+
   // ---- Lista de Espera ----
   let showEsperaForm = false, esperaDraft = null, esperaEditId = null, esperaFormError = '', esperaSaving = false;
   let esperaSelectedIds = new Set();
@@ -29789,6 +29865,7 @@ function buildVacinacaoPage(container, goTo) {
     showMarcacaoForm = false; marcacaoDraft = null; marcacaoEditId = null; marcacaoOrigemEsperaId = null;
     encomendaSelectedIds = new Set();
     showEncomendaForm = false; encomendaDraft = null; encomendaEditId = null;
+    showQuebraForm = false; quebraDraft = null; quebraEditId = null;
     esperaSelectedIds = new Set();
     esperaSearch = '';
     showEsperaForm = false; esperaDraft = null; esperaEditId = null;
@@ -29836,7 +29913,7 @@ function buildVacinacaoPage(container, goTo) {
       // dataNascimento não é um campo do formulário de Marcação, mas viaja
       // escondido no draft (ver recordToRow) para nunca se perder se a
       // marcação vier a ser cancelada e a pessoa regressar à Lista de Espera.
-      openNewMarcacao({ nome: esp.nome, contacto: esp.contacto, gripe: !!esp.gripe, covid: !!esp.covid, dataNascimento: esp.dataNascimento || '' });
+      openNewMarcacao({ nome: esp.nome, contacto: esp.contacto, numeroUtente: esp.numeroUtente || '', gripe: !!esp.gripe, covid: !!esp.covid, dataNascimento: esp.dataNascimento || '' });
     };
     // <60 anos + só Gripe: a Gripe (só com receita) não exige marcação nem
     // gestão de vaga — avisa antes de agendar, mas nunca bloqueia (o
@@ -29851,6 +29928,11 @@ function buildVacinacaoPage(container, goTo) {
   async function submitMarcacao() {
     const missing = checkRequiredFields(marcacaoDraft, vacinacaoMarcacaoSchema);
     if (missing.length) { marcacaoFormError = buildRequiredMessage(missing, vacinacaoMarcacaoSchema); rerender(); return; }
+    // Barreira explícita: "hora" não entra na lista genérica de campos
+    // obrigatórios (getRequiredFieldNames é partilhada por toda a app), mas
+    // aqui é sempre indispensável — sem ela a marcação fica invisível na
+    // grelha de Vagas e escapa à verificação de conflito de horário abaixo.
+    if (!String(marcacaoDraft.hora || '').trim()) { marcacaoFormError = 'Por favor, preencha: Hora.'; rerender(); return; }
     // Barreira explícita, mesmo que a regra genérica de obrigatoriedade
     // alguma vez mude: nunca se grava uma marcação sem Contacto.
     if (!String(marcacaoDraft.contacto || '').trim()) { marcacaoFormError = 'Por favor, preencha: Contacto. Não é possível gravar uma marcação sem contacto do utente.'; rerender(); return; }
@@ -29874,7 +29956,7 @@ function buildVacinacaoPage(container, goTo) {
     // (marcacaoDraft.forcarDuplicado fica true depois de confirmado, para
     // não voltar a perguntar ao reenviar o mesmo formulário).
     if (!marcacaoDraft.forcarDuplicado) {
-      const dup = vacinacaoBuscarDuplicados(campanhaId, marcacaoDraft, marcacaoEditId);
+      const dup = vacinacaoBuscarDuplicados(campanhaId, marcacaoDraft, marcacaoEditId, marcacaoOrigemEsperaId);
       const avisoTxt = vacinacaoAvisoDuplicadoTexto(dup);
       if (avisoTxt) {
         confirmDialog(`⚠️ ${avisoTxt}`, () => { marcacaoDraft.forcarDuplicado = true; submitMarcacao(); }, { confirmLabel: 'Continuar Mesmo Assim' });
@@ -29933,7 +30015,7 @@ function buildVacinacaoPage(container, goTo) {
       marcacaoSelectedIds = new Set(); showMarcacaoForm = false; rerender();
       confirmDialog(`Colocar ${m.nome || 'este utente'} de novo na Lista de Espera desta campanha?`, async () => {
         const created = await dbInsert('vacinacaoListaEspera', {
-          campanhaId, nome: m.nome || '', contacto: m.contacto || '', gripe: !!m.gripe, covid: !!m.covid,
+          campanhaId, nome: m.nome || '', contacto: m.contacto || '', numeroUtente: m.numeroUtente || '', gripe: !!m.gripe, covid: !!m.covid,
           dataNascimento: m.dataNascimento || '',
           observacoes: 'Reposto na lista após cancelamento de marcação.',
         });
@@ -30024,6 +30106,50 @@ function buildVacinacaoPage(container, goTo) {
     return STATE.vacinacaoEncomendas.filter(e => e.campanhaId === campanhaId).slice().sort((a, b) => (b.data || '').localeCompare(a.data || ''));
   }
 
+  /* ============ QUEBRAS / DESPERDÍCIO ============ */
+  // Registo de doses partidas/contaminadas/desperdiçadas — nunca chegam a
+  // ser administradas, mas saem do stock tal como se tivessem sido (ver
+  // vacinacaoStockAtual). `data` nasce sempre com o dia em que o botão foi
+  // premido (ver buildQuebraBtn, chamado a partir da página do dia).
+  function horaAtualHHMM() { const agora = new Date(); return `${pad2(agora.getHours())}:${pad2(agora.getMinutes())}`; }
+  function quebraVazia(dateISO) { return Object.assign(emptyRecord(vacinacaoQuebraSchema), { campanhaId, data: dateISO || todayISO(), hora: horaAtualHHMM() }); }
+  function openNewQuebra(dateISO) { quebraDraft = quebraVazia(dateISO); quebraEditId = null; quebraFormError = ''; showQuebraForm = true; rerender(); }
+  function openEditQuebra(q) { quebraDraft = Object.assign({}, q); quebraEditId = q.id; quebraFormError = ''; showQuebraForm = true; rerender(); }
+  function cancelQuebraForm() { showQuebraForm = false; quebraFormError = ''; rerender(); }
+  async function submitQuebra() {
+    const missing = checkRequiredFields(quebraDraft, vacinacaoQuebraSchema);
+    if (missing.length) { quebraFormError = buildRequiredMessage(missing, vacinacaoQuebraSchema); rerender(); return; }
+    if (!(Number(quebraDraft.qtdGripe) > 0) && !(Number(quebraDraft.qtdCovid) > 0)) {
+      quebraFormError = 'Indique a quantidade perdida de pelo menos uma vacina.'; rerender(); return;
+    }
+    quebraFormError = '';
+    if (!quebraEditId) quebraDraft.responsavel = currentUserName();
+    quebraSaving = true; rerender();
+    if (quebraEditId) {
+      const updated = await dbUpdate('vacinacaoQuebras', quebraEditId, quebraDraft);
+      if (updated) STATE.vacinacaoQuebras = STATE.vacinacaoQuebras.map(q => q.id === quebraEditId ? updated : q);
+      else quebraFormError = `Não foi possível guardar as alterações. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
+    } else {
+      const created = await dbInsert('vacinacaoQuebras', quebraDraft);
+      if (created) STATE.vacinacaoQuebras = [created, ...STATE.vacinacaoQuebras];
+      else quebraFormError = `Não foi possível registar a quebra. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
+    }
+    quebraSaving = false;
+    if (!quebraFormError) showQuebraForm = false;
+    rerender();
+  }
+  function removeQuebraUnica(q) {
+    if (isEnfermeiro()) return;
+    confirmDialog('Tem a certeza de que quer eliminar este registo de quebra? A quantidade volta a contar para o stock.', async () => {
+      const apagados = await bulkSoftDelete('vacinacaoQuebras', [q.id]);
+      STATE.vacinacaoQuebras = STATE.vacinacaoQuebras.filter(x => !apagados.has(x.id));
+      rerender();
+    }, { danger: true, confirmLabel: 'Eliminar' });
+  }
+  function quebrasDaCampanha() {
+    return STATE.vacinacaoQuebras.filter(q => q.campanhaId === campanhaId).slice().sort((a, b) => (b.data || '').localeCompare(a.data || ''));
+  }
+
   /* ============ LISTA DE ESPERA ============ */
   function esperaVazia() { return Object.assign(emptyRecord(vacinacaoListaEsperaSchema), { campanhaId }); }
   function openNewEspera() { esperaDraft = esperaVazia(); esperaEditId = null; esperaFormError = ''; showEsperaForm = true; rerender(); }
@@ -30040,7 +30166,7 @@ function buildVacinacaoPage(container, goTo) {
     if (!esperaDraft.dataNascimento) { esperaFormError = 'Por favor, preencha: Data de Nascimento.'; rerender(); return; }
     if (!esperaDraft.gripe && !esperaDraft.covid) { esperaFormError = 'Selecione pelo menos uma vacina (Gripe e/ou COVID).'; rerender(); return; }
     if (!esperaDraft.forcarDuplicado) {
-      const dup = vacinacaoBuscarDuplicados(campanhaId, esperaDraft, esperaEditId);
+      const dup = vacinacaoBuscarDuplicados(campanhaId, esperaDraft, null, esperaEditId);
       const avisoTxt = vacinacaoAvisoDuplicadoTexto(dup);
       if (avisoTxt) {
         confirmDialog(`⚠️ ${avisoTxt}`, () => { esperaDraft.forcarDuplicado = true; submitEspera(); }, { confirmLabel: 'Continuar Mesmo Assim' });
@@ -30141,7 +30267,7 @@ function buildVacinacaoPage(container, goTo) {
     const wrap = h('div', { class: 'animate-in' });
     wrap.appendChild(withBackButton(buildPageHeader('syringe', 'Vacinação', 'Todas as campanhas (criadas automaticamente por temporada — Setembro a Abril).', STATE.vacinacaoCampanhas.length), goTo, showCampanhaForm ? cancelCampanha : undefined));
     if (showCampanhaForm) {
-      wrap.appendChild(buildRecordForm(vacinacaoCampanhaSchema, campanhaDraft, {
+      wrap.appendChild(buildRecordFormEstreito(vacinacaoCampanhaSchema, campanhaDraft, {
         editing: !!campanhaEditId, onSubmit: submitCampanha, onCancel: cancelCampanha, errorMessage: campanhaFormError, saving: campanhaSaving,
       }));
       return wrap;
@@ -30229,7 +30355,12 @@ function buildVacinacaoPage(container, goTo) {
     const doDia = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO);
     const ocupacao = {};
     doDia.forEach(m => { if (m.hora && m.estado !== 'Cancelada') ocupacao[m.hora] = m; });
-    const grade = vacinacaoSlotsPadrao();
+    // Grelha completa do dia (08:00-24:00) — os extremos (08:00-08:20 e
+    // 21:00-24:00) aparecem sempre como "Indisponível" (não são horários
+    // habituais de vacinação), mas continuam clicáveis para abrir/marcar
+    // se for mesmo preciso, com confirmação explícita antes de avançar.
+    const slots = vacinacaoGerarSlotsHorario();
+    const grade = slots.map(s => s.hora);
     const encaixes = doDia.filter(m => m.hora && m.estado !== 'Cancelada' && !grade.includes(m.hora))
       .slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || ''));
 
@@ -30261,13 +30392,37 @@ function buildVacinacaoPage(container, goTo) {
         h('div', { class: 'row-actions' }, [bookBtn]),
       ]);
     }
-    const linhas = grade.map(hora => (ocupacao[hora] ? linhaOcupada(ocupacao[hora], hora) : linhaLivre(hora)));
+    // Fora do horário habitual (08:00-08:20 e 21:00-24:00): sem marcação
+    // aparece sempre "Indisponível" (visual esbatido, igual a uma vaga
+    // bloqueada), mas o botão "+" continua a funcionar — só pede
+    // confirmação explícita antes de abrir o formulário.
+    function linhaIndisponivel(hora) {
+      const bookBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Fora do horário habitual — marcar mesmo assim', 'aria-label': 'Marcar' }, Icon('plus', { size: 13, strokeWidth: 2.4 }));
+      bookBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        requireAuth(() => confirmDialog(
+          `O horário ${hora} é fora do período habitual de vacinação (${pad2(Math.floor(VACINACAO_HORA_DEFAULT_INICIO / 60))}:${pad2(VACINACAO_HORA_DEFAULT_INICIO % 60)}–${pad2(Math.floor(VACINACAO_HORA_DEFAULT_FIM / 60))}:${pad2(VACINACAO_HORA_DEFAULT_FIM % 60)}). Deseja marcar mesmo assim?`,
+          () => openNewMarcacao({ data: dateISO, hora }),
+          { confirmLabel: 'Marcar Mesmo Assim' }
+        ));
+      });
+      return h('div', { class: 'agenda-slot-row agenda-slot-bloqueado' }, [
+        h('span', { class: 'agenda-slot-hora' }, hora),
+        h('span', { class: 'agenda-slot-label' }, 'Indisponível — fora do horário habitual'),
+        h('div', { class: 'row-actions' }, [bookBtn]),
+      ]);
+    }
+    const linhas = slots.map(s => {
+      const m = ocupacao[s.hora];
+      if (m) return linhaOcupada(m, s.hora);
+      return s.dentroDefault ? linhaLivre(s.hora) : linhaIndisponivel(s.hora);
+    });
     const corpo = [h('div', { class: 'agenda-slots-list', style: 'max-height:none;overflow-y:visible;' }, linhas)];
     if (encaixes.length) {
-      corpo.push(h('p', { class: 'field-helper-text', style: 'margin:14px 0 6px;font-weight:700;' }, 'Encaixes (fora do horário habitual)'));
+      corpo.push(h('p', { class: 'field-helper-text', style: 'margin:14px 0 6px;font-weight:700;' }, 'Encaixes (fora dos blocos de 10 minutos)'));
       corpo.push(h('div', { class: 'agenda-slots-list', style: 'max-height:none;overflow-y:visible;' }, encaixes.map(m => linhaOcupada(m, m.hora))));
     }
-    return h('div', { class: 'card card-pad', style: 'margin-bottom:14px;' }, corpo);
+    return h('div', { class: 'card card-pad', style: 'margin-bottom:14px;max-width:640px;' }, corpo);
   }
   // Banner de gestão de frascos COVID (6 doses/frasco) para um dia
   // concreto: mostra quantas pessoas estão marcadas (não canceladas) e, se
@@ -30291,7 +30446,7 @@ function buildVacinacaoPage(container, goTo) {
       const quebra = vacinacaoQuebraCovid(administradas);
       blocos.push(quebra === 0
         ? `✅ COVID administradas: ${administradas} — sem quebra.`
-        : `🗑️ COVID administradas: ${administradas} — quebra prevista de ${quebra} dose${quebra > 1 ? 's' : ''} (frasco aberto por completar).`);
+        : `🗑️ COVID administradas: ${administradas} — quebra prevista de ${quebra} dose${quebra > 1 ? 's' : ''} (frasco aberto por completar). Isto é só uma estimativa — se a quebra realmente aconteceu, regista-a em "Registar Quebra" para atualizar o stock.`);
     }
     return h('div', { class: 'card card-pad', style: 'margin-bottom:14px;background:var(--pharm-50);' }, blocos.map(b => h('p', { style: 'margin:0 0 4px;font-size:13px;' }, b)));
   }
@@ -30421,6 +30576,11 @@ function buildVacinacaoPage(container, goTo) {
       h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;' }, [
         buildAbrirFecharDiaBtn(dateISO),
         (() => {
+          const btn = h('button', { class: 'btn btn-secondary', title: 'Registar vacina partida, contaminada ou desperdiçada — sai do stock como se tivesse sido administrada' }, [Icon('alert', { size: 14, strokeWidth: 2.2 }), ' Registar Quebra']);
+          btn.addEventListener('click', () => requireAuth(() => openNewQuebra(dateISO)));
+          return btn;
+        })(),
+        (() => {
           const btn = h('button', { class: 'btn btn-secondary' }, [Icon('printer', { size: 14, strokeWidth: 2.2 }), ' Imprimir']);
           btn.addEventListener('click', () => {
             const lista = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO && m.estado !== 'Cancelada')
@@ -30432,12 +30592,29 @@ function buildVacinacaoPage(container, goTo) {
       ]),
     ]);
     wrap.appendChild(cabecalho);
+    if (showQuebraForm) {
+      wrap.appendChild(buildRecordFormEstreito(vacinacaoQuebraSchema, quebraDraft, {
+        editing: !!quebraEditId, onSubmit: submitQuebra, onCancel: cancelQuebraForm, errorMessage: quebraFormError, saving: quebraSaving,
+        fieldOverrides: { responsavel: buildCampoAutomaticoReadonly },
+      }));
+      return wrap;
+    }
     wrap.appendChild(h('h3', { class: 'dash-card-title', style: 'margin-bottom:6px;' }, formatDate(dateISO)));
     wrap.appendChild(buildResponsavelDoDiaAviso(dateISO));
     const avisoOutrosServicos = buildOutrosServicosDoDiaAviso(dateISO);
     if (avisoOutrosServicos) wrap.appendChild(avisoOutrosServicos);
     const avisoFrascos = buildAvisoFrascosCovid(dateISO);
     if (avisoFrascos) wrap.appendChild(avisoFrascos);
+    const quebrasDoDia = STATE.vacinacaoQuebras.filter(q => q.campanhaId === campanhaId && q.data === dateISO);
+    if (quebrasDoDia.length) {
+      const totalG = quebrasDoDia.reduce((s, q) => s + (Number(q.qtdGripe) || 0), 0);
+      const totalC = quebrasDoDia.reduce((s, q) => s + (Number(q.qtdCovid) || 0), 0);
+      wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:14px;background:#fef2f2;border-color:#fecaca;' }, [
+        h('p', { style: 'margin:0;font-size:13px;font-weight:700;' }, `🗑️ Quebra registada hoje: Gripe ${totalG} · COVID ${totalC}`),
+        ...quebrasDoDia.map(q => h('p', { class: 'field-helper-text', style: 'margin:2px 0 0;cursor:pointer;', onclick: () => openEditQuebra(q) },
+          `${q.hora || '—'} · ${q.qtdGripe ? `Gripe ${q.qtdGripe}` : ''}${q.qtdGripe && q.qtdCovid ? ' · ' : ''}${q.qtdCovid ? `COVID ${q.qtdCovid}` : ''}${q.motivo ? ` — ${q.motivo}` : ''} (${q.responsavel || '—'})`)),
+      ]));
+    }
     wrap.appendChild(h('div', { class: 'tabs-row', style: 'margin-bottom:10px;' }, [
       h('button', { class: 'tab-btn' + (agendaDiaVista === 'grelha' ? ' active' : ''), onclick: () => { agendaDiaVista = 'grelha'; rerender(); } }, [Icon('calendar', { size: 14 }), h('span', {}, 'Vagas')]),
       h('button', { class: 'tab-btn' + (agendaDiaVista === 'tabela' ? ' active' : ''), onclick: () => { agendaDiaVista = 'tabela'; rerender(); } }, [Icon('clipboard', { size: 14 }), h('span', {}, 'Tabela Detalhada')]),
@@ -30563,7 +30740,7 @@ function buildVacinacaoPage(container, goTo) {
       });
       const aviso = buildAvisoFrascoNaMarcacao();
       if (aviso) wrap.appendChild(aviso);
-      wrap.appendChild(buildRecordForm(camposComOverrides, marcacaoDraft, {
+      wrap.appendChild(buildRecordFormEstreito(camposComOverrides, marcacaoDraft, {
         editing: !!marcacaoEditId, onSubmit: submitMarcacao, onCancel: cancelMarcacaoForm, errorMessage: marcacaoFormError, saving: marcacaoSaving,
         fieldOverrides: { responsavel: buildCampoAutomaticoReadonly },
         onConclude: (marcacaoEditId && marcacaoDraft.estado === 'Pendente') ? () => marcarAdministrada(marcacaoDraft) : null, concludeLabel: 'Marcar como Administrada',
@@ -30674,12 +30851,12 @@ function buildVacinacaoPage(container, goTo) {
         h('div', { class: 'card card-pad' }, [
           h('p', { class: 'field-helper-text', style: 'margin:0 0 4px;' }, 'Stock Atual — Gripe'),
           h('p', { style: 'font-size:28px;font-weight:700;margin:0;' }, String(stock.gripe)),
-          h('p', { class: 'field-helper-text', style: 'margin:6px 0 0;' }, `Inicial ${Number(campanha.stockInicialGripe) || 0} · Recebido ${stock.recebidasGripe} · Administrado ${stock.administradasGripe}`),
+          h('p', { class: 'field-helper-text', style: 'margin:6px 0 0;' }, `Inicial ${Number(campanha.stockInicialGripe) || 0} · Recebido ${stock.recebidasGripe} · Administrado ${stock.administradasGripe} · Quebra ${stock.quebrasGripe}`),
         ]),
         h('div', { class: 'card card-pad' }, [
           h('p', { class: 'field-helper-text', style: 'margin:0 0 4px;' }, 'Stock Atual — COVID'),
           h('p', { style: 'font-size:28px;font-weight:700;margin:0;' }, String(stock.covid)),
-          h('p', { class: 'field-helper-text', style: 'margin:6px 0 0;' }, `Inicial ${Number(campanha.stockInicialCovid) || 0} · Recebido ${stock.recebidasCovid} · Administrado ${stock.administradasCovid}`),
+          h('p', { class: 'field-helper-text', style: 'margin:6px 0 0;' }, `Inicial ${Number(campanha.stockInicialCovid) || 0} · Recebido ${stock.recebidasCovid} · Administrado ${stock.administradasCovid} · Quebra ${stock.quebrasCovid}`),
         ]),
       ]));
       wrap.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:0 0 8px;' }, 'Contagem de Administrações'));
@@ -30693,7 +30870,7 @@ function buildVacinacaoPage(container, goTo) {
         const avisoNecessidade = buildAvisoNecessidadeEncomenda(campanha);
         if (avisoNecessidade) wrap.appendChild(avisoNecessidade);
       }
-      wrap.appendChild(buildRecordForm(vacinacaoEncomendaSchema, encomendaDraft, {
+      wrap.appendChild(buildRecordFormEstreito(vacinacaoEncomendaSchema, encomendaDraft, {
         editing: !!encomendaEditId, onSubmit: submitEncomenda, onCancel: cancelEncomendaForm, errorMessage: encomendaFormError, saving: encomendaSaving,
         fieldOverrides: { responsavel: buildCampoAutomaticoReadonly },
         onConclude: (encomendaEditId && encomendaDraft.estado === 'Pendente') ? () => marcarEncomendaRececionada(encomendaDraft) : null, concludeLabel: 'Confirmar Receção',
@@ -30741,13 +30918,64 @@ function buildVacinacaoPage(container, goTo) {
     return wrap;
   }
 
+  /* ============ RENDER: QUEBRAS / DESPERDÍCIO (separador próprio) ============ */
+  // Listagem de TODAS as quebras da campanha (qualquer dia), com vacina(s)
+  // e quantidade, quem registou, data e hora. Registar/editar disponível a
+  // qualquer perfil com acesso à Vacinação (o botão principal para o dia
+  // corrente vive também na página do dia — ver buildAgendaDiaView);
+  // eliminar fica reservado a quem não seja Enfermeiro.
+  function buildQuebrasTab() {
+    const wrap = h('div', {});
+    if (showQuebraForm) {
+      wrap.appendChild(buildRecordFormEstreito(vacinacaoQuebraSchema, quebraDraft, {
+        editing: !!quebraEditId, onSubmit: submitQuebra, onCancel: cancelQuebraForm, errorMessage: quebraFormError, saving: quebraSaving,
+        fieldOverrides: { responsavel: buildCampoAutomaticoReadonly },
+      }));
+      return wrap;
+    }
+    wrap.appendChild(h('div', { style: 'display:flex;align-items:center;justify-content:flex-end;margin-bottom:14px;' }, [
+      (() => {
+        const btn = h('button', { class: 'btn btn-secondary' }, [Icon('plus', { size: 14, strokeWidth: 2.4 }), ' Registar Quebra']);
+        btn.addEventListener('click', () => requireAuth(() => openNewQuebra()));
+        return btn;
+      })(),
+    ]));
+    const listaQuebras = quebrasDaCampanha();
+    if (!listaQuebras.length) {
+      wrap.appendChild(EmptyState('Ainda não há quebras registadas nesta campanha.'));
+      return wrap;
+    }
+    const thead = h('thead', {}, h('tr', {}, ['Data', 'Hora', 'Vacina(s)', 'Quantidade', 'Motivo', 'Registado Por', ''].map(t => h('th', {}, t))));
+    const tbody = h('tbody', {}, listaQuebras.map(q => {
+      const partes = [];
+      if (q.qtdGripe) partes.push(`Gripe: ${q.qtdGripe}`);
+      if (q.qtdCovid) partes.push(`COVID: ${q.qtdCovid}`);
+      const totalQtd = (Number(q.qtdGripe) || 0) + (Number(q.qtdCovid) || 0);
+      const delBtn = isEnfermeiro() ? null : h('button', { class: 'btn-fab-sm tone-red', title: 'Eliminar registo de quebra', 'aria-label': 'Eliminar' }, Icon('trash', { size: 12, strokeWidth: 2.2 }));
+      if (delBtn) delBtn.addEventListener('click', (ev) => { ev.stopPropagation(); requireAuth(() => removeQuebraUnica(q)); });
+      const row = h('tr', { class: 'selectable-row' }, [
+        h('td', {}, formatDate(q.data)),
+        h('td', {}, q.hora || '—'),
+        h('td', {}, partes.join(' · ') || '—'),
+        h('td', { class: 'cell-strong' }, String(totalQtd)),
+        h('td', {}, q.motivo || '—'),
+        h('td', { title: q.responsavel || undefined }, q.responsavel ? formatarNomeResponsavelTabela(q.responsavel, STATE.usuarios) : '—'),
+        h('td', {}, delBtn || ''),
+      ]);
+      row.addEventListener('click', (ev) => { if (ev.target.closest('button')) return; requireAuth(() => openEditQuebra(q)); });
+      return row;
+    }));
+    wrap.appendChild(h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', {}, [thead, tbody]))));
+    return wrap;
+  }
+
   /* ============ RENDER: LISTA DE ESPERA ============ */
   function buildEsperaTab() {
     const wrap = h('div', {});
     if (showEsperaForm) {
       const idade = vacinacaoCalcularIdade(esperaDraft.dataNascimento);
       const avisoTxt = vacinacaoAvisoElegibilidade(idade, !!esperaDraft.gripe, !!esperaDraft.covid);
-      wrap.appendChild(buildRecordForm(vacinacaoListaEsperaSchema.map(f => {
+      wrap.appendChild(buildRecordFormEstreito(vacinacaoListaEsperaSchema.map(f => {
         if (f.name === 'dataNascimento') return Object.assign({}, f, { onChange: () => rerender(), helperText: avisoTxt || undefined });
         if (f.name === 'gripe' || f.name === 'covid') return Object.assign({}, f, { onChange: () => rerender() });
         return f;
@@ -30800,8 +31028,9 @@ function buildVacinacaoPage(container, goTo) {
   function buildResponsaveisTab() {
     const wrap = h('div', {});
     if (showResponsavelForm) {
-      wrap.appendChild(buildRecordForm(vacinacaoResponsavelSchema, responsavelDraft, {
+      wrap.appendChild(buildRecordFormEstreito(vacinacaoResponsavelSchema, responsavelDraft, {
         editing: !!responsavelEditId, onSubmit: submitResponsavel, onCancel: cancelResponsavelForm, errorMessage: responsavelFormError, saving: responsavelSaving,
+        fieldOverrides: { horaInicio: buildCampoHoraScrollVacinacao, horaFim: buildCampoHoraScrollVacinacao },
       }));
       return wrap;
     }
@@ -30846,10 +31075,11 @@ function buildVacinacaoPage(container, goTo) {
     const enf = isEnfermeiro();
     if (enf && activeSubTab === 'responsaveis') activeSubTab = 'agenda';
     const wrap = h('div', { class: 'animate-in' });
-    const anyFormOpen = showMarcacaoForm || showEncomendaForm || showEsperaForm || showResponsavelForm;
+    const anyFormOpen = showMarcacaoForm || showEncomendaForm || showQuebraForm || showEsperaForm || showResponsavelForm;
     const fecharFormAtivo = () => {
       if (showMarcacaoForm) cancelMarcacaoForm();
       else if (showEncomendaForm) cancelEncomendaForm();
+      else if (showQuebraForm) cancelQuebraForm();
       else if (showEsperaForm) cancelEsperaForm();
       else if (showResponsavelForm) cancelResponsavelForm();
     };
@@ -30861,6 +31091,7 @@ function buildVacinacaoPage(container, goTo) {
       const abas = [
         h('button', { class: 'tab-btn' + (activeSubTab === 'agenda' ? ' active' : ''), onclick: () => { activeSubTab = 'agenda'; rerender(); } }, [Icon('calendar', { size: 14 }), h('span', {}, 'Agenda')]),
         h('button', { class: 'tab-btn' + (activeSubTab === 'stock' ? ' active' : ''), onclick: () => { activeSubTab = 'stock'; rerender(); } }, [Icon('package', { size: 14 }), h('span', {}, 'Stock / Encomendas')]),
+        h('button', { class: 'tab-btn' + (activeSubTab === 'quebras' ? ' active' : ''), onclick: () => { activeSubTab = 'quebras'; rerender(); } }, [Icon('alert', { size: 14 }), h('span', {}, 'Quebras')]),
         h('button', { class: 'tab-btn' + (activeSubTab === 'espera' ? ' active' : ''), onclick: () => { activeSubTab = 'espera'; rerender(); } }, [Icon('users', { size: 14 }), h('span', {}, 'Lista de Espera')]),
       ];
       if (!enf) abas.push(h('button', { class: 'tab-btn' + (activeSubTab === 'responsaveis' ? ' active' : ''), onclick: () => { activeSubTab = 'responsaveis'; rerender(); } }, [Icon('idBadge', { size: 14 }), h('span', {}, 'Responsáveis')]));
@@ -30868,6 +31099,7 @@ function buildVacinacaoPage(container, goTo) {
     }
     if (activeSubTab === 'agenda') wrap.appendChild(buildAgendaTab());
     else if (activeSubTab === 'stock') wrap.appendChild(buildStockTab());
+    else if (activeSubTab === 'quebras') wrap.appendChild(buildQuebrasTab());
     else if (activeSubTab === 'espera') wrap.appendChild(buildEsperaTab());
     else if (!enf) wrap.appendChild(buildResponsaveisTab());
     return wrap;
