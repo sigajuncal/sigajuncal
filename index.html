@@ -838,9 +838,15 @@
   .selectable-row.row-selected:hover{background:var(--pharm-100);}
   /* Elementos interativos dentro de uma linha selecionável (botões, links,
      inputs, selects) mantêm sempre o próprio cursor — nunca o "pointer" de
-     seleção da linha, para não sugerir que também selecionam a linha. */
-  .selectable-row button, .selectable-row a, .selectable-row input,
-  .selectable-row select, .selectable-row textarea, .selectable-row label{cursor:auto;}
+     seleção da linha, para não sugerir que também selecionam a linha.
+     Corrigido (pedido explícito 2026-08-11): botões e links são eles
+     próprios clicáveis, por isso o "próprio cursor" deles é sempre
+     "pointer" (cursor:auto num <button> resolve para a seta normal em
+     vários browsers/SO, dando a entender por engano que não são
+     clicáveis) — só inputs/selects/textarea/label é que fazem sentido
+     ficar com cursor:auto (campo de escrita/seleção, não um clique único). */
+  .selectable-row button, .selectable-row a{cursor:pointer;}
+  .selectable-row input, .selectable-row select, .selectable-row textarea, .selectable-row label{cursor:auto;}
   .checkbox-cell{width:20px;text-align:center;padding-left:6px;padding-right:6px;}
   .pedidos-table th, .pedidos-table td{text-align:center;}
   .pedidos-table thead th{position:sticky;top:0;z-index:5;background:var(--pharm-50);
@@ -2505,7 +2511,7 @@
   .agenda-slot-bloqueado{background:var(--pharm-100);}
   .agenda-slot-bloqueado .agenda-slot-label{color:var(--pharm-500);font-style:italic;}
   .agenda-slot-bloqueado .agenda-slot-nome,.agenda-slot-bloqueado .agenda-slot-servico{color:var(--pharm-500) !important;}
-  .agenda-slot-ocupado{background:#eff6ff;}
+  .agenda-slot-ocupado{background:#eff6ff;cursor:pointer;}
   .agenda-slot-row.linha-selecionada{background:var(--pharm-100) !important;box-shadow:inset 3px 0 0 var(--pharm-500);}
   .agenda-slot-encaixe{background:#fdf4ff;border:1px dashed #d8b4fe;}
   /* Selo "ENCAIXE" (pedido explícito 2026-08-11) — marcação fora da
@@ -2514,11 +2520,14 @@
      de relance sem precisar de secção à parte. */
   .badge-encaixe{display:inline-block;margin-left:6px;font-size:8.5px;font-weight:800;letter-spacing:.03em;
     color:#a21caf;background:#fae8ff;border:1px solid #f0abfc;border-radius:5px;padding:1px 5px;vertical-align:middle;}
-  /* Nome de quem regista/administra a marcação, visível diretamente na
-     grelha de Vagas (pedido explícito 2026-08-11) — discreto, não compete
-     com o nome do utente nem com o estado. */
+  /* Responsável pela Vacinação neste período (separador "Responsáveis"),
+     visível diretamente na grelha de Vagas (pedido explícito 2026-08-11)
+     — discreto, não compete com o nome do utente nem com o estado. Sem
+     responsável definido fica ainda mais discreto/tracejado, para não
+     parecer um alerta grave — é só informativo. */
   .agenda-slot-responsavel{flex-shrink:0;font-size:11.5px;font-weight:700;color:var(--pharm-500);
     background:var(--pharm-100);border-radius:7px;padding:2px 8px;white-space:nowrap;}
+  .agenda-slot-responsavel-vazio{color:var(--pharm-400);background:transparent;border:1px dashed var(--pharm-200);font-weight:600;}
   /* Slots "arrastados" por uma marcação mais longa (ex: 60min a partir das
      12:15) — ligados visualmente à marcação principal por uma barra lateral
      na mesma cor do slot ocupado, mais estreitos/discretos que a linha
@@ -9572,7 +9581,7 @@ function buildRecordForm(schema, draft, opts) {
     actionsRow.push(h('button', { class: 'btn-revert', style: 'color:#16a34a;border-color:#bbf7d0;background:#f0fdf4;', onclick: () => requireAuth(opts.onConclude) }, [Icon('check', { size: 15, strokeWidth: 2.4 }), ' ' + (opts.concludeLabel || 'Concluir')]));
   }
   if (opts.editing && opts.onRevert) {
-    actionsRow.push(h('button', { class: 'btn-revert', onclick: () => requireAuth(opts.onRevert) }, [Icon('undo', { size: 15, strokeWidth: 2.2 }), ' ' + (opts.revertLabel || 'Anular Correção')]));
+    actionsRow.push(h('button', { class: 'btn-revert', onclick: () => requireAuth(opts.onRevert) }, [Icon(opts.revertIcon || 'undo', { size: 15, strokeWidth: 2.2 }), ' ' + (opts.revertLabel || 'Anular Correção')]));
   }
   if (opts.editing && opts.onDelete) {
     actionsRow.push(h('button', {
@@ -30061,7 +30070,19 @@ function buildVacinacaoPage(container, goTo) {
 
 
   function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
-  function campanhas() { return STATE.vacinacaoCampanhas.slice().sort((a, b) => (b.dataInicio || '').localeCompare(a.dataInicio || '')); }
+  // A campanha ATUALMENTE em vigor (hoje dentro de dataInicio-dataFim)
+  // fica sempre em primeiro lugar, qualquer que seja a data — as
+  // restantes (passadas ou futuras já semeadas) seguem-se por ordem
+  // cronológica decrescente (pedido explícito 2026-08-11).
+  function campanhas() {
+    const hoje = todayISO();
+    return STATE.vacinacaoCampanhas.slice().sort((a, b) => {
+      const aAtual = a.dataInicio && a.dataFim && a.dataInicio <= hoje && hoje <= a.dataFim;
+      const bAtual = b.dataInicio && b.dataFim && b.dataInicio <= hoje && hoje <= b.dataFim;
+      if (aAtual !== bAtual) return aAtual ? -1 : 1;
+      return (b.dataInicio || '').localeCompare(a.dataInicio || '');
+    });
+  }
   function campanhaAtual() { return STATE.vacinacaoCampanhas.find(c => c.id === campanhaId) || null; }
 
   /* ============ CAMPANHAS ============ */
@@ -30683,8 +30704,6 @@ function buildVacinacaoPage(container, goTo) {
       wrap.appendChild(EmptyState('A preparar a campanha desta temporada...'));
     } else {
       const cards = lista.map(c => {
-        const pendentes = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === c.id && m.estado === 'Pendente').length;
-        const esperaCount = STATE.vacinacaoListaEspera.filter(e => e.campanhaId === c.id).length;
         // Só o nome da campanha, em letras grandes (pedido explícito
         // 2026-08-11) — o período Início/Fim já se vê e edita dentro da
         // própria campanha, não precisa de repetir aqui.
@@ -30697,20 +30716,12 @@ function buildVacinacaoPage(container, goTo) {
         if (!isEnfermeiro()) {
           cardHeaderKids.push(h('button', { class: 'btn btn-secondary', style: 'flex-shrink:0;', onclick: (e) => { e.stopPropagation(); openEditCampanha(c); } }, [Icon('pencil', { size: 14, strokeWidth: 2.2 }), ' Editar']));
         }
-        // Stock (Gripe/COVID) removido daqui (pedido explícito 2026-08-11)
-        // — o stock inicial nasce sempre a 0 e só o separador "Stock /
-        // Encomendas" dentro da campanha dá o contexto completo (recebido,
-        // administrado, quebra); mostrar só o número aqui era mais
-        // confuso do que útil. Marcações Pendentes e Lista de Espera
-        // continuam — são úteis para perceber, de relance, que campanha
-        // precisa de atenção sem ter de entrar em cada uma.
-        const card = h('div', { class: 'card card-pad animate-in', style: 'margin-bottom:12px;cursor:pointer;' }, [
-          h('div', { style: 'display:flex;justify-content:space-between;align-items:flex-start;gap:12px;' }, cardHeaderKids),
-          h('div', { style: 'display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:13px;' }, [
-            h('span', {}, [h('strong', {}, String(pendentes)), ' marcações pendentes']),
-            h('span', {}, [h('strong', {}, String(esperaCount)), ' na lista de espera']),
-          ]),
-        ]);
+        // Contagens (Stock, Marcações Pendentes, Lista de Espera) todas
+        // removidas daqui (pedido explícito 2026-08-11) — o cartão fica só
+        // com o nome; todo o detalhe vive dentro da própria campanha, nos
+        // separadores próprios.
+        const card = h('div', { class: 'card card-pad animate-in', style: 'margin-bottom:12px;cursor:pointer;' },
+          h('div', { style: 'display:flex;justify-content:space-between;align-items:flex-start;gap:12px;' }, cardHeaderKids));
         card.addEventListener('click', () => abrirCampanha(c));
         return card;
       });
@@ -30876,32 +30887,49 @@ function buildVacinacaoPage(container, goTo) {
       mostrarBadge();
       return wrap;
     }
+    // Responsável pela Vacinação visível numa vaga (livre ou ocupada) —
+    // função partilhada por linhaOcupada e linhaLivre (pedido explícito
+    // 2026-08-11): antes de haver marcação (vaga livre) ou enquanto
+    // Pendente, mostra sempre quem está ESCALADO para este período (para
+    // se saber de antemão quem vai vacinar, mesmo sem ninguém marcado
+    // ainda) — nunca definitivo, só quem se espera que administre.
+    function buildRespPeriodoBadge(hora) {
+      const respNoPeriodo = responsaveisNoDia(dateISO, hora);
+      const nomeRespPeriodo = respNoPeriodo.length ? respNoPeriodo.map(r => r.nome).join(', ') : '';
+      return nomeRespPeriodo
+        ? h('span', { class: 'agenda-slot-responsavel', title: 'Responsável pela Vacinação escalado para este período' }, nomeRespPeriodo)
+        : h('span', { class: 'agenda-slot-responsavel agenda-slot-responsavel-vazio', title: 'Sem Responsável pela Vacinação definido para este período — ver separador "Responsáveis"' }, 'Sem responsável');
+    }
     function linhaOcupada(m, hora) {
       if (m.tipoLinha === 'bloqueado') return linhaBloqueada(m, hora);
-      const respNoPeriodo = responsaveisNoDia(dateISO, hora);
       // Encaixe (fora da grelha fixa de 10 em 10 min) — pequeno selo para
       // continuar fácil de distinguir de relance, agora que já não vive
       // isolado numa secção à parte (pedido explícito 2026-08-11).
       const ehEncaixe = !grade.includes(hora);
-      // Nome de quem trata desta marcação, visível diretamente na grelha
-      // (antes só aparecia ao passar o rato) — prioriza quem de facto
-      // administrou (administradoPor); antes de administrar, mostra quem
-      // registou (responsavel). Se a vacina tiver sido dada por outro
-      // colega, corrige-se em "Vacina(s) Administrada(s) Por", na edição
-      // (ver vacinacaoMarcacaoSchema) — nunca precisa de passar pelo
-      // Responsável do período para isso.
-      const nomeResponsavelLinha = m.administradoPor || m.responsavel || '';
+      // Uma vez Administrada, quem consta é sempre quem de facto deu a
+      // vacina (administradoPor — preenchido de forma definitiva ao
+      // mudar o Estado, ver marcarAdministrada/aplicarEstadoDiretoMarcacao),
+      // que pode ser diferente do Responsável pela Vacinação escalado
+      // para o período; antes disso (Pendente), mostra-se sempre quem
+      // está escalado, ainda não é definitivo. Cancelada nunca chega
+      // aqui — a vaga volta a livre (ver ocupacao, filtra estado!=='Cancelada'),
+      // por isso nunca aparece ninguém como responsável por uma
+      // administração que não chegou a acontecer.
+      const respBadge = m.estado === 'Administrada'
+        ? (m.administradoPor
+            ? h('span', { class: 'agenda-slot-responsavel', title: 'Administrada por (definitivo)' }, m.administradoPor)
+            : buildRespPeriodoBadge(hora))
+        : buildRespPeriodoBadge(hora);
       const row = h('div', { class: 'agenda-slot-row agenda-slot-ocupado' }, [
         h('span', { class: 'agenda-slot-hora' }, [hora, ehEncaixe ? h('span', { class: 'badge-encaixe', title: 'Encaixe — fora da grelha fixa de 10 em 10 minutos' }, 'ENCAIXE') : null]),
         h('span', { class: 'agenda-slot-label cell-strong' }, [
           h('span', { class: 'agenda-slot-nome' }, m.nome || '—'),
           h('span', { class: 'agenda-slot-servico' }, vacinacaoLabelVacinas(m)),
         ]),
-        nomeResponsavelLinha ? h('span', { class: 'agenda-slot-responsavel', title: m.administradoPor ? 'Administrada por' : 'Registada por' }, nomeResponsavelLinha) : null,
+        respBadge,
         m.aviso ? h('span', { title: 'Utente avisado' }, Icon('bell', { size: 14, strokeWidth: 2.2 })) : null,
         buildEstadoBadgeVaga(m),
       ]);
-      row.title = respNoPeriodo.length ? `Responsável pela Vacinação: ${respNoPeriodo.map(r => r.nome).join(', ')}` : undefined;
       row.addEventListener('click', () => openEditMarcacao(m));
       return row;
     }
@@ -30938,6 +30966,7 @@ function buildVacinacaoPage(container, goTo) {
       return h('div', { class: 'agenda-slot-row agenda-slot-livre agenda-vaga-futura' }, [
         h('span', { class: 'agenda-slot-hora' }, hora),
         h('span', { class: 'agenda-slot-label cell-muted' }, 'Vaga livre'),
+        buildRespPeriodoBadge(hora),
         h('div', { class: 'row-actions' }, [bookBtn, blockBtn]),
       ]);
     }
@@ -31394,7 +31423,7 @@ function buildVacinacaoPage(container, goTo) {
         editing: !!marcacaoEditId, onSubmit: submitMarcacao, onCancel: cancelMarcacaoForm, errorMessage: marcacaoFormError, saving: marcacaoSaving,
         fieldOverrides: { responsavel: buildCampoAutomaticoReadonly },
         onConclude: (marcacaoEditId && marcacaoDraft.estado === 'Pendente') ? () => marcarAdministrada(marcacaoDraft) : null, concludeLabel: 'Marcar como Administrada',
-        onRevert: (marcacaoEditId && marcacaoDraft.estado !== 'Cancelada') ? () => cancelarMarcacao(marcacaoDraft) : null, revertLabel: 'Cancelar Marcação',
+        onRevert: (marcacaoEditId && marcacaoDraft.estado !== 'Cancelada') ? () => cancelarMarcacao(marcacaoDraft) : null, revertLabel: 'Cancelar Marcação', revertIcon: 'x',
         onDelete: (marcacaoEditId && !isEnfermeiro()) ? () => removeMarcacaoUnica(marcacaoDraft) : null,
       }));
       return wrap;
