@@ -3895,6 +3895,11 @@ const vacinacaoEncomendaSchema = [
   { name: 'qtdGripe', label: 'Quantidade — Gripe', type: 'number', size: 'sm' },
   { name: 'qtdCovid', label: 'Quantidade — COVID', type: 'number', size: 'sm' },
   { name: 'responsavel', label: 'Registado Por', type: 'text', size: 'sm' },
+  // Quem confirma a receção (marcarEncomendaRececionada) — sempre quem tem
+  // sessão iniciada nesse momento, nunca quem registou a encomenda
+  // originalmente (podem ser pessoas diferentes); automático e não
+  // editável à mão, tal como "Registado Por" (pedido explícito 2026-08-11).
+  { name: 'recebidoPor', label: 'Rececionado Por', type: 'text', size: 'sm' },
 ];
 // Quebras/Desperdício — vacinas partidas, contaminadas ou desperdiçadas
 // (nunca chegam a ser administradas a ninguém). Registadas por dia, contam
@@ -30307,7 +30312,11 @@ function buildVacinacaoPage(container, goTo) {
   }
 
   /* ============ ENCOMENDAS / STOCK ============ */
-  function encomendaVazia() { return Object.assign(emptyRecord(vacinacaoEncomendaSchema), { campanhaId, data: todayISO() }); }
+  // "Registado Por" já nasce preenchido com quem tem sessão iniciada
+  // (pedido explícito 2026-08-11: antes só era gravado no submit, ficando
+  // em branco enquanto o formulário estava aberto) — continua não
+  // editável à mão (ver buildCampoAutomaticoReadonly).
+  function encomendaVazia() { return Object.assign(emptyRecord(vacinacaoEncomendaSchema), { campanhaId, data: todayISO(), responsavel: currentUserName() }); }
   function openNewEncomenda() { if (!isMasterUser()) return; encomendaDraft = encomendaVazia(); encomendaEditId = null; encomendaFormError = ''; showEncomendaForm = true; rerender(); }
   function openEditEncomenda(e) { if (!isMasterUser()) return; encomendaDraft = Object.assign({}, e); encomendaEditId = e.id; encomendaFormError = ''; showEncomendaForm = true; rerender(); }
   function cancelEncomendaForm() { showEncomendaForm = false; encomendaFormError = ''; rerender(); }
@@ -30320,6 +30329,11 @@ function buildVacinacaoPage(container, goTo) {
       encomendaFormError = 'Indique a quantidade encomendada de pelo menos uma vacina.'; rerender(); return;
     }
     if (encomendaDraft.estado === 'Rececionada' && !encomendaDraft.dataRececao) encomendaDraft.dataRececao = todayISO();
+    // Cobre também quem muda o Estado diretamente para "Rececionada" no
+    // formulário (em vez de usar o botão "Confirmar Receção") — nos dois
+    // casos, quem confirma a receção fica sempre registado (pedido
+    // explícito 2026-08-11), nunca reescrito se já estiver preenchido.
+    if (encomendaDraft.estado === 'Rececionada' && !encomendaDraft.recebidoPor) encomendaDraft.recebidoPor = currentUserName();
     encomendaFormError = '';
     if (!encomendaEditId) encomendaDraft.responsavel = currentUserName();
     encomendaSaving = true; rerender();
@@ -30350,7 +30364,11 @@ function buildVacinacaoPage(container, goTo) {
   function marcarEncomendaRececionada(e) {
     if (!isMasterUser()) return;
     confirmDialog('Confirmar que esta encomenda já foi rececionada na farmácia? As quantidades passam a contar para o stock.', async () => {
-      const updated = await dbUpdate('vacinacaoEncomendas', e.id, { estado: 'Rececionada', dataRececao: e.dataRececao || todayISO() });
+      // Rececionado Por: sempre quem confirma agora, nunca reescrito numa
+      // futura correção se já estiver preenchido (mesmo espírito de
+      // "administradoPor" nas Marcações) — pode ser diferente de quem
+      // registou a encomenda originalmente (pedido explícito 2026-08-11).
+      const updated = await dbUpdate('vacinacaoEncomendas', e.id, { estado: 'Rececionada', dataRececao: e.dataRececao || todayISO(), recebidoPor: e.recebidoPor || currentUserName() });
       if (updated) { STATE.vacinacaoEncomendas = STATE.vacinacaoEncomendas.map(x => x.id === e.id ? updated : x); rerender(); }
       else showDbErrorToast('Não foi possível atualizar a encomenda');
     }, { confirmLabel: 'Confirmar Receção' });
@@ -30582,7 +30600,7 @@ function buildVacinacaoPage(container, goTo) {
 
   function buildCampanhasView() {
     const wrap = h('div', { class: 'animate-in' });
-    wrap.appendChild(withBackButton(buildPageHeader('syringe', 'Vacinação', 'Todas as campanhas (criadas automaticamente por temporada — Setembro a Abril).', STATE.vacinacaoCampanhas.length), goTo, showCampanhaForm ? cancelCampanha : undefined));
+    wrap.appendChild(withBackButton(buildPageHeader('syringe', 'Campanhas de Vacinação', 'Todas as campanhas (criadas automaticamente por temporada — Setembro a Abril).', STATE.vacinacaoCampanhas.length), goTo, showCampanhaForm ? cancelCampanha : undefined));
     if (showCampanhaForm) {
       wrap.appendChild(buildRecordFormEstreito(vacinacaoCampanhaSchema, campanhaDraft, {
         editing: !!campanhaEditId, onSubmit: submitCampanha, onCancel: cancelCampanha, errorMessage: campanhaFormError, saving: campanhaSaving,
@@ -30594,14 +30612,13 @@ function buildVacinacaoPage(container, goTo) {
       wrap.appendChild(EmptyState('A preparar a campanha desta temporada...'));
     } else {
       const cards = lista.map(c => {
-        const stock = vacinacaoStockAtual(c);
         const pendentes = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === c.id && m.estado === 'Pendente').length;
         const esperaCount = STATE.vacinacaoListaEspera.filter(e => e.campanhaId === c.id).length;
+        // Só o nome da campanha, em letras grandes (pedido explícito
+        // 2026-08-11) — o período Início/Fim já se vê e edita dentro da
+        // própria campanha, não precisa de repetir aqui.
         const cardHeaderKids = [
-          h('div', {}, [
-            h('h3', { class: 'dash-card-title', style: 'margin:0 0 4px;' }, c.nome || '—'),
-            h('p', { class: 'field-helper-text', style: 'margin:0;' }, `${c.dataInicio ? formatDate(c.dataInicio) : '—'} a ${c.dataFim ? formatDate(c.dataFim) : '—'}`),
-          ]),
+          h('h3', { class: 'dash-card-title', style: 'margin:0;font-size:22px;' }, c.nome || '—'),
         ];
         // Enfermeiro: só consulta/marca — nunca edita campanhas (stock
         // inicial, período, etc. são decisões de gestão). Ninguém "cria"
@@ -30609,11 +30626,16 @@ function buildVacinacaoPage(container, goTo) {
         if (!isEnfermeiro()) {
           cardHeaderKids.push(h('button', { class: 'btn btn-secondary', style: 'flex-shrink:0;', onclick: (e) => { e.stopPropagation(); openEditCampanha(c); } }, [Icon('pencil', { size: 14, strokeWidth: 2.2 }), ' Editar']));
         }
+        // Stock (Gripe/COVID) removido daqui (pedido explícito 2026-08-11)
+        // — o stock inicial nasce sempre a 0 e só o separador "Stock /
+        // Encomendas" dentro da campanha dá o contexto completo (recebido,
+        // administrado, quebra); mostrar só o número aqui era mais
+        // confuso do que útil. Marcações Pendentes e Lista de Espera
+        // continuam — são úteis para perceber, de relance, que campanha
+        // precisa de atenção sem ter de entrar em cada uma.
         const card = h('div', { class: 'card card-pad animate-in', style: 'margin-bottom:12px;cursor:pointer;' }, [
           h('div', { style: 'display:flex;justify-content:space-between;align-items:flex-start;gap:12px;' }, cardHeaderKids),
           h('div', { style: 'display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:13px;' }, [
-            h('span', {}, [h('strong', {}, String(stock.gripe)), ' Gripe em stock']),
-            h('span', {}, [h('strong', {}, String(stock.covid)), ' COVID em stock']),
             h('span', {}, [h('strong', {}, String(pendentes)), ' marcações pendentes']),
             h('span', {}, [h('strong', {}, String(esperaCount)), ' na lista de espera']),
           ]),
@@ -31399,7 +31421,7 @@ function buildVacinacaoPage(container, goTo) {
       }
       wrap.appendChild(buildRecordFormEstreito(vacinacaoEncomendaSchema, encomendaDraft, {
         editing: !!encomendaEditId, onSubmit: submitEncomenda, onCancel: cancelEncomendaForm, errorMessage: encomendaFormError, saving: encomendaSaving,
-        fieldOverrides: { responsavel: buildCampoAutomaticoReadonly },
+        fieldOverrides: { responsavel: buildCampoAutomaticoReadonly, recebidoPor: buildCampoAutomaticoReadonly },
         onConclude: (encomendaEditId && encomendaDraft.estado === 'Pendente') ? () => marcarEncomendaRececionada(encomendaDraft) : null, concludeLabel: 'Confirmar Receção',
       }));
       return wrap;
@@ -31408,7 +31430,7 @@ function buildVacinacaoPage(container, goTo) {
     if (!list.length) {
       wrap.appendChild(EmptyState('Ainda não há encomendas registadas nesta campanha.'));
     } else {
-      const headers = (podeGerirEncomendas ? [''] : []).concat(['Data', 'Gripe', 'COVID', 'Estado', 'Data de Receção', 'Registado Por']);
+      const headers = (podeGerirEncomendas ? [''] : []).concat(['Data', 'Gripe', 'COVID', 'Estado', 'Data de Receção', 'Registado Por', 'Rececionado Por']);
       const thead = h('thead', {}, h('tr', {}, headers.map(t => h('th', {}, t))));
       const tbody = h('tbody', {}, list.map(e => {
         const selected = encomendaSelectedIds.has(e.id);
@@ -31424,6 +31446,7 @@ function buildVacinacaoPage(container, goTo) {
           h('td', {}, estadoBadge),
           h('td', {}, e.dataRececao ? formatDate(e.dataRececao) : '—'),
           h('td', { title: e.responsavel || undefined }, e.responsavel ? formatarNomeResponsavelTabela(e.responsavel, STATE.usuarios) : '—'),
+          h('td', { title: e.recebidoPor || undefined }, e.recebidoPor ? formatarNomeResponsavelTabela(e.recebidoPor, STATE.usuarios) : '—'),
         );
         const row = h('tr', { class: 'selectable-row' + (selected ? ' row-selected' : '') }, cells);
         if (podeGerirEncomendas) row.addEventListener('click', (ev) => { if (ev.target.closest('input[type=checkbox]')) return; openEditEncomenda(e); });
