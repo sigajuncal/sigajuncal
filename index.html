@@ -1117,6 +1117,13 @@
   .date-input-icon svg{display:block;}
   .checkbox-field{display:flex;align-items:center;gap:8px;padding-top:23px;cursor:pointer;user-select:none;
     grid-column:span 6;white-space:nowrap;}
+  /* Uma checkbox com field.size definido (ex: 'xs'/'sm') deve respeitar
+     esse tamanho em vez do span:6 por defeito acima — regra própria, com a
+     MESMA especificidade da .checkbox-field mas depois no ficheiro, para
+     vencer no cascade (sem isto, checkboxes com size ficavam sempre a
+     meio da linha, longe umas das outras — ex: Gripe/COVID da Vacinação). */
+  .checkbox-field.field-xs{grid-column:span 3;}
+  .checkbox-field.field-sm{grid-column:span 4;}
   .checkbox-field input{width:16px;height:16px;accent-color:var(--pharm-600);cursor:pointer;flex-shrink:0;}
   .checkbox-field span{font-size:13.5px;font-weight:600;color:var(--pharm-800);white-space:nowrap;}
   /* Formações — seletor de participantes em tags/checkboxes */
@@ -2439,6 +2446,12 @@
   .agenda-vaga-expirada{opacity:.6;}
   .agenda-vaga-expirada .agenda-slot-label{font-style:italic;}
   .agenda-slots-list{display:flex;flex-direction:column;gap:5px;max-height:60vh;overflow-y:auto;}
+  /* Grelha de Vagas da Vacinação — Manhã e Tarde lado a lado em ecrãs
+     largos (aproveita a largura, poupa scroll); empilha em coluna única
+     abaixo de 900px (tablet/telemóvel), onde duas colunas ficariam
+     demasiado estreitas para serem confortáveis. */
+  .vagas-grelha-colunas{display:grid;grid-template-columns:1fr;gap:22px;}
+  @media (min-width:900px){.vagas-grelha-colunas{grid-template-columns:1fr 1fr;}}
   .agenda-slot-row{display:flex;align-items:center;gap:12px;padding:9px 12px;border-radius:10px;
     background:var(--pharm-50);}
   .agenda-slot-hora{font-size:12px;font-weight:800;color:var(--pharm-700);width:96px;flex-shrink:0;
@@ -9409,7 +9422,7 @@ function buildRecordForm(schema, draft, opts) {
 // Usada nos formulários do módulo de Vacinação, onde os campos são poucos
 // e curtos (datas, horas, números) e não fazem sentido a esticar.
 function buildRecordFormEstreito(schema, draft, opts, maxWidth) {
-  return h('div', { style: `max-width:${maxWidth || 820}px;` }, [buildRecordForm(schema, draft, opts)]);
+  return h('div', { style: `max-width:${maxWidth || 960}px;` }, [buildRecordForm(schema, draft, opts)]);
 }
 
 // ---- Toasts: feedback visível e não-bloqueante, usado sobretudo para
@@ -30007,21 +30020,29 @@ function buildVacinacaoPage(container, goTo) {
   // Cancelar uma marcação pergunta sempre, a seguir, se a pessoa deve
   // voltar para a Lista de Espera desta campanha — nunca insere sozinho,
   // só pergunta (ver popup em cancelarMarcacao).
+  // Pergunta se a pessoa deve voltar para a Lista de Espera desta
+  // campanha — usado depois de QUALQUER caminho que cancele uma marcação
+  // (formulário completo em cancelarMarcacao, ou a troca direta pelo
+  // badge de Estado em aplicarEstadoDiretoMarcacao). Nunca insere sozinho,
+  // só pergunta.
+  function ofertarReporNaListaEspera(m) {
+    confirmDialog(`Colocar ${m.nome || 'este utente'} de novo na Lista de Espera desta campanha?`, async () => {
+      const created = await dbInsert('vacinacaoListaEspera', {
+        campanhaId, nome: m.nome || '', contacto: m.contacto || '', numeroUtente: m.numeroUtente || '', gripe: !!m.gripe, covid: !!m.covid,
+        dataNascimento: m.dataNascimento || '',
+        observacoes: 'Reposto na lista após cancelamento de marcação.',
+      });
+      if (created) { STATE.vacinacaoListaEspera = [created, ...STATE.vacinacaoListaEspera]; rerender(); }
+      else showDbErrorToast('Não foi possível adicionar à Lista de Espera');
+    }, { confirmLabel: 'Sim, adicionar' });
+  }
   function cancelarMarcacao(m) {
     confirmDialog('Tem a certeza de que quer cancelar esta marcação?', async () => {
       const updated = await dbUpdate('vacinacaoMarcacoes', m.id, { estado: 'Cancelada' });
       if (!updated) { showDbErrorToast('Não foi possível cancelar a marcação'); return; }
       STATE.vacinacaoMarcacoes = STATE.vacinacaoMarcacoes.map(x => x.id === m.id ? updated : x);
       marcacaoSelectedIds = new Set(); showMarcacaoForm = false; rerender();
-      confirmDialog(`Colocar ${m.nome || 'este utente'} de novo na Lista de Espera desta campanha?`, async () => {
-        const created = await dbInsert('vacinacaoListaEspera', {
-          campanhaId, nome: m.nome || '', contacto: m.contacto || '', numeroUtente: m.numeroUtente || '', gripe: !!m.gripe, covid: !!m.covid,
-          dataNascimento: m.dataNascimento || '',
-          observacoes: 'Reposto na lista após cancelamento de marcação.',
-        });
-        if (created) { STATE.vacinacaoListaEspera = [created, ...STATE.vacinacaoListaEspera]; rerender(); }
-        else showDbErrorToast('Não foi possível adicionar à Lista de Espera');
-      }, { confirmLabel: 'Sim, adicionar' });
+      ofertarReporNaListaEspera(m);
     }, { danger: true, confirmLabel: 'Cancelar Marcação' });
   }
   function marcarAdministrada(m) {
@@ -30033,6 +30054,21 @@ function buildVacinacaoPage(container, goTo) {
       if (updated) { STATE.vacinacaoMarcacoes = STATE.vacinacaoMarcacoes.map(x => x.id === m.id ? updated : x); marcacaoSelectedIds = new Set(); showMarcacaoForm = false; rerender(); }
       else showDbErrorToast('Não foi possível concluir a marcação');
     }, { confirmLabel: 'Confirmar' });
+  }
+  // Troca de Estado diretamente pelo badge (clicar no badge da grelha de
+  // Vagas troca-o por um <select> ali mesmo — mesmo padrão do módulo
+  // Pedidos, ver buildEstadoCell) — sem abrir o formulário completo. Nunca
+  // grava sozinho: Cancelada continua a oferecer repor na Lista de Espera;
+  // Administrada continua a preencher "Administrado Por" automaticamente.
+  async function aplicarEstadoDiretoMarcacao(m, novoEstado) {
+    if (novoEstado === m.estado) return;
+    const patch = { estado: novoEstado };
+    if (novoEstado === 'Administrada') patch.administradoPor = m.administradoPor || currentUserName();
+    const updated = await dbUpdate('vacinacaoMarcacoes', m.id, patch);
+    if (!updated) { showDbErrorToast('Não foi possível atualizar a marcação'); return; }
+    STATE.vacinacaoMarcacoes = STATE.vacinacaoMarcacoes.map(x => x.id === m.id ? updated : x);
+    rerender();
+    if (novoEstado === 'Cancelada') ofertarReporNaListaEspera(m);
   }
   function removeMarcacoesSelecionadas() {
     if (marcacaoSelectedIds.size === 0) return;
@@ -30364,10 +30400,38 @@ function buildVacinacaoPage(container, goTo) {
     const encaixes = doDia.filter(m => m.hora && m.estado !== 'Cancelada' && !grade.includes(m.hora))
       .slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || ''));
 
+    // Badge de Estado clicável — troca-se, ali mesmo, por um <select> com
+    // os 3 estados possíveis (mesmo padrão do módulo Pedidos, ver
+    // buildEstadoCell) — grava assim que se escolhe uma opção diferente,
+    // sem precisar de abrir o formulário completo.
+    function buildEstadoBadgeVaga(reg) {
+      const wrap = h('span', {});
+      function mostrarBadge() {
+        clear(wrap);
+        const badge = reg.estado === 'Administrada' ? h('span', { class: 'badge badge-green estado-badge-clicavel' }, 'ADMINISTRADA')
+          : reg.estado === 'Cancelada' ? h('span', { class: 'badge badge-red estado-badge-clicavel' }, 'CANCELADA')
+          : h('span', { class: 'badge badge-orange estado-badge-clicavel' }, 'PENDENTE');
+        badge.title = 'Clicar para alterar o estado';
+        badge.addEventListener('click', (e) => { e.stopPropagation(); requireAuth(mostrarSelect); });
+        wrap.appendChild(badge);
+      }
+      function mostrarSelect() {
+        clear(wrap);
+        const sel = h('select', { class: 'select inline-input inline-estado' }, ['Pendente', 'Administrada', 'Cancelada'].map(o => h('option', { value: o, selected: reg.estado === o ? 'selected' : undefined }, o)));
+        sel.value = reg.estado || 'Pendente';
+        sel.addEventListener('click', (e) => e.stopPropagation());
+        sel.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); sel.blur(); } });
+        sel.addEventListener('blur', () => {
+          if (sel.value === reg.estado) { mostrarBadge(); return; }
+          aplicarEstadoDiretoMarcacao(reg, sel.value);
+        });
+        wrap.appendChild(sel);
+        sel.focus();
+      }
+      mostrarBadge();
+      return wrap;
+    }
     function linhaOcupada(m, hora) {
-      const estadoBadge = m.estado === 'Administrada' ? h('span', { class: 'badge badge-green' }, 'ADMINISTRADA')
-        : m.estado === 'Cancelada' ? h('span', { class: 'badge badge-red' }, 'CANCELADA')
-        : h('span', { class: 'badge badge-orange' }, 'PENDENTE');
       const respNoPeriodo = responsaveisNoDia(dateISO, hora);
       const row = h('div', { class: 'agenda-slot-row agenda-slot-ocupado' }, [
         h('span', { class: 'agenda-slot-hora' }, hora),
@@ -30376,7 +30440,7 @@ function buildVacinacaoPage(container, goTo) {
           h('span', { class: 'agenda-slot-servico' }, vacinacaoLabelVacinas(m)),
         ]),
         m.aviso ? h('span', { title: 'Utente avisado' }, Icon('bell', { size: 14, strokeWidth: 2.2 })) : null,
-        estadoBadge,
+        buildEstadoBadgeVaga(m),
       ]);
       row.title = respNoPeriodo.length ? `Responsável: ${respNoPeriodo.map(r => r.nome).join(', ')}` : undefined;
       row.addEventListener('click', () => openEditMarcacao(m));
@@ -30417,12 +30481,30 @@ function buildVacinacaoPage(container, goTo) {
       if (m) return linhaOcupada(m, s.hora);
       return s.dentroDefault ? linhaLivre(s.hora) : linhaIndisponivel(s.hora);
     });
-    const corpo = [h('div', { class: 'agenda-slots-list', style: 'max-height:none;overflow-y:visible;' }, linhas)];
+    // Manhã | Tarde lado a lado (em vez de uma única coluna comprida) —
+    // aproveita a largura do ecrã e poupa scroll. Divisão às 14:00 (fim da
+    // pausa de almoço típica da farmácia). Em ecrãs estreitos (telemóvel)
+    // volta a empilhar em coluna única — ver .vagas-grelha-colunas no CSS.
+    const meio = slots.findIndex(s => s.hora >= '14:00');
+    const colManha = linhas.slice(0, meio === -1 ? linhas.length : meio);
+    const colTarde = meio === -1 ? [] : linhas.slice(meio);
+    const corpo = [
+      h('div', { class: 'vagas-grelha-colunas' }, [
+        h('div', {}, [
+          h('p', { class: 'field-helper-text', style: 'margin:0 0 6px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;' }, 'Manhã'),
+          h('div', { class: 'agenda-slots-list', style: 'max-height:none;overflow-y:visible;' }, colManha),
+        ]),
+        colTarde.length ? h('div', {}, [
+          h('p', { class: 'field-helper-text', style: 'margin:0 0 6px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;' }, 'Tarde'),
+          h('div', { class: 'agenda-slots-list', style: 'max-height:none;overflow-y:visible;' }, colTarde),
+        ]) : null,
+      ]),
+    ];
     if (encaixes.length) {
       corpo.push(h('p', { class: 'field-helper-text', style: 'margin:14px 0 6px;font-weight:700;' }, 'Encaixes (fora dos blocos de 10 minutos)'));
       corpo.push(h('div', { class: 'agenda-slots-list', style: 'max-height:none;overflow-y:visible;' }, encaixes.map(m => linhaOcupada(m, m.hora))));
     }
-    return h('div', { class: 'card card-pad', style: 'margin-bottom:14px;max-width:640px;' }, corpo);
+    return h('div', { class: 'card card-pad', style: 'margin-bottom:14px;max-width:1080px;' }, corpo);
   }
   // Banner de gestão de frascos COVID (6 doses/frasco) para um dia
   // concreto: mostra quantas pessoas estão marcadas (não canceladas) e, se
@@ -34504,7 +34586,14 @@ function render() {
 // NENHUM separador (activeTab) ou formulário aberto pode "saltar" sozinho:
 // dados novos do Realtime continuam a atualizar STATE normalmente, só a
 // vista é que não se re-desenha até o utilizador voltar a interagir.
-const PAGINAS_NUNCA_RECONSTROI_EM_FUNDO = new Set(['horarios']);
+// 'vacinacao' entrou por ter exatamente o mesmo perfil de risco: campanha
+// escolhida, separador ativo, dia selecionado e formulários abertos
+// (Nova Marcação, Responsável, Encomenda, Quebra...) eram todos perdidos
+// sempre que outro colega gravasse alguma coisa na mesma campanha
+// entretanto (ex: outra marcação, receção de encomenda) — o Realtime
+// disparava um redesenho de fundo a meio do preenchimento e o formulário
+// "desaparecia" sem o utilizador ter clicado em nada.
+const PAGINAS_NUNCA_RECONSTROI_EM_FUNDO = new Set(['horarios', 'vacinacao']);
 function renderInterno(ehTransicaoDePagina) {
   const root = document.getElementById('root');
 
