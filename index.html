@@ -29659,8 +29659,6 @@ function buildVacinacaoPage(container, goTo) {
   let marcacaoOrigemEsperaId = null; // preenchido quando se "Marca" a partir da Lista de Espera
   let agendaView = 'calendario'; // calendario | lista
   let agendaDiaSelecionado = null; // dateISO — quando definido, mostra a agenda desse dia
-  const hoje = new Date();
-  let calAno = hoje.getFullYear(), calMes = hoje.getMonth();
 
   // ---- Encomendas / Stock ----
   let showEncomendaForm = false, encomendaDraft = null, encomendaEditId = null, encomendaFormError = '', encomendaSaving = false;
@@ -30280,16 +30278,34 @@ function buildVacinacaoPage(container, goTo) {
   // vários meses lado a lado usado nas Agendas/Eventos: aqui há muitas mais
   // marcações por dia (10 em 10 minutos), por isso o calendário e a lista
   // do dia precisam do máximo de espaço possível, não de um cartão estreito.
-  function buildAgendaCalendarioView() {
-    const wrap = h('div', {});
-    const firstDay = new Date(calAno, calMes, 1);
+  // Meses da campanha (ex: Setembro/2026 a Abril/2027 = 8 meses) — nunca
+  // se navega ano fora à toa: o calendário mostra sempre só o período real
+  // da própria campanha (dataInicio a dataFim), em grelha fixa de 4 colunas
+  // (4 meses em cima, 4 em baixo, para uma campanha de 8 meses).
+  function vacinacaoMesesDaCampanha(campanha) {
+    if (!campanha || !campanha.dataInicio || !campanha.dataFim) return [];
+    const [anoIni, mesIni] = campanha.dataInicio.split('-').map(Number);
+    const [anoFim, mesFim] = campanha.dataFim.split('-').map(Number);
+    const meses = [];
+    let y = anoIni, m = mesIni;
+    let guarda = 0; // salvaguarda contra datas inválidas/invertidas — nunca um loop infinito
+    while ((y < anoFim || (y === anoFim && m <= mesFim)) && guarda < 24) {
+      meses.push({ ano: y, mes: m - 1 }); // mês 0-indexed, para bater certo com Date()/MESES_PT
+      m += 1;
+      if (m > 12) { m = 1; y += 1; }
+      guarda += 1;
+    }
+    return meses;
+  }
+  function buildMiniMes(ano, mes0) {
+    const firstDay = new Date(ano, mes0, 1);
     const startWeekday = (firstDay.getDay() + 6) % 7;
-    const daysInMonth = new Date(calAno, calMes + 1, 0).getDate();
+    const daysInMonth = new Date(ano, mes0 + 1, 0).getDate();
     const todayStr = todayISO();
     const cells = [];
-    for (let i = 0; i < startWeekday; i++) cells.push(h('div', { style: 'min-height:76px;' }));
+    for (let i = 0; i < startWeekday; i++) cells.push(h('div', {}));
     for (let d = 1; d <= daysInMonth; d++) {
-      const dateISO = `${calAno}-${pad2(calMes + 1)}-${pad2(d)}`;
+      const dateISO = `${ano}-${pad2(mes0 + 1)}-${pad2(d)}`;
       const doDia = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO && m.estado !== 'Cancelada');
       const covidDoDia = doDia.filter(m => m.covid).length;
       const avisoMultiplo = covidDoDia > 0 && vacinacaoFaltamParaMultiploSeis(covidDoDia) !== 0;
@@ -30297,37 +30313,37 @@ function buildVacinacaoPage(container, goTo) {
       const isPast = dateISO < todayStr;
       const aberto = vacinacaoDiaAberto(dateISO);
       const isSunday = vacinacaoEhDomingo(dateISO);
-      // Cores (pouco saturadas): aberto+múltiplo de 6 de COVID (0 conta como
-      // múltiplo, ou seja, dias só de Gripe também ficam verdes) = verde;
-      // aberto e NÃO múltiplo de 6 = laranja; aberto e sem marcações = azul;
-      // não aberto = neutro. Dias já passados ficam esbatidos (como nas Agendas).
+      // Cores (pouco saturadas): aberto+múltiplo de 6 de COVID (0 conta
+      // como múltiplo, ou seja, dias só de Gripe também ficam verdes) =
+      // verde; aberto e NÃO múltiplo de 6 = laranja; aberto e sem
+      // marcações = azul; não aberto = neutro. Dias já passados ficam
+      // esbatidos (como nas Agendas).
       let bg = '#fff', border = 'var(--pharm-200)';
       if (aberto && doDia.length && !avisoMultiplo) { bg = '#ecfdf5'; border = '#86efac'; }
       else if (aberto && doDia.length && avisoMultiplo) { bg = '#fffbeb'; border = '#fcd34d'; }
       else if (aberto && !doDia.length) { bg = '#eff6ff'; border = '#93c5fd'; }
       const estiloEsbatido = isPast ? 'opacity:.55;filter:grayscale(.25);' : '';
       const cell = h('div', {
-        style: `min-height:76px;border-radius:10px;border:1.5px solid ${isToday ? 'var(--pharm-700)' : border};background:${bg};padding:6px 8px;cursor:pointer;display:flex;flex-direction:column;gap:2px;transition:transform .1s ease;${estiloEsbatido}`,
+        style: `aspect-ratio:1/1;border-radius:6px;border:1.2px solid ${isToday ? 'var(--pharm-700)' : border};background:${bg};cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:${isToday ? '800' : '500'};${estiloEsbatido}`,
         title: doDia.length ? `${doDia.length} marcação${doDia.length > 1 ? 'ões' : ''}` + (avisoMultiplo ? ` · ⚠️ COVID: ${covidDoDia} (não múltiplo de 6)` : ' · ✅ COVID em múltiplo de 6') : (aberto ? 'Dia aberto, sem marcações' : (isSunday ? 'Domingo — pede confirmação ao abrir' : undefined)),
-      }, [
-        h('span', { style: `font-weight:${isToday ? '800' : '600'};font-size:13px;` }, String(d)),
-        doDia.length ? h('span', { style: 'font-size:11px;color:var(--pharm-700);' }, `${doDia.length} marc.`) : null,
-        doDia.length ? h('span', { style: 'font-size:10.5px;color:var(--pharm-500);' }, `COVID: ${covidDoDia}${avisoMultiplo ? ' ⚠️' : ''}`) : null,
-      ]);
+      }, String(d));
       cell.addEventListener('click', () => { agendaDiaSelecionado = dateISO; rerender(); });
       cells.push(cell);
     }
-    const weekdayRow = h('div', { style: 'display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin-bottom:4px;' },
-      DIAS_SEMANA_PT.map(d => h('div', { style: 'text-align:center;font-size:11px;font-weight:800;color:var(--pharm-400);text-transform:uppercase;' }, d)));
-    const navRow = h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;' }, [
-      h('button', { class: 'btn btn-secondary', onclick: () => { calMes -= 1; if (calMes < 0) { calMes = 11; calAno -= 1; } rerender(); } }, '‹'),
-      h('h3', { class: 'dash-card-title', style: 'margin:0;font-size:16px;' }, `${MESES_PT[calMes]} ${calAno}`),
-      h('button', { class: 'btn btn-secondary', onclick: () => { calMes += 1; if (calMes > 11) { calMes = 0; calAno += 1; } rerender(); } }, '›'),
+    const weekdayRow = h('div', { style: 'display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:3px;' },
+      DIAS_SEMANA_PT.map(d => h('div', { style: 'text-align:center;font-size:8.5px;font-weight:800;color:var(--pharm-400);' }, d[0])));
+    return h('div', { class: 'card card-pad', style: 'box-sizing:border-box;' }, [
+      h('h4', { style: 'margin:0 0 6px;font-size:12.5px;font-weight:800;color:var(--pharm-700);text-align:center;' }, `${MESES_PT[mes0]} ${ano}`),
+      weekdayRow,
+      h('div', { style: 'display:grid;grid-template-columns:repeat(7,1fr);gap:2px;' }, cells),
     ]);
-    wrap.appendChild(h('div', { class: 'card card-pad', style: 'width:100%;box-sizing:border-box;' }, [
-      navRow, weekdayRow,
-      h('div', { style: 'display:grid;grid-template-columns:repeat(7,1fr);gap:8px;' }, cells),
-    ]));
+  }
+  function buildAgendaCalendarioView() {
+    const campanha = campanhaAtual();
+    const meses = vacinacaoMesesDaCampanha(campanha);
+    const wrap = h('div', {});
+    if (!meses.length) { wrap.appendChild(EmptyState('Esta campanha ainda não tem um período (Início/Fim) definido.')); return wrap; }
+    wrap.appendChild(h('div', { style: 'display:grid;grid-template-columns:repeat(4,1fr);gap:14px;width:100%;box-sizing:border-box;' }, meses.map(mm => buildMiniMes(mm.ano, mm.mes))));
     return wrap;
   }
   // Aviso ao agendar: só de Gripe (sem COVID), com COVID já marcado nesse
