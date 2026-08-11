@@ -2452,6 +2452,16 @@
      demasiado estreitas para serem confortáveis. */
   .vagas-grelha-colunas{display:grid;grid-template-columns:1fr;gap:22px;}
   @media (min-width:900px){.vagas-grelha-colunas{grid-template-columns:1fr 1fr;}}
+  /* Grelha de Vagas + cartões-resumo do dia lado a lado — a grelha (card
+     próprio, max-width definido inline) fica à esquerda, os cartões numa
+     coluna estreita à direita, aproveitando o espaço que sobrava em ecrãs
+     largos. Empilha (resumo por baixo) em ecrãs estreitos. */
+  .vaga-dia-com-resumo{display:flex;flex-direction:column;gap:14px;align-items:flex-start;}
+  @media (min-width:1400px){
+    .vaga-dia-com-resumo{flex-direction:row;}
+    .vaga-dia-com-resumo > :first-child{flex:1 1 640px;min-width:0;}
+    .vaga-dia-com-resumo > :last-child{flex:0 0 280px;}
+  }
   .agenda-slot-row{display:flex;align-items:center;gap:12px;padding:9px 12px;border-radius:10px;
     background:var(--pharm-50);}
   .agenda-slot-hora{font-size:12px;font-weight:800;color:var(--pharm-700);width:96px;flex-shrink:0;
@@ -3855,9 +3865,12 @@ const vacinacaoEncomendaSchema = [
 const vacinacaoQuebraSchema = [
   { name: 'data', label: 'Data', type: 'date', size: 'xs' },
   { name: 'hora', label: 'Hora', type: 'text', size: 'xs', placeholder: 'Ex: 10:15' },
-  { name: 'qtdGripe', label: 'Quebra — Gripe', type: 'number', size: 'sm' },
-  { name: 'qtdCovid', label: 'Quebra — COVID', type: 'number', size: 'sm' },
+  { name: 'qtdGripe', label: 'Quebra — Gripe', type: 'number', size: 'xs' },
+  { name: 'qtdCovid', label: 'Quebra — COVID', type: 'number', size: 'xs' },
   { name: 'motivo', label: 'Motivo (opcional)', type: 'text', col: 2, placeholder: 'Ex: frasco caiu, seringa contaminada...' },
+  // Pré-preenchido com quem tem sessão iniciada (ver quebraVazia), mas
+  // continua sempre editável — permite corrigir para outra colega, se foi
+  // ela a registar mesmo a quebra.
   { name: 'responsavel', label: 'Registado Por', type: 'text', size: 'sm' },
 ];
 const vacinacaoListaEsperaSchema = [
@@ -4065,13 +4078,16 @@ function vacinacaoSomarMinutos(hora, minutos) {
 // Contagem de administrações/pendentes/canceladas num intervalo [desde,até]
 // (datas ISO, inclusive) — usada para os totais Hoje/Semana/Mês/Total.
 function vacinacaoContarPeriodo(campanha, desde, ate) {
-  const marcs = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanha.id && m.data && m.data >= desde && m.data <= ate);
+  const marcs = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanha.id && m.data && m.data >= desde && m.data <= ate && m.tipoLinha !== 'bloqueado');
+  const quebras = STATE.vacinacaoQuebras.filter(q => q.campanhaId === campanha.id && q.data && q.data >= desde && q.data <= ate);
   return {
     administradas: marcs.filter(m => m.estado === 'Administrada').length,
     administradasGripe: marcs.filter(m => m.estado === 'Administrada' && m.gripe).length,
     administradasCovid: marcs.filter(m => m.estado === 'Administrada' && m.covid).length,
     pendentes: marcs.filter(m => m.estado === 'Pendente').length,
     canceladas: marcs.filter(m => m.estado === 'Cancelada').length,
+    quebraGripe: quebras.reduce((s, q) => s + (Number(q.qtdGripe) || 0), 0),
+    quebraCovid: quebras.reduce((s, q) => s + (Number(q.qtdCovid) || 0), 0),
   };
 }
 // Deteção de duplicados — evita marcar/inscrever duas vezes a mesma pessoa
@@ -29964,6 +29980,21 @@ function buildVacinacaoPage(container, goTo) {
         return;
       }
     }
+    // Marcação DIRETA (não veio de "Marcar" na Lista de Espera) cujo
+    // utente já está na Lista de Espera desta campanha para a MESMA vacina
+    // — em vez de só avisar, informa-se claramente que a pessoa vai ser
+    // removida da Lista de Espera, e remove-se mesmo (reaproveita o mesmo
+    // mecanismo de marcarDaListaEspera: marcacaoOrigemEsperaId).
+    if (!marcacaoEditId && !marcacaoOrigemEsperaId) {
+      const preDup = vacinacaoBuscarDuplicados(campanhaId, marcacaoDraft, marcacaoEditId, marcacaoOrigemEsperaId);
+      if (preDup.naListaEspera) {
+        confirmDialog(`⚠️ ${preDup.naListaEspera.nome || 'Esta pessoa'} está na Lista de Espera desta campanha para a mesma vacina. Ao confirmar esta marcação direta, será removida automaticamente da Lista de Espera. Deseja continuar?`, () => {
+          marcacaoOrigemEsperaId = preDup.naListaEspera.id;
+          submitMarcacao();
+        }, { confirmLabel: 'Continuar e Remover da Lista' });
+        return;
+      }
+    }
     // Deteção de duplicados: mesma pessoa já marcada noutro dia, ou já
     // vacinada nesta época — nunca bloqueia, só pede confirmação explícita
     // (marcacaoDraft.forcarDuplicado fica true depois de confirmado, para
@@ -30000,6 +30031,7 @@ function buildVacinacaoPage(container, goTo) {
         const apagados = await bulkSoftDelete('vacinacaoListaEspera', [marcacaoOrigemEsperaId]);
         STATE.vacinacaoListaEspera = STATE.vacinacaoListaEspera.filter(e => !apagados.has(e.id));
         marcacaoOrigemEsperaId = null;
+        showToast(`${marcacaoDraft.nome || 'Utente'} removido(a) da Lista de Espera.`, 'success');
       }
       // Abertura automática e silenciosa do dia (sem popup, mesmo ao
       // domingo) assim que uma marcação é mesmo gravada com sucesso —
@@ -30082,7 +30114,10 @@ function buildVacinacaoPage(container, goTo) {
   }
   function marcacoesDaCampanha() {
     const q = normalizarTexto(marcacaoSearch).trim();
-    let list = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId);
+    // tipoLinha 'bloqueado' (vagas indisponibilizadas manualmente — ver
+    // bloquearVagaVacinacao) nunca aparece aqui: não é uma marcação real de
+    // ninguém, só existe para ocupar o lugar na grelha de Vagas.
+    let list = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.tipoLinha !== 'bloqueado');
     if (q) list = list.filter(m => [m.nome, m.contacto, m.responsavel].some(v => normalizarTexto(v).includes(q)));
     if (marcacaoTab === 'administradas') list = list.filter(m => m.estado === 'Administrada');
     else if (marcacaoTab === 'canceladas') list = list.filter(m => m.estado === 'Cancelada');
@@ -30148,7 +30183,7 @@ function buildVacinacaoPage(container, goTo) {
   // vacinacaoStockAtual). `data` nasce sempre com o dia em que o botão foi
   // premido (ver buildQuebraBtn, chamado a partir da página do dia).
   function horaAtualHHMM() { const agora = new Date(); return `${pad2(agora.getHours())}:${pad2(agora.getMinutes())}`; }
-  function quebraVazia(dateISO) { return Object.assign(emptyRecord(vacinacaoQuebraSchema), { campanhaId, data: dateISO || todayISO(), hora: horaAtualHHMM() }); }
+  function quebraVazia(dateISO) { return Object.assign(emptyRecord(vacinacaoQuebraSchema), { campanhaId, data: dateISO || todayISO(), hora: horaAtualHHMM(), responsavel: currentUserName() }); }
   function openNewQuebra(dateISO) { quebraDraft = quebraVazia(dateISO); quebraEditId = null; quebraFormError = ''; showQuebraForm = true; rerender(); }
   function openEditQuebra(q) { quebraDraft = Object.assign({}, q); quebraEditId = q.id; quebraFormError = ''; showQuebraForm = true; rerender(); }
   function cancelQuebraForm() { showQuebraForm = false; quebraFormError = ''; rerender(); }
@@ -30159,7 +30194,10 @@ function buildVacinacaoPage(container, goTo) {
       quebraFormError = 'Indique a quantidade perdida de pelo menos uma vacina.'; rerender(); return;
     }
     quebraFormError = '';
-    if (!quebraEditId) quebraDraft.responsavel = currentUserName();
+    // Pré-preenchido em quebraVazia() com quem tem sessão iniciada, mas
+    // continua editável — só reforça aqui a predefinição se, por algum
+    // motivo, tiver ficado em branco (nunca substitui um valor já escrito).
+    if (!quebraEditId && !String(quebraDraft.responsavel || '').trim()) quebraDraft.responsavel = currentUserName();
     quebraSaving = true; rerender();
     if (quebraEditId) {
       const updated = await dbUpdate('vacinacaoQuebras', quebraEditId, quebraDraft);
@@ -30387,6 +30425,69 @@ function buildVacinacaoPage(container, goTo) {
   // Ocupada (nome + vacina(s) + estado, clicável para editar). Diferença
   // única pedida: em vez de janela flutuante (modal), isto vive na própria
   // página do dia (buildAgendaDiaView), a ocupar a largura toda.
+  // Bloquear/Desbloquear vaga — mesmo espírito do módulo Agenda de
+  // Serviços (ver bloquearVaga/desbloquearVaga em buildAgendaDiaModal):
+  // um registo "vazio" em vacinacaoMarcacoes com tipoLinha:'bloqueado'
+  // (sem nome/vacinas/estado) só para ocupar o lugar na grelha — nunca
+  // conta como marcação real em lado nenhum (ver marcacoesDaCampanha,
+  // impressão, Fechar Dia, etc., todos já filtram tipoLinha!=='bloqueado').
+  function bloquearVagaVacinacao(dateISO, hora) {
+    confirmDialog(`Indisponibilizar a vaga das ${hora}?`, async () => {
+      const created = await dbInsert('vacinacaoMarcacoes', { campanhaId, data: dateISO, hora, tipoLinha: 'bloqueado', responsavel: currentUserName() });
+      if (created) { STATE.vacinacaoMarcacoes = [created, ...STATE.vacinacaoMarcacoes]; rerender(); }
+      else showDbErrorToast('Não foi possível indisponibilizar a vaga');
+    });
+  }
+  function desbloquearVagaVacinacao(m) {
+    confirmDialog('Voltar a disponibilizar esta vaga?', async () => {
+      const apagados = await bulkSoftDelete('vacinacaoMarcacoes', [m.id]);
+      STATE.vacinacaoMarcacoes = STATE.vacinacaoMarcacoes.filter(x => !apagados.has(x.id));
+      rerender();
+    });
+  }
+  // Cartões-resumo do dia (ver buildAgendaDiaView) — vivem ao lado da
+  // grelha de Vagas, aproveitando o espaço que sobrava à direita em ecrãs
+  // largos. Tudo calculado em tempo real a partir de STATE (marcações e
+  // quebras), tal como o resto do módulo — qualquer marcação, cancelamento
+  // ou quebra registada atualiza estes números no próximo render() local.
+  function buildResumoDoDiaCards(dateISO) {
+    const doDia = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO && m.tipoLinha !== 'bloqueado');
+    const agendadasGripe = doDia.filter(m => m.estado !== 'Cancelada' && m.gripe).length;
+    const agendadasCovid = doDia.filter(m => m.estado !== 'Cancelada' && m.covid).length;
+    const administradasGripe = doDia.filter(m => m.estado === 'Administrada' && m.gripe).length;
+    const administradasCovid = doDia.filter(m => m.estado === 'Administrada' && m.covid).length;
+    const quebrasDoDia = STATE.vacinacaoQuebras.filter(q => q.campanhaId === campanhaId && q.data === dateISO);
+    const quebraGripe = quebrasDoDia.reduce((s, q) => s + (Number(q.qtdGripe) || 0), 0);
+    const quebraCovid = quebrasDoDia.reduce((s, q) => s + (Number(q.qtdCovid) || 0), 0);
+    const faltamMultiplo = vacinacaoFaltamParaMultiploSeis(agendadasCovid);
+    function cartao(titulo, linhas) {
+      return h('div', { class: 'card card-pad' }, [
+        h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;' }, titulo),
+        h('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;' }, linhas),
+      ]);
+    }
+    const multiploCard = h('div', { class: 'card card-pad', style: faltamMultiplo === 0 ? 'background:#ecfdf5;border-color:#86efac;' : 'background:#fffbeb;border-color:#fde68a;' }, [
+      h('p', { class: 'field-helper-text', style: 'margin:0 0 6px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;' }, 'Múltiplo de 6 — COVID'),
+      h('p', { style: 'margin:0;font-size:13px;font-weight:600;' }, faltamMultiplo === 0
+        ? (agendadasCovid > 0 ? `✅ ${agendadasCovid} agendada${agendadasCovid > 1 ? 's' : ''} — múltiplo exato de 6, sem desperdício previsto.` : 'Sem marcações COVID neste dia.')
+        : `⚠️ Faltam ${faltamMultiplo} para completar múltiplo de 6 (${agendadasCovid} agendada${agendadasCovid > 1 ? 's' : ''}).`),
+    ]);
+    return h('div', { style: 'display:flex;flex-direction:column;gap:14px;width:100%;' }, [
+      cartao('Agendadas Neste Dia', [
+        h('span', { class: 'badge badge-blue' }, `Gripe: ${agendadasGripe}`),
+        h('span', { class: 'badge badge-blue' }, `COVID: ${agendadasCovid}`),
+      ]),
+      cartao('Administradas Neste Dia', [
+        h('span', { class: 'badge badge-green' }, `Gripe: ${administradasGripe}`),
+        h('span', { class: 'badge badge-green' }, `COVID: ${administradasCovid}`),
+      ]),
+      cartao('Quebras Neste Dia', [
+        h('span', { class: 'badge badge-red' }, `Gripe: ${quebraGripe}`),
+        h('span', { class: 'badge badge-red' }, `COVID: ${quebraCovid}`),
+      ]),
+      multiploCard,
+    ]);
+  }
   function buildVagasGrelhaDia(dateISO) {
     const doDia = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO);
     const ocupacao = {};
@@ -30397,7 +30498,7 @@ function buildVacinacaoPage(container, goTo) {
     // se for mesmo preciso, com confirmação explícita antes de avançar.
     const slots = vacinacaoGerarSlotsHorario();
     const grade = slots.map(s => s.hora);
-    const encaixes = doDia.filter(m => m.hora && m.estado !== 'Cancelada' && !grade.includes(m.hora))
+    const encaixes = doDia.filter(m => m.hora && m.estado !== 'Cancelada' && m.tipoLinha !== 'bloqueado' && !grade.includes(m.hora))
       .slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || ''));
 
     // Badge de Estado clicável — troca-se, ali mesmo, por um <select> com
@@ -30432,6 +30533,7 @@ function buildVacinacaoPage(container, goTo) {
       return wrap;
     }
     function linhaOcupada(m, hora) {
+      if (m.tipoLinha === 'bloqueado') return linhaBloqueada(m, hora);
       const respNoPeriodo = responsaveisNoDia(dateISO, hora);
       const row = h('div', { class: 'agenda-slot-row agenda-slot-ocupado' }, [
         h('span', { class: 'agenda-slot-hora' }, hora),
@@ -30446,14 +30548,40 @@ function buildVacinacaoPage(container, goTo) {
       row.addEventListener('click', () => openEditMarcacao(m));
       return row;
     }
+    // Uma vaga "bloqueada" (indisponibilizada manualmente) não é uma
+    // marcação real — mostra-se como Indisponível, com um botão para
+    // Reabrir; nunca abre o formulário de edição (não há nada para editar).
+    function linhaBloqueada(m, hora) {
+      const reabrirBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Reabrir vaga', 'aria-label': 'Reabrir vaga' }, Icon('lockOpen', { size: 12, strokeWidth: 2.2 }));
+      reabrirBtn.addEventListener('click', (e) => { e.stopPropagation(); requireAuth(() => desbloquearVagaVacinacao(m)); });
+      return h('div', { class: 'agenda-slot-row agenda-slot-bloqueado' }, [
+        h('span', { class: 'agenda-slot-hora' }, hora),
+        h('span', { class: 'agenda-slot-label' }, 'Indisponível'),
+        h('div', { class: 'row-actions' }, [reabrirBtn]),
+      ]);
+    }
+    // Vaga livre EXPIRADA (hora já passada): deixou de se poder marcar
+    // diretamente nesse horário — evita registos tardios com a hora
+    // errada (ex: vaga das 14:00 preenchida às 17:00, quando a pessoa
+    // chegou). Para um registo tardio, usa-se sempre "Adicionar Encaixe"
+    // (no cabeçalho), que predefine a hora ATUAL do registo — continua
+    // editável para outra hora, se for mesmo preciso.
     function linhaLivre(hora) {
       const expirada = vacinacaoVagaExpirada(dateISO, hora);
+      if (expirada) {
+        return h('div', { class: 'agenda-slot-row agenda-slot-livre agenda-vaga-expirada' }, [
+          h('span', { class: 'agenda-slot-hora' }, hora),
+          h('span', { class: 'agenda-slot-label cell-muted' }, 'Vaga expirada'),
+        ]);
+      }
       const bookBtn = h('button', { class: 'btn-fab-sm tone-blue', title: 'Marcar', 'aria-label': 'Marcar' }, Icon('plus', { size: 13, strokeWidth: 2.4 }));
       bookBtn.addEventListener('click', (e) => { e.stopPropagation(); requireAuth(() => openNewMarcacao({ data: dateISO, hora })); });
-      return h('div', { class: 'agenda-slot-row agenda-slot-livre' + (expirada ? ' agenda-vaga-expirada' : ' agenda-vaga-futura') }, [
+      const blockBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Indisponibilizar vaga', 'aria-label': 'Indisponibilizar vaga' }, Icon('lockClosed', { size: 12, strokeWidth: 2.2 }));
+      blockBtn.addEventListener('click', (e) => { e.stopPropagation(); requireAuth(() => bloquearVagaVacinacao(dateISO, hora)); });
+      return h('div', { class: 'agenda-slot-row agenda-slot-livre agenda-vaga-futura' }, [
         h('span', { class: 'agenda-slot-hora' }, hora),
-        h('span', { class: 'agenda-slot-label cell-muted' }, expirada ? 'Vaga expirada' : 'Vaga livre'),
-        h('div', { class: 'row-actions' }, [bookBtn]),
+        h('span', { class: 'agenda-slot-label cell-muted' }, 'Vaga livre'),
+        h('div', { class: 'row-actions' }, [bookBtn, blockBtn]),
       ]);
     }
     // Fora do horário habitual (08:00-08:20 e 21:00-24:00): sem marcação
@@ -30595,7 +30723,7 @@ function buildVacinacaoPage(container, goTo) {
   function vacinacaoFecharDia(dateISO) {
     const registo = vacinacaoDiaAbertoRegisto(dateISO);
     if (!registo) return;
-    const temAtiva = STATE.vacinacaoMarcacoes.some(m => m.campanhaId === campanhaId && m.data === dateISO && m.estado !== 'Cancelada');
+    const temAtiva = STATE.vacinacaoMarcacoes.some(m => m.campanhaId === campanhaId && m.data === dateISO && m.estado !== 'Cancelada' && m.tipoLinha !== 'bloqueado');
     if (temAtiva) {
       confirmDialog('Impossível fechar o dia: é necessário primeiro concluir, cancelar ou eliminar todas as marcações ativas para esta data.', () => {}, { confirmLabel: 'Entendido' });
       return;
@@ -30658,6 +30786,11 @@ function buildVacinacaoPage(container, goTo) {
       h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;' }, [
         buildAbrirFecharDiaBtn(dateISO),
         (() => {
+          const btn = h('button', { class: 'btn btn-secondary', title: 'Registo tardio — predefine a hora atual, mas pode escolher outra' }, [Icon('plus', { size: 14, strokeWidth: 2.4 }), ' Adicionar Encaixe']);
+          btn.addEventListener('click', () => requireAuth(() => openNewMarcacao({ data: dateISO, hora: horaAtualHHMM() })));
+          return btn;
+        })(),
+        (() => {
           const btn = h('button', { class: 'btn btn-secondary', title: 'Registar vacina partida, contaminada ou desperdiçada — sai do stock como se tivesse sido administrada' }, [Icon('alert', { size: 14, strokeWidth: 2.2 }), ' Registar Quebra']);
           btn.addEventListener('click', () => requireAuth(() => openNewQuebra(dateISO)));
           return btn;
@@ -30665,7 +30798,7 @@ function buildVacinacaoPage(container, goTo) {
         (() => {
           const btn = h('button', { class: 'btn btn-secondary' }, [Icon('printer', { size: 14, strokeWidth: 2.2 }), ' Imprimir']);
           btn.addEventListener('click', () => {
-            const lista = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO && m.estado !== 'Cancelada')
+            const lista = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO && m.estado !== 'Cancelada' && m.tipoLinha !== 'bloqueado')
               .slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || ''));
             imprimirDocumento(buildImpressaoMarcacoesDoc(campanhaAtual(), dateISO, lista), { titulo: `vacinacao_${dateISO}` });
           });
@@ -30677,7 +30810,6 @@ function buildVacinacaoPage(container, goTo) {
     if (showQuebraForm) {
       wrap.appendChild(buildRecordFormEstreito(vacinacaoQuebraSchema, quebraDraft, {
         editing: !!quebraEditId, onSubmit: submitQuebra, onCancel: cancelQuebraForm, errorMessage: quebraFormError, saving: quebraSaving,
-        fieldOverrides: { responsavel: buildCampoAutomaticoReadonly },
       }));
       return wrap;
     }
@@ -30702,9 +30834,12 @@ function buildVacinacaoPage(container, goTo) {
       h('button', { class: 'tab-btn' + (agendaDiaVista === 'tabela' ? ' active' : ''), onclick: () => { agendaDiaVista = 'tabela'; rerender(); } }, [Icon('clipboard', { size: 14 }), h('span', {}, 'Tabela Detalhada')]),
     ]));
     if (agendaDiaVista === 'grelha') {
-      wrap.appendChild(buildVagasGrelhaDia(dateISO));
+      wrap.appendChild(h('div', { class: 'vaga-dia-com-resumo' }, [
+        buildVagasGrelhaDia(dateISO),
+        buildResumoDoDiaCards(dateISO),
+      ]));
     } else {
-      const listDoDia = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO)
+      const listDoDia = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO && m.tipoLinha !== 'bloqueado')
         .slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || ''));
       wrap.appendChild(buildMarcacoesTable(listDoDia, 'Sem marcações neste dia.'));
     }
@@ -30900,6 +31035,8 @@ function buildVacinacaoPage(container, goTo) {
           h('span', { class: 'badge badge-blue' }, `COVID: ${c.administradasCovid}`),
           h('span', { class: 'badge badge-orange' }, `Pendentes: ${c.pendentes}`),
           h('span', { class: 'badge badge-red' }, `Canceladas: ${c.canceladas}`),
+          h('span', { class: 'badge badge-red' }, `Quebra Gripe: ${c.quebraGripe}`),
+          h('span', { class: 'badge badge-red' }, `Quebra COVID: ${c.quebraCovid}`),
         ]),
       ]);
     });
@@ -31011,7 +31148,6 @@ function buildVacinacaoPage(container, goTo) {
     if (showQuebraForm) {
       wrap.appendChild(buildRecordFormEstreito(vacinacaoQuebraSchema, quebraDraft, {
         editing: !!quebraEditId, onSubmit: submitQuebra, onCancel: cancelQuebraForm, errorMessage: quebraFormError, saving: quebraSaving,
-        fieldOverrides: { responsavel: buildCampoAutomaticoReadonly },
       }));
       return wrap;
     }
