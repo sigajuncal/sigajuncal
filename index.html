@@ -33303,7 +33303,21 @@ function buildEntregasPage(container, goTo) {
     const uid = activeUser ? activeUser.id : 'sem_sessao';
     return `entregas_nova_${farmaciaAtiva}_${uid}`;
   }
+  // Acompanha a transição do formulário aberto->fechado (guardado, cancelado,
+  // concluído ou anulado) para dar uma pequena folga ao popup automático de
+  // "Entregas Pendentes Pós-Prazo" logo a seguir — ver uso em rerender().
+  let showFormAnteriorParaGracaPopup = showForm;
   function rerender() {
+    if (showFormAnteriorParaGracaPopup && !showForm) {
+      // O formulário ACABOU de fechar — nunca deixar o popup automático de
+      // atrasadas abrir nos segundos seguintes. Sem isto, uma colega que
+      // termina de preencher/guardar uma entrega via ver este popup (sobre
+      // OUTRA entrega, sem relação nenhuma com a que acabou de gravar) saltar
+      // logo por cima, interpreta-o como sinal de que a gravação falhou e
+      // repete a ação — o que gera duplicados (pedido explícito 2026-08-12).
+      popupAtrasadasSilenciadoAte = Math.max(popupAtrasadasSilenciadoAte, Date.now() + POPUP_ATRASADAS_GRACA_POS_FORM_MS);
+    }
+    showFormAnteriorParaGracaPopup = showForm;
     // Guarda o estado do formulário em memória (não em localStorage) no
     // formulário — é isto que permite a uma reinstanciação desta função,
     // disparada por um render em segundo plano, retomar exatamente onde o
@@ -33336,6 +33350,10 @@ function buildEntregasPage(container, goTo) {
   let popupAtrasadasAberto = false;
   let popupAtrasadasSilenciadoAte = 0;
   const ATRASADAS_SILENCIO_MS = 10 * 60 * 1000;
+  // Folga curta aplicada logo depois de o formulário fechar (ver rerender)
+  // — só o suficiente para o "Deseja gerar/imprimir?" e afins terminarem sem
+  // o popup de atrasadas saltar por cima e ser confundido com a ação atual.
+  const POPUP_ATRASADAS_GRACA_POS_FORM_MS = 20 * 1000;
   async function confirmarEntregaAtrasada(r, onSucesso, onFalha) {
     // Clicar "Confirmar Entrega" neste popup JÁ É a confirmação — não pede
     // outra vez "tem a certeza?" (isso seria fricção a mais num popup
@@ -33363,6 +33381,11 @@ function buildEntregasPage(container, goTo) {
   }
   function abrirPopupAtrasadas() {
     if (!farmaciaAtiva || popupAtrasadasAberto) return;
+    // Nunca interrompe quem está a meio do preenchimento (Nova Entrega ou
+    // edição) — mesmo que seja a pessoa a clicar no banner manualmente,
+    // abrir este popup por cima do formulário só causaria confusão sobre o
+    // que está de facto por gravar (pedido explícito 2026-08-12).
+    if (showForm) return;
     const atrasadas = entregasAtrasadasPosPrazo(farmaciaAtiva);
     if (!atrasadas.length) return;
     popupAtrasadasAberto = true;
@@ -33376,6 +33399,11 @@ function buildEntregasPage(container, goTo) {
     if (!container.isConnected) { clearInterval(watcherAtrasadas); return; }
     if (!farmaciaAtiva) return;
     if (popupAtrasadasAberto) return;
+    // Formulário aberto (Nova Entrega/edição) — nunca verifica nem abre o
+    // popup automático enquanto isso durar; abrirPopupAtrasadas() já tem o
+    // mesmo guard, mas cortar aqui também poupa o rerender() do banner a
+    // meio do preenchimento, que só faria "piscar" o ecrã sem necessidade.
+    if (showForm) return;
     if (Date.now() >= popupAtrasadasSilenciadoAte) abrirPopupAtrasadas();
     // Na 1ª verificação (500ms depois de montar a página), o build() inicial
     // já desenhou o banner com os dados/hora exatos desse momento — voltar a
