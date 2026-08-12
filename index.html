@@ -20453,9 +20453,11 @@ function buildDeclaracaoPresencaPage(container, goTo) {
    rodapé, via buildDocLetterhead/buildDocRodape/buildDocA4 — nada disto
    muda) — só o Título e o Texto ficam completamente livres, escritos num
    mini-editor com formatação básica (negrito/itálico/sublinhado/lista).
-   Nome do Utente + NIF mantidos (mesmos campos obrigatórios que as outras
-   3 declarações) — mantém o Histórico pesquisável por nome/NIF como nos
-   restantes tipos; nada impede escrever sobre outro assunto no texto. ---- */
+   SEM Nome do Utente/NIF (reforçado 2026-08-12) — nem toda a declaração
+   livre é sobre um utente em concreto (pode ser uma carta para uma
+   entidade, por exemplo), por isso estes campos nem chegam a existir aqui;
+   no Histórico ficam sempre a "—" para este tipo (mesmo fallback que já
+   existia para qualquer campo vazio). */
 function buildDeclaracaoLivrePage(container, goTo) {
   if (!podeEmitirDocumentos()) { buildDocumentosAcessoNegado(container, goTo); return; }
 
@@ -20464,11 +20466,9 @@ function buildDeclaracaoLivrePage(container, goTo) {
   let editingId = registoEditar ? registoEditar.id : null;
   let draft = registoEditar ? (() => {
     const params = parseJSONSafe(registoEditar.parametrosJson) || {};
-    return { nomeUtente: registoEditar.nomeUtente || '', nifUtente: registoEditar.nifUtente || '', numeroFicha: '', titulo: params.titulo || 'Declaração', corpoHtml: params.corpoHtml || '' };
-  })() : { nomeUtente: '', nifUtente: '', numeroFicha: '', titulo: 'Declaração', corpoHtml: '' };
+    return { titulo: params.titulo || 'Declaração', corpoHtml: params.corpoHtml || '' };
+  })() : { titulo: 'Declaração', corpoHtml: '' };
   let saving = false;
-  let clienteFichaCarregada = null;
-  const perguntarSobreFichaClienteDeclaracao = criarPerguntaSobreFichaCliente(draft, () => clienteFichaCarregada);
 
   function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
 
@@ -20485,14 +20485,6 @@ function buildDeclaracaoLivrePage(container, goTo) {
   }
 
   async function guardarDocumento(modo) {
-    if (!String(draft.nomeUtente || '').trim() || !String(draft.nifUtente || '').trim()) {
-      showToast('Por favor, preencha o Nome do Utente e o NIF.', 'error');
-      return;
-    }
-    if (!/^[0-9]{9}$/.test(String(draft.nifUtente || '').trim())) {
-      showToast('O NIF deve ter exatamente 9 dígitos numéricos.', 'error');
-      return;
-    }
     // Texto vazio (só tags HTML sem conteúdo real, ex: "<br>" ou "<p></p>")
     // conta como vazio — verificação pelo texto puro, não pelo HTML.
     const textoPuro = String(draft.corpoHtml || '').replace(/<[^>]*>/g, '').trim();
@@ -20501,8 +20493,10 @@ function buildDeclaracaoLivrePage(container, goTo) {
     const dataEmissao = todayISO();
     const registo = {
       tipo: 'livre',
-      nomeUtente: formatarNomeUtente(draft.nomeUtente),
-      nifUtente: draft.nifUtente,
+      // Sem utente associado (ver comentário acima) — ficam sempre vazios,
+      // o Histórico já mostra "—" sozinho para qualquer campo em branco.
+      nomeUtente: '',
+      nifUtente: '',
       discriminado: false,
       valorTotal: null,
       parametros: { titulo: draft.titulo || 'Declaração', corpoHtml: draft.corpoHtml || '' },
@@ -20514,7 +20508,6 @@ function buildDeclaracaoLivrePage(container, goTo) {
     saving = false;
     if (!created) { showDbErrorToast('Não foi possível guardar o documento'); rerender(); return; }
     editingId = created.id;
-    perguntarSobreFichaClienteDeclaracao();
     if (modo === 'pdf') await baixarPdfDocumento(construirDocumentoNode(dataEmissao), `declaracao_livre_${dataEmissao}.pdf`);
     else if (modo === 'print') imprimirDocumento(construirDocumentoNode(dataEmissao), { titulo: `declaracao_livre_${dataEmissao}` });
     else { goTo('hub-documentos'); return; }
@@ -20525,21 +20518,12 @@ function buildDeclaracaoLivrePage(container, goTo) {
     const wrap = h('div', { class: 'animate-in' });
     wrap.appendChild(withBackButton(buildPageHeader('filetext', 'Declaração Livre', 'Emitir uma declaração com título e texto livres, no mesmo formato das restantes.', undefined), goTo));
 
-    const nomeInput = h('input', { class: 'input' });
-    nomeInput.value = draft.nomeUtente;
-    nomeInput.addEventListener('input', () => { draft.nomeUtente = nomeInput.value; });
-    const { fichaField, nifField } = buildFichaClienteDeclaracaoFields(draft, rerender, (novoEstado) => { clienteFichaCarregada = novoEstado; });
     const tituloInput = h('input', { class: 'input', maxlength: '120', placeholder: 'Ex: Declaração' });
     tituloInput.value = draft.titulo;
     tituloInput.addEventListener('input', () => { draft.titulo = tituloInput.value; });
-
-    const campos = [
-      fichaField,
-      h('div', { class: 'field doc-w-md' }, [h('label', {}, 'Nome do Utente'), nomeInput, attachAvisoNomeUtente(nomeInput)]),
-      nifField,
-      h('div', { class: 'field doc-w-md' }, [h('label', {}, 'Título do Documento'), tituloInput]),
-    ];
-    wrap.appendChild(h('div', { class: 'card card-pad' }, [h('div', { class: 'doc-fields-row' }, campos)]));
+    wrap.appendChild(h('div', { class: 'card card-pad' }, [
+      h('div', { class: 'doc-fields-row' }, [h('div', { class: 'field doc-w-md' }, [h('label', {}, 'Título do Documento'), tituloInput])]),
+    ]));
 
     // Mini-editor de texto — negrito/itálico/sublinhado/lista, via
     // document.execCommand (suficiente para "funções básicas de editor de
@@ -20574,7 +20558,6 @@ function buildDeclaracaoLivrePage(container, goTo) {
     const saveBtn = h('button', { class: 'btn btn-secondary', onclick: saving ? null : () => requireAuth(() => guardarDocumento(false)) }, saving ? 'A guardar…' : 'Guardar Apenas');
     const pdfBtn = h('button', { class: 'btn btn-secondary', onclick: saving ? null : () => requireAuth(() => guardarDocumento('pdf')) }, 'Download PDF');
     const printBtn = h('button', { class: 'btn btn-primary', onclick: saving ? null : () => requireAuth(() => guardarDocumento('print')) }, 'Imprimir');
-    wrap.appendChild(h('p', { class: 'aviso-rodape-ficha' }, '⚠️ Confirme se os dados da ficha do utente (automáticos ou editados) estão corretos antes de guardar.'));
     wrap.appendChild(h('div', { class: 'form-actions', style: 'margin-top:16px;' }, [saveBtn, pdfBtn, printBtn]));
 
     return wrap;
