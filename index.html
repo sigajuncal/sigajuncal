@@ -374,7 +374,15 @@
     display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--pharm-700);padding:0;}
   .validade-qtd-btn:hover{background:var(--pharm-50);border-color:var(--pharm-300);}
   .validade-qtd-btn:active{background:var(--pharm-100);}
-  .validade-qtd-input{text-align:center;padding:4px 2px;font-size:12.5px;width:32px;-moz-appearance:textfield;}
+  .validade-qtd-input{text-align:center;padding:4px 2px;font-size:12.5px;width:40px;-moz-appearance:textfield;}
+  /* Especificidade reforçada (2 classes) de propósito: a regra genérica
+     .input{width:100%} (mais abaixo no ficheiro, por isso ganharia no
+     empate de especificidade com só 1 classe) estava a esticar esta caixa
+     para ocupar todo o espaço livre da linha — ficava "descomunal" mesmo
+     com a largura definida aqui em cima. flex:0 0 40px impede-a de crescer
+     dentro do .validade-qtd-stepper (flex row); 40px chega perfeitamente
+     para os 4 algarismos pedidos (pedido explícito 2026-08-12). */
+  .validade-qtd-stepper .validade-qtd-input{width:40px;flex:0 0 40px;}
   .validade-qtd-input::-webkit-outer-spin-button,.validade-qtd-input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
 
   /* Widget de Validades na Página Inicial — ticker/carrossel a rodar
@@ -29988,21 +29996,35 @@ function vacinacaoStockAtual(campanha) {
 // alarme de "falta encomendar" quando já há uma encomenda a caminho
 // (pedido explícito 2026-08-11) — e quanto falta encomendar no mínimo,
 // depois de descontar isso, para cobrir as marcações já feitas.
+// Reforçado 2026-08-12: a Lista de Espera passou também a contar para esta
+// necessidade — quem lá está ainda não tem marcação nenhuma, mas vai
+// precisar da mesma dose mais cedo ou mais tarde, por isso ignorá-la dava
+// sempre uma ideia otimista a mais de quanto stock realmente chega.
+// pendentes*/espera* continuam SEPARADOS no resultado (nunca somados numa
+// única contagem escondida) — o aviso mostra sempre os dois números lado a
+// lado, para não voltar a confundir "já marcado" com "só à espera"
+// (distinção que já era importante nas próprias listas, ver
+// escolherDaListaEsperaNoFormulario).
 function vacinacaoNecessidadeEncomenda(campanha) {
   const stock = vacinacaoStockAtual(campanha);
   const pendentesGripe = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanha.id && m.estado === 'Pendente' && m.gripe).length;
   const pendentesCovid = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanha.id && m.estado === 'Pendente' && m.covid).length;
+  const espera = STATE.vacinacaoListaEspera.filter(e => e.campanhaId === campanha.id);
+  const esperaGripe = espera.filter(e => e.gripe).length;
+  const esperaCovid = espera.filter(e => e.covid).length;
+  const necessidadeGripe = pendentesGripe + esperaGripe;
+  const necessidadeCovid = pendentesCovid + esperaCovid;
   const encomendasPendentes = STATE.vacinacaoEncomendas.filter(e => e.campanhaId === campanha.id && e.estado === 'Pendente');
   const aCaminhoGripe = encomendasPendentes.reduce((s, e) => s + (Number(e.qtdGripe) || 0), 0);
   const aCaminhoCovid = encomendasPendentes.reduce((s, e) => s + (Number(e.qtdCovid) || 0), 0);
   const coberturaGripe = stock.gripe + aCaminhoGripe;
   const coberturaCovid = stock.covid + aCaminhoCovid;
   return {
-    pendentesGripe, pendentesCovid,
+    pendentesGripe, pendentesCovid, esperaGripe, esperaCovid, necessidadeGripe, necessidadeCovid,
     stockGripe: stock.gripe, stockCovid: stock.covid,
     aCaminhoGripe, aCaminhoCovid,
-    faltamGripe: Math.max(0, pendentesGripe - coberturaGripe),
-    faltamCovid: Math.max(0, pendentesCovid - coberturaCovid),
+    faltamGripe: Math.max(0, necessidadeGripe - coberturaGripe),
+    faltamCovid: Math.max(0, necessidadeCovid - coberturaCovid),
   };
 }
 
@@ -31605,12 +31627,12 @@ function buildVacinacaoPage(container, goTo) {
     const n = vacinacaoNecessidadeEncomenda(campanha);
     if (!n.faltamGripe && !n.faltamCovid) return null;
     const linhas = [];
-    if (n.faltamGripe) linhas.push(`Gripe: ${n.pendentesGripe} marcação${n.pendentesGripe > 1 ? 'ões' : ''} pendente${n.pendentesGripe > 1 ? 's' : ''} para ${n.stockGripe} em stock${n.aCaminhoGripe ? ` + ${n.aCaminhoGripe} já encomendado(s) a caminho` : ''} — falta encomendar pelo menos mais ${n.faltamGripe}.`);
-    if (n.faltamCovid) linhas.push(`COVID: ${n.pendentesCovid} marcação${n.pendentesCovid > 1 ? 'ões' : ''} pendente${n.pendentesCovid > 1 ? 's' : ''} para ${n.stockCovid} em stock${n.aCaminhoCovid ? ` + ${n.aCaminhoCovid} já encomendado(s) a caminho` : ''} — falta encomendar pelo menos mais ${n.faltamCovid}.`);
+    if (n.faltamGripe) linhas.push(`Gripe: ${n.pendentesGripe} marcação${n.pendentesGripe !== 1 ? 'ões' : ''} pendente${n.pendentesGripe !== 1 ? 's' : ''} + ${n.esperaGripe} na lista de espera = ${n.necessidadeGripe} necessário${n.necessidadeGripe !== 1 ? 's' : ''}, para ${n.stockGripe} em stock${n.aCaminhoGripe ? ` + ${n.aCaminhoGripe} já encomendado(s) a caminho` : ''} — falta encomendar pelo menos mais ${n.faltamGripe}.`);
+    if (n.faltamCovid) linhas.push(`COVID: ${n.pendentesCovid} marcação${n.pendentesCovid !== 1 ? 'ões' : ''} pendente${n.pendentesCovid !== 1 ? 's' : ''} + ${n.esperaCovid} na lista de espera = ${n.necessidadeCovid} necessário${n.necessidadeCovid !== 1 ? 's' : ''}, para ${n.stockCovid} em stock${n.aCaminhoCovid ? ` + ${n.aCaminhoCovid} já encomendado(s) a caminho` : ''} — falta encomendar pelo menos mais ${n.faltamCovid}.`);
     return h('div', { class: 'card card-pad', style: 'margin-bottom:16px;background:#fef2f2;border-color:#fecaca;' }, [
-      h('p', { style: 'margin:0 0 4px;font-size:13px;font-weight:700;' }, '⚠️ Stock insuficiente para as marcações já feitas'),
+      h('p', { style: 'margin:0 0 4px;font-size:13px;font-weight:700;' }, '⚠️ Stock insuficiente para as marcações já feitas + Lista de Espera'),
       ...linhas.map(l => h('p', { style: 'margin:0;font-size:13px;' }, l)),
-      h('p', { class: 'field-helper-text', style: 'margin:6px 0 0;' }, 'Este cálculo já desconta encomendas em estado "Pendente" (por rececionar) — é o que falta encomendar PARA ALÉM do que já está a caminho.'),
+      h('p', { class: 'field-helper-text', style: 'margin:6px 0 0;' }, 'Este cálculo já desconta encomendas em estado "Pendente" (por rececionar) — é o que falta encomendar PARA ALÉM do que já está a caminho, contando quem já tem marcação E quem ainda só está na Lista de Espera.'),
     ]);
   }
   function buildStockTab() {
@@ -31626,6 +31648,7 @@ function buildVacinacaoPage(container, goTo) {
     if (!showEncomendaForm) {
       const avisoNecessidade = buildAvisoNecessidadeEncomenda(campanha);
       if (avisoNecessidade) wrap.appendChild(avisoNecessidade);
+      const necessidade = vacinacaoNecessidadeEncomenda(campanha);
       wrap.appendChild(h('div', { class: 'quick-grid hub-tier-row', style: 'margin-bottom:16px;' }, [
         h('div', { class: 'card card-pad' }, [
           h('p', { class: 'field-helper-text', style: 'margin:0 0 4px;' }, 'Stock Atual — Gripe'),
@@ -31636,6 +31659,19 @@ function buildVacinacaoPage(container, goTo) {
           h('p', { class: 'field-helper-text', style: 'margin:0 0 4px;' }, 'Stock Atual — COVID'),
           h('p', { style: 'font-size:28px;font-weight:700;margin:0;' }, String(stock.covid)),
           h('p', { class: 'field-helper-text', style: 'margin:6px 0 0;' }, `Inicial ${Number(campanha.stockInicialCovid) || 0} · Recebido ${stock.recebidasCovid} · Administrado ${stock.administradasCovid} · Quebra ${stock.quebrasCovid}`),
+        ]),
+        // Contagem da Lista de Espera (pedido explícito 2026-08-12) — quem
+        // está aqui ainda não tem marcação nenhuma, mas também vai
+        // precisar de dose mais cedo ou mais tarde; já entra no cálculo de
+        // "falta encomendar" acima (vacinacaoNecessidadeEncomenda), mas
+        // fica também visível sempre, mesmo quando o stock ainda chega.
+        h('div', { class: 'card card-pad' }, [
+          h('p', { class: 'field-helper-text', style: 'margin:0 0 4px;' }, 'Lista de Espera'),
+          h('p', { style: 'font-size:28px;font-weight:700;margin:0;' }, String(necessidade.esperaGripe + necessidade.esperaCovid)),
+          h('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;' }, [
+            h('span', { class: 'badge badge-blue' }, `Gripe: ${necessidade.esperaGripe}`),
+            h('span', { class: 'badge badge-blue' }, `COVID: ${necessidade.esperaCovid}`),
+          ]),
         ]),
       ]));
       wrap.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:0 0 8px;' }, 'Contagem de Administrações'));
@@ -31768,6 +31804,15 @@ function buildVacinacaoPage(container, goTo) {
     const searchInput = h('input', { class: 'search-input', type: 'text', placeholder: 'Pesquisar por nome ou contacto...' });
     searchInput.value = esperaSearch;
     searchInput.addEventListener('input', debounce(() => { esperaSearch = searchInput.value; rerender(); }, 250));
+    // Resumo Gripe/COVID desta lista — o mesmo total que já entra no
+    // cálculo de "falta encomendar" em Stock/Encomendas (ver
+    // vacinacaoNecessidadeEncomenda), só que visível aqui também, onde
+    // estas pessoas realmente estão (pedido explícito 2026-08-12).
+    const todosEspera = STATE.vacinacaoListaEspera.filter(e => e.campanhaId === campanhaId);
+    wrap.appendChild(h('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;' }, [
+      h('span', { class: 'badge badge-blue' }, `Gripe: ${todosEspera.filter(e => e.gripe).length}`),
+      h('span', { class: 'badge badge-blue' }, `COVID: ${todosEspera.filter(e => e.covid).length}`),
+    ]));
     wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:14px;' }, searchInput));
 
     const list = listaEsperaDaCampanha();
