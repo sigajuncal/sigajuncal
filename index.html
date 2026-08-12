@@ -570,7 +570,16 @@
   .doc-header-logo{height:72px;width:auto;object-fit:contain;}
   .doc-title{text-align:center;font-size:20px;font-weight:700;letter-spacing:.08em;
     margin:0 0 38px;text-transform:uppercase;color:#0f172a;}
-  .doc-body-text{font-size:13.5px;line-height:2.05;text-align:justify;margin:18px 0 28px;color:#0f172a;}
+  /* Indentação da 1ª linha de cada parágrafo — pedido explícito 2026-08-12,
+     "fica mais profissional". Aplica-se a TODAS as declarações: nas 3 com
+     texto fixo (Despesas Mensal/Presença/Avaliação Física), o próprio
+     .doc-body-text é um único parágrafo, por isso a indentação no bloco
+     chega; na Declaração Livre, o texto pode ter vários parágrafos
+     (cada Enter no mini-editor cria um novo <div>/<p> — comportamento
+     padrão do browser em contenteditable), por isso a indentação também
+     tem de se aplicar a cada um desses filhos, não só ao bloco todo. */
+  .doc-body-text{font-size:13.5px;line-height:2.05;text-align:justify;margin:18px 0 28px;color:#0f172a;text-indent:2em;}
+  .doc-body-text p,.doc-body-text div{text-indent:2em;}
   /* Declaração Livre — mini-editor de texto (pedido explícito 2026-08-12):
      mesmo aspeto/tipografia do .doc-body-text final impresso, para o que se
      vê a escrever ser muito parecido com o que sai no documento. Barra de
@@ -581,9 +590,12 @@
   .rte-toolbar button:hover{background:var(--pharm-50);border-color:var(--pharm-300);}
   .rte-toolbar button.active{background:var(--pharm-100);border-color:var(--pharm-400);color:var(--pharm-900);}
   .rte-editor{min-height:180px;font-size:13.5px;line-height:1.8;text-align:justify;color:#0f172a;
-    padding:12px 14px;cursor:text;}
+    padding:12px 14px;cursor:text;text-indent:2em;}
+  .rte-editor p,.rte-editor div{text-indent:2em;}
   .rte-editor:focus{outline:none;}
   .rte-editor ul{margin:0 0 0 20px;padding:0;}
+  .rte-editor ul li{text-indent:0;}
+  .doc-body-text ul li{text-indent:0;}
   .rte-editor:empty:before{content:attr(data-placeholder);color:var(--pharm-400);pointer-events:none;}
   .doc-table{width:100%;border-collapse:collapse;margin:0 0 26px;font-size:12.5px;color:#0f172a;}
   .doc-table th,.doc-table td{border:1px solid #64748b;padding:7px 10px;text-align:left;color:#0f172a;}
@@ -19251,12 +19263,18 @@ function buildObjetivosPage(container, goTo, embedded) {
 ================================================================= */
 // ---- Permissões: só estes cargos podem emitir declarações em "Documentos" ----
 function podeEmitirDocumentos() {
-  // Nunca deixa o script rebentar por o utilizador ainda não estar pronto —
-  // mas, ao contrário de um "cargo por omissão" otimista, a ausência de
-  // sessão nunca concede acesso: por segurança, cai sempre para "sem cargo".
-  const cargo = (activeUser && activeUser.categoriaProfissional) ? String(activeUser.categoriaProfissional).trim().toLowerCase() : '';
-  if (!activeUser || !cargo) return false;
+  if (!activeUser) return false;
+  // Master/Administrador têm sempre acesso total a Documentos — incluindo
+  // eliminar do Histórico — independentemente do Cargo (categoriaProfissional).
+  // Antes disto, um(a) Administrador(a) cujo Cargo não fosse um dos 4
+  // permitidos abaixo ficava com "Acesso restrito" na página inteira e nem
+  // sequer conseguia ver a tabela do Histórico para lá selecionar/eliminar
+  // nada — pedido explícito 2026-08-12 (mesma lógica de sobreposição que
+  // Master/Administrador já têm noutros módulos, ex: Financeiro, Empresas
+  // Parceiras).
+  if (isMasterUser()) return true;
   // Cargos permitidos — cobre as duas flexões de género de cada um.
+  const cargo = activeUser.categoriaProfissional ? String(activeUser.categoriaProfissional).trim().toLowerCase() : '';
   const CARGOS_PERMITIDOS = [
     'diretor técnico', 'diretora técnica',
     'diretor técnico adjunto', 'diretora técnica adjunta',
@@ -19919,8 +19937,20 @@ async function dbAtualizarDocumentoEmitido(id, record) {
 async function dbEliminarDocumentoEmitido(id) {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível.'; return false; }
   try {
-    const { error } = await sb.from('documentos_emitidos').delete().eq('id', id);
+    // Mesmo bug de silenciamento já corrigido noutras tabelas (ver
+    // dbPermanentDelete) — sem .select() a confirmar linhas devolvidas, um
+    // .delete() bloqueado por RLS não reporta erro nenhum, só "sucesso" com
+    // 0 linhas apagadas: a app removia o documento do ecrã na mesma, só
+    // para ele "voltar" ao recarregar (nunca tinha sido eliminado a sério).
+    // Reforçado 2026-08-12 — pedido explícito de garantir que Administrador
+    // consegue mesmo eliminar documentos, não só que o botão apareça.
+    const { data, error } = await sb.from('documentos_emitidos').delete().eq('id', id).select();
     if (error) { lastDbError = error.message; console.error('[Supabase] erro ao eliminar documento emitido:', error.message); return false; }
+    if (!data || !data.length) {
+      lastDbError = 'O documento não foi eliminado (pode já ter sido eliminado, ou não tem permissão — verifique as políticas RLS de documentos_emitidos).';
+      console.error(`[Supabase] eliminação de documentos_emitidos#${id} não afetou nenhuma linha — provável bloqueio de RLS.`);
+      return false;
+    }
     return true;
   } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error('[Supabase] erro de rede ao eliminar documento emitido:', formatarErroSeguro(e)); return false; }
 }
@@ -20665,6 +20695,10 @@ function buildHistoricoDocumentosSection(goTo) {
       STATE.documentosEmitidos = STATE.documentosEmitidos.filter(r => !apagados.has(r.id));
       selectedIds = new Set([...selectedIds].filter(id => !apagados.has(id)));
       renderResultsOnly();
+      // dbEliminarDocumentoEmitido agora deteta e reporta corretamente um
+      // bloqueio de RLS (ver comentário lá) em vez de fingir sucesso — por
+      // isso esta mensagem passou a ser real, não só teórica.
+      if (apagados.size < ids.length) showDbErrorToast('Alguns documentos não puderam ser eliminados');
     }, { danger: true, confirmLabel: 'Eliminar' });
   }
 
@@ -34762,7 +34796,7 @@ function buildFormacoesPage(container, goTo) {
     const cabecalho = [
       buildDocLetterhead(),
       h('h1', { class: 'doc-title' }, 'Relatório de Formações'),
-      h('p', { class: 'doc-body-text', style: 'margin-top:0;margin-bottom:8px;' }, subtitulo),
+      h('p', { class: 'doc-body-text', style: 'margin-top:0;margin-bottom:8px;text-indent:0;' }, subtitulo),
     ];
     const rodape = buildDocRodapeComResponsavel('Hugo Cunha - Diretor Técnico Adjunto', todayISO());
     // Histórico "Todos os registos" pode facilmente juntar vários anos de
