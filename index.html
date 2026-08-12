@@ -7576,6 +7576,19 @@ async function dbMarcarRecadoTratado(id) {
     return rowToRecord(data);
   } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error('[Supabase] erro de rede ao marcar recado como tratado:', formatarErroSeguro(e)); return null; }
 }
+// Marca uma das duas colunas de "vista no widget da Home" (ver
+// ultimaNotifFoiDescartada/descartarUltimaNotificacao) — campo é sempre
+// 'notifVistaRecebida' ou 'notifVistaConcluida', nunca outro valor.
+async function dbMarcarNotifHomeVista(id, campo) {
+  if (!sb) { lastDbError = 'Cliente Supabase indisponível.'; return null; }
+  try {
+    const rowBase = recordToRow({ [campo]: true });
+    const { data, error } = await comAutoLimpezaDeColunas('gavetaRecados', rowBase,
+      (row) => sb.from('gaveta_recados').update(row).eq('id', id).select().single());
+    if (error) { lastDbError = error.message; console.error('[Supabase] erro ao marcar notificação da Home como vista:', error.message); return null; }
+    return rowToRecord(data);
+  } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error('[Supabase] erro de rede ao marcar notificação da Home como vista:', formatarErroSeguro(e)); return null; }
+}
 // Recados são correio pessoal efémero — eliminar é sempre definitivo (hard
 // delete, nunca passa pelo Lixo), tal como os Lembretes.
 async function dbEliminarRecado(id) {
@@ -7863,34 +7876,67 @@ async function dbClearChat() {
     return true;
   } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error('[Supabase] erro de rede ao limpar o chat:', formatarErroSeguro(e)); return false; }
 }
-// Contagem de não lidas fica em localStorage, por utilizador (username) —
-// nunca no Supabase, para não precisar de uma tabela de "leituras" à parte.
-function chatLastReadKey() { return activeUser ? `sigaJuncalChatLastRead_${activeUser.username}` : 'sigaJuncalChatLastRead_convidado'; }
-function chatLastRead() {
-  const k = chatLastReadKey();
-  try { return localStorage.getItem(k); } catch (e) { return null; }
+// "Última leitura" do Chat por utilizador — coluna chat_ultima_leitura em
+// usuarios_app (Supabase), sincronizada como o resto da app. Antes vivia só
+// em localStorage por utilizador/dispositivo: quem lia o Chat num posto
+// continuava a ver o badge de "não lidas" aceso noutro posto, porque nada
+// ficava registado nalgum sítio comum a todos os dispositivos — mesma falha
+// corrigida na Gaveta de Recados (ver dbMarcarNotifHomeVista), pedido
+// explícito 2026-08-12. O Modo Convidado (sem sessão, ecrã "Retomar
+// Sessão") não tem utilizador da BD para associar — esse caso, só esse,
+// continua mesmo local ao dispositivo (localStorage), por não haver outro
+// sítio onde guardar.
+function chatLastReadConvidadoKey() { return 'sigaJuncalChatLastRead_convidado'; }
+function chatLastReadConvidado() {
+  try { return localStorage.getItem(chatLastReadConvidadoKey()); } catch (e) { return null; }
 }
-function chatMarkAllRead() {
-  const k = chatLastReadKey();
-  try { localStorage.setItem(k, new Date().toISOString()); } catch (e) { /* localStorage indisponível — ignora silenciosamente */ }
+function guardarChatLastReadConvidado(iso) {
+  try { localStorage.setItem(chatLastReadConvidadoKey(), iso); } catch (e) { /* localStorage indisponível — ignora silenciosamente */ }
+}
+function chatLastRead() {
+  if (!activeUser) return chatLastReadConvidado();
+  const u = (STATE.usuarios || []).find(x => String(x.id) === String(activeUser.id));
+  return (u && u.chatUltimaLeitura) || null;
+}
+async function chatMarkAllRead() {
+  const agora = new Date().toISOString();
+  if (!activeUser) { guardarChatLastReadConvidado(agora); atualizarIndicadoresChat(); return; }
+  // Atualiza o STATE local já (a UI limpa o badge de imediato, sem esperar
+  // pela rede) — o dbUpdate por baixo é que garante que fica gravado e
+  // chega aos outros postos.
+  STATE.usuarios = (STATE.usuarios || []).map(u => String(u.id) === String(activeUser.id) ? Object.assign({}, u, { chatUltimaLeitura: agora }) : u);
   atualizarIndicadoresChat();
+  const updated = await dbUpdate('usuarios', activeUser.id, { chatUltimaLeitura: agora });
+  if (updated) { STATE.usuarios = (STATE.usuarios || []).map(u => String(u.id) === String(updated.id) ? updated : u); atualizarIndicadoresChat(); }
 }
 // Momento em que a app arrancou nesta aba/janela — serve de baseline para a
 // contagem de não lidas quando ainda não há registo de "última leitura"
-// (utilizador que nunca abriu o Chat neste dispositivo, ou Modo Sem Sessão).
-// Sem isto, a contagem ficava eternamente a 0 e nenhum badge aparecia.
+// (utilizador que nunca abriu o Chat, em nenhum dispositivo, ou Modo Sem
+// Sessão). Sem isto, a contagem ficava eternamente a 0 e nenhum badge aparecia.
 let chatBaselineArranqueISO = new Date().toISOString();
-// Copia o marcador de leitura mais RECENTE entre duas chaves (utilizador ↔
-// convidado) — garante que a contagem de não lidas sobrevive à expiração da
-// sessão (ecrã "Retomar Sessão") e ao login seguinte, sem recontar
-// mensagens que a pessoa já tinha visto.
-function sincronizarChatLastRead(chaveOrigem, chaveDestino) {
-  try {
-    const origem = localStorage.getItem(chaveOrigem);
-    if (!origem) return;
-    const destino = localStorage.getItem(chaveDestino);
-    if (!destino || origem > destino) localStorage.setItem(chaveDestino, origem);
-  } catch (e) { /* localStorage indisponível — ignora */ }
+// Ao entrar em sessão: se havia leitura em Modo Convidado (neste mesmo
+// dispositivo) mais recente do que a última leitura já gravada para este
+// utilizador na BD, herda-a — evita recontar como "não lidas" mensagens que
+// a própria pessoa já tinha visto no ecrã de convidado mesmo antes de
+// autenticar-se.
+async function herdarChatLastReadDoConvidado() {
+  if (!activeUser) return;
+  const origem = chatLastReadConvidado();
+  if (!origem) return;
+  const u = (STATE.usuarios || []).find(x => String(x.id) === String(activeUser.id));
+  if (u && u.chatUltimaLeitura && u.chatUltimaLeitura >= origem) return;
+  STATE.usuarios = (STATE.usuarios || []).map(x => String(x.id) === String(activeUser.id) ? Object.assign({}, x, { chatUltimaLeitura: origem }) : x);
+  const updated = await dbUpdate('usuarios', activeUser.id, { chatUltimaLeitura: origem });
+  if (updated) STATE.usuarios = (STATE.usuarios || []).map(x => String(x.id) === String(updated.id) ? updated : x);
+}
+// Ao sair de sessão (silenciosa ou manual): propaga a última leitura já
+// gravada para este utilizador para a chave de Modo Convidado NESTE
+// dispositivo — o ecrã "Retomar Sessão" não reconta como não lidas
+// mensagens que a própria pessoa, com sessão iniciada, já tinha visto.
+function propagarChatLastReadParaConvidado() {
+  if (!activeUser) return;
+  const u = (STATE.usuarios || []).find(x => String(x.id) === String(activeUser.id));
+  if (u && u.chatUltimaLeitura) guardarChatLastReadConvidado(u.chatUltimaLeitura);
 }
 function chatUnreadCount() {
   // Sem registo de última leitura, conta-se tudo o que chegou DEPOIS do
@@ -12642,23 +12688,33 @@ function buildGavetaBtnHome() {
   btn.addEventListener('click', () => abrirModalGaveta());
   return btn;
 }
-// Guarda, por utilizador, qual foi a última notificação da Gaveta já vista/
-// descartada no widget da Home — em localStorage, para sobreviver a
-// recarregamentos da página. Uma vez descartada (clique no botão ✕, ou ao
-// abrir a conversa/tarefa a partir daqui), essa notificação nunca mais
-// volta a aparecer no widget, mesmo que continue "recente".
-const ULTIMA_NOTIF_DESCARTADA_KEY_PREFIXO = 'sigaJuncalUltimaNotifDescartada_';
-function ultimaNotifDescartadaKey() { return activeUser ? ULTIMA_NOTIF_DESCARTADA_KEY_PREFIXO + activeUser.username : null; }
-function ultimaNotificacaoIdUnico(item) { return `${item.tipoEvento}:${item.r.id}`; }
+// Guarda, por RECADO (não por utilizador/dispositivo), se a notificação já
+// foi vista/descartada no widget da Home — colunas notif_vista_recebida/
+// notif_vista_concluida em gaveta_recados, gravadas no Supabase (ver
+// dbMarcarNotifHomeVista). Antes disto vivia em localStorage, isolado por
+// browser: uma colega que via/descartava a notificação num posto continuava
+// a vê-la reaparecer noutro computador (ou noutro turno, no mesmo posto
+// partilhado), porque nada tinha ficado registado em lado nenhum que todos
+// os dispositivos pudessem consultar — pedido explícito 2026-08-12 para
+// corrigir exatamente este sintoma, quer nas tarefas quer nas mensagens, e
+// tanto no widget "Última Notificação" (debaixo da saudação) como em geral.
+// Cada evento tem a sua própria coluna porque a mesma linha de recados pode
+// gerar DOIS eventos distintos ao longo do tempo, para pessoas diferentes —
+// 'recebida' (para quem recebeu) e, mais tarde, 'concluida' (para quem
+// enviou, quando a tarefa é confirmada) — descartar um não pode esconder o
+// outro.
 function ultimaNotifFoiDescartada(item) {
-  const key = ultimaNotifDescartadaKey();
-  if (!key) return false;
-  try { return window.localStorage.getItem(key) === ultimaNotificacaoIdUnico(item); } catch (e) { return false; }
+  return !!(item.tipoEvento === 'concluida' ? item.r.notifVistaConcluida : item.r.notifVistaRecebida);
 }
-function descartarUltimaNotificacao(item) {
-  const key = ultimaNotifDescartadaKey();
-  if (!key) return;
-  try { window.localStorage.setItem(key, ultimaNotificacaoIdUnico(item)); } catch (e) { /* localStorage indisponível — só não persiste entre recarregamentos */ }
+async function descartarUltimaNotificacao(item) {
+  const campo = item.tipoEvento === 'concluida' ? 'notifVistaConcluida' : 'notifVistaRecebida';
+  // Atualiza o STATE local já, antes da resposta do servidor, para o widget
+  // desaparecer de imediato ao clique (sem esperar pela rede) — a chamada ao
+  // Supabase é que garante que a marcação sobrevive e chega aos outros
+  // dispositivos (via Realtime, igual ao resto da Gaveta).
+  STATE.gavetaRecados = (STATE.gavetaRecados || []).map(r => r.id === item.r.id ? Object.assign({}, r, { [campo]: true }) : r);
+  const updated = await dbMarcarNotifHomeVista(item.r.id, campo);
+  if (updated) STATE.gavetaRecados = (STATE.gavetaRecados || []).map(r => r.id === updated.id ? updated : r);
 }
 // Notificação mais recente relevante para o utilizador — usada pelo widget
 // discreto "Última Notificação" que substituiu o botão antigo da Gaveta
@@ -36719,7 +36775,7 @@ function showUserLoginScreen(onSuccess, opts) {
     activeUserPin = u.pin || null;
     // Herdar do modo convidado o que já tinha sido lido antes do login —
     // evita que o badge reconte mensagens já vistas no ecrã anterior.
-    sincronizarChatLastRead('sigaJuncalChatLastRead_convidado', `sigaJuncalChatLastRead_${activeUser.username}`);
+    herdarChatLastReadDoConvidado();
     guardarSessaoPersistente(activeUser);
     pedirPermissaoNotificacoes();
     iniciarPresenca();
@@ -37005,7 +37061,7 @@ function clearSessionSilently() {
   // Antes de limpar a sessão, propaga o marcador de "última leitura" do
   // chat para a chave de convidado — a contagem de não lidas continua
   // correta no ecrã de "Retomar Sessão", sem recontar o que já foi visto.
-  sincronizarChatLastRead(`sigaJuncalChatLastRead_${activeUser.username}`, 'sigaJuncalChatLastRead_convidado');
+  propagarChatLastReadParaConvidado();
   activeUser = null;
   activeUserPin = null;
   STATE.financeiro = [];
@@ -37029,7 +37085,7 @@ function clearSessionSilently() {
 }
 function manualLogout() {
   confirmDialog('Deseja terminar a sessão atual?', () => {
-    if (activeUser) sincronizarChatLastRead(`sigaJuncalChatLastRead_${activeUser.username}`, 'sigaJuncalChatLastRead_convidado');
+    if (activeUser) propagarChatLastReadParaConvidado();
     activeUser = null;
     activeUserPin = null;
     STATE.financeiro = [];
