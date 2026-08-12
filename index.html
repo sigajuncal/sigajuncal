@@ -351,15 +351,20 @@
      e densas: tudo (checkbox, nome, CNP/validade/localização e Qtd.) numa
      única linha horizontal, para caber o máximo de produtos no ecrã sem
      scroll excessivo. */
-  .validade-item-row{display:flex;align-items:center;gap:10px;padding:8px 14px;}
+  .validade-item-row{display:flex;align-items:center;gap:10px;padding:6px 14px;}
   .validade-item-row.row-selected{background:var(--pharm-100) !important;}
   .validade-item-urgente{border-left:4px solid var(--red);background:var(--red-bg);}
   .validade-item-info{flex:1;min-width:0;display:flex;align-items:baseline;gap:8px;overflow:hidden;}
   .validade-item-nome{font-weight:700;color:var(--pharm-900);font-size:13px;flex-shrink:1;min-width:0;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .validade-item-meta{font-size:11.5px;color:var(--pharm-500);white-space:nowrap;flex-shrink:0;}
-  .validade-qtd-field{flex-shrink:0;width:auto;margin:0;}
-  .validade-qtd-field label{font-size:9px;margin-bottom:1px;}
+  /* "Qtd." passou de rótulo EM CIMA do campo (2 linhas de altura) para
+     rótulo AO LADO do stepper (pedido explícito 2026-08-12 — a fila
+     continuava grossa mesmo depois de trocar as setas por botões, porque
+     o rótulo empilhado por cima continuava a obrigar a 2 linhas de altura,
+     quando o resto da linha tem só 1). Agora fica tudo numa única linha.*/
+  .validade-qtd-field{flex-shrink:0;width:auto;margin:0;display:flex;align-items:center;gap:6px;}
+  .validade-qtd-label{font-size:10.5px;font-weight:700;color:var(--pharm-500);flex-shrink:0;}
   /* Substituídas as setas nativas do <input type=number> (desperdiçavam
      espaço na linha, empilhadas na vertical) por um par de botões − / +
      ladeando o número — pedido explícito 2026-08-12. */
@@ -14819,19 +14824,29 @@ function buildValidadesPage(container, goTo) {
         // fina, sem o espaço desperdiçado pelas setas empilhadas na vertical.
         const qtdInput = h('input', { class: 'input validade-qtd-input', type: 'number', min: '0', placeholder: '—', title: 'Quantidade Disponível' });
         qtdInput.value = (r.quantidade === null || r.quantidade === undefined) ? '' : String(r.quantidade);
+        // Valor "vivo" independente de r.quantidade — corrige um bug em que
+        // clicar em + e logo a seguir em − saltava o valor recém-aplicado
+        // (ex: 38→39 no +, depois 39→37 no − em vez de →38): passoQtd lia
+        // sempre r.quantidade, que só é atualizado quando a linha inteira é
+        // reconstruída (não a cada clique) — por isso ficava "preso" no
+        // valor de antes do primeiro clique. Agora cada clique parte sempre
+        // do último valor mesmo aplicado nesta linha, não do valor original.
+        let qtdAtual = (r.quantidade === null || r.quantidade === undefined) ? null : r.quantidade;
         qtdInput.addEventListener('click', (e) => e.stopPropagation());
         qtdInput.addEventListener('keydown', (e) => { if (e.key === '-') e.preventDefault(); if (e.key === 'Enter') { e.preventDefault(); qtdInput.blur(); } });
         qtdInput.addEventListener('change', () => {
           requireAuth(() => {
             const novo = qtdInput.value === '' ? null : Math.max(0, parseInt(qtdInput.value, 10) || 0);
+            qtdAtual = novo;
             qtdInput.value = novo === null ? '' : String(novo);
             atualizarQuantidade(r, novo);
           });
         });
         function passoQtd(delta) {
           requireAuth(() => {
-            const atual = (r.quantidade === null || r.quantidade === undefined) ? 0 : r.quantidade;
+            const atual = (qtdAtual === null || qtdAtual === undefined) ? 0 : qtdAtual;
             const novo = Math.max(0, atual + delta);
+            qtdAtual = novo;
             qtdInput.value = String(novo);
             atualizarQuantidade(r, novo);
           });
@@ -14855,7 +14870,9 @@ function buildValidadesPage(container, goTo) {
               r.localizacao ? ` · ${r.localizacao}` : '',
             ]),
           ]),
-          h('div', { class: 'field field-xs validade-qtd-field', style: 'margin:0;' }, [h('label', {}, 'Qtd.'), qtdStepper]),
+          // Rótulo "Qtd." ao lado do stepper, não empilhado por cima (ver
+          // .validade-qtd-field) — mantém a linha inteira numa só altura.
+          h('div', { class: 'validade-qtd-field' }, [h('span', { class: 'validade-qtd-label' }, 'Qtd.'), qtdStepper]),
         ]);
         row.addEventListener('click', () => toggleSelect(r.id));
         return row;
