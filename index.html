@@ -19571,7 +19571,10 @@ function buildFichaClienteDeclaracaoFields(draft, rerender, onCarregado) {
     h('label', {}, '🔎 Nº de Ficha'), fichaControl,
     h('p', { class: 'field-helper-text' }, 'Preenche Nome, NIF, Género e Data de Nascimento, se existir.'),
   ]);
-  const nifField = h('div', { class: 'field doc-w-xs' }, [h('label', {}, 'NIF'), nifControl]);
+  // doc-w-36 (max-width:144px) — só 9 dígitos, sem ambiguidade nenhuma;
+  // antes usava doc-w-xs (320px), praticamente a mesma largura do Nome do
+  // Utente ao lado, sem necessidade nenhuma (pedido explícito 2026-08-13).
+  const nifField = h('div', { class: 'field doc-w-36' }, [h('label', {}, 'NIF'), nifControl]);
   return { fichaField, nifField };
 }
 // Pergunta pós-gravação sobre a Ficha de Cliente — mesmo mecanismo/textos em
@@ -19693,7 +19696,13 @@ function buildDocRodapeComResponsavel(nomeComCargo, dataISO) {
 function buildDocRodape(dataISO) {
   return buildDocRodapeComResponsavel(nomeResponsavelComCargo(), dataISO);
 }
-// Marca d'água discreta no topo, uniforme para todos os documentos impressos.
+// Marca d'água discreta no topo — SÓ nos Formulários de Entrega
+// (extraClass 'doc-a4-formulario-entrega'). Nas Declarações (Despesas
+// Mensais, Presença, Avaliação Física, Livre) deixou de aparecer: são
+// documentos formais entregues ao utente/entidades externas, e a marca
+// "SigaJuncal · data/hora" não faz sentido nesse contexto — pedido
+// explícito 2026-08-13. O rodapé (data/assinatura/carimbo, buildDocRodape)
+// nunca referiu o SigaJuncal, por isso não precisou de alteração nenhuma.
 function buildDocTopoMeta() {
   const agora = new Date();
   const dataHora = `${pad2(agora.getDate())}/${pad2(agora.getMonth() + 1)}/${agora.getFullYear()} ${pad2(agora.getHours())}:${pad2(agora.getMinutes())}`;
@@ -19704,8 +19713,9 @@ function buildDocTopoMeta() {
 // "justify-content:space-between" da folha empurra o rodapé para o fundo em
 // vez de espalhar espaço entre cada parágrafo individual.
 function buildDocA4(conteudoKids, rodapeNode, extraClass) {
+  const mostrarTopoMeta = extraClass === 'doc-a4-formulario-entrega';
   return h('div', { class: extraClass ? `doc-a4 ${extraClass}` : 'doc-a4' }, [
-    h('div', { class: 'doc-conteudo' }, [buildDocTopoMeta(), ...conteudoKids]),
+    h('div', { class: 'doc-conteudo' }, [mostrarTopoMeta ? buildDocTopoMeta() : null, ...conteudoKids]),
     rodapeNode,
   ]);
 }
@@ -20059,13 +20069,14 @@ function buildDeclaracaoDespesasPage(container, goTo) {
       genero: params.genero || 'Masculino',
       dataNascimento: params.dataNascimento || '',
       discriminado: !!registoEditar.discriminado,
+      naoCliente: !!params.naoCliente,
       valorTotalManual: registoEditar.discriminado ? '' : String(registoEditar.valorTotal != null ? registoEditar.valorTotal : ''),
       itens: itensSalvos.length ? itensSalvos.map(it => ({ nome: it.nome || '', preco: String(it.preco != null ? it.preco : '') })) : [{ nome: '', preco: '' }],
       // Nº de Ficha nunca vem gravado no próprio documento (é só um atalho
       // de preenchimento) — reabrir para editar arranca sempre em branco.
       numeroFicha: '',
     };
-  })() : { nomeUtente: '', nifUtente: '', genero: 'Masculino', dataNascimento: '', discriminado: false, valorTotalManual: '', itens: [{ cnp: '', nome: '', preco: '' }], numeroFicha: '' };
+  })() : { nomeUtente: '', nifUtente: '', genero: 'Masculino', dataNascimento: '', discriminado: false, naoCliente: false, valorTotalManual: '', itens: [{ cnp: '', nome: '', preco: '' }], numeroFicha: '' };
   let saving = false;
   // Ficha de Cliente carregada pelo Nº de Ficha OU pelo NIF — mesmo
   // mecanismo/objetivo do equivalente em Entregas/Manipulados (ver
@@ -20086,7 +20097,13 @@ function buildDeclaracaoDespesasPage(container, goTo) {
     const cabecalho = [
       buildDocLetterhead(),
       h('h1', { class: 'doc-title' }, 'Declaração'),
-      h('p', { class: 'doc-body-text' }, `A pedido ${artigoUtente(draft.genero)} ${draft.nomeUtente || '—'}, portador(a) do Número de Identificação Fiscal ${draft.nifUtente || '—'}${parteIdade}, declara-se que tem adquirido nesta farmácia medicação crónica no valor mensal de ${totalStr} €.`),
+      h('p', { class: 'doc-body-text' }, draft.naoCliente
+        // Utente NÃO é cliente da farmácia — nunca aqui adquiriu a
+        // medicação; o texto tem de deixar isso explícito, e o valor
+        // apresentado é um orçamento/estimativa, nunca um histórico de
+        // compras real (pedido explícito 2026-08-13).
+        ? `A pedido ${artigoUtente(draft.genero)} ${draft.nomeUtente || '—'}, portador(a) do Número de Identificação Fiscal ${draft.nifUtente || '—'}${parteIdade}, declara-se, a título de orçamento, que a medicação crónica por ${draft.genero === 'Feminino' ? 'ela' : 'ele'} habitualmente utilizada tem um custo mensal estimado, nesta farmácia, de ${totalStr} €. O(a) utente não é atualmente cliente desta farmácia, pelo que não adquiriu aqui a referida medicação.`
+        : `A pedido ${artigoUtente(draft.genero)} ${draft.nomeUtente || '—'}, portador(a) do Número de Identificação Fiscal ${draft.nifUtente || '—'}${parteIdade}, declara-se que tem adquirido nesta farmácia medicação crónica no valor mensal de ${totalStr} €.`),
     ];
     const linhasValidas = draft.discriminado ? draft.itens.filter(it => String(it.nome || '').trim() || String(it.preco || '').trim()) : [];
     // Rede de segurança: no caso normal (poucos medicamentos discriminados)
@@ -20145,7 +20162,7 @@ function buildDeclaracaoDespesasPage(container, goTo) {
       discriminado: !!draft.discriminado,
       valorTotal: calcularTotal(),
       itens: draft.discriminado ? draft.itens.filter(it => String(it.nome || '').trim() || String(it.preco || '').trim()) : null,
-      parametros: { genero: draft.genero, dataNascimento: draft.dataNascimento },
+      parametros: { genero: draft.genero, dataNascimento: draft.dataNascimento, naoCliente: !!draft.naoCliente },
       responsavelNome: (activeUser && (activeUser.nomeCompleto || activeUser.username)) || '',
       responsavelCargo: (activeUser && activeUser.categoriaProfissional) || '',
       dataEmissao,
@@ -20178,6 +20195,8 @@ function buildDeclaracaoDespesasPage(container, goTo) {
     nascInput.addEventListener('input', () => { draft.dataNascimento = nascInput.value; });
     const discCb = h('input', { type: 'checkbox', checked: !!draft.discriminado });
     discCb.addEventListener('change', () => { draft.discriminado = discCb.checked; rerender(); });
+    const naoClienteCb = h('input', { type: 'checkbox', checked: !!draft.naoCliente });
+    naoClienteCb.addEventListener('change', () => { draft.naoCliente = naoClienteCb.checked; rerender(); });
 
     const campos = [
       fichaField,
@@ -20186,7 +20205,12 @@ function buildDeclaracaoDespesasPage(container, goTo) {
       buildGeneroUtenteField(draft),
       h('div', { class: 'field doc-w-36' }, [h('label', {}, 'Data de Nascimento'), melhorarInputData(nascInput)]),
     ];
-    const linhaCheckbox = h('label', { class: 'checkbox-field', style: 'margin-top:14px;' }, [discCb, h('span', {}, 'Discriminar Medicamentos / Produtos')]);
+    // Situação em que o utente NUNCA foi cliente da farmácia — nunca cá
+    // levantou a medicação, mas na mesma se dispõe a orçamentar-lhe o custo
+    // mensal da medicação crónica; o texto da declaração muda para deixar
+    // isso claro (ver construirDocumentoNode) — pedido explícito 2026-08-13.
+    const linhaNaoCliente = h('label', { class: 'checkbox-field', style: 'margin-top:14px;' }, [naoClienteCb, h('span', {}, 'Utente não é cliente da Farmácia Juncal (emitir como orçamento da medicação crónica)')]);
+    const linhaCheckbox = h('label', { class: 'checkbox-field', style: 'margin-top:8px;' }, [discCb, h('span', {}, 'Discriminar Medicamentos / Produtos')]);
     if (!draft.discriminado) {
       const valorInput = h('input', { class: 'input', type: 'number', step: '0.01', min: '0', placeholder: '0,00' });
       valorInput.value = draft.valorTotalManual;
@@ -20197,7 +20221,7 @@ function buildDeclaracaoDespesasPage(container, goTo) {
       });
       campos.push(h('div', { class: 'field doc-w-40' }, [h('label', {}, 'Valor Total (€)'), valorInput]));
     }
-    const formChildren = [h('div', { class: 'doc-fields-row' }, campos), linhaCheckbox];
+    const formChildren = [h('div', { class: 'doc-fields-row' }, campos), linhaNaoCliente, linhaCheckbox];
 
     if (draft.discriminado) {
       const linhasEl = draft.itens.map((it, idx) => {
