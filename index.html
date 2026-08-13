@@ -354,10 +354,27 @@
   .validade-item-row{display:flex;align-items:center;gap:10px;padding:6px 14px;}
   .validade-item-row.row-selected{background:var(--pharm-100) !important;}
   .validade-item-urgente{border-left:4px solid var(--red);background:var(--red-bg);}
-  .validade-item-info{flex:1;min-width:0;display:flex;align-items:baseline;gap:8px;overflow:hidden;}
+  .validade-item-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;overflow:hidden;}
+  .validade-item-linha1{display:flex;align-items:baseline;gap:8px;overflow:hidden;}
   .validade-item-nome{font-weight:700;color:var(--pharm-900);font-size:13px;flex-shrink:1;min-width:0;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .validade-item-meta{font-size:11.5px;color:var(--pharm-500);white-space:nowrap;flex-shrink:0;}
+  /* Linha própria para "Registado por / em" — separada da linha de CNP/
+     Validade/Localização (que já ia toda seguida, difícil de ler), com um
+     tom distinto mas discreto para se distinguir à primeira vista dos
+     dados do produto sem gritar — pedido explícito 2026-08-13. */
+  .validade-item-meta-registo{font-size:11px;color:var(--pharm-600);font-style:italic;}
+  /* Widget "Marcações Recentes" no hub de Agendas — lista compacta,
+     clicável, mesma lógica visual do resto da app (linha com bolinha
+     colorida do serviço + info + metadados discretos à direita). */
+  .agenda-recentes-lista{display:flex;flex-direction:column;}
+  .agenda-recente-row{display:flex;align-items:center;gap:12px;padding:10px 4px;border-bottom:1px solid var(--pharm-100);}
+  .agenda-recente-row:last-child{border-bottom:none;}
+  .agenda-recente-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;}
+  .agenda-recente-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;}
+  .agenda-recente-cliente{font-weight:700;color:var(--pharm-900);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .agenda-recente-meta{font-size:11.5px;color:var(--pharm-500);}
+  .agenda-recente-registo{font-size:11px;color:var(--pharm-400);white-space:nowrap;flex-shrink:0;}
   /* "Qtd." passou de rótulo EM CIMA do campo (2 linhas de altura) para
      rótulo AO LADO do stepper (pedido explícito 2026-08-12 — a fila
      continuava grossa mesmo depois de trocar as setas por botões, porque
@@ -15016,17 +15033,17 @@ function buildValidadesPage(container, goTo) {
         const row = h('div', { class: 'card validade-item-row' + (perto ? ' validade-item-urgente' : '') + (selected ? ' row-selected' : ''), style: 'cursor:pointer;' }, [
           cb,
           h('div', { class: 'validade-item-info' }, [
-            h('span', { class: 'validade-item-nome' }, r.produto || r.cnp || 'Sem nome'),
-            h('span', { class: 'validade-item-meta' }, [
-              r.cnp ? `CNP ${r.cnp} · ` : '', `Validade: ${validadeFormatarMesAno(r.validade)}`,
-              r.localizacao ? ` · ${r.localizacao}` : '',
-              // Registado por / Data de registo — mesma informação já
-              // mostrada em Erros de Stock, pedido explícito 2026-08-13.
-              // createdAt vem sempre da BD (coluna automática do Supabase),
-              // por isso funciona mesmo em registos antigos.
-              r.responsavel ? ` · Registado por ${formatarNomeResponsavelTabela(r.responsavel, STATE.usuarios)}` : '',
-              r.createdAt ? ` em ${formatDate(String(r.createdAt).slice(0, 10))}` : '',
+            h('div', { class: 'validade-item-linha1' }, [
+              h('span', { class: 'validade-item-nome' }, r.produto || r.cnp || 'Sem nome'),
+              h('span', { class: 'validade-item-meta' }, [
+                r.cnp ? `CNP ${r.cnp} · ` : '', `Validade: ${validadeFormatarMesAno(r.validade)}`,
+                r.localizacao ? ` · ${r.localizacao}` : '',
+              ]),
             ]),
+            (r.responsavel || r.createdAt) ? h('span', { class: 'validade-item-meta-registo' }, [
+              r.responsavel ? `Registado por ${formatarNomeResponsavelTabela(r.responsavel, STATE.usuarios)}` : 'Registado',
+              r.createdAt ? ` em ${formatDate(String(r.createdAt).slice(0, 10))}` : '',
+            ]) : null,
           ]),
           // Rótulo "Qtd." ao lado do stepper, não empilhado por cima (ver
           // .validade-qtd-field) — mantém a linha inteira numa só altura.
@@ -35391,8 +35408,64 @@ function buildAgendasHubPage(container, goTo) {
 
   wrap.appendChild(h('div', { class: 'quick-grid hub-tier-row' }, principal.map(buildCard)));
   wrap.appendChild(h('div', { class: 'quick-grid hub-tier-row' }, secundario.map(buildCard)));
+  wrap.appendChild(buildAgendasRecentesWidget());
   container.appendChild(wrap);
 }
+
+// "Há quanto tempo" compacto (min/h/dias) — reaproveitado só aqui, o
+// textoDadosAtualizados() da Página Inicial é específico da última
+// sincronização e só distingue min/h.
+function tempoRelativoCompacto(iso) {
+  if (!iso) return '';
+  const segundos = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (segundos < 45) return 'agora mesmo';
+  const minutos = Math.floor(segundos / 60);
+  if (minutos < 60) return `há ${minutos} min`;
+  const horas = Math.floor(minutos / 60);
+  if (horas < 24) return `há ${horas}h`;
+  const dias = Math.floor(horas / 24);
+  return `há ${dias} ${pluralPT(dias, 'dia', 'dias')}`;
+}
+// Marcações registadas nos ÚLTIMOS 7 DIAS em qualquer das Agendas (todos os
+// serviços combinados, mais recente primeiro por data/hora de REGISTO — não
+// da consulta em si) — meramente informativo, sem interação nenhuma (nada
+// clicável). Só visível a quem vê este hub (nunca um Prestador de Serviço,
+// que nem chega a esta página: é redirecionado direto para a sua própria
+// agenda, ver router). Pedido explícito 2026-08-13 — revisto no mesmo dia:
+// deixou de ser "últimas 15" para passar a "últimos 7 dias", e deixou de
+// ser clicável (linhas de consulta ou navegação nenhuma).
+function buildAgendasRecentesWidget() {
+  const limite7dias = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const recentes = (STATE.agendaMarcacoes || [])
+    .filter(m => m.tipoLinha !== 'bloqueado' && m.createdAt && new Date(m.createdAt).getTime() >= limite7dias)
+    .slice()
+    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+
+  const box = h('div', { class: 'card card-pad', style: 'margin-top:20px;' });
+  box.appendChild(h('h3', { class: 'page-eyebrow', style: 'margin:0 0 12px;color:var(--pharm-800);font-size:14px;text-transform:none;letter-spacing:0;' }, 'Marcações Recentes (últimos 7 dias)'));
+  if (!recentes.length) {
+    box.appendChild(h('p', { class: 'cell-muted' }, 'Sem marcações registadas nos últimos 7 dias.'));
+    return box;
+  }
+  const linhas = recentes.map(m => {
+    const prestador = PRESTADORES_AGENDA.find(p => p.key === m.prestadorKey);
+    const cor = prestador ? prestador.cor : 'var(--pharm-400)';
+    return h('div', { class: 'agenda-recente-row' }, [
+      h('span', { class: 'agenda-recente-dot', style: `background:${cor};` }),
+      h('div', { class: 'agenda-recente-info' }, [
+        h('span', { class: 'agenda-recente-cliente' }, m.nomeCliente || 'Sem nome'),
+        h('span', { class: 'agenda-recente-meta' }, `${prestador ? prestador.especialidade : m.prestadorKey} · ${formatDate(m.data)} às ${m.hora || '—'}`),
+      ]),
+      h('span', { class: 'agenda-recente-registo' }, [
+        m.responsavel ? `${formatarNomeResponsavelTabela(m.responsavel, STATE.usuarios)} · ` : '',
+        tempoRelativoCompacto(m.createdAt),
+      ]),
+    ]);
+  });
+  box.appendChild(h('div', { class: 'agenda-recentes-lista' }, linhas));
+  return box;
+}
+
 
 // Passo intermédio de sub-seleção para o serviço de Nutrição: escolha entre
 // as duas profissionais (Tatiana / Joana) antes de abrir a respetiva agenda.
