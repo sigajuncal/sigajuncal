@@ -14732,6 +14732,19 @@ function buildValidadesPage(container, goTo) {
     control.value = draft.cnp || '';
     let debounceTimer = null;
     let ultimoCnpConsultado = '';
+    // Aviso inline imediato (sem esperar pelo submit) quando o CNP já está
+    // registado em Validades — mesmo padrão usado em Erros de Stock (ver
+    // buildCnpAutoFillField em buildErrosPage) — pedido explícito 2026-08-13.
+    const avisoDuplicadoEl = h('p', { class: 'field-error-inline', style: 'display:none;' }, '');
+    function verificarDuplicadoCnp(cnpAtual) {
+      const duplicado = cnpAtual ? STATE.validades.find(r => r.id !== editingId && String(r.cnp || '').trim() === cnpAtual) : null;
+      if (duplicado) {
+        avisoDuplicadoEl.textContent = `⚠ O produto (CNP ${cnpAtual}) já se encontra registado em Validades.`;
+        avisoDuplicadoEl.style.display = '';
+      } else {
+        avisoDuplicadoEl.style.display = 'none';
+      }
+    }
     async function consultarEPreencher() {
       const cnpAtual = String(draft.cnp || '').trim();
       if (!cnpAtual || cnpAtual === ultimoCnpConsultado) return;
@@ -14755,12 +14768,14 @@ function buildValidadesPage(container, goTo) {
       if (cleaned !== control.value) control.value = cleaned;
       draft.cnp = control.value;
       ultimoCnpConsultado = '';
+      verificarDuplicadoCnp(control.value.trim());
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(consultarEPreencher, 350);
     });
     control.addEventListener('change', () => { if (debounceTimer) clearTimeout(debounceTimer); consultarEPreencher(); });
     control.addEventListener('blur', () => { if (debounceTimer) clearTimeout(debounceTimer); consultarEPreencher(); });
-    return h('div', { class: 'field field-xs' }, [h('label', {}, 'CNP / EAN / Código Interno'), control]);
+    verificarDuplicadoCnp(String(draft.cnp || '').trim()); // estado inicial (ex: reabrir para editar)
+    return h('div', { class: 'field field-xs' }, [h('label', {}, 'CNP / EAN / Código Interno'), control, avisoDuplicadoEl]);
   }
 
   async function submit() {
@@ -14789,6 +14804,22 @@ function buildValidadesPage(container, goTo) {
       formError = 'Apenas podem ser registados produtos com validade inferior a 1 ano a contar da data atual (foco no escoamento prioritário).';
       rerender();
       return;
+    }
+    // ---- Prevenção de CNPs duplicados em Validades ----
+    // Um mesmo CNP só pode ter UM registo de cada vez em Validades — mesmo
+    // padrão de Erros de Stock (ver submit() em buildErrosPage), adaptado:
+    // aqui não há "estado" a distinguir pendente/corrigido, por isso basta
+    // não haver NENHUM outro registo com este CNP. Ao editar, o próprio
+    // registo (editingId) nunca conta como duplicado de si mesmo — pedido
+    // explícito 2026-08-13.
+    const cnpTrim = String(draft.cnp || '').trim();
+    if (cnpTrim) {
+      const duplicado = STATE.validades.find(r => r.id !== editingId && String(r.cnp || '').trim() === cnpTrim);
+      if (duplicado) {
+        formError = `O produto (CNP ${cnpTrim}) já se encontra registado em Validades.`;
+        rerender();
+        return;
+      }
     }
     formError = '';
     saving = true; rerender();
@@ -14989,6 +15020,12 @@ function buildValidadesPage(container, goTo) {
             h('span', { class: 'validade-item-meta' }, [
               r.cnp ? `CNP ${r.cnp} · ` : '', `Validade: ${validadeFormatarMesAno(r.validade)}`,
               r.localizacao ? ` · ${r.localizacao}` : '',
+              // Registado por / Data de registo — mesma informação já
+              // mostrada em Erros de Stock, pedido explícito 2026-08-13.
+              // createdAt vem sempre da BD (coluna automática do Supabase),
+              // por isso funciona mesmo em registos antigos.
+              r.responsavel ? ` · Registado por ${formatarNomeResponsavelTabela(r.responsavel, STATE.usuarios)}` : '',
+              r.createdAt ? ` em ${formatDate(String(r.createdAt).slice(0, 10))}` : '',
             ]),
           ]),
           // Rótulo "Qtd." ao lado do stepper, não empilhado por cima (ver
