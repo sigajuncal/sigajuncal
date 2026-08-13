@@ -124,10 +124,6 @@
     justify-content:center;margin-left:auto;margin-right:auto;}
   .sidebar-desktop.sidebar-colapsada .nav-item-home,
   .sidebar-desktop.sidebar-colapsada .nav-item-chat{padding:10px;}
-  /* nav-item-home ganhou uma borda de 2px (ver acima) — desconta-a do
-     padding só aqui, para o ícone (24px) continuar com o mesmo espaço
-     disponível de antes dentro do quadrado de 44px, sem cortar. */
-  .sidebar-desktop.sidebar-colapsada .nav-item-home{padding:8px;}
   .sidebar-desktop.sidebar-colapsada .sidebar-brand-logo{justify-content:center;padding:0 10px;}
   .sidebar-desktop.sidebar-colapsada .conexao-indicador{justify-content:center;padding:8px;}
   /* Tooltip flutuante ao passar o cursor por um ícone da sidebar
@@ -220,24 +216,25 @@
     box-shadow:0 2px 8px rgba(37,111,149,.3);}
   .nav-item.active:hover{background:var(--pharm-700);}
   .nav-item.active .nav-icon{color:#fff;}
-  /* Página Inicial deixou de ter preenchimento escuro sólido permanente —
-     era exatamente esse preenchimento (--pharm-800) que a confundia com
-     qualquer outro item quando ESSE está ativo (--pharm-600, a mesma
-     "família" de azul escuro sólido) — sobretudo na vista colapsada, onde
-     só sobra um quadrado de cor sem rótulo nenhum a esclarecer. Agora fica
-     sempre um contorno claro (nunca se confunde com um item ativo, que é
-     sempre preenchido) e só passa a preenchimento sólido quando é mesmo a
-     página atual — igual à convenção de qualquer outro item da sidebar,
-     nunca uma exceção visual à parte. Pedido explícito 2026-08-13. */
+  /* Segunda tentativa (2026-08-13): o contorno claro ficou parecido de mais
+     com o cartão do utilizador ativo logo a seguir (também --pharm-50 com
+     borda clara — é ali que fica o botão de terminar sessão) e fraco contra
+     o fundo branco. Preenchimento sólido outra vez, mas com uma cor FORA da
+     família --pharm- (usada por qualquer item ativo E pelo botão da
+     Gaveta) — --blue, um azul mais vivo/diferente, nunca usado em mais
+     lado nenhum da sidebar. Fica sempre bem visível e nunca se confunde com
+     "item ativo" (mais discreto/petróleo) nem com o cartão de sessão (claro
+     com borda fina).
+  */
   .nav-item-home{position:relative;flex-direction:column;align-items:center;justify-content:center;gap:4px;
-    background:var(--pharm-50);border:2px solid var(--pharm-600);color:var(--pharm-700);font-weight:800;
-    padding:9px 10px;box-shadow:0 2px 6px rgba(37,111,149,.14);}
-  .nav-item-home .nav-icon{color:var(--pharm-600);}
-  .nav-item-home:hover{background:var(--pharm-100);border-color:var(--pharm-700);color:var(--pharm-800);}
-  .nav-item-home:hover .nav-icon{color:var(--pharm-700);}
-  .nav-item-home.active{background:var(--pharm-600);border-color:var(--pharm-600);color:#fff;}
+    background:var(--blue);border-color:var(--blue);color:#fff;font-weight:800;
+    padding:10px 10px;box-shadow:0 4px 12px rgba(37,99,235,.35);}
+  .nav-item-home .nav-icon{color:#fff;}
+  .nav-item-home:hover{background:#1d4ed8;border-color:#1d4ed8;
+    box-shadow:0 6px 16px rgba(29,78,216,.42);}
+  .nav-item-home.active{background:#1e3a8a;border-color:#1e3a8a;}
   .nav-item-home.active .nav-icon{color:#fff;}
-  .nav-item-home.active:hover{background:var(--pharm-700);border-color:var(--pharm-700);}
+  .nav-item-home.active:hover{background:#172554;}
   .nav-item-chat{position:relative;flex-direction:column;align-items:center;justify-content:center;gap:4px;
     background:var(--pharm-600);border-color:var(--pharm-600);color:#fff;font-weight:800;
     padding:10px 10px;box-shadow:0 4px 12px rgba(37,111,149,.32);}
@@ -13100,7 +13097,7 @@ function abrirModalGaveta(abrirThreadInicial) {
     const col = h('div', { class: 'gaveta-sidebar-col' });
     col.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 10px;' }, 'Só tu vês as tuas conversas.'));
 
-    const searchInput = h('input', { class: 'search-input', type: 'text', placeholder: 'Pesquisar por nome ou palavra-chave...' });
+    const searchInput = h('input', { class: 'search-input', type: 'text', placeholder: 'Nome do colega, ou palavra-chave...' });
     searchInput.value = searchQuery;
 
     const totalPendentes = recadosPendentesDoUtilizador().length;
@@ -21318,8 +21315,17 @@ async function descarregarBackup(onStatus) {
   const nomeBase = `backup_farmacia_juncal_${todayISO()}`;
   try {
     // 1) Excel — múltiplas abas, uma por tabela, pronto a abrir no OneDrive.
+    // Gerado como bytes em memória (XLSX.write, NÃO XLSX.writeFile) e
+    // descarregado pelo MESMO dispararDownloadBlob usado pelo JSON — o
+    // mecanismo de download embutido do XLSX.writeFile falhava em
+    // silêncio no Safari (sem exceção nenhuma, o próprio código reportava
+    // sucesso) e o ficheiro .xlsx nunca chegava a aparecer em Descargas;
+    // o JSON, que já passava por dispararDownloadBlob, sempre funcionou
+    // — por isso passa a ser o caminho único para os dois. Corrigido
+    // 2026-08-13.
     const wb = gerarBackupExcel(backup);
-    XLSX.writeFile(wb, `${nomeBase}.xlsx`);
+    const wbArray = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    dispararDownloadBlob(new Blob([wbArray], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `${nomeBase}.xlsx`);
     // 2) JSON — dump completo e fiel do STATE/base de dados, para restauro técnico.
     const json = JSON.stringify(backup, null, 2);
     dispararDownloadBlob(new Blob([json], { type: 'application/json' }), `${nomeBase}.json`);
