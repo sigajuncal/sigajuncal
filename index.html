@@ -6235,6 +6235,13 @@ function buildNumFichaCategoriaField(f, draft, rerender, onCarregado) {
   control.value = draft[f.name] || '';
   let debounceTimer = null;
   let ultimoConsultado = null;
+  // Só passa a true depois de aplicarEscolha() ter mesmo preenchido o
+  // formulário através deste campo, nesta sessão — protege Nome/Contacto já
+  // preenchidos (ex: ao abrir um pedido existente para editar) de serem
+  // apagados por um clique+saída deste campo sem alterar nada, ou por um
+  // número que não corresponde a ficha nenhuma (mesmo bug corrigido nas
+  // Declarações — ver buildFichaClienteDeclaracaoFields, 2026-08-13).
+  let fichaFoiCarregadaNestaSessao = false;
   function limparCamposCliente() {
     draft.nome = ''; draft.contacto = '';
   }
@@ -6242,10 +6249,10 @@ function buildNumFichaCategoriaField(f, draft, rerender, onCarregado) {
     const atual = String(draft[f.name] || '').trim();
     if (atual === ultimoConsultado) return;
     ultimoConsultado = atual;
-    if (!atual) { onCarregado(null); limparCamposCliente(); rerender(); return; }
+    if (!atual) { onCarregado(null); if (fichaFoiCarregadaNestaSessao) { limparCamposCliente(); fichaFoiCarregadaNestaSessao = false; } rerender(); return; }
     const encontrado = await buscarClienteFichaJuncal(atual);
     if (String(draft[f.name] || '').trim() !== atual) return; // Nº mudou entretanto — descarta resposta tardia
-    if (!encontrado) { onCarregado(null); limparCamposCliente(); rerender(); return; }
+    if (!encontrado) { onCarregado(null); if (fichaFoiCarregadaNestaSessao) { limparCamposCliente(); fichaFoiCarregadaNestaSessao = false; } rerender(); return; }
     if (encontrado.duplicados) {
       // Esta Ficha tem mais do que um utente associado (família a
       // partilhar o mesmo Nº de Ficha) — pede ao operador para escolher
@@ -6259,9 +6266,10 @@ function buildNumFichaCategoriaField(f, draft, rerender, onCarregado) {
     aplicarEscolha(encontrado);
   }
   function aplicarEscolha(encontrado) {
+    fichaFoiCarregadaNestaSessao = true;
     onCarregado({ fonte: encontrado.fonte, id: encontrado.id, nome: encontrado.nome, contacto: encontrado.contacto });
-    draft.nome = encontrado.nome;
-    draft.contacto = encontrado.contacto;
+    if (encontrado.nome) draft.nome = encontrado.nome;
+    if (encontrado.contacto) draft.contacto = encontrado.contacto;
     rerender();
   }
   control.addEventListener('input', () => {
@@ -19475,10 +19483,21 @@ function buildFichaClienteDeclaracaoFields(draft, rerender, onCarregado) {
 
   let debounceTimer = null;
   let ultimaChaveConsultada = null; // namespaced por "ficha:"/"nif:" — evita repetir a mesma consulta duas vezes seguidas
+  // Só passa a true depois de aplicarEncontrado() ter mesmo preenchido o
+  // formulário através deste Nº de Ficha, nesta sessão de edição — protege
+  // Nome/NIF/Data de Nascimento já preenchidos de serem apagados por um
+  // clique+saída deste campo sem escrever nada, ou por um número que não
+  // corresponde a ficha nenhuma. Sem isto, ao reabrir um documento antigo
+  // para editar — o Nº de Ficha começa sempre em branco por não ser gravado
+  // no próprio documento — um simples clique acidental neste campo (sem
+  // sequer escrever) apagava por completo os dados já corretos que lá
+  // estavam (bug real, reportado 2026-08-13).
+  let fichaFoiCarregadaNestaSessao = false;
   function limparCamposCliente() {
     draft.nomeUtente = ''; draft.nifUtente = ''; draft.dataNascimento = '';
   }
   function aplicarEncontrado(encontrado) {
+    fichaFoiCarregadaNestaSessao = true;
     // Rede de segurança final: mesmo que `encontrado` já venha das funções
     // de pesquisa (que já tratam nif/num_cc/numCc e
     // dataNascimento/data_nascimento), lê de novo com fallback aqui — nunca
@@ -19489,8 +19508,8 @@ function buildFichaClienteDeclaracaoFields(draft, rerender, onCarregado) {
       fonte: encontrado.fonte, id: encontrado.id, nome: encontrado.nome,
       nif: nifEncontrado, genero: encontrado.genero || '', dataNascimento: dataNascEncontrada,
     });
-    draft.nomeUtente = encontrado.nome;
-    draft.nifUtente = nifEncontrado;
+    if (encontrado.nome) draft.nomeUtente = encontrado.nome;
+    if (nifEncontrado) draft.nifUtente = nifEncontrado;
     // Um cliente novo carregado destranca sempre a escolha de género — a
     // "trava" de generoEscolhidoManualmente é sobre o cliente ANTERIOR, não
     // faz sentido continuar a aplicar-se a partir daqui.
@@ -19513,10 +19532,10 @@ function buildFichaClienteDeclaracaoFields(draft, rerender, onCarregado) {
     const chave = `ficha:${atual}`;
     if (chave === ultimaChaveConsultada) return;
     ultimaChaveConsultada = chave;
-    if (!atual) { onCarregado(null); limparCamposCliente(); rerender(); return; }
+    if (!atual) { onCarregado(null); if (fichaFoiCarregadaNestaSessao) { limparCamposCliente(); fichaFoiCarregadaNestaSessao = false; } rerender(); return; }
     const encontrado = await buscarClienteFichaJuncal(atual);
     if (String(draft.numeroFicha || '').trim() !== atual) return; // Nº mudou entretanto — descarta resposta tardia
-    if (!encontrado) { onCarregado(null); limparCamposCliente(); rerender(); return; }
+    if (!encontrado) { onCarregado(null); if (fichaFoiCarregadaNestaSessao) { limparCamposCliente(); fichaFoiCarregadaNestaSessao = false; } rerender(); return; }
     if (encontrado.duplicados) {
       // Esta Ficha tem mais do que um utente associado (família a
       // partilhar o mesmo Nº de Ficha) — pede ao operador para escolher
@@ -20170,7 +20189,7 @@ function buildDeclaracaoDespesasPage(container, goTo) {
       discriminado: !!draft.discriminado,
       valorTotal: calcularTotal(),
       itens: draft.discriminado ? draft.itens.filter(it => String(it.nome || '').trim() || String(it.preco || '').trim()) : null,
-      parametros: { genero: draft.genero, dataNascimento: draft.dataNascimento, naoCliente: !!draft.naoCliente },
+      parametros: { genero: draft.genero, dataNascimento: draft.dataNascimento, naoCliente: !!draft.naoCliente, numeroFicha: draft.numeroFicha || '' },
       responsavelNome: (activeUser && (activeUser.nomeCompleto || activeUser.username)) || '',
       responsavelCargo: (activeUser && activeUser.categoriaProfissional) || '',
       dataEmissao,
@@ -20295,9 +20314,12 @@ function buildDeclaracaoAvaliacaoFisicaPage(container, goTo) {
       nomeUtente: registoEditar.nomeUtente || '', nifUtente: registoEditar.nifUtente || '',
       genero: params.genero || 'Masculino', dataNascimento: params.dataNascimento || '',
       altura: params.altura || '', peso: params.peso || '', tensao: params.tensao || '',
-      // Nº de Ficha nunca vem gravado no próprio documento (é só um atalho
-      // de preenchimento) — reabrir para editar arranca sempre em branco.
-      numeroFicha: '',
+      // Nº de Ficha agora É preservado (dentro de parametros, ver
+      // registo.parametros abaixo) — antes ficava sempre em branco ao
+      // reabrir para editar, o que também tornava fácil disparar por
+      // engano a limpeza de Nome/NIF/Data de Nascimento (ver
+      // buildFichaClienteDeclaracaoFields) — corrigido 2026-08-13.
+      numeroFicha: params.numeroFicha || '',
     };
   })() : { nomeUtente: '', nifUtente: '', genero: 'Masculino', dataNascimento: '', altura: '', peso: '', tensao: '', numeroFicha: '' };
   let saving = false;
@@ -20352,7 +20374,7 @@ function buildDeclaracaoAvaliacaoFisicaPage(container, goTo) {
       nifUtente: draft.nifUtente,
       discriminado: false,
       valorTotal: null,
-      parametros: { genero: draft.genero, dataNascimento: draft.dataNascimento, altura: draft.altura, peso: draft.peso, tensao: draft.tensao },
+      parametros: { genero: draft.genero, dataNascimento: draft.dataNascimento, altura: draft.altura, peso: draft.peso, tensao: draft.tensao, numeroFicha: draft.numeroFicha || '' },
       responsavelNome: (activeUser && (activeUser.nomeCompleto || activeUser.username)) || '',
       responsavelCargo: (activeUser && activeUser.categoriaProfissional) || '',
       dataEmissao,
@@ -20459,9 +20481,9 @@ function buildDeclaracaoPresencaPage(container, goTo) {
       genero: params.genero || 'Masculino', dataNascimento: params.dataNascimento || '',
       tipoServico: ehConhecido ? tipoSalvo : 'Outro', tipoServicoOutro: ehConhecido ? '' : tipoSalvo,
       dataServico: params.dataServico || todayISO(), horaInicio: params.horaInicio || '', duracaoAprox: params.duracaoAprox || '',
-      // Nº de Ficha nunca vem gravado no próprio documento (é só um atalho
-      // de preenchimento) — reabrir para editar arranca sempre em branco.
-      numeroFicha: '',
+      // Nº de Ficha agora É preservado (ver nota igual na Declaração de
+      // Despesas Mensais) — corrigido 2026-08-13.
+      numeroFicha: params.numeroFicha || '',
     };
   })() : { nomeUtente: '', nifUtente: '', genero: 'Masculino', dataNascimento: '', tipoServico: TIPOS_SERVICO_PRESENCA[0], tipoServicoOutro: '', dataServico: todayISO(), horaInicio: '', duracaoAprox: '', numeroFicha: '' };
   let saving = false;
@@ -20503,7 +20525,7 @@ function buildDeclaracaoPresencaPage(container, goTo) {
       nifUtente: draft.nifUtente,
       discriminado: false,
       valorTotal: null,
-      parametros: { genero: draft.genero, dataNascimento: draft.dataNascimento, tipoServico: tipoServicoFinal(), dataServico: draft.dataServico, horaInicio: draft.horaInicio, duracaoAprox: draft.duracaoAprox },
+      parametros: { genero: draft.genero, dataNascimento: draft.dataNascimento, tipoServico: tipoServicoFinal(), dataServico: draft.dataServico, horaInicio: draft.horaInicio, duracaoAprox: draft.duracaoAprox, numeroFicha: draft.numeroFicha || '' },
       responsavelNome: (activeUser && (activeUser.nomeCompleto || activeUser.username)) || '',
       responsavelCargo: (activeUser && activeUser.categoriaProfissional) || '',
       dataEmissao,
@@ -20711,10 +20733,13 @@ function construirDocumentoNodeFromRegisto(registo) {
     const totalStr = (registo.valorTotal != null ? registo.valorTotal : 0).toFixed(2).replace('.', ',');
     const idadeDespesas = idadeAPartirDeNascimento(params.dataNascimento, registo.dataEmissao);
     const parteIdadeDespesas = idadeDespesas !== null ? `, com ${idadeDespesas} anos de idade` : '';
+    const textoDespesas = params.naoCliente
+      ? `A pedido ${artigoUtente(genero)} ${registo.nomeUtente || '—'}, portador(a) do Número de Identificação Fiscal ${registo.nifUtente || '—'}${parteIdadeDespesas}, declara-se, a título de orçamento, que a medicação crónica por ${genero === 'Feminino' ? 'ela' : 'ele'} habitualmente utilizada tem um custo mensal estimado, nesta farmácia, de ${totalStr} €. O(a) utente não é atualmente cliente desta farmácia, pelo que não adquiriu aqui a referida medicação.`
+      : `A pedido ${artigoUtente(genero)} ${registo.nomeUtente || '—'}, portador(a) do Número de Identificação Fiscal ${registo.nifUtente || '—'}${parteIdadeDespesas}, declara-se que tem adquirido nesta farmácia medicação crónica no valor mensal de ${totalStr} €.`;
     const kids = [
       buildDocLetterhead(),
       h('h1', { class: 'doc-title' }, 'Declaração'),
-      h('p', { class: 'doc-body-text' }, `A pedido ${artigoUtente(genero)} ${registo.nomeUtente || '—'}, portador(a) do Número de Identificação Fiscal ${registo.nifUtente || '—'}${parteIdadeDespesas}, declara-se que tem adquirido nesta farmácia medicação crónica no valor mensal de ${totalStr} €.`),
+      h('p', { class: 'doc-body-text' }, textoDespesas),
     ];
     if (registo.discriminado && itens.length) {
       const linhasNode = itens.map(it => h('tr', {}, [h('td', {}, it.nome || '—'), h('td', {}, (parseFloat(it.preco) || 0).toFixed(2).replace('.', ','))]));
@@ -33792,6 +33817,19 @@ function buildEntregasPage(container, goTo) {
     control.value = draft.numeroFicha || '';
     let debounceTimer = null;
     let ultimoConsultado = null;
+    // Só passa a true depois de aplicarEscolha() ter mesmo preenchido o
+    // formulário através deste campo, nesta sessão — protege Nome/Morada/
+    // Localidade/Contacto já preenchidos (ex: ao abrir uma entrega já
+    // gravada para editar, onde o Nº de Ficha já vem populado do próprio
+    // registo) de serem apagados por um simples clique+saída deste campo
+    // sem alterar nada, ou por um número que entretanto deixou de
+    // corresponder a ficha nenhuma — mesmo bug corrigido nas Declarações
+    // (ver buildFichaClienteDeclaracaoFields), reportado a acontecer também
+    // aqui, 2026-08-13. A troca deliberada de cliente a meio do
+    // preenchimento (escrever um Nº de Ficha novo por cima de um já
+    // carregado) continua a substituir/limpar normalmente — só deixa de
+    // disparar por um blur/consulta que não mudou nada de facto.
+    let fichaFoiCarregadaNestaSessao = false;
     function limparCamposCliente() {
       draft.nomeCliente = ''; draft.morada = ''; draft.localidade = ''; draft.contacto = '';
     }
@@ -33799,10 +33837,10 @@ function buildEntregasPage(container, goTo) {
       const atual = String(draft.numeroFicha || '').trim();
       if (atual === ultimoConsultado) return;
       ultimoConsultado = atual;
-      if (!atual) { clienteFichaCarregada = null; limparCamposCliente(); rerender(); return; }
+      if (!atual) { clienteFichaCarregada = null; if (fichaFoiCarregadaNestaSessao) { limparCamposCliente(); fichaFoiCarregadaNestaSessao = false; } rerender(); return; }
       const encontrado = await buscarClienteFicha(atual);
       if (String(draft.numeroFicha || '').trim() !== atual) return; // Nº mudou entretanto — descarta resposta tardia
-      if (!encontrado) { clienteFichaCarregada = null; limparCamposCliente(); rerender(); return; }
+      if (!encontrado) { clienteFichaCarregada = null; if (fichaFoiCarregadaNestaSessao) { limparCamposCliente(); fichaFoiCarregadaNestaSessao = false; } rerender(); return; }
       if (encontrado.duplicados) {
         // Esta Ficha tem mais do que um utente associado (família a
         // partilhar o mesmo Nº de Ficha) — pede ao operador para escolher
@@ -33816,11 +33854,12 @@ function buildEntregasPage(container, goTo) {
       aplicarEscolha(encontrado);
     }
     function aplicarEscolha(encontrado) {
+      fichaFoiCarregadaNestaSessao = true;
       clienteFichaCarregada = { fonte: encontrado.fonte, id: encontrado.id, nome: encontrado.nome, morada: encontrado.morada, localidade: encontrado.localidade, contacto: encontrado.contacto };
-      draft.nomeCliente = encontrado.nome;
-      draft.morada = encontrado.morada;
-      draft.localidade = encontrado.localidade;
-      draft.contacto = encontrado.contacto;
+      if (encontrado.nome) draft.nomeCliente = encontrado.nome;
+      if (encontrado.morada) draft.morada = encontrado.morada;
+      if (encontrado.localidade) draft.localidade = encontrado.localidade;
+      if (encontrado.contacto) draft.contacto = encontrado.contacto;
       rerender();
     }
     control.addEventListener('input', () => {
