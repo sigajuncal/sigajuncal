@@ -20889,7 +20889,16 @@ function buildHistoricoDocumentosSection(goTo) {
     const linhas = lista.map(r => {
       const dataHora = r.createdAt ? new Date(r.createdAt).toLocaleString('pt-PT', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
       const badge = h('span', { class: 'badge ' + (TIPOS_DOCUMENTO_BADGE_TONE[r.tipo] || 'badge-blue') }, TIPOS_DOCUMENTO_LABELS[r.tipo] || r.tipo);
-      const emitidoPor = [r.responsavelNome ? formatarNomeResponsavelTabela(r.responsavelNome, STATE.usuarios) : '', r.responsavelCargo].filter(Boolean).join(' - ');
+      // Nesta tabela em particular há espaço de sobra — mostra sempre
+      // Primeiro + Último nome por extenso, sem abreviar (ao contrário de
+      // formatarNomeResponsavelTabela, usada nas tabelas mais apertadas de
+      // Pedidos/Agendas, que abrevia para desambiguar colegas com o mesmo
+      // primeiro nome) e sem o cargo a seguir — pedido explícito 2026-08-13.
+      const emitidoPor = (() => {
+        const partes = String(r.responsavelNome || '').trim().split(/\s+/).filter(Boolean);
+        if (partes.length <= 1) return partes[0] || '';
+        return `${partes[0]} ${partes[partes.length - 1]}`;
+      })();
 
       const nomeBaseHist = { despesas_mensal: 'declaracao_despesas', presenca: 'declaracao_presenca', avaliacao_fisica: 'declaracao_avaliacao_fisica', livre: 'declaracao_livre' }[r.tipo] || 'documento';
       const dataDoc = r.dataEmissao || (r.createdAt ? String(r.createdAt).slice(0, 10) : todayISO());
@@ -34197,22 +34206,22 @@ function buildEntregasPage(container, goTo) {
         : (activeTab === 'historico' ? 'Ainda não há entregas concluídas.' : 'Sem entregas pendentes.');
       return EmptyState(msg);
     }
-    const thead = h('thead', {}, h('tr', {}, ['', 'Nº', 'Prazo', 'Cliente', 'Estado', 'Obs.', 'Contacto', 'Morada', 'Data', 'Registado por', 'Bloco', 'Pagamento', 'Ações'].map(t => h('th', {}, t))));
+    const thead = h('thead', {}, h('tr', {}, ['', 'Nº', activeTab === 'historico' ? 'Entregue em' : 'Prazo', 'Cliente', 'Estado', 'Obs.', 'Contacto', 'Morada', 'Data', 'Registado por', 'Bloco', 'Pagamento', 'Ações'].map(t => h('th', {}, t))));
     const rows = list.map(r => {
       const selected = selectedIds.has(r.id);
-      // Coluna "Prazo": em Pendentes mostra o temporizador regressivo ao
-      // vivo; em Histórico, mostra só a nota da hora-limite pedida e a hora
-      // real a que a entrega foi mesmo feita (o temporizador desaparece).
+      // Coluna "Entregue em" (Histórico) / "Prazo" (Pendentes): em
+      // Pendentes mostra o temporizador regressivo ao vivo; em Histórico,
+      // a entrega já aconteceu — o prazo/limite deixou de ser a informação
+      // mais útil, por isso passa a mostrar antes a DATA E HORA reais em
+      // que foi marcada Entregue (horaEntregaReal, timestamp completo),
+      // não só a hora como antes — sem isto não dava para distinguir, só
+      // pela tabela, se uma entrega tinha sido feita no dia previsto
+      // (coluna "Data", que continua a mostrar a data AGENDADA) ou dias
+      // depois — pedido explícito 2026-08-13.
       let prazoCell = '—';
       if (activeTab === 'historico') {
-        const horaLabel = entregaHoraLimiteEfetiva(r);
-        const horaReal = r.horaEntregaReal ? formatDateTime(r.horaEntregaReal).split(' ')[1] : null;
-        if (horaLabel || horaReal) {
-          prazoCell = h('div', { style: 'display:flex;flex-direction:column;gap:2px;' }, [
-            horaLabel ? h('span', { class: 'cell-muted', style: 'font-size:11px;' }, `Limite: ${horaLabel}`) : null,
-            horaReal ? h('span', { class: 'cell-muted', style: 'font-size:11px;font-weight:700;' }, `Entregue: ${horaReal}`) : null,
-          ]);
-        }
+        const entregueEm = r.horaEntregaReal ? formatDateTime(r.horaEntregaReal) : null;
+        prazoCell = entregueEm ? h('span', { class: 'cell-strong', style: 'font-size:12.5px;white-space:nowrap;' }, entregueEm) : '—';
       } else {
         prazoCell = buildEntregaTimerBadge(r) || '—';
       }
