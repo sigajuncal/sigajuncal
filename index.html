@@ -1564,6 +1564,21 @@
   .estatisticas-table th{position:static;box-shadow:none;}
   .estatisticas-table tbody tr:nth-child(even){background:var(--pharm-50);}
   .estatisticas-table tbody tr:nth-child(even):hover{background:rgba(54,136,176,.08);}
+  /* Em mobile, "width:fit-content" + "overflow:visible" (regras acima)
+     era exatamente a causa da sobreposição reportada (pedido explícito
+     2026-08-14): num ecrã estreito, uma tabela de 4+ colunas com nomes
+     compridos e padding 8px/16px facilmente ultrapassa a largura do
+     ecrã; com overflow:visible essa parte a mais não ganha scroll
+     nenhum, só "vaza" visualmente para fora da caixa do cartão e cai por
+     cima do cartão seguinte (o que se via no print). Em mobile troca-se
+     para o padrão oposto: cartão sempre a 100% de largura (nunca
+     fit-content) e a tabela ganha scroll horizontal PRÓPRIO, contido
+     dentro do cartão — nunca mais sai da caixa nem sobrepõe nada. */
+  @media (max-width:768px){
+    .estatisticas-card{width:100%;max-width:100%;}
+    .estatisticas-table-wrap{overflow-x:auto;max-height:none;-webkit-overflow-scrolling:touch;}
+    .estatisticas-table{width:max-content;min-width:100%;}
+  }
   /* Destaque de "quem tem mais" em cada coluna (pedido explícito
      2026-08-14) — círculo bem visível à volta do número, cor sempre
      neutra/escura (nunca a cor da coluna) para se ver igual em qualquer
@@ -1728,9 +1743,24 @@
   .escala-nota-validacao-toggle{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:var(--pharm-500);cursor:pointer;}
   .escala-nota-validacao-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:#166534;}
   .escala-nota-pendente-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:#b45309;}
-  .escala-pessoal-linha{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;row-gap:4px;
+  /* "A Minha Semana" — Dia | Horas | Tarefas, em 3 colunas de grelha
+     (pedido explícito 2026-08-14: a informação de tarefa/cargo especial
+     estava empilhada por baixo das horas, na mesma "coluna" da direita —
+     passa a ter coluna própria, alinhada ao topo, com a altura da linha
+     a ajustar-se sozinha à quantidade de tarefas listadas nesse dia
+     (comportamento nativo de grid: a linha cresce para caber a coluna
+     mais alta). Em ecrãs estreitos as 3 colunas encolhem mas mantêm-se
+     lado a lado — nunca voltam a empilhar-se por cima umas das outras. */
+  .escala-pessoal-linha{display:grid;grid-template-columns:minmax(140px,1.1fr) minmax(90px,auto) minmax(110px,1fr);
+    align-items:start;column-gap:10px;row-gap:4px;
     padding:8px 0;border-bottom:1px solid var(--pharm-100);font-size:13.5px;}
   .escala-pessoal-linha:last-child{border-bottom:none;}
+  .escala-pessoal-horas{text-align:right;}
+  .escala-pessoal-tarefas{display:flex;flex-direction:column;align-items:flex-end;gap:3px;}
+  @media (max-width:480px){
+    .escala-pessoal-linha{grid-template-columns:minmax(96px,1fr) minmax(70px,auto) minmax(84px,1fr);
+      column-gap:6px;font-size:12.5px;}
+  }
   .escala-cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;}
   .calendario-anual-grid{display:grid;grid-template-columns:1fr;gap:12px;}
   @media (min-width:769px){.calendario-anual-grid{grid-template-columns:repeat(4,1fr);}}
@@ -13753,15 +13783,17 @@ function buildHomepage(container, goTo) {
 
   const entregasCounts = entregasPendentesPorFarmacia();
   const temEntregasPendentes = entregasCounts.juncal > 0;
-  // O LED só PISCA quando pelo menos uma entrega pendente já chegou (ou está
-  // a <=15min) da sua hora/bloco limite — mesmo critério "piscar" usado no
-  // temporizador da tabela de Entregas (entregaPrazoEstado). Antes piscava
-  // sempre que havia QUALQUER entrega pendente, mesmo agendada para daqui a
-  // dias, o que não distinguia "regista para breve" de "regista já" —
-  // pedido explícito 2026-08-14. Havendo pendentes mas nenhuma urgente,
-  // mostra-se um ponto estático (sinaliza que existem, sem alarmar à toa).
+  // O LED PISCA quando pelo menos uma entrega pendente já entrou no seu
+  // Bloco Horário (a partir da hora de início — pedido explícito
+  // 2026-08-14, ver entregaBlocoJaComecou) OU já está perto/passou da
+  // hora-limite (mesmo critério "piscar" de entregaPrazoEstado, usado no
+  // temporizador da tabela de Entregas). Antes só piscava nos últimos 15
+  // min antes do fim — agora acende assim que fica acionável (o bloco
+  // começou), não só quando está prestes a expirar. Havendo pendentes mas
+  // nenhuma dentro do bloco/urgente, mostra-se um ponto estático (sinaliza
+  // que existem, sem alarmar à toa).
   const entregasJuncalPendentes = STATE.entregas.filter(r => r.farmacia === 'Juncal' && r.estadoEntrega !== 'Entregue');
-  const entregaUrgenteAgora = entregasJuncalPendentes.some(r => entregaPrazoEstado(r).piscar);
+  const entregaUrgenteAgora = entregasJuncalPendentes.some(r => entregaPrazoEstado(r).piscar || entregaBlocoJaComecou(r));
   const entregasCard = h('button', { class: 'stat-card tone-card entregas-badge-card clickable next-evento-card', onclick: () => goTo('entregas') }, [
     h('div', { class: 'stat-icon' }, Icon('truck', { size: 19 })),
     h('div', { style: 'min-width:0;' }, [
@@ -27616,15 +27648,21 @@ function buildHorariosPage(container, goTo) {
         const agoraMinDoDia = (dataDoDia === hojeISO) ? escalaMinutosAbsolutos(`${pad2(new Date().getHours())}:${pad2(new Date().getMinutes())}`, false) : null;
         const pill = escalaTarefaPill(dia, agoraMinDoDia);
         const ausenciaBadge = ausencia ? h('span', { class: 'escala-cell-ausencia-badge', style: 'margin-top:2px;' }, ESCALA_TIPOS_DIA.find(t => t.key === ausencia.tipo)?.label || 'Ausência') : null;
-        const conteudoDireita = (pill || ausenciaBadge)
-          ? h('span', { style: 'display:flex;flex-direction:column;align-items:flex-end;gap:3px;' }, [h('span', {}, texto), pill, ausenciaBadge])
-          : h('span', {}, texto);
+        // Horas e Tarefas em colunas próprias (pedido explícito
+        // 2026-08-14) — antes ficavam empilhadas na mesma coluna da
+        // direita; agora "Tarefas" é a 3ª coluna da grelha, sempre
+        // alinhada ao topo, e a altura da linha ajusta-se sozinha à
+        // quantidade de pills listadas nesse dia (ver CSS
+        // .escala-pessoal-linha).
+        const horasEl = h('span', { class: 'escala-pessoal-horas' }, texto);
+        const tarefasEl = h('span', { class: 'escala-pessoal-tarefas' }, [pill, ausenciaBadge].filter(Boolean));
         // Dia por extenso + data completa (pedido explícito 2026-08-09:
         // "Segunda-Feira, 10 de Agosto de 2026" em vez de só "Segunda" —
         // mais seguro, evita ambiguidade entre semanas.
         return h('div', { class: 'escala-pessoal-linha' + (tipoEfetivo !== 'normal' ? ` escala-cell-${tipoEfetivo}` : '') + (ausencia ? ' escala-cell-ausencia-sobreposta' : '') }, [
           h('span', { class: 'escala-pessoal-dia' }, escalaDiaLabelExtenso(d.key, d.label, semana.semanaInicio)),
-          conteudoDireita,
+          horasEl,
+          tarefasEl,
         ]);
       });
       wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:16px;max-width:480px;' }, [
@@ -34478,6 +34516,18 @@ function blocoHorarioFimHora(bloco) {
   if (isNaN(hh) || hh < 0 || hh > 23) return null;
   return `${pad2(hh)}:00`;
 }
+// Extrai a PRIMEIRA "HH" de um bloco horário — a hora de INÍCIO do bloco
+// (ex: "2º (14H - 16H)" → "14:00"). Usada só para saber se um bloco já
+// começou (ver entregaBlocoJaComecou), nunca para o prazo/deadline em si
+// (esse continua a usar sempre o FIM, ver blocoHorarioFimHora).
+function blocoHorarioInicioHora(bloco) {
+  if (!bloco) return null;
+  const matches = String(bloco).match(/(\d{1,2})H/gi);
+  if (!matches || !matches.length) return null;
+  const hh = parseInt(matches[0], 10);
+  if (isNaN(hh) || hh < 0 || hh > 23) return null;
+  return `${pad2(hh)}:00`;
+}
 // Versão curta do Bloco Horário para a tabela de Entregas (poupa espaço
 // horizontal): "2º (14H - 16H)" → "2º", "Sábado (14H - 18H)" → "Sábado" —
 // só a identificação do bloco, sem o intervalo de horas entre parênteses
@@ -34495,6 +34545,19 @@ function entregaBlocoExpirado(bloco, dataISO) {
   if (!fimHora) return false;
   const fimTimestamp = new Date(`${dataISO}T${fimHora}:00`);
   return !isNaN(fimTimestamp.getTime()) && Date.now() > fimTimestamp.getTime();
+}
+// Já entrámos na janela do Bloco Horário de uma entrega (hoje, hora atual
+// >= hora de início do bloco) — pedido explícito 2026-08-14: o LED de
+// "Entregas Pendentes" na Página Inicial deve começar a piscar assim que o
+// bloco COMEÇA (fica acionável agora), não só nos últimos 15 min antes do
+// fim. Só se aplica a entregas com Bloco Horário definido (Hora Limite
+// específica avulsa não tem "início" nenhum, por isso não entra aqui).
+function entregaBlocoJaComecou(r) {
+  if (!r.blocoHorario || !r.dataEntrega || r.dataEntrega !== todayISO()) return false;
+  const inicioHora = blocoHorarioInicioHora(r.blocoHorario);
+  if (!inicioHora) return false;
+  const inicioTimestamp = new Date(`${r.dataEntrega}T${inicioHora}:00`);
+  return !isNaN(inicioTimestamp.getTime()) && Date.now() >= inicioTimestamp.getTime();
 }
 // Hora-limite efetiva: usa a Hora Limite Específica se definida, senão o
 // fim do Bloco Horário selecionado.
