@@ -23213,6 +23213,22 @@ const ESCALA_VARIANTES = [
 // tem estatuto 'prestador' conta para o módulo Férias/Horários: sem saldo
 // anual, só Indisponibilidade.
 function escalaUtilizadorEhPrestador(u) { return !!u && u.estatutoColaborador === 'prestador'; }
+// Normaliza, só para efeitos de EXIBIÇÃO, um tipo de dia gravado antes da
+// restrição de Prestadores (2026-08-10/14) existir — ex: um Prestador com
+// 'folga' gravado na base de dados de há semanas, nunca reaberto no
+// editor (ver tipoInicialCelula em abrirEditorCelulaEscala, que só
+// corrige ao GRAVAR esse dia em concreto). Sem isto, o histórico e os
+// horários já publicados continuavam a mostrar "Folga"/outros rótulos do
+// Quadro para sempre, mesmo depois da distinção visual mudar — pedido
+// explícito 2026-08-14: "corrige para todos", sem exigir reabrir cada
+// dia um a um. NÃO reescreve nada na base de dados — é só uma leitura
+// normalizada, usada em todos os pontos que mostram o tipo de um dia
+// (Vista em Tabela, Vista Vertical/Timeline, Vista Pessoal, tooltips).
+function escalaTipoEfetivoDia(tipo, colaboradorId) {
+  if (!tipo || tipo === 'normal' || tipo === 'indisponivel') return tipo;
+  const colaborador = colaboradorId ? (STATE.usuarios || []).find(u => u.id === colaboradorId) : null;
+  return escalaUtilizadorEhPrestador(colaborador) ? 'indisponivel' : tipo;
+}
 function escalaCalcularHoras(entrada, saida) {
   if (!/^\d{1,2}:\d{2}$/.test(entrada) || !/^\d{1,2}:\d{2}$/.test(saida)) return 0;
   const [eh, em] = entrada.split(':').map(Number);
@@ -26232,13 +26248,14 @@ function buildHorariosPage(container, goTo) {
         const linha = semana.dados[v.codigo] || { colaboradorNome: '', dias: {} };
         const cells = ESCALA_DIAS.map(d => {
           const dia = linha.dias[d.key] || { tipo: 'folga' };
+          const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, (dia && dia.colaboradorId) || linha.colaboradorId);
           let conteudo, classe = 'escala-cell';
-          if (dia.tipo === 'normal') {
+          if (tipoEfetivo === 'normal') {
             conteudo = `${dia.entrada}–${dia.saida} (${escalaFormatarHoras(dia.horas)})`;
             if (dia.pausaInicio && dia.pausaFim) conteudo += ` · pausa ${dia.pausaInicio}-${dia.pausaFim}`;
             if (dia.heHoras) conteudo += ` +${escalaFormatarHoras(dia.heHoras)}HE`;
           }
-          else { conteudo = ESCALA_TIPOS_DIA.find(t => t.key === dia.tipo)?.label || '—'; classe += ` escala-cell-${dia.tipo}`; }
+          else { conteudo = ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—'; classe += ` escala-cell-${tipoEfetivo}`; }
           // Ausência (Férias/Baixa/Falta/...) registada DEPOIS de o turno
           // já ter sido gerado/editado — ver a mesma verificação em
           // buildVistaVertical. Só se aplica a células ainda "normal";
@@ -26927,11 +26944,12 @@ function buildHorariosPage(container, goTo) {
       const linha = semana.dados[codigo];
       const rows = ESCALA_DIAS.map(d => {
         const dia = linha.dias[d.key] || { tipo: 'folga' };
+        const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, activeUser.id);
         // Ausência (Férias/Baixa/Falta/...) registada DEPOIS de o turno já
         // estar na grelha — mesma verificação usada em buildGrelhaEquipa/
         // buildVistaVertical (ver comentários lá).
-        const ausencia = dia.tipo === 'normal' ? escalaAusenciaDoDia(activeUser.id, escalaDataDoDia(semana.semanaInicio, d.key)) : null;
-        const texto = dia.tipo === 'normal' ? `${dia.entrada} – ${dia.saida}${(dia.pausaInicio && dia.pausaFim) ? ` (pausa ${dia.pausaInicio}-${dia.pausaFim})` : ''}${dia.heHoras ? ` (+${escalaFormatarHoras(dia.heHoras)} HE)` : ''}` : (ESCALA_TIPOS_DIA.find(t => t.key === dia.tipo)?.label || '—');
+        const ausencia = tipoEfetivo === 'normal' ? escalaAusenciaDoDia(activeUser.id, escalaDataDoDia(semana.semanaInicio, d.key)) : null;
+        const texto = tipoEfetivo === 'normal' ? `${dia.entrada} – ${dia.saida}${(dia.pausaInicio && dia.pausaFim) ? ` (pausa ${dia.pausaInicio}-${dia.pausaFim})` : ''}${dia.heHoras ? ` (+${escalaFormatarHoras(dia.heHoras)} HE)` : ''}` : (ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—');
         const pill = escalaTarefaPill(dia);
         const ausenciaBadge = ausencia ? h('span', { class: 'escala-cell-ausencia-badge', style: 'margin-top:2px;' }, ESCALA_TIPOS_DIA.find(t => t.key === ausencia.tipo)?.label || 'Ausência') : null;
         const conteudoDireita = (pill || ausenciaBadge)
@@ -26940,7 +26958,7 @@ function buildHorariosPage(container, goTo) {
         // Dia por extenso + data completa (pedido explícito 2026-08-09:
         // "Segunda-Feira, 10 de Agosto de 2026" em vez de só "Segunda" —
         // mais seguro, evita ambiguidade entre semanas.
-        return h('div', { class: 'escala-pessoal-linha' + (dia.tipo !== 'normal' ? ` escala-cell-${dia.tipo}` : '') + (ausencia ? ' escala-cell-ausencia-sobreposta' : '') }, [
+        return h('div', { class: 'escala-pessoal-linha' + (tipoEfetivo !== 'normal' ? ` escala-cell-${tipoEfetivo}` : '') + (ausencia ? ' escala-cell-ausencia-sobreposta' : '') }, [
           h('span', { class: 'escala-pessoal-dia' }, escalaDiaLabelExtenso(d.key, d.label, semana.semanaInicio)),
           conteudoDireita,
         ]);
@@ -27025,9 +27043,10 @@ function buildHorariosPage(container, goTo) {
         if (dObj.getDay() === 0) horasDomingo = Math.round((horasDomingo + horasDia) * 100) / 100;
         horasNoturnas = Math.round((horasNoturnas + escalaHorasNaJanela(dia, 22 * 60, 24 * 60)) * 100) / 100;
       } else {
-        texto = ESCALA_TIPOS_DIA.find(t => t.key === dia.tipo)?.label || '—';
-        classeExtra = ` escala-cell-${dia.tipo}`;
-        if (dia.tipo === 'ferias') diasFerias += 1;
+        const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, colaboradorId);
+        texto = ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—';
+        classeExtra = ` escala-cell-${tipoEfetivo}`;
+        if (tipoEfetivo === 'ferias') diasFerias += 1;
       }
       // Domingo/feriado com um sinal visual leve na linha — ajuda a
       // localizar rapidamente esses dias numa lista de 28-31, sem
@@ -29740,6 +29759,11 @@ function buildHorariosPage(container, goTo) {
       // abaixo, que já excluem estes turnos das contagens de presença).
       const colaboradorIdDoDia = (dia && dia.colaboradorId) || linha.colaboradorId;
       const ausenciaSobreposta = dia.tipo === 'normal' ? escalaAusenciaDoDia(colaboradorIdDoDia, dataDoDiaSelecionado) : null;
+      // Tipo normalizado para EXIBIÇÃO (ver escalaTipoEfetivoDia) — um
+      // Prestador com 'folga' gravado antes desta distinção existir
+      // aparece aqui já como 'indisponivel', sem precisar de reabrir e
+      // regravar esse dia primeiro (pedido explícito 2026-08-14).
+      const tipoEfetivoDia = escalaTipoEfetivoDia(dia.tipo, colaboradorIdDoDia);
       // Horas Extra reivindicadas (pedido explícito 2026-08-10): sempre
       // que o colaborador desta vaga+dia tem uma reivindicação ATIVA de
       // um bloco de Horas Extra Disponíveis para este dia (ver
@@ -29827,7 +29851,7 @@ function buildHorariosPage(container, goTo) {
             title: `${escalaTarefaTextoItem(t)} · ${t.inicio}-${t.fim}`,
           }, tarefaInfo ? tarefaInfo.icon : '★'));
         });
-      } else if (dia.tipo === 'folga' || dia.tipo === 'indisponivel') {
+      } else if (tipoEfetivoDia === 'folga' || tipoEfetivoDia === 'indisponivel') {
         // Folga — estilização suave e minimalista: nunca mostra ícone/
         // texto no bloco (nem sequer "Folga" por extenso) para não
         // rivalizar visualmente com turnos reais nem com ausências que
@@ -29849,7 +29873,7 @@ function buildHorariosPage(container, goTo) {
         });
         if (editavel) blocoFolga.addEventListener('dblclick', aoClicarPosicao);
         blocos = [blocoFolga];
-      } else if (dia.tipo && dia.tipo !== 'normal') {
+      } else if (tipoEfetivoDia && tipoEfetivoDia !== 'normal') {
         // Item 1 (Estilização Visual): Tipo diferente de "Normal" —
         // Férias/Baixa/Falta/Licença/Aniversário/Extra (Folga e
         // Indisponibilidade têm tratamento próprio, ver ramo acima) —
@@ -29859,11 +29883,11 @@ function buildHorariosPage(container, goTo) {
         // ao centro (sem emoji — pedido explícito) — sinaliza de imediato
         // "não está ao serviço em turno regular", sem precisar de passar
         // o rato.
-        const infoTipo = ESCALA_TIPOS_DIA.find(t => t.key === dia.tipo);
+        const infoTipo = ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivoDia);
         const blocoAusencia = h('div', {
           class: 'escala-vertical-bloco escala-vertical-bloco-tipo-ausencia' + (editavel ? ' escala-vertical-bloco-clicavel' : ''),
           style: 'top:0%;height:100%;',
-        }, h('span', {}, infoTipo ? infoTipo.label : dia.tipo));
+        }, h('span', {}, infoTipo ? infoTipo.label : tipoEfetivoDia));
         if (editavel) blocoAusencia.addEventListener('dblclick', aoClicarPosicao);
         blocos = [blocoAusencia];
       }
@@ -29895,7 +29919,7 @@ function buildHorariosPage(container, goTo) {
       // por hover, ver pedido 2026-08-08. Sem "— turno mantido" (pedido
       // seguinte, 2026-08-08): é óbvio pelo próprio bloco de turno estar
       // visível e só polui o balão.
-      const situacaoDia = dia.tipo === 'folga' ? 'Folga' : (dia.tipo && dia.tipo !== 'normal' ? (ESCALA_TIPOS_DIA.find(t => t.key === dia.tipo)?.label || dia.tipo) : (ausenciaSobreposta ? (ESCALA_TIPOS_DIA.find(t => t.key === ausenciaSobreposta.tipo)?.label || 'Ausência') : ''));
+      const situacaoDia = tipoEfetivoDia === 'folga' ? 'Folga' : (tipoEfetivoDia && tipoEfetivoDia !== 'normal' ? (ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivoDia)?.label || tipoEfetivoDia) : (ausenciaSobreposta ? (ESCALA_TIPOS_DIA.find(t => t.key === ausenciaSobreposta.tipo)?.label || 'Ausência') : ''));
       const textoTooltipColaborador = colaboradorNome + (situacaoDia ? ` (${situacaoDia})` : '');
       const trilho = h('div', { class: 'escala-vertical-trilho' + (editavel && !blocos.length ? ' escala-vertical-trilho-vazio' : '') }, [...blocos, ...tarefaOverlays, ...horasExtraOverlays].filter(Boolean));
       if (editavel && !blocos.length) trilho.addEventListener('click', aoClicarPosicao);
