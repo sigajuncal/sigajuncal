@@ -1913,6 +1913,12 @@
      despercebido a quem está a alocar o colaborador nesse dia. */
   .escala-vertical-pedido-especial-badge{display:inline-flex;align-items:center;justify-content:center;
     margin-left:3px;font-size:11px;filter:drop-shadow(0 1px 1px rgba(217,119,6,.4));cursor:help;}
+  /* Badge de alerta "🖐️ Disponibilidade Extra" no cabeçalho da coluna
+     (Vista Timeline do Gerador) — tom verde (distinto do âmbar de Pedido
+     Especial), para sinalizar que o colaborador se ofereceu para esse
+     dia, tanto se já tem turno como se ainda está "Folga". */
+  .escala-vertical-disponibilidade-badge{display:inline-flex;align-items:center;justify-content:center;
+    margin-left:3px;font-size:11px;filter:drop-shadow(0 1px 1px rgba(4,120,87,.4));cursor:help;}
   /* Destaque de Tarefa/Cargo Especial (Chefe de Turno, Encomenda, etc.)
      dentro do bloco de turno — mesma coordenada (top/height em %) do
      .escala-vertical-bloco, sobreposto por cima (nunca o substitui);
@@ -7418,6 +7424,7 @@ const TABLES = {
   escalaNotasSemana: 'escala_notas_semana',
   escalaNotasPessoais: 'escala_notas_pessoais',
   escalaPedidosEspeciais: 'escala_pedidos_especiais',
+  escalaDisponibilidades: 'escala_disponibilidades',
   escalaHorasExtra: 'escala_horas_extra',
   escalaHorasExtraReivindicacoes: 'escala_horas_extra_reivindicacoes',
   escalaDiasOperacionaisEspeciais: 'escala_dias_operacionais_especiais',
@@ -8654,6 +8661,7 @@ const STATE = {
   escalaNotasSemana: [],
   escalaNotasPessoais: [],
   escalaPedidosEspeciais: [],
+  escalaDisponibilidades: [],
   escalaHorasExtra: [],
   escalaHorasExtraReivindicacoes: [],
   escalaDiasOperacionaisEspeciais: [],
@@ -22846,6 +22854,49 @@ ALTER TABLE escala_notas_pessoais ADD COLUMN IF NOT EXISTS resolvido_em timestam
 --     automático mantém-se igual a antes. Nunca substitui o cálculo
 --     automático, só o ajusta — pedido explícito 2026-08-08.
 ALTER TABLE escala_saldos_ferias ADD COLUMN IF NOT EXISTS ajuste_saldo_transitado integer NOT NULL DEFAULT 0;
+
+-- 27) escala_disponibilidades — disponibilidade EXTRA auto-declarada por
+--     um colaborador (Quadro ou Prestador) para um dia em que
+--     normalmente não estaria escalado (ex: Vanessa, do Quadro com
+--     horário fixo, a avisar que pode um Sábado) — puramente
+--     informativa: nunca atribui turno sozinha nem bloqueia nada, só
+--     alimenta o aviso na Vista Timeline do Gerador (ver badge, mesmo
+--     padrão de escala_pedidos_especiais). O sentido inverso —
+--     indisponibilidade formal de Prestadores — já existe em
+--     escala_ferias (tipo='indisponivel', bloqueia turnos); esta tabela
+--     cobre só a disponibilidade extra, que não tinha onde ficar
+--     registada. Pedido explícito 2026-08-14.
+CREATE TABLE IF NOT EXISTS escala_disponibilidades (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  colaborador_id bigint NOT NULL REFERENCES usuarios_app(id) ON DELETE CASCADE,
+  colaborador_nome text DEFAULT '',
+  data_inicio date NOT NULL,
+  data_fim date NOT NULL,
+  observacoes text DEFAULT '',
+  eliminado boolean NOT NULL DEFAULT false,
+  data_eliminacao timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_escala_disponibilidades_intervalo ON escala_disponibilidades (data_inicio, data_fim);
+ALTER TABLE escala_disponibilidades ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS anon_select_escala_disponibilidades ON escala_disponibilidades;
+DROP POLICY IF EXISTS anon_insert_escala_disponibilidades ON escala_disponibilidades;
+DROP POLICY IF EXISTS anon_update_escala_disponibilidades ON escala_disponibilidades;
+DROP POLICY IF EXISTS anon_delete_escala_disponibilidades ON escala_disponibilidades;
+CREATE POLICY anon_select_escala_disponibilidades ON escala_disponibilidades FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY anon_insert_escala_disponibilidades ON escala_disponibilidades FOR INSERT TO anon, authenticated WITH CHECK (true);
+CREATE POLICY anon_update_escala_disponibilidades ON escala_disponibilidades FOR UPDATE TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY anon_delete_escala_disponibilidades ON escala_disponibilidades FOR DELETE TO anon, authenticated USING (true);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables
+    WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'escala_disponibilidades'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE escala_disponibilidades;
+  END IF;
+END $$;
 ================================================================= */
 // Lista-base (usada em runtime, não só informativa) da Lista Única de
 // Rotação do Grupo A — ver escalaAtribuirGrupoA() mais abaixo. Serve só de
@@ -24407,6 +24458,74 @@ async function decidirPedidoEspecialViaGaveta(r, novoEstado, onDone) {
   if (updatedRecado) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === r.id ? updatedRecado : x);
   showToast(novoEstado === 'aprovado' ? 'Pedido especial aprovado.' : 'Pedido especial rejeitado.', 'success');
   if (onDone) onDone();
+}
+/* ---- Disponibilidades Extra (pedido explícito 2026-08-14) ----
+   Disponibilidade EXTRA auto-declarada por um colaborador (Quadro ou
+   Prestador) para um dia em que normalmente não estaria escalado — ex:
+   Vanessa (Quadro, horário fixo) a avisar que pode um Sábado. Puramente
+   informativa: nunca atribui turno sozinha nem bloqueia nada, só
+   alimenta o aviso na Vista Timeline do Gerador (ver badge). O sentido
+   inverso — indisponibilidade formal de Prestadores — já vive em
+   escala_ferias (tipo='indisponivel', bloqueia turnos de facto); esta
+   tabela cobre só a disponibilidade extra, que não tinha onde ficar
+   registada. Sem workflow de aprovação (ao contrário de Pedidos
+   Especiais): é só um aviso, quem faz o horário decide sempre. */
+function escalaDisponibilidadesAtivas() { return STATE.escalaDisponibilidades || []; }
+// Registos que cobrem um mês (YYYY-MM) — usa sobreposição de intervalo,
+// mesmo critério de escalaPedidosEspeciaisDoMes.
+function escalaDisponibilidadesDoMes(anoMes) {
+  const inicioMes = `${anoMes}-01`;
+  const [ano, mes] = anoMes.split('-').map(Number);
+  const ultimoDia = new Date(ano, mes, 0).getDate();
+  const fimMes = `${anoMes}-${String(ultimoDia).padStart(2, '0')}`;
+  return escalaDisponibilidadesAtivas().filter(d => d.dataInicio <= fimMes && d.dataFim >= inicioMes);
+}
+// Disponibilidade extra (se houver) de um colaborador que cobre uma data
+// exata — usado pelo badge de alerta na Vista Timeline do Gerador, mesmo
+// padrão de escalaPedidoEspecialDoColaboradorNaData.
+function escalaDisponibilidadeDoColaboradorNaData(colaboradorId, dataISO) {
+  if (!colaboradorId || !dataISO) return null;
+  return escalaDisponibilidadesAtivas().find(d => String(d.colaboradorId) === String(colaboradorId) && d.dataInicio <= dataISO && dataISO <= d.dataFim) || null;
+}
+// Todos os registos de Disponibilidade Extra que tocam nalgum dia de uma
+// semana concreta (Segunda a Domingo) — usado pelo banner "Esta Semana"
+// na Vista Timeline do Gerador (pedido explícito 2026-08-14: o aviso tem
+// de aparecer LOGO ao abrir a semana, mesmo dia por defeito é Segunda,
+// nunca só no dia exato — ex: alguém a chegar só ao Domingo, dia em que
+// a Vanessa deu disponibilidade, e ter de refazer o horário já feito).
+function escalaDisponibilidadesDaSemana(semanaInicioISO) {
+  const datasDaSemana = ESCALA_DIAS.map(d => escalaDataDoDia(semanaInicioISO, d.key));
+  const inicioSemana = datasDaSemana[0], fimSemana = datasDaSemana[datasDaSemana.length - 1];
+  return escalaDisponibilidadesAtivas().filter(d => d.dataInicio <= fimSemana && d.dataFim >= inicioSemana);
+}
+// Rótulos dos dias da semana (Segunda..Domingo) cobertos por um registo
+// de Disponibilidade Extra concreto — usado para mostrar "Sáb, Dom" em
+// vez de repetir as datas completas no banner semanal.
+function escalaDiasSemanaCobertosPorDisponibilidade(semanaInicioISO, disp) {
+  return ESCALA_DIAS.filter(d => {
+    const dataDia = escalaDataDoDia(semanaInicioISO, d.key);
+    return dataDia >= disp.dataInicio && dataDia <= disp.dataFim;
+  }).map(d => d.label);
+}
+function podeEditarDisponibilidade(disp) {
+  return isMasterUser() || (!!activeUser && String(disp.colaboradorId) === String(activeUser.id));
+}
+async function criarDisponibilidade(payload) {
+  const created = await dbInsert('escalaDisponibilidades', payload);
+  if (created) STATE.escalaDisponibilidades = [...(STATE.escalaDisponibilidades || []), created];
+  return created;
+}
+async function editarDisponibilidade(disp, patch) {
+  const updated = await dbUpdate('escalaDisponibilidades', disp.id, patch);
+  if (updated) STATE.escalaDisponibilidades = STATE.escalaDisponibilidades.map(d => d.id === disp.id ? updated : d);
+  return updated;
+}
+function eliminarDisponibilidadeConfirm(disp, onDone) {
+  confirmDialog('Tem a certeza de que quer eliminar este registo de disponibilidade? Esta ação não pode ser desfeita.', async () => {
+    const ok = await dbDelete('escalaDisponibilidades', disp.id);
+    if (ok) { STATE.escalaDisponibilidades = STATE.escalaDisponibilidades.filter(d => d.id !== disp.id); if (onDone) onDone(); }
+    else escalaShowErro('Não foi possível eliminar o registo');
+  }, { danger: true, confirmLabel: 'Eliminar' });
 }
 // Número de dias de calendário entre duas datas ISO, inclusive em ambas as
 // pontas — usado só para o "total de dias" bruto de um período (mostrado
@@ -26161,6 +26280,183 @@ function abrirModalPedidosEspeciais(onFechar, dataPreset) {
   render();
 }
 
+// ---- Modal "🖐️ Disponibilidade" (pedido explícito 2026-08-14) ----
+// Onde QUALQUER colaborador (Quadro ou Prestador) regista disponibilidade
+// EXTRA para um dia em que normalmente não estaria escalado — ex: a
+// Vanessa (Quadro, horário fixo) a avisar que pode um Sábado. Todos veem
+// os registos de todos (mesmo critério de Pedidos Especiais, é o que
+// permite o badge de alerta na Timeline do Gerador funcionar para
+// qualquer um); só o próprio colaborador (ou Hugo/Paulo, em nome de
+// outro) pode editar/eliminar um registo. Sem workflow de aprovação —
+// é só um aviso, nunca vinculativo.
+function abrirModalDisponibilidade(onFechar, dataPreset) {
+  if (!activeUser) return;
+  const overlay = h('div', { class: 'modal-overlay' });
+  function fechar() { document.removeEventListener('keydown', onKeydown); overlay.remove(); if (onFechar) onFechar(); }
+  function onKeydown(e) { if (e.key === 'Escape') fechar(); }
+  document.addEventListener('keydown', onKeydown);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) fechar(); });
+
+  const agora = new Date();
+  let mesFiltro = dataPreset ? dataPreset.slice(0, 7) : `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(2, '0')}`;
+  // Filtro por colaborador — "todos" (por omissão) ou um id concreto, para
+  // dar a vista completa por colaborador pedida explicitamente: escolher
+  // alguém aqui e navegar os meses mostra só os registos dessa pessoa.
+  let colaboradorFiltro = 'todos';
+  let mostrarForm = !!dataPreset;
+  let editandoId = null;
+  let draft = null;
+  let saving = false;
+  let formError = '';
+
+  const bodyEl = h('div', {});
+
+  function novoDraft() {
+    return { colaboradorId: activeUser.id, dataInicio: dataPreset || '', dataFim: dataPreset || '', observacoes: '' };
+  }
+  function mesLabel(anoMes) {
+    const [ano, mes] = anoMes.split('-').map(Number);
+    return `${MESES_PT[mes - 1]} de ${ano}`;
+  }
+  function mudarMes(delta) {
+    const [ano, mes] = mesFiltro.split('-').map(Number);
+    const d = new Date(ano, mes - 1 + delta, 1);
+    mesFiltro = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    render();
+  }
+  function abrirNovo() {
+    draft = novoDraft(); editandoId = null; formError = ''; mostrarForm = true; render();
+  }
+  function abrirEdicao(disp) {
+    draft = { colaboradorId: disp.colaboradorId, dataInicio: disp.dataInicio, dataFim: disp.dataFim, observacoes: disp.observacoes || '' };
+    editandoId = disp.id; formError = ''; mostrarForm = true; render();
+  }
+  async function submeter() {
+    if (!draft.dataInicio || !draft.dataFim) { formError = 'Indique a Data de Início e a Data de Fim.'; render(); return; }
+    if (draft.dataFim < draft.dataInicio) { formError = 'A Data de Fim não pode ser anterior à Data de Início.'; render(); return; }
+    formError = ''; saving = true; render();
+    const colaborador = (STATE.usuarios || []).find(u => String(u.id) === String(draft.colaboradorId));
+    const payload = {
+      colaboradorId: draft.colaboradorId,
+      colaboradorNome: colaborador ? (colaborador.nomeCompleto || colaborador.username) : (activeUser.nomeCompleto || activeUser.username),
+      dataInicio: draft.dataInicio, dataFim: draft.dataFim,
+      observacoes: draft.observacoes.trim(),
+    };
+    let ok;
+    if (editandoId) {
+      const original = escalaDisponibilidadesAtivas().find(d => d.id === editandoId);
+      ok = await editarDisponibilidade(original, payload);
+    } else {
+      ok = await criarDisponibilidade(payload);
+    }
+    saving = false;
+    if (ok) { mostrarForm = false; render(); }
+    else { formError = `Não foi possível guardar. ${escalaMensagemErroAmigavel(lastDbError)}`; render(); }
+  }
+  function buildForm() {
+    const podeEscolherColaborador = isMasterUser();
+    const colaboradorField = podeEscolherColaborador
+      ? (() => {
+          const opcoes = (STATE.usuarios || []).filter(u => u.incluirHorarios && usuarioVisivelParaAtual(u));
+          const sel = h('select', { class: 'select' }, opcoes.map(u => h('option', { value: u.id, selected: String(draft.colaboradorId) === String(u.id) ? 'selected' : undefined }, u.nomeCompleto || u.username)));
+          sel.value = String(draft.colaboradorId);
+          sel.addEventListener('change', () => { draft.colaboradorId = sel.value; });
+          return h('div', { class: 'field span2' }, [h('label', {}, 'Colaborador'), sel]);
+        })()
+      : h('div', { class: 'field span2' }, [h('label', {}, 'Colaborador'), h('p', { class: 'field-helper-text', style: 'margin:0;' }, activeUser.nomeCompleto || activeUser.username)]);
+    const inicioInput = h('input', { class: 'input', type: 'date' }); inicioInput.value = draft.dataInicio;
+    inicioInput.addEventListener('change', () => { draft.dataInicio = inicioInput.value; if (!draft.dataFim || draft.dataFim < draft.dataInicio) draft.dataFim = draft.dataInicio; render(); });
+    const fimInput = h('input', { class: 'input', type: 'date' }); fimInput.value = draft.dataFim;
+    fimInput.addEventListener('change', () => { draft.dataFim = fimInput.value; });
+    const obsInput = h('textarea', { class: 'textarea', rows: '2', placeholder: 'Ex: "Posso este Sábado", "Disponível à noite"... (opcional)' }); obsInput.value = draft.observacoes;
+    obsInput.addEventListener('input', () => { draft.observacoes = obsInput.value; });
+    const submeterBtn = h('button', { class: 'btn btn-primary', onclick: saving ? null : () => requireAuth(submeter), disabled: saving ? 'disabled' : undefined }, saving ? 'A guardar…' : (editandoId ? 'Guardar Alterações' : 'Registar Disponibilidade'));
+    const cancelarBtn = h('button', { class: 'btn btn-secondary', onclick: () => { mostrarForm = false; render(); } }, 'Cancelar');
+    const campos = [
+      colaboradorField,
+      h('div', { class: 'field field-sm' }, [h('label', {}, 'Data de Início'), inicioInput]),
+      h('div', { class: 'field field-sm' }, [h('label', {}, 'Data de Fim'), fimInput]),
+      h('div', { class: 'field span2' }, [h('label', {}, 'Nota (opcional)'), obsInput]),
+    ];
+    return h('div', { class: 'card card-pad animate-in', style: 'margin-bottom:16px;' }, [
+      h('h3', { class: 'page-eyebrow', style: 'margin:0 0 12px;color:var(--pharm-800);font-size:14px;text-transform:none;letter-spacing:0;' }, editandoId ? 'Editar Disponibilidade' : 'Nova Disponibilidade'),
+      h('div', { class: 'form-grid' }, campos),
+      formError ? h('p', { class: 'form-error' }, formError) : null,
+      h('div', { class: 'form-actions' }, [submeterBtn, cancelarBtn]),
+    ]);
+  }
+  function buildCartaoDisponibilidade(disp) {
+    const dataTexto = disp.dataInicio === disp.dataFim ? formatDate(disp.dataInicio) : `${formatDate(disp.dataInicio)} — ${formatDate(disp.dataFim)}`;
+    const acoes = [];
+    if (podeEditarDisponibilidade(disp)) {
+      const editarBtn = h('button', { class: 'btn-fab-sm tone-blue', title: 'Editar' }, Icon('pencil', { size: 13, strokeWidth: 2.2 }));
+      editarBtn.addEventListener('click', () => requireAuth(() => abrirEdicao(disp)));
+      const eliminarBtn = h('button', { class: 'btn-fab-sm', title: 'Eliminar' }, Icon('trash', { size: 13, strokeWidth: 2.2 }));
+      eliminarBtn.addEventListener('click', () => requireAuth(() => eliminarDisponibilidadeConfirm(disp, render)));
+      acoes.push(editarBtn, eliminarBtn);
+    }
+    return h('div', { class: 'card card-pad', style: 'margin-bottom:10px;' }, [
+      h('div', { style: 'display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;' }, [
+        h('div', {}, [
+          h('p', { class: 'cell-strong', style: 'margin:0 0 2px;' }, disp.colaboradorNome || 'Colaborador'),
+          h('p', { class: 'field-helper-text', style: 'margin:0;' }, dataTexto),
+          disp.observacoes ? h('p', { style: 'margin:6px 0 0;font-size:12.5px;color:var(--pharm-500);white-space:pre-wrap;' }, disp.observacoes) : null,
+        ]),
+        h('span', { style: 'font-size:11px;font-weight:800;padding:4px 10px;border-radius:999px;color:#047857;background:#d1fae5;white-space:nowrap;' }, '🖐️ Disponível'),
+      ]),
+      acoes.length ? h('div', { style: 'display:flex;gap:6px;margin-top:10px;flex-wrap:wrap;' }, acoes) : null,
+    ]);
+  }
+  function render() {
+    clear(bodyEl);
+    const novoBtn = !mostrarForm ? h('button', { class: 'btn btn-secondary', style: 'margin-bottom:14px;' }, [Icon('plus', { size: 14 }), ' Nova Disponibilidade']) : null;
+    if (novoBtn) novoBtn.addEventListener('click', () => requireAuth(abrirNovo));
+    const navMes = h('div', { style: 'display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;' }, [
+      h('button', { class: 'btn-fab-sm', title: 'Mês anterior' }, Icon('arrowleft', { size: 14 })),
+      h('span', { class: 'cell-strong', style: 'min-width:140px;text-align:center;' }, mesLabel(mesFiltro)),
+      h('button', { class: 'btn-fab-sm', title: 'Mês seguinte' }, Icon('arrowright', { size: 14 })),
+    ]);
+    navMes.children[0].addEventListener('click', () => mudarMes(-1));
+    navMes.children[2].addEventListener('click', () => mudarMes(1));
+    // Vista completa por colaborador: dropdown "Todos" + cada colaborador
+    // com incluirHorarios — escolher alguém filtra a lista abaixo (que
+    // continua a navegar por mês) só aos registos dessa pessoa.
+    const colaboradoresOpts = (STATE.usuarios || []).filter(u => u.incluirHorarios && usuarioVisivelParaAtual(u));
+    const filtroSel = h('select', { class: 'select', style: 'max-width:220px;' }, [
+      h('option', { value: 'todos', selected: colaboradorFiltro === 'todos' ? 'selected' : undefined }, 'Todos os Colaboradores'),
+      ...colaboradoresOpts.map(u => h('option', { value: u.id, selected: String(colaboradorFiltro) === String(u.id) ? 'selected' : undefined }, u.nomeCompleto || u.username)),
+    ]);
+    filtroSel.value = String(colaboradorFiltro);
+    filtroSel.addEventListener('change', () => { colaboradorFiltro = filtroSel.value; render(); });
+    const filtroWrap = h('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap;' }, [
+      h('label', { style: 'font-size:12.5px;font-weight:700;color:var(--pharm-600);' }, 'Ver:'), filtroSel,
+    ]);
+    let lista = escalaDisponibilidadesDoMes(mesFiltro).slice().sort((a, b) => a.dataInicio.localeCompare(b.dataInicio));
+    if (colaboradorFiltro !== 'todos') lista = lista.filter(d => String(d.colaboradorId) === String(colaboradorFiltro));
+    const listaEl = lista.length ? lista.map(buildCartaoDisponibilidade) : [EmptyState('Sem disponibilidades extra registadas para este período.')];
+    bodyEl.appendChild(h('div', {}, [
+      navMes,
+      filtroWrap,
+      mostrarForm ? buildForm() : novoBtn,
+      ...listaEl,
+    ]));
+  }
+
+  const closeBtn = h('button', { class: 'close-btn', onclick: fechar }, Icon('x', { size: 16 }));
+  const panel = h('div', { class: 'modal-panel', style: 'max-width:640px;' }, [
+    h('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;' }, [
+      h('p', { class: 'modal-title', style: 'margin:0;' }, '🖐️ Disponibilidade'),
+      closeBtn,
+    ]),
+    h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, 'Disponibilidade extra para dias em que normalmente não estaria escalado (ex: um fim de semana) — informativo, nunca atribui turno sozinho; quem faz o horário decide sempre.'),
+    bodyEl,
+  ]);
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+  if (dataPreset) draft = novoDraft();
+  render();
+}
+
 // Traduz um erro em bruto do Supabase (lastDbError) para uma mensagem
 // amigável em português de Portugal — o módulo Horários nunca mostra ao
 // utilizador texto cru como "column escala_semanas.eliminado does not
@@ -27789,6 +28085,22 @@ function buildHorariosPage(container, goTo) {
     const validacao = feriasPeriodosValidos();
     if (!validacao.ok) { feriasError = validacao.erro; rerender(); return; }
     const tipo = feriasDraft.tipo || (escalaUtilizadorEhPrestador(alvo) ? 'indisponivel' : 'ferias');
+    // Guarda de segurança (pedido explícito 2026-08-14, "verifica
+    // presença de bugs e erros"): o formulário já filtra as opções de
+    // Tipo por estatuto (ESCALA_TIPOS_AUSENCIA_QUADRO/_PRESTADOR, ver
+    // buildFormPedidoFerias), mas esta segunda verificação no momento de
+    // gravar garante que NUNCA fica gravado um tipo incompatível — ex:
+    // Férias Base/Baixa/Falta/etc. para um Prestador, ou Indisponibilidade
+    // para alguém do Quadro — mesmo que o rascunho tenha sido montado por
+    // outra via (edição de um registo antigo, alteração de colaborador
+    // sem re-render, etc.).
+    const opcoesTipoValidasParaAlvo = escalaUtilizadorEhPrestador(alvo) ? ESCALA_TIPOS_AUSENCIA_PRESTADOR : ESCALA_TIPOS_AUSENCIA_QUADRO;
+    if (!opcoesTipoValidasParaAlvo.some(t => t.key === tipo)) {
+      feriasError = escalaUtilizadorEhPrestador(alvo)
+        ? 'Prestadores de Serviço só podem ser marcados como "Indisponibilidade" — Férias/Ausências formais são exclusivas do Quadro.'
+        : 'Este tipo é exclusivo de Prestadores de Serviço — escolha um tipo de Férias/Ausências do Quadro.';
+      rerender(); return;
+    }
     // Bloqueio de Retroatividade — nenhum período pode começar num ano já
     // congelado (ver escalaAnoFerasCongelado). Verifica TODOS os períodos
     // do rascunho antes de gravar qualquer um.
@@ -28888,16 +29200,9 @@ function buildHorariosPage(container, goTo) {
   // Cor determinística por colaborador (mesmo colaborador = mesma cor
   // sempre, sem depender da ordem de carregamento) — usada no Calendário
   // da Equipa para distinguir visualmente quem está ausente em cada dia.
-  // Cor determinística por colaborador, agora por ORDEM DE ENTRADA
-  // (primeira vez que aparece em escala_ferias, por created_at crescente
-  // — pedido explícito 2026-08-08) em vez de hash sobre o texto do id.
-  // Ângulo dourado (~137.508°) sobre a roda de matizes HSL garante o
-  // máximo espaçamento possível entre cores vizinhas nessa ordem, e nunca
-  // "esgota": ao contrário da paleta fixa de 12 cores anterior (que
-  // repetia tons quase iguais lado a lado a partir de ~13 colaboradores),
-  // cada novo colaborador que aparece no calendário recebe sempre uma cor
-  // nova e bem distinta das anteriores, por maior que a equipa fique.
-  const ESCALA_COR_ANGULO_DOURADO = 137.508;
+  // Cor determinística por colaborador, por ORDEM DE ENTRADA (primeira
+  // vez que aparece em escala_ferias, por created_at crescente — pedido
+  // explícito 2026-08-08).
   function escalaOrdemColaboradoresFerias() {
     const primeiraData = new Map();
     (STATE.escalaFerias || []).forEach(f => {
@@ -28908,20 +29213,46 @@ function buildHorariosPage(container, goTo) {
     });
     return [...primeiraData.keys()].sort((a, b) => primeiraData.get(a) - primeiraData.get(b));
   }
+  // Paleta FIXA de 12 cores "normais"/reconhecíveis para os primeiros 12
+  // colaboradores (pedido explícito 2026-08-14, substitui a rotação
+  // anterior por ângulo dourado em HSL — gerava tons esbatidos/pouco
+  // identificáveis): 6 famílias de cor, cada uma com 2 tons (claro/
+  // escuro). Sempre escuras o suficiente para o texto branco do número
+  // do dia (calendarioCellStyle já aplica color:#fff por cima) continuar
+  // legível.
+  const ESCALA_PALETA_CORES_COLABORADOR = [
+    '#10B981', '#047857', // verde claro / verde escuro
+    '#3B82F6', '#1D4ED8', // azul claro / azul escuro
+    '#EF4444', '#B91C1C', // vermelho claro / vermelho escuro
+    '#EC4899', '#BE185D', // rosa claro / rosa escuro
+    '#F59E0B', '#B45309', // amarelo claro / amarelo escuro
+    '#8B5CF6', '#6D28D9', // roxo claro / roxo escuro
+  ];
+  // A partir do 13º colaborador (pedido explícito 2026-08-14: "não quero
+  // cores repetidas, quero cores únicas para cada colaborador") a paleta
+  // fixa acima estende-se automaticamente por ângulo dourado (~137.508°)
+  // sobre a roda de matizes — nunca repete (matematicamente só voltaria
+  // a coincidir ao fim de milhares de colaboradores) e mantém sempre o
+  // máximo espaçamento possível entre matizes vizinhos. Offset de 30°
+  // afasta a 1ª cor extra dos matizes já usados na paleta fixa (verde/
+  // azul/vermelho/rosa/amarelo/roxo ~ a cada 60°); saturação/luminosidade
+  // alternam a cada volta completa da roda, tal como no texto branco
+  // sobreposto, para continuarem sempre escuras/legíveis o suficiente.
+  function escalaCorExtraGerada(idxExtra) {
+    const anguloDourado = 137.508;
+    const hue = (idxExtra * anguloDourado + 30) % 360;
+    const volta = Math.floor((idxExtra * anguloDourado) / 360);
+    const sat = volta % 2 === 0 ? 68 : 55;
+    const light = volta % 2 === 0 ? 40 : 32;
+    return `hsl(${hue.toFixed(1)}, ${sat}%, ${light}%)`;
+  }
   function escalaCorColaborador(utilizadorId) {
     const id = String(utilizadorId || '');
     const ordem = escalaOrdemColaboradoresFerias();
     let idx = ordem.indexOf(id);
     if (idx === -1) idx = ordem.length; // ainda sem registos carregados — cor de reserva determinística
-    const hue = (idx * ESCALA_COR_ANGULO_DOURADO) % 360;
-    // Alterna 2 bandas de saturação/luminosidade a cada volta completa da
-    // roda de matizes — reforça ainda mais o contraste em equipas
-    // grandes, onde tons puramente cíclicos a espaços de 137.5° já podem
-    // começar a ficar parecidos ao fim de algumas voltas.
-    const volta = Math.floor((idx * ESCALA_COR_ANGULO_DOURADO) / 360);
-    const sat = volta % 2 === 0 ? 72 : 60;
-    const light = volta % 2 === 0 ? 45 : 37;
-    return `hsl(${hue.toFixed(1)}, ${sat}%, ${light}%)`;
+    if (idx < ESCALA_PALETA_CORES_COLABORADOR.length) return ESCALA_PALETA_CORES_COLABORADOR[idx];
+    return escalaCorExtraGerada(idx - ESCALA_PALETA_CORES_COLABORADOR.length);
   }
   const ESCALA_NOMES_MESES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
   // Texto "N dia útil" / "N dias úteis" correto em português (o plural de
@@ -29054,6 +29385,15 @@ function buildHorariosPage(container, goTo) {
     btn.addEventListener('click', () => requireAuth(() => abrirModalPedidosEspeciais(rerender)));
     return btn;
   }
+  // 🖐️ Botão "Disponibilidade" — junto a Pedidos Especiais (pedido
+  // explícito 2026-08-14): onde qualquer colaborador (Quadro ou
+  // Prestador) regista disponibilidade EXTRA para um dia em que
+  // normalmente não estaria escalado (ex: um fim de semana da Vanessa).
+  function buildBotaoDisponibilidade() {
+    const btn = h('button', { class: 'btn btn-secondary', style: 'padding:7px 14px;font-size:12.5px;' }, [Icon('hand', { size: 13, strokeWidth: 2.2 }), ' Disponibilidade']);
+    btn.addEventListener('click', () => requireAuth(() => abrirModalDisponibilidade(rerender)));
+    return btn;
+  }
   // ⚙️ Botão "Configurações" — visível SÓ ao Diretor Técnico/Administrador
   // (isMasterUser()); abre o Modal de Definições Avançadas que concentra
   // Limites de Sobreposição/Exceções, Feriados, Reuniões do Grupo e a
@@ -29123,7 +29463,7 @@ function buildHorariosPage(container, goTo) {
         h('h3', { class: 'page-eyebrow', style: 'margin:0;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, 'Calendário da Equipa'),
         h('p', { class: 'field-helper-text', style: 'margin:2px 0 0;' }, masterGestao ? 'Clique num dia livre para marcar férias/ausência.' : 'Consulta — a marcação é feita pelo Diretor Técnico/Administrador.'),
       ]),
-      h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;' }, [buildBotaoPedidosEspeciais(), (podeConfigurarFerias() && !horariosEhMobile) ? buildBotaoConfiguracoes() : null].filter(Boolean)),
+      h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;' }, [buildBotaoPedidosEspeciais(), buildBotaoDisponibilidade(), (podeConfigurarFerias() && !horariosEhMobile) ? buildBotaoConfiguracoes() : null].filter(Boolean)),
     ]));
 
     if (masterGestao) {
@@ -29134,17 +29474,12 @@ function buildHorariosPage(container, goTo) {
     // 1) Calendário Anual/Mensal Geral da Equipa — vista principal.
     wrap.appendChild(buildCalendarioEquipaAnual());
 
-    // Saldos Anuais/Indisponibilidades — gestão da Direção, nunca em
-    // mobile (mesmo para Hugo/Paulo): a vista mobile de Férias fica
-    // estritamente por "consulta do calendário/resumo de ausências".
+    // Saldos Anuais — gestão da Direção, nunca em mobile (mesmo para
+    // Hugo/Paulo): a vista mobile de Férias fica estritamente por
+    // "consulta do calendário/resumo de ausências".
     if (masterGestao) {
       wrap.appendChild(h('h3', { class: 'page-eyebrow', style: 'margin:22px 0 10px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, 'Saldos Anuais — Quadro'));
       wrap.appendChild(buildSaldosAnuais());
-      const indisponibilidades = todas.filter(p => p.tipo === 'indisponivel');
-      if (indisponibilidades.length) {
-        wrap.appendChild(h('h3', { class: 'page-eyebrow', style: 'margin:22px 0 10px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, 'Indisponibilidades — Prestadores de Serviço'));
-        wrap.appendChild(buildListaFerias(indisponibilidades, { comColaborador: true, comAcoesGestao: true }));
-      }
     }
 
     // 2) Tabela de Resumo de Férias/Ausências por Colaborador — ordenada
@@ -29153,6 +29488,21 @@ function buildHorariosPage(container, goTo) {
     // em desktop — em mobile, mesmo o Master só consulta.
     wrap.appendChild(h('h3', { class: 'page-eyebrow', style: 'margin:22px 0 10px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, 'Resumo de Férias / Ausências'));
     wrap.appendChild(buildListaFerias(todas, { comColaborador: true, comAcoesGestao: masterGestao }));
+
+    // Indisponibilidades dos Prestadores — movida para DEBAIXO do Resumo
+    // de Férias/Ausências (pedido explícito 2026-08-14, antes vinha antes
+    // do Resumo); continua gestão da Direção, nunca mobile. Já registada
+    // no Calendário da Equipa acima (tipo='indisponivel' em
+    // escala_ferias) — esta lista é só a mesma informação num formato
+    // fácil de consultar/gerir de uma vez, sem ter de vasculhar o
+    // calendário mês a mês.
+    if (masterGestao) {
+      const indisponibilidades = todas.filter(p => p.tipo === 'indisponivel');
+      if (indisponibilidades.length) {
+        wrap.appendChild(h('h3', { class: 'page-eyebrow', style: 'margin:22px 0 10px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, 'Indisponibilidades — Prestadores de Serviço'));
+        wrap.appendChild(buildListaFerias(indisponibilidades, { comColaborador: true, comAcoesGestao: true }));
+      }
+    }
 
     // 3) Tabela Final de Rotações — apenas consulta passiva (a gestão da
     // lista base vive só no Modal de Configurações, desktop only).
@@ -30738,6 +31088,21 @@ function buildHorariosPage(container, goTo) {
           h('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto;' }, extraBotoesDireita),
         ])
       : h('div', { class: 'tabs-row', style: 'margin-bottom:14px;' }, diaTabsBotoes);
+    // Banner "Disponibilidade Extra Esta Semana" (pedido explícito
+    // 2026-08-14) — SEMPRE visível ao abrir a semana, independente de
+    // qual dia está selecionado nos separadores acima (por omissão abre
+    // em Segunda): lista logo à partida quem deu disponibilidade extra
+    // nalgum dia desta semana, para nunca só ser descoberto ao chegar ao
+    // dia exato (ex: Domingo) depois do resto do horário já estar feito.
+    const disponibilidadesSemana = escalaDisponibilidadesDaSemana(semana.semanaInicio);
+    const bannerDisponibilidadeSemana = disponibilidadesSemana.length ? h('div', { class: 'card card-pad', style: 'margin-bottom:14px;background:#ecfdf5;border-color:#a7f3d0;' }, [
+      h('p', { class: 'cell-strong', style: 'margin:0 0 6px;color:#047857;' }, '🖐️ Disponibilidade Extra Esta Semana'),
+      ...disponibilidadesSemana.map(disp => {
+        const diasLabel = escalaDiasSemanaCobertosPorDisponibilidade(semana.semanaInicio, disp).join(', ');
+        return h('p', { style: 'margin:2px 0;font-size:12.5px;color:#047857;' },
+          `${disp.colaboradorNome || 'Colaborador'} — ${diasLabel}${disp.observacoes ? ` (${disp.observacoes})` : ''}`);
+      }),
+    ]) : null;
     const diaKey = ESCALA_DIAS.some(d => d.key === diaVerticalSelecionado) ? diaVerticalSelecionado : 'seg';
     // Data ISO exata do dia selecionado — necessária para cruzar com
     // escala_ferias (que guarda intervalos de datas, não "dias da
@@ -30745,7 +31110,7 @@ function buildHorariosPage(container, goTo) {
     // ausência (ver escalaAusenciaDoDia mais abaixo).
     const dataDoDiaSelecionado = escalaDataDoDia(semana.semanaInicio, diaKey);
     const posicoes = ESCALA_GRUPOS.flatMap(g => escalaVagasGrupoOrdenadas(g.key));
-    if (!posicoes.length) return h('div', {}, [diaTabs, EmptyState('Sem posições configuradas.')]);
+    if (!posicoes.length) return h('div', {}, [diaTabs, bannerDisponibilidadeSemana, EmptyState('Sem posições configuradas.')]);
     // Converte "HH:MM" em minutos desde HORA_INICIO, recortado ao
     // intervalo visível [HORA_INICIO, HORA_FIM] — um turno que começa
     // antes das 08:00 ou acaba depois das 24:00 fica visualmente cortado
@@ -30992,6 +31357,22 @@ function buildHorariosPage(container, goTo) {
           title: `📌 Pedido Especial — ${escalaMotivoPedidoTexto(pedidoEspecialColuna)} (${estadoInfoPedido.label})`,
         }, '📌'));
       }
+      // Disponibilidade Extra (pedido explícito 2026-08-14): badge no
+      // cabeçalho da coluna quando o colaborador desse dia tem
+      // disponibilidade extra registada — nos dois sentidos possíveis:
+      // (a) já tem turno atribuído, o aviso é só confirmação de que se
+      // ofereceu; (b) ainda está "Folga"/por preencher, o aviso chama a
+      // atenção para uma oferta que pode não estar a ser aproveitada.
+      // Nunca atribui nem impede nada sozinho — só avisa, igual ao badge
+      // de Pedido Especial acima.
+      const disponibilidadeColuna = colaboradorIdDoDia ? escalaDisponibilidadeDoColaboradorNaData(colaboradorIdDoDia, dataDoDiaSelecionado) : null;
+      if (disponibilidadeColuna) {
+        const semTurnoAinda = tipoEfetivoDia === 'folga' || tipoEfetivoDia === 'indisponivel';
+        titulo.appendChild(h('span', {
+          class: 'escala-vertical-disponibilidade-badge',
+          title: `🖐️ Disponibilidade Extra registada${disponibilidadeColuna.observacoes ? ' — ' + disponibilidadeColuna.observacoes : ''}${semTurnoAinda ? ' (ainda sem turno atribuído — pode estar por aproveitar)' : ''}`,
+        }, '🖐️'));
+      }
       return h('div', { class: 'escala-vertical-coluna' }, [titulo, trilho]);
     });
     // Total de colaboradores presentes por hora (usado só na coluna
@@ -31074,6 +31455,7 @@ function buildHorariosPage(container, goTo) {
       : null;
     return h('div', {}, [
       diaTabs,
+      bannerDisponibilidadeSemana,
       notaFeriadoVertical,
       buildPainelAlertasCobertura(alertasCobertura, escalaDataOperacionalEspecial(dataDoDiaSelecionado)),
       h('div', { class: 'escala-vertical-wrap' }, [
