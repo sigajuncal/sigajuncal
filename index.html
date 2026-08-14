@@ -314,6 +314,18 @@
     background:#fff;border-radius:9px;padding:8px 12px;border:1px solid #bfdbfe;}
   .home-minha-tarefa-nome{font-size:13px;font-weight:700;color:#1e3a8a;}
   .home-minha-tarefa-horario{font-size:12.5px;font-weight:800;color:#2563eb;white-space:nowrap;}
+  /* Estados de destaque de "As Suas Tarefas de Hoje" (pedido explícito
+     2026-08-14): a tarefa que está mesmo a decorrer agora fica em
+     vermelho com o marcador a pulsar (mesmo padrão de animação do ponto
+     verde de presença online, cor diferente para nunca confundir); a
+     que está prestes a começar (dentro de 30min) fica em âmbar, sem
+     pulsar — só um aviso, ainda não é urgente. Tarefas já terminadas
+     nunca chegam a esta lista (ver escalaMinhasTarefasHoje). */
+  .home-minha-tarefa-decorrer{background:#fef2f2;border-color:#fca5a5;}
+  .home-minha-tarefa-decorrer .home-minha-tarefa-estado{color:#b91c1c;font-size:11px;font-weight:800;
+    animation:presencaDotPulse 1.8s ease-in-out infinite;}
+  .home-minha-tarefa-brevemente{background:#fffbeb;border-color:#fcd34d;}
+  .home-minha-tarefa-brevemente .home-minha-tarefa-estado{color:#92400e;font-size:11px;font-weight:800;}
   /* Chat Interno */
   .chat-page-wrap{display:flex;flex-direction:column;}
   .chat-messages{display:flex;flex-direction:column;gap:14px;padding:6px 4px 16px;max-height:56vh;min-height:280px;overflow-y:auto;}
@@ -1603,6 +1615,13 @@
   .escala-cell-conteudo{display:flex;flex-direction:column;align-items:flex-start;gap:3px;}
   .escala-tarefa-pill{display:inline-flex;align-items:center;gap:3px;padding:1px 7px;border-radius:999px;
     background:#fef3c7;color:#92400e;border:1px solid #fde68a;font-size:10px;font-weight:700;white-space:nowrap;}
+  /* Variantes de estado (só no dia de hoje — ver escalaTarefaPill/
+     buildVistaPessoal), mesma paleta do cartão "As Suas Tarefas de Hoje"
+     da Home (vermelho a pulsar / âmbar mais forte), para a app falar
+     sempre a mesma linguagem visual sobre a mesma tarefa. */
+  .escala-tarefa-pill-decorrer{background:#fee2e2;color:#b91c1c;border-color:#fca5a5;
+    animation:presencaDotPulse 1.8s ease-in-out infinite;}
+  .escala-tarefa-pill-brevemente{background:#fef08a;color:#854d0e;border-color:#facc15;}
   /* Nome do colaborador DESSE dia numa célula do Grupo B (rotação diária
      B1/B2 — ver escalaAtribuirGrupoBParaDia) — texto pequeno e discreto,
      mesmo espírito visual do escala-tarefa-pill mas sem "pílula". */
@@ -23735,14 +23754,22 @@ function escalaTarefaTexto(dia) {
 // Semana" e "Escala da Equipa" (Vista em Tabela), por baixo das horas do
 // turno. Devolve null quando não há nenhuma tarefa; devolve um único
 // <span> quando há 1, ou um wrapper com várias pills quando há mais.
-function escalaTarefaPill(dia) {
+// `agoraMin` é opcional (minutos absolutos do instante atual) — só deve
+// ser passado quando o dia em causa é HOJE (ver buildVistaPessoal); nesse
+// caso a pill ganha o mesmo destaque visual do cartão "As Suas Tarefas de
+// Hoje" (vermelho a pulsar se a decorrer, âmbar mais forte se prestes a
+// começar — pedido explícito 2026-08-14, para não haver 2 sítios com
+// linguagem visual diferente para a mesma informação).
+function escalaTarefaPill(dia, agoraMin) {
   if (!dia || dia.tipo !== 'normal') return null;
   const tarefas = escalaTarefasDoDia(dia);
   const pills = tarefas.map(t => {
     const texto = escalaTarefaTextoItem(t);
     if (!texto) return null;
     const intervalo = (t.inicio && t.fim) ? ` ${t.inicio}-${t.fim}` : '';
-    return h('span', { class: 'escala-tarefa-pill' }, texto + intervalo);
+    const estado = (agoraMin != null) ? escalaEstadoTarefaAgora(t, agoraMin) : null;
+    const classe = 'escala-tarefa-pill' + (estado && estado !== 'agendada' ? ` escala-tarefa-pill-${estado}` : '');
+    return h('span', { class: classe }, texto + intervalo);
   }).filter(Boolean);
   if (!pills.length) return null;
   return pills.length === 1 ? pills[0] : h('div', { class: 'escala-tarefa-pills-wrap' }, pills);
@@ -23784,13 +23811,27 @@ function escalaTarefasAtivasAgora() {
 // dia de HOJE — usada no cartão de destaque da Página Inicial (ver
 // buildMinhasTarefasHojeCard). Ao contrário de escalaTarefasAtivasAgora
 // (qualquer tarefa da equipa toda EM CURSO neste preciso minuto), esta
-// devolve TODAS as tarefas do próprio dia já atribuídas ao utilizador,
-// passadas, em curso ou ainda por vir — até 3 (limite pedido). Mesma
-// regra de visibilidade da semana (publicada, ou rascunho visível à
-// equipa, ou o próprio ser Master/Administrador) — nunca expõe um
-// rascunho ainda não confirmado. Se o utilizador estiver de férias/
-// ausência hoje (escalaAusenciaDoDia), não há turno real a decorrer,
-// logo não há tarefas a mostrar.
+// devolve as tarefas do próprio dia já atribuídas ao utilizador que
+// ainda não terminaram — em curso ou por vir — até 3 (limite pedido);
+// tarefas cujo Fim já passou deixam de aparecer sozinhas (pedido
+// explícito 2026-08-14: "desaparecer se tiver terminado"), sem ser
+// preciso recarregar a página (recalculado a cada rerender). Cada item
+// devolvido inclui `estado`: 'decorrer' (a acontecer agora),
+// 'brevemente' (começa dentro de 30min) ou 'agendada' (mais tarde hoje)
+// — ver escalaEstadoTarefaAgora, usado por buildMinhasTarefasHojeCard
+// para destacar visualmente cada caso. Mesma regra de visibilidade da
+// semana (publicada, ou rascunho visível à equipa, ou o próprio ser
+// Master/Administrador) — nunca expõe um rascunho ainda não confirmado.
+// Se o utilizador estiver de férias/ausência hoje (escalaAusenciaDoDia),
+// não há turno real a decorrer, logo não há tarefas a mostrar.
+const ESCALA_TAREFA_JANELA_BREVEMENTE_MIN = 30;
+function escalaEstadoTarefaAgora(t, agoraMin) {
+  const iniMin = escalaMinutosAbsolutos(t.inicio, false);
+  const fimMin = escalaMinutosAbsolutos(t.fim, true);
+  if (agoraMin >= iniMin && agoraMin < fimMin) return 'decorrer';
+  if (agoraMin < iniMin && (iniMin - agoraMin) <= ESCALA_TAREFA_JANELA_BREVEMENTE_MIN) return 'brevemente';
+  return 'agendada';
+}
 function escalaMinhasTarefasHoje() {
   if (!activeUser) return [];
   const agora = new Date();
@@ -23801,6 +23842,7 @@ function escalaMinhasTarefasHoje() {
   if (!semana) return [];
   if (semana.estado !== 'publicado' && !escalaMostrarRascunhosEquipa(semana) && !isMasterUser()) return [];
   const diaKey = escalaDiaKeyDeData(agora);
+  const agoraMin = escalaMinutosAbsolutos(`${pad2(agora.getHours())}:${pad2(agora.getMinutes())}`, false);
   const minhas = [];
   Object.keys(semana.dados || {}).forEach(codigo => {
     const linha = semana.dados[codigo];
@@ -23810,9 +23852,11 @@ function escalaMinhasTarefasHoje() {
     if (!colaboradorId || String(colaboradorId) !== String(activeUser.id)) return;
     escalaTarefasDoDia(dia).forEach(t => {
       if (!t.inicio || !t.fim) return;
-      minhas.push({ codigo, tipo: t.tipo, outro: t.outro, inicio: t.inicio, fim: t.fim });
+      if (escalaMinutosAbsolutos(t.fim, true) <= agoraMin) return; // já terminou — não mostrar
+      minhas.push({ codigo, tipo: t.tipo, outro: t.outro, inicio: t.inicio, fim: t.fim, estado: escalaEstadoTarefaAgora(t, agoraMin) });
     });
   });
+  minhas.sort((a, b) => escalaMinutosAbsolutos(a.inicio, false) - escalaMinutosAbsolutos(b.inicio, false));
   return minhas.slice(0, 3);
 }
 function escalaVagasGrupoOrdenadas(grupo) {
@@ -26720,7 +26764,10 @@ function buildHorariosPage(container, goTo) {
   }
   function buildFeedNotasEquipa(semana) {
     const notas = escalaNotasSemanaDaSemana(semana.semanaInicio);
-    const kids = [h('h3', { class: 'dash-card-title', style: 'margin:0 0 12px;' }, '💬 Observações Partilhadas da Semana')];
+    const kids = [
+      h('h3', { class: 'dash-card-title', style: 'margin:0 0 2px;' }, '💬 Observações Partilhadas da Semana'),
+      h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, 'Visível a toda a equipa e fica pendente de validação da Direção até ser confirmada.'),
+    ];
     if (activeUser) {
       const novoInput = h('textarea', { class: 'textarea', rows: '2', placeholder: 'Escrever uma nota (ex: troca de turno combinada, aviso à equipa)...' });
       const enviarBtn = h('button', {
@@ -27215,8 +27262,8 @@ function buildHorariosPage(container, goTo) {
       h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, 'Chefe de Turno / Encomendas — sem ter de abrir célula a célula. Só Farmacêutico(a)/Diretor(a) Técnico(a) e Adjunto(a).'),
       congelada ? h('p', { class: 'field-helper-text', style: 'margin:0;' }, 'Semana congelada — não é possível atribuir tarefas.') : h('div', { class: 'form-grid' }, [
         atribuicaoRapidaError ? h('p', { class: 'form-error span2' }, atribuicaoRapidaError) : null,
-        h('div', { class: 'field span2' }, [h('label', {}, 'Dia'), diaSelect]),
-        h('div', { class: 'field span2' }, [h('label', {}, 'Tipo de Tarefa'), tipoSelect]),
+        h('div', { class: 'field' }, [h('label', {}, 'Dia'), diaSelect]),
+        h('div', { class: 'field' }, [h('label', {}, 'Tipo de Tarefa'), tipoSelect]),
         h('div', { class: 'field span2' }, [h('label', {}, 'Colaborador'), colabSelect]),
         contextoTurno ? h('div', { class: 'field span2', style: 'margin-top:-8px;' }, [contextoTurno]) : null,
         h('div', { class: 'field field-sm' }, [h('label', {}, 'Início'), inicioInput]),
@@ -27385,6 +27432,7 @@ function buildHorariosPage(container, goTo) {
     const codigosMeus = Object.keys(semana.dados || {}).filter(cod => semana.dados[cod].colaboradorId === activeUser.id);
     if (!codigosMeus.length) return EmptyState('Não está atribuído a nenhuma posição nesta semana.');
     const wrap = h('div', {});
+    const hojeISO = dateToISO(new Date());
     codigosMeus.forEach(codigo => {
       const linha = semana.dados[codigo];
       const rows = ESCALA_DIAS.map(d => {
@@ -27393,7 +27441,8 @@ function buildHorariosPage(container, goTo) {
         // Ausência (Férias/Baixa/Falta/...) registada DEPOIS de o turno já
         // estar na grelha — mesma verificação usada em buildGrelhaEquipa/
         // buildVistaVertical (ver comentários lá).
-        const ausencia = tipoEfetivo === 'normal' ? escalaAusenciaDoDia(activeUser.id, escalaDataDoDia(semana.semanaInicio, d.key)) : null;
+        const dataDoDia = escalaDataDoDia(semana.semanaInicio, d.key);
+        const ausencia = tipoEfetivo === 'normal' ? escalaAusenciaDoDia(activeUser.id, dataDoDia) : null;
         let texto = tipoEfetivo === 'normal' ? `${dia.entrada} – ${dia.saida}${(dia.pausaInicio && dia.pausaFim) ? ` (pausa ${dia.pausaInicio}-${dia.pausaFim})` : ''}${dia.heHoras ? ` (+${escalaFormatarHoras(dia.heHoras)} HE)` : ''}` : (ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—');
         // Horas Extra reivindicadas por mim (ver buildPainelHorasExtra) —
         // antes só apareciam no painel "Horas Extra Disponíveis" lá
@@ -27403,7 +27452,11 @@ function buildHorariosPage(container, goTo) {
         if (reivindicacoesDoDia.length) {
           texto += ' · ' + reivindicacoesDoDia.map(r => `+HE ${r.intervaloInicio}-${r.intervaloFim}`).join(', ');
         }
-        const pill = escalaTarefaPill(dia);
+        // agoraMin só passado no dia de HOJE — dá à pill de tarefa o
+        // mesmo destaque visual (a decorrer/em breve) do cartão da Home,
+        // sem sentido nenhum nos outros 6 dias da semana.
+        const agoraMinDoDia = (dataDoDia === hojeISO) ? escalaMinutosAbsolutos(`${pad2(new Date().getHours())}:${pad2(new Date().getMinutes())}`, false) : null;
+        const pill = escalaTarefaPill(dia, agoraMinDoDia);
         const ausenciaBadge = ausencia ? h('span', { class: 'escala-cell-ausencia-badge', style: 'margin-top:2px;' }, ESCALA_TIPOS_DIA.find(t => t.key === ausencia.tipo)?.label || 'Ausência') : null;
         const conteudoDireita = (pill || ausenciaBadge)
           ? h('span', { style: 'display:flex;flex-direction:column;align-items:flex-end;gap:3px;' }, [h('span', {}, texto), pill, ausenciaBadge])
@@ -37275,13 +37328,17 @@ function buildTarefasAtivasWidget() {
 function buildMinhasTarefasHojeCard() {
   const tarefas = escalaMinhasTarefasHoje();
   if (!tarefas.length) return null;
+  const ROTULO_ESTADO = { decorrer: '● A decorrer agora', brevemente: '◷ Em breve' };
   return h('div', { class: 'home-minhas-tarefas-card' }, [
     h('div', { class: 'home-minhas-tarefas-titulo' }, [
       Icon('alert', { size: 16, strokeWidth: 2.4 }),
       h('span', {}, tarefas.length === 1 ? 'Tem 1 tarefa agendada para hoje' : `Tem ${tarefas.length} tarefas agendadas para hoje`),
     ]),
-    h('div', { class: 'home-minhas-tarefas-lista' }, tarefas.map(t => h('div', { class: 'home-minha-tarefa-item' }, [
-      h('span', { class: 'home-minha-tarefa-nome' }, escalaTarefaTextoItem(t)),
+    h('div', { class: 'home-minhas-tarefas-lista' }, tarefas.map(t => h('div', { class: 'home-minha-tarefa-item' + (t.estado !== 'agendada' ? ` home-minha-tarefa-${t.estado}` : '') }, [
+      h('div', { style: 'display:flex;flex-direction:column;gap:2px;' }, [
+        h('span', { class: 'home-minha-tarefa-nome' }, escalaTarefaTextoItem(t)),
+        ROTULO_ESTADO[t.estado] ? h('span', { class: 'home-minha-tarefa-estado' }, ROTULO_ESTADO[t.estado]) : null,
+      ]),
       h('span', { class: 'home-minha-tarefa-horario' }, `${t.inicio} – ${t.fim}`),
     ]))),
   ]);
