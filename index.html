@@ -1583,9 +1583,18 @@
      Vista Pessoal. */
   .escala-semana-intervalo{font-size:13.5px;font-weight:800;color:var(--pharm-700);margin:0 0 8px;}
   .escala-table th{white-space:nowrap;}
+  /* Vista em Tabela mais compacta (pedido explícito 2026-08-14): menos
+     padding por célula e as 7 colunas de dia deixam de forçar
+     white-space:nowrap — o texto de um turno ("15:00–21:00 (6h)") passa a
+     quebrar em 2 linhas em vez de alargar a coluna, o que fazia a tabela
+     toda ultrapassar a largura do ecrã e obrigar a scroll horizontal. As
+     colunas "Posição"/"Colaborador"/"Total" continuam compactas de
+     propósito (badge curto, nome já abreviado — ver nomeCurtoDesambiguado
+     — e número), por isso mantêm-se em nowrap. */
+  .escala-table td, .escala-table th{padding:6px 8px;}
   .escala-grupo-header{background:var(--pharm-50);font-weight:800;color:var(--pharm-700);
     font-size:11px;text-transform:uppercase;letter-spacing:.04em;padding:7px 12px !important;}
-  .escala-cell{white-space:nowrap;font-size:12.5px;}
+  .escala-cell{white-space:normal;font-size:12.5px;max-width:118px;line-height:1.3;}
   /* Empilha o texto das horas com o pill da Tarefa/Cargo Especial por
      baixo (ver escalaTarefaPill) — só usado quando o dia tem tarefa
      atribuída; .escala-cell mantém white-space:nowrap para o texto das
@@ -25043,6 +25052,70 @@ function podeGerirBancoHorasEHE() {
   const nome = String((activeUser && activeUser.nomeCompleto) || '').trim();
   return ESCALA_NOMES_GESTAO_BANCO_HORAS.includes(nome);
 }
+// Campo de hora com 2 seletores próprios (Horas + Minutos 00/30, pedido
+// explícito 2026-08-09): o `step` do <input type="time"> nativo não
+// resultava — o relógio/scroll do browser continuava a mostrar todos os
+// 60 minutos, ignorando o step. Construído à mão para nunca permitir
+// escolher um minuto fora de 00/30 (continuam a suportar escolher por
+// rato/dedo E escrever o número diretamente — comportamento nativo de
+// qualquer <select>, não precisa de código à parte). Horas restritas a
+// 08-23 (horário da farmácia, nunca faz sentido entrada/pausa fora
+// disso) — `permitirMeiaNoite` acrescenta também "00" no fundo da lista,
+// só para Saída/Fim Pausa, a representar meia-noite no fim do dia
+// (convenção já usada no resto do horário — ver ESCALA_DIAS/
+// buildVistaVertical). O elemento devolvido (`wrap`) comporta-se como um
+// campo normal para o resto do código: `.value` lê/escreve sempre
+// "HH:MM" (ou "" sem valor) via getter/setter, e vive dentro de um
+// .field para o toggle de visibilidade (atualizarVisibilidade) continuar
+// a funcionar sem alterações.
+// Promovida a função GLOBAL (2026-08-14, antes só existia dentro de
+// abrirEditorCelulaEscala) — passou a ser usada também no formulário de
+// Horas Extra Disponíveis (buildPainelHorasExtra), que antes tinha 4
+// campos de texto livre "HH:MM" (tinhas de escrever os dois pontos à
+// mão), inconsistente com o resto da app. `onChange(valorHHMM)` é
+// opcional — só é preciso em sítios como buildPainelHorasExtra, cujo
+// formulário vive dentro do ciclo normal de rerender() (a app pode
+// reconstruir a árvore toda a qualquer momento, ex: chegada de dados em
+// tempo real) — por isso o valor tem de ficar sincronizado num objeto de
+// estado (draft) a cada escolha, nunca só lido no submit. O Modal de
+// Edição de Dia (abrirEditorCelulaEscala) não precisa disto: vive fora
+// desse ciclo, por isso continua a ler `.value` só no submit.
+function campoHora(valorInicial, permitirMeiaNoite, onChange) {
+  const wrap = h('div', { class: 'time-picker-custom' });
+  const horaSel = h('select', { class: 'time-picker-select' }, [h('option', { value: '' }, '--')]);
+  for (let hVal = 8; hVal < 24; hVal += 1) {
+    const hStr = String(hVal).padStart(2, '0');
+    horaSel.appendChild(h('option', { value: hStr }, hStr));
+  }
+  if (permitirMeiaNoite) horaSel.appendChild(h('option', { value: '00' }, '00 (meia-noite)'));
+  const minSel = h('select', { class: 'time-picker-select' }, [
+    h('option', { value: '' }, '--'), h('option', { value: '00' }, '00'), h('option', { value: '30' }, '30'),
+  ]);
+  wrap.appendChild(horaSel);
+  wrap.appendChild(h('span', { class: 'time-picker-sep' }, ':'));
+  wrap.appendChild(minSel);
+  function aplicarValor(v) {
+    const partes = String(v || '').split(':');
+    const hNum = parseInt(partes[0], 10);
+    horaSel.value = (v && !isNaN(hNum)) ? String(hNum).padStart(2, '0') : '';
+    const mNum = parseInt(partes[1], 10);
+    minSel.value = (v && !isNaN(mNum)) ? (mNum >= 30 ? '30' : '00') : '';
+  }
+  aplicarValor(valorInicial);
+  // Ao escolher a hora, se ainda não houver minuto escolhido assume
+  // logo "00" — poupa 1 clique no caso mais comum (à hora certa).
+  horaSel.addEventListener('change', () => { if (horaSel.value && !minSel.value) minSel.value = '00'; });
+  Object.defineProperty(wrap, 'value', {
+    get() { return (horaSel.value && minSel.value) ? `${horaSel.value}:${minSel.value}` : ''; },
+
+    set(v) { aplicarValor(v); },
+  });
+  if (onChange) {
+    horaSel.addEventListener('change', () => onChange(wrap.value));
+    minSel.addEventListener('change', () => onChange(wrap.value));
+  }
+  return wrap;
+}
 function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   const overlay = h('div', { class: 'modal-overlay' });
   let saving = false;
@@ -25084,64 +25157,25 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   // Prestador) só têm 2 estados possíveis: Normal ou Indisponibilidade —
   // o resto (Férias/Dia Extra/Aniversário/Outras Licenças/Folga/Baixa/
   // Falta) não se aplica, são conceitos do Quadro (pedido explícito
-  // 2026-08-10). O tipo já gravado fica sempre selecionável mesmo que
-  // fora desta lista (registo antigo antes desta restrição) — nunca
-  // troca silenciosamente por baixo do gestor.
+  // 2026-08-10). CORRIGIDO (2026-08-14): a versão anterior deixava
+  // passar uma 3ª opção legada quando o valor já gravado na célula não
+  // era 'normal' nem 'indisponivel' (ex: 'folga' de antes desta
+  // restrição existir) — um Prestador podia acabar com "Normal / Folga /
+  // Indisponibilidade" no seletor, como se fosse do Quadro. Agora a
+  // lista é SEMPRE só as 2 opções: qualquer tipo legado gravado
+  // (Folga/Férias/etc.) é tratado como equivalente a "Indisponibilidade"
+  // já na pré-seleção — ao gravar sem tocar em mais nada, o registo
+  // fica automaticamente migrado para 'indisponivel'.
   const colaboradorObjCelula = colaboradorIdCelula ? (STATE.usuarios || []).find(u => u.id === colaboradorIdCelula) : null;
-  const tiposDisponiveisCelula = escalaUtilizadorEhPrestador(colaboradorObjCelula)
-    ? ESCALA_TIPOS_DIA.filter(t => t.key === 'normal' || t.key === 'indisponivel' || t.key === diaAtual.tipo)
+  const ehPrestadorCelula = escalaUtilizadorEhPrestador(colaboradorObjCelula);
+  const tiposDisponiveisCelula = ehPrestadorCelula
+    ? ESCALA_TIPOS_DIA.filter(t => t.key === 'normal' || t.key === 'indisponivel')
     : ESCALA_TIPOS_DIA;
-  const tipoSelect = h('select', { class: 'select' }, tiposDisponiveisCelula.map(t => h('option', { value: t.key, selected: diaAtual.tipo === t.key ? 'selected' : undefined }, t.label)));
-  tipoSelect.value = diaAtual.tipo || 'normal';
-  // Campo de hora com 2 seletores próprios (Horas + Minutos 00/30,
-  // pedido explícito 2026-08-09): o `step` do <input type="time"> nativo
-  // não resultava — o relógio/scroll do browser continuava a mostrar
-  // todos os 60 minutos, ignorando o step. Construído à mão para nunca
-  // permitir escolher um minuto fora de 00/30 (continuam a suportar
-  // escolher por rato/dedo E escrever o número diretamente — comportamento
-  // nativo de qualquer <select>, não precisa de código à parte). Horas
-  // restritas a 08-23 (horário da farmácia, nunca faz sentido entrada/
-  // pausa fora disso) — `permitirMeiaNoite` acrescenta também "00" no
-  // fundo da lista, só para Saída/Fim Pausa, a representar meia-noite no
-  // fim do dia (convenção já usada no resto do horário — ver
-  // ESCALA_DIAS/buildVistaVertical). O elemento devolvido (`wrap`)
-  // continua a comportar-se como um campo normal para o resto do código:
-  // `.value` lê/escreve sempre "HH:MM" (ou "" sem valor) via
-  // getter/setter, e vive dentro de um .field para o toggle de
-  // visibilidade (atualizarVisibilidade) continuar a funcionar sem
-  // alterações.
-  function campoHora(valorInicial, permitirMeiaNoite) {
-    const wrap = h('div', { class: 'time-picker-custom' });
-    const horaSel = h('select', { class: 'time-picker-select' }, [h('option', { value: '' }, '--')]);
-    for (let hVal = 8; hVal < 24; hVal += 1) {
-      const hStr = String(hVal).padStart(2, '0');
-      horaSel.appendChild(h('option', { value: hStr }, hStr));
-    }
-    if (permitirMeiaNoite) horaSel.appendChild(h('option', { value: '00' }, '00 (meia-noite)'));
-    const minSel = h('select', { class: 'time-picker-select' }, [
-      h('option', { value: '' }, '--'), h('option', { value: '00' }, '00'), h('option', { value: '30' }, '30'),
-    ]);
-    wrap.appendChild(horaSel);
-    wrap.appendChild(h('span', { class: 'time-picker-sep' }, ':'));
-    wrap.appendChild(minSel);
-    function aplicarValor(v) {
-      const partes = String(v || '').split(':');
-      const hNum = parseInt(partes[0], 10);
-      horaSel.value = (v && !isNaN(hNum)) ? String(hNum).padStart(2, '0') : '';
-      const mNum = parseInt(partes[1], 10);
-      minSel.value = (v && !isNaN(mNum)) ? (mNum >= 30 ? '30' : '00') : '';
-    }
-    aplicarValor(valorInicial);
-    // Ao escolher a hora, se ainda não houver minuto escolhido assume
-    // logo "00" — poupa 1 clique no caso mais comum (à hora certa).
-    horaSel.addEventListener('change', () => { if (horaSel.value && !minSel.value) minSel.value = '00'; });
-    Object.defineProperty(wrap, 'value', {
-      get() { return (horaSel.value && minSel.value) ? `${horaSel.value}:${minSel.value}` : ''; },
-
-      set(v) { aplicarValor(v); },
-    });
-    return wrap;
-  }
+  const tipoInicialCelula = (ehPrestadorCelula && diaAtual.tipo && diaAtual.tipo !== 'normal' && diaAtual.tipo !== 'indisponivel')
+    ? 'indisponivel'
+    : (diaAtual.tipo || 'normal');
+  const tipoSelect = h('select', { class: 'select' }, tiposDisponiveisCelula.map(t => h('option', { value: t.key, selected: tipoInicialCelula === t.key ? 'selected' : undefined }, t.label)));
+  tipoSelect.value = tipoInicialCelula;
   const entradaInput = campoHora(diaAtual.entrada);
   const saidaInput = campoHora(diaAtual.saida, true);
   const pausaInicioInput = campoHora(diaAtual.pausaInicio);
@@ -26233,7 +26267,15 @@ function buildHorariosPage(container, goTo) {
         const nomesDistintosB = v.grupo === 'B'
           ? Array.from(new Set(ESCALA_DIAS.map(d => (linha.dias[d.key] && linha.dias[d.key].colaboradorNome) || '').filter(Boolean)))
           : [];
-        const colaboradorLabel = nomesDistintosB.length ? nomesDistintosB.join(' / ') : linha.colaboradorNome;
+        // Nomes sempre abreviados nesta coluna (pedido explícito
+        // 2026-08-14: "Hugo Cunha" → "Hugo", "André Seixas" → "A.
+        // Seixas", "Joana Coelho" → "Joana C.") — mesma função já usada
+        // no resto da escala (nome do dia do Grupo B, indicador Online),
+        // nunca o nome completo por extenso, que empurrava a tabela toda
+        // para fora do ecrã.
+        const colaboradorLabel = nomesDistintosB.length
+          ? nomesDistintosB.map(nomeCurtoDesambiguado).join(' / ')
+          : nomeCurtoDesambiguado(linha.colaboradorNome);
         bodyRows.push(h('tr', {}, [
           h('td', { class: 'cell-strong' }, escalaBadgePosicao(v.codigo, v.grupo)),
           h('td', {}, colaboradorLabel || h('span', { class: 'cell-muted' }, 'Posição por preencher')),
@@ -26786,14 +26828,17 @@ function buildHorariosPage(container, goTo) {
     if (mostrarFormHorasExtra && ehGestor) {
       const diaSelect = h('select', { class: 'select' }, ESCALA_DIAS.map(d => h('option', { value: d.key, selected: horasExtraDraft.diaKey === d.key ? 'selected' : undefined }, d.label)));
       diaSelect.value = horasExtraDraft.diaKey; diaSelect.addEventListener('change', () => { horasExtraDraft.diaKey = diaSelect.value; });
-      const iniInput = h('input', { class: 'input', placeholder: 'HH:MM' }); iniInput.value = horasExtraDraft.horaInicio || '';
-      iniInput.addEventListener('input', () => { horasExtraDraft.horaInicio = iniInput.value; });
-      const fimInput = h('input', { class: 'input', placeholder: 'HH:MM' }); fimInput.value = horasExtraDraft.horaFim || '';
-      fimInput.addEventListener('input', () => { horasExtraDraft.horaFim = fimInput.value; });
-      const pausaIniInput = h('input', { class: 'input', placeholder: 'HH:MM (opcional)' }); pausaIniInput.value = horasExtraDraft.pausaInicio || '';
-      pausaIniInput.addEventListener('input', () => { horasExtraDraft.pausaInicio = pausaIniInput.value; });
-      const pausaFimInput = h('input', { class: 'input', placeholder: 'HH:MM (opcional)' }); pausaFimInput.value = horasExtraDraft.pausaFim || '';
-      pausaFimInput.addEventListener('input', () => { horasExtraDraft.pausaFim = pausaFimInput.value; });
+      // Início/Fim/Pausa — mesmo seletor Horas+Minutos (campoHora) usado
+      // no resto da escala, em vez dos antigos 4 campos de texto livre
+      // "HH:MM" (pedido explícito 2026-08-14: escrever os dois pontos à
+      // mão ficava inconsistente com todo o resto da app). Como este
+      // formulário vive dentro do ciclo normal de rerender(), cada
+      // seletor sincroniza o valor em horasExtraDraft a cada escolha
+      // (onChange), para nunca se perder num redesenho entretanto.
+      const iniInput = campoHora(horasExtraDraft.horaInicio, false, (v) => { horasExtraDraft.horaInicio = v; });
+      const fimInput = campoHora(horasExtraDraft.horaFim, true, (v) => { horasExtraDraft.horaFim = v; });
+      const pausaIniInput = campoHora(horasExtraDraft.pausaInicio, false, (v) => { horasExtraDraft.pausaInicio = v; });
+      const pausaFimInput = campoHora(horasExtraDraft.pausaFim, true, (v) => { horasExtraDraft.pausaFim = v; });
       const descInput = h('input', { class: 'input', placeholder: 'Observações (opcional) — ex: falta gente ao balcão' }); descInput.value = horasExtraDraft.descricao || '';
       descInput.addEventListener('input', () => { horasExtraDraft.descricao = descInput.value; });
       const guardarBtn = h('button', { class: 'btn btn-primary', disabled: horasExtraSaving ? 'disabled' : undefined }, horasExtraSaving ? 'A guardar…' : 'Disponibilizar');
@@ -29782,24 +29827,22 @@ function buildHorariosPage(container, goTo) {
             title: `${escalaTarefaTextoItem(t)} · ${t.inicio}-${t.fim}`,
           }, tarefaInfo ? tarefaInfo.icon : '★'));
         });
-      } else if (dia.tipo === 'folga' || dia.tipo === 'indisponivel') {
-        // Folga — estilização suave e minimalista (pedido à parte de
-        // Férias/Baixa/etc.): nunca mostra ícone/texto no bloco (nem
-        // sequer "Folga" por extenso) para não rivalizar visualmente com
-        // turnos reais nem com ausências que pedem atenção — cinzento
-        // ultra ténue/translúcido (escala-vertical-bloco-folga), quase
-        // invisível. Identificação (colaborador + "Folga"/"Indisponibi-
-        // lidade") só ao passar o cursor, através do MESMO tooltip escuro
-        // flutuante do resto da coluna (mostrarTooltipColaborador, ver
-        // abaixo) — nunca um tooltip nativo (title) à parte, que
-        // duplicava a informação num segundo balão branco, com estilo
-        // diferente, redundante.
-        // Indisponibilidade (Prestadores de Serviço) segue o MESMO
-        // tratamento visual da Folga (pedido explícito 2026-08-10) — não
-        // é uma ausência formal como Férias/Baixa (não consome saldo, não
-        // compete por cobertura, ver ESCALA_TIPOS_CONTAM_SOBREPOSICAO),
-        // por isso não deve chamar a mesma atenção visual (riscas
-        // diagonais) dessas.
+      } else if (dia.tipo === 'folga') {
+        // Folga — estilização suave e minimalista: nunca mostra ícone/
+        // texto no bloco (nem sequer "Folga" por extenso) para não
+        // rivalizar visualmente com turnos reais nem com ausências que
+        // pedem atenção — cinzento ultra ténue/translúcido
+        // (escala-vertical-bloco-folga), quase invisível. Identificação
+        // (colaborador + "Folga") só ao passar o cursor, através do
+        // MESMO tooltip escuro flutuante do resto da coluna
+        // (mostrarTooltipColaborador, ver abaixo) — nunca um tooltip
+        // nativo (title) à parte, que duplicava a informação num segundo
+        // balão branco, com estilo diferente, redundante.
+        // Indisponibilidade (Prestadores) DEIXOU de seguir este mesmo
+        // tratamento (revertido 2026-08-14, pedido explícito) — ficava
+        // visualmente indistinguível de uma célula vazia ("não está ali
+        // a fazer nada"). Passa a cair no ramo abaixo (riscas + etiqueta
+        // "Indisponibilidade (IND)"), como qualquer outra ausência.
         const blocoFolga = h('div', {
           class: 'escala-vertical-bloco escala-vertical-bloco-folga' + (editavel ? ' escala-vertical-bloco-clicavel' : ''),
           style: 'top:0%;height:100%;',
@@ -29808,10 +29851,10 @@ function buildHorariosPage(container, goTo) {
         blocos = [blocoFolga];
       } else if (dia.tipo && dia.tipo !== 'normal') {
         // Item 1 (Estilização Visual): Tipo diferente de "Normal" —
-        // Férias/Baixa/Falta/Licença/Aniversário/Extra (Folga e
-        // Indisponibilidade têm tratamento próprio, ver ramo acima) —
-        // nunca tem horário próprio para desenhar um intervalo real, por
-        // isso preenche a coluna do dia inteira a cinzento
+        // Férias/Baixa/Falta/Licença/Aniversário/Extra/Indisponibilidade
+        // (Folga tem tratamento próprio, ver ramo acima) — nunca tem
+        // horário próprio para desenhar um intervalo real, por isso
+        // preenche a coluna do dia inteira a cinzento
         // (escala-vertical-bloco-tipo-ausencia), com a etiqueta do tipo
         // ao centro (sem emoji — pedido explícito) — sinaliza de imediato
         // "não está ao serviço em turno regular", sem precisar de passar
