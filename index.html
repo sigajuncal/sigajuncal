@@ -29503,6 +29503,35 @@ function buildHorariosPage(container, goTo) {
     }
     return [{ inicio: dia.entrada, fim: dia.saida, inicioMin, fimMin }];
   }
+  // Aniversário de colaborador agendado a trabalhar ("normal") nesse
+  // exato dia — comparação por Mês-Dia (AAAA-MM-DD → "MM-DD"), ignora o
+  // ano de nascimento em si. Pedido explícito 2026-08-14: o gerador de
+  // horário não tinha em conta os aniversários dos colaboradores, por
+  // isso alguém podia ficar agendado a trabalhar no seu próprio dia de
+  // aniversário sem qualquer aviso (o Tipo "Dia de Aniversário" existe
+  // no seletor da célula, mas tem de ser escolhido manualmente).
+  function escalaEDataAniversario(dataNascimentoISO, dataISO) {
+    if (!dataNascimentoISO || !dataISO) return false;
+    return String(dataNascimentoISO).slice(5, 10) === String(dataISO).slice(5, 10);
+  }
+  function validarAniversariosNoDia({ semana, diaKey, dataISO, posicoes }) {
+    if (!dataISO) return [];
+    const alertas = [];
+    const jaAvisados = new Set();
+    posicoes.forEach(v => {
+      const linha = semana.dados[v.codigo] || { dias: {} };
+      const dia = linha.dias[diaKey] || { tipo: 'folga' };
+      if (dia.tipo !== 'normal' || !dia.entrada || !dia.saida) return;
+      const colaboradorId = (dia && dia.colaboradorId) || linha.colaboradorId;
+      if (!colaboradorId || jaAvisados.has(colaboradorId)) return;
+      if (escalaAusenciaDoDia(colaboradorId, dataISO)) return; // já coberto por Férias/Aniversário/etc.
+      const colaborador = STATE.usuarios.find(u => u.id === colaboradorId);
+      if (!colaborador || !escalaEDataAniversario(colaborador.dataNascimento, dataISO)) return;
+      jaAvisados.add(colaboradorId);
+      alertas.push({ nivel: 'aviso', texto: `🎂 Hoje é o aniversário de ${colaborador.nomeCompleto || colaborador.username} — está agendado(a) a trabalhar. Considera marcar "Dia de Aniversário".` });
+    });
+    return alertas;
+  }
   function validarCoberturaHorario({ semana, diaKey, dataISO, posicoes, minutosNoIntervalo, HORA_INICIO, HORA_FIM }) {
     const turnosDia = [];
     posicoes.filter(escalaContaParaCoberturaTotal).forEach(v => {
@@ -29518,7 +29547,7 @@ function buildHorariosPage(container, goTo) {
       if (dataISO && escalaAusenciaDoDia(colaboradorId, dataISO)) return;
       turnosDia.push(dia);
     });
-    const alertas = [];
+    const alertas = validarAniversariosNoDia({ semana, diaKey, dataISO, posicoes });
     // Abertura — igualdade estrita ao texto "08:00" (nunca <=, nunca
     // sobreposição de hora inteira).
     const contagemAbertura = turnosDia.filter(d => d.entrada === '08:00').length;
