@@ -25528,19 +25528,37 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     // Atalho "Todo o Horário" (pedido explícito 2026-08-14): quando a
     // tarefa dura o turno inteiro (ex: Chefe de Turno o dia todo), copia
     // a Entrada/Saída do próprio turno para o Início/Fim da tarefa, num
-    // clique — sem isto, era preciso escrever manualmente as mesmas
-    // horas já preenchidas em cima, e sem forma nenhuma de representar
-    // "o turno todo" quando esse turno tem Pausa/Almoço a meio (um único
-    // Início/Fim contínuo continua a ser o formato da tarefa — a Pausa
-    // é só um detalhe visual do bloco de baixo, nunca corta a tarefa em
-    // dois). Lê entradaInput/saidaInput sempre no momento do clique
-    // (nunca uma cópia estática), para refletir qualquer alteração à
-    // Entrada/Saída feita entretanto no mesmo formulário.
-    const todoHorarioBtn = h('button', { type: 'button', class: 'btn-link edit', style: 'font-size:11.5px;' }, '🕐 Todo o Horário (Entrada–Saída)');
-    todoHorarioBtn.addEventListener('click', () => {
-      tarefaInicioInput.value = entradaInput.value;
-      tarefaFimInput.value = saidaInput.value;
-    });
+    // clique. CORRIGIDO (2026-08-14, bug): quando há Pausa/Almoço a meio
+    // do turno, copiar Entrada→Saída directamente criava uma tarefa a
+    // cobrir também esse intervalo — inofensivo numa pausa curta, mas
+    // com uma pausa grande (ex: 2 turnos do mesmo dia separados por
+    // várias horas) isto espicava um período enorme em que a pessoa nem
+    // está a trabalhar, e bloqueava erradamente outras atribicões nesse
+    // horário morto (ver escalaTarefaColisao). Agora usa
+    // escalaSegmentosTurnoAbsolutos sobre os valores ATUAIS dos campos
+    // (nunca uma cópia estática): sem pausa válida a meio, continua 1
+    // botão só; com pausa a dividir o turno em 2 segmentos, mostra 1
+    // botão por segmento, cada um só preenche o seu próprio troço.
+    const todoHorarioWrap = h('span', {});
+    function atualizarTodoHorarioBtn() {
+      const segmentos = escalaSegmentosTurnoAbsolutos({ entrada: entradaInput.value, saida: saidaInput.value, pausaInicio: pausaInicioInput.value, pausaFim: pausaFimInput.value });
+      todoHorarioWrap.innerHTML = '';
+      if (segmentos.length <= 1) {
+        const btn = h('button', { type: 'button', class: 'btn-link edit', style: 'font-size:11.5px;' }, '🕐 Todo o Horário (Entrada–Saída)');
+        btn.addEventListener('click', () => { tarefaInicioInput.value = entradaInput.value; tarefaFimInput.value = saidaInput.value; });
+        todoHorarioWrap.appendChild(btn);
+      } else {
+        segmentos.forEach(seg => {
+          const inicioTxt = escalaAbsMinParaHora(seg.inicioMin), fimTxt = escalaAbsMinParaHora(seg.fimMin);
+          const btn = h('button', { type: 'button', class: 'btn-link edit', style: 'font-size:11.5px;margin-right:10px;' }, `🕐 ${inicioTxt}–${fimTxt}`);
+          btn.addEventListener('click', () => { tarefaInicioInput.value = inicioTxt; tarefaFimInput.value = fimTxt; });
+          todoHorarioWrap.appendChild(btn);
+        });
+      }
+    }
+    atualizarTodoHorarioBtn();
+    [entradaInput, saidaInput, pausaInicioInput, pausaFimInput].forEach(inp => inp.addEventListener('change', atualizarTodoHorarioBtn));
+    const todoHorarioBtn = todoHorarioWrap;
     return { tarefaSelect, tarefaOutroInput, tarefaInicioInput, tarefaFimInput, removerBtn, todoHorarioBtn };
   });
   const addTarefaBtn = h('button', { type: 'button', class: 'btn btn-secondary', style: 'padding:6px 12px;font-size:12.5px;' }, [Icon('plus', { size: 13 }), ' Adicionar Tarefa']);
@@ -25658,6 +25676,19 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
         const fimT = bloco.tarefaFimInput.value.trim();
         if (!/^\d{1,2}:\d{2}$/.test(inicioT) || !/^\d{1,2}:\d{2}$/.test(fimT)) {
           errorEl.textContent = 'Indique Início e Fim de cada Tarefa no formato HH:MM.';
+          errorEl.style.display = '';
+          return;
+        }
+        // Correção de bug (pedido explícito 2026-08-14): mesma
+        // verificação da Atribuição Rápida — o intervalo da tarefa tem
+        // de caber dentro de UM segmento de trabalho real (nunca
+        // atravessar a Pausa/Almoço), senão uma pausa grande a meio do
+        // turno permitia gravar uma tarefa a cobrir também o período em
+        // que a pessoa nem está lá.
+        const iniMinT = escalaMinutosAbsolutos(inicioT, false), fimMinT = escalaMinutosAbsolutos(fimT, true);
+        const dentroDeUmSegmentoT = escalaSegmentosTurnoAbsolutos({ entrada, saida, pausaInicio, pausaFim }).some(seg => iniMinT >= seg.inicioMin && fimMinT <= seg.fimMin);
+        if (!dentroDeUmSegmentoT) {
+          errorEl.textContent = 'Esse intervalo ultrapassa a Pausa/Almoço do turno — ajuste o Início/Fim de cada Tarefa para caber só no período em que a pessoa está mesmo a trabalhar.';
           errorEl.style.display = '';
           return;
         }
@@ -26148,6 +26179,7 @@ function buildHorariosPage(container, goTo) {
   let feriasDraft = feriasNovoDraft(), feriasError = '', feriasSaving = false;
   let feriasConflitosPendentes = null; // preenchido quando a validação de sobreposição bloqueia e aguarda confirmação explícita
   let feriasAnoSaldos = new Date().getFullYear();
+  let estatisticasAno = new Date().getFullYear();
   let editingSaldoUserId = null, saldoDraft = {}, saldoSaving = false, saldoError = '';
   let prioridadeAno = ESCALA_PRIORIDADE_FERIAS_ANO_BASE;
   let mostrarGerirPrioridade = false;
@@ -27160,6 +27192,16 @@ function buildHorariosPage(container, goTo) {
       if (!outroFinal) { atribuicaoRapidaError = 'Escreva a Tarefa em "Outro", ou escolha uma das opções da lista.'; rerender(); return; }
     }
     if (!/^\d{1,2}:\d{2}$/.test(inicio || '') || !/^\d{1,2}:\d{2}$/.test(fim || '')) { atribuicaoRapidaError = 'Indique Início e Fim no formato HH:MM.'; rerender(); return; }
+    // Correção de bug (pedido explícito 2026-08-14): o intervalo da
+    // tarefa tem de caber dentro de UM segmento de trabalho real do
+    // turno (ver escalaSegmentosTurnoAbsolutos) — nunca atravessar uma
+    // Pausa/Almoço a meio. Sem isto, um turno com uma pausa grande (ex:
+    // 2 blocos do mesmo dia separados por várias horas) permitia gravar
+    // uma tarefa a cobrir também o período em que a pessoa nem está lá,
+    // bloqueando erradamente outras atribuições nesse horário morto.
+    const iniMin = escalaMinutosAbsolutos(inicio, false), fimMin = escalaMinutosAbsolutos(fim, true);
+    const dentroDeUmSegmento = escalaSegmentosTurnoAbsolutos(alvo.dia).some(seg => iniMin >= seg.inicioMin && fimMin <= seg.fimMin);
+    if (!dentroDeUmSegmento) { atribuicaoRapidaError = 'Esse intervalo ultrapassa a Pausa/Almoço do turno — ajuste o Início/Fim para caber só no período em que a pessoa está mesmo a trabalhar.'; rerender(); return; }
     const tarefasAtuais = escalaTarefasDoDia(alvo.dia);
     if (tarefasAtuais.length >= 3) { atribuicaoRapidaError = 'Este turno já tem o máximo de 3 tarefas — remova uma primeiro no Editor de Dia.'; rerender(); return; }
     // Bloqueio de sobreposição (pedido explícito 2026-08-14): Chefe de
@@ -27248,12 +27290,31 @@ function buildHorariosPage(container, goTo) {
         : h('p', { class: 'field-helper-text', style: 'margin:0;color:#b45309;font-weight:600;' }, '⚠️ Não está escalado(a) em turno Normal nesse dia.');
     }
     // Atalho "Todo o Horário" — só aparece quando já se sabe o turno
-    // desse colaborador nesse dia (ver contextoTurno acima).
+    // desse colaborador nesse dia (ver contextoTurno acima). Sensível a
+    // segmentos (pedido explícito 2026-08-14, correção de bug): quando o
+    // turno tem Pausa/Almoço a meio, Entrada–Saída sozinho ultrapassava
+    // esse intervalo — grave com uma pausa grande (ex: 2 turnos do dia
+    // separados por várias horas), isto criava uma tarefa (ex: Chefe de
+    // Turno) a cobrir também o período em que a pessoa nem está lá,
+    // bloqueando erradamente outras atribuições nesse horário morto (ver
+    // escalaTarefaColisao). Agora usa escalaSegmentosTurnoAbsolutos: só 1
+    // segmento (sem pausa, ou pausa curta) → continua 1 botão só; 2
+    // segmentos (pausa a dividir o turno) → 1 botão por segmento, cada um
+    // só preenche o seu próprio troço.
     const alvoAtual = atribuicaoRapidaDraft.colaboradorId ? escalaVagaDoColaboradorNoDia(semana, diaAtualKey, atribuicaoRapidaDraft.colaboradorId) : null;
     const todoHorarioBtn = alvoAtual ? (() => {
-      const btn = h('button', { type: 'button', class: 'btn-link edit', style: 'font-size:11.5px;' }, '🕐 Todo o Horário (Entrada–Saída)');
-      btn.addEventListener('click', () => { atribuicaoRapidaDraft.inicio = alvoAtual.dia.entrada; atribuicaoRapidaDraft.fim = alvoAtual.dia.saida; rerender(); });
-      return btn;
+      const segmentos = escalaSegmentosTurnoAbsolutos(alvoAtual.dia);
+      if (segmentos.length <= 1) {
+        const btn = h('button', { type: 'button', class: 'btn-link edit', style: 'font-size:11.5px;' }, '🕐 Todo o Horário (Entrada–Saída)');
+        btn.addEventListener('click', () => { atribuicaoRapidaDraft.inicio = alvoAtual.dia.entrada; atribuicaoRapidaDraft.fim = alvoAtual.dia.saida; rerender(); });
+        return btn;
+      }
+      return h('div', { style: 'display:flex;flex-wrap:wrap;gap:10px;' }, segmentos.map(seg => {
+        const inicioTxt = escalaAbsMinParaHora(seg.inicioMin), fimTxt = escalaAbsMinParaHora(seg.fimMin);
+        const btn = h('button', { type: 'button', class: 'btn-link edit', style: 'font-size:11.5px;' }, `🕐 ${inicioTxt}–${fimTxt}`);
+        btn.addEventListener('click', () => { atribuicaoRapidaDraft.inicio = inicioTxt; atribuicaoRapidaDraft.fim = fimTxt; rerender(); });
+        return btn;
+      }));
     })() : null;
     const atribuirBtn = h('button', { class: 'btn btn-primary', disabled: atribuicaoRapidaSaving ? 'disabled' : undefined }, atribuicaoRapidaSaving ? 'A atribuir…' : 'Atribuir Tarefa');
     atribuirBtn.addEventListener('click', () => requireAuth(() => atribuirTarefaRapida(semana)));
@@ -28074,6 +28135,169 @@ function buildHorariosPage(container, goTo) {
       h('p', { class: 'field-helper-text', style: 'margin:0 0 10px;' }, 'O Prémio do Ano é atribuído individualmente em cada ano e não transita automaticamente para o ano seguinte.'),
       saldoError ? h('p', { class: 'form-error' }, saldoError) : null,
       h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', {}, [thead, h('tbody', {}, rows)]))),
+    ]);
+  }
+  // ---- Estatísticas — pedido explícito 2026-08-14 ----
+  // Separador só de leitura, ao lado de "Férias": para cada colaborador
+  // do QUADRO (nunca Prestadores — "fazem sempre as horas que
+  // definirem", sem o mesmo sentido de rotatividade/cobertura), agrega
+  // ao longo de um ano inteiro um conjunto de indicadores sobre O TIPO
+  // de horas feitas — não só quantas horas, mas QUANDO (feriados, fins
+  // de semana, aberturas/fechos, período noturno, manhãs/tardes livres).
+  // Calculado 100% a partir de semanas PUBLICADAS (nunca rascunhos —
+  // mesmo critério de "histórico" usado no resto da app) — um ano sem
+  // nenhuma semana publicada mostra tudo a 0, nunca inventa dados. Os
+  // anos disponíveis para navegar são só os que a app tem mesmo
+  // (min/max de semana.semanaInicio já publicada) — nunca deixa ir para
+  // um ano sem nada para mostrar.
+  function escalaAnosComSemanasPublicadas() {
+    const anos = (STATE.escalaSemanas || []).filter(s => s.estado === 'publicado').map(s => Number(String(s.semanaInicio).slice(0, 4)));
+    if (!anos.length) return { min: new Date().getFullYear(), max: new Date().getFullYear() };
+    return { min: Math.min(...anos), max: Math.max(...anos) + 1 }; // +1: última semana do ano pode espraiar-se para o ano seguinte
+  }
+  function escalaCalcularEstatisticasAno(ano) {
+    const stats = {};
+    usuariosQuadroAtivos().forEach(u => {
+      stats[u.id] = {
+        nome: u.nomeCompleto || u.username,
+        horasFeriado: 0, aberturas: 0, fechos: 0, saidas22: 0, saidas23: 0, horasNoturnas: 0, pausasRegistadas: 0,
+        tardesLivres: 0, manhasLivres: 0, horasExtra: 0,
+        fdsLivres: 0, fdsOcupados: 0, fdsParcialSab: 0, fdsParcialDom: 0,
+      };
+    });
+    (STATE.escalaSemanas || []).filter(s => s.estado === 'publicado').forEach(semana => {
+      Object.keys(stats).forEach(uid => {
+        const s = stats[uid];
+        const trabalhouNoDia = {};
+        ESCALA_DIAS.forEach(d => {
+          const dataISO = escalaDataDoDia(semana.semanaInicio, d.key);
+          if (!dataISO || dataISO.slice(0, 4) !== String(ano)) return;
+          const alvo = escalaVagaDoColaboradorNoDia(semana, d.key, uid);
+          if (!alvo) return;
+          trabalhouNoDia[d.key] = true;
+          const dia = alvo.dia;
+          const horasDia = escalaCalcularHorasComPausa(dia.entrada, dia.saida, dia.pausaInicio, dia.pausaFim);
+          if (escalaEhFeriado(dataISO)) s.horasFeriado += horasDia;
+          if (dia.entrada === '08:00') s.aberturas += 1;
+          if (dia.saida === '00:00') s.fechos += 1;
+          if (dia.saida === '22:00') s.saidas22 += 1;
+          if (dia.saida === '23:00') s.saidas23 += 1;
+          // "Contabilizar apenas as ocorrências" (pedido explícito
+          // 2026-08-14): conta quantos DIAS tiveram uma Pausa/Almoço
+          // registada, nunca a soma de horas de pausa — o interesse aqui
+          // é saber com que frequência a pessoa teve pausa, não quantas
+          // horas de pausa teve ao todo.
+          if (dia.pausaInicio && dia.pausaFim) s.pausasRegistadas += 1;
+          s.horasNoturnas += escalaHorasNaJanela(dia, 22 * 60, 24 * 60);
+          if (escalaMinutosAbsolutos(dia.saida, true) <= 14 * 60) s.tardesLivres += 1;
+          if (escalaMinutosAbsolutos(dia.entrada, false) > 14 * 60) s.manhasLivres += 1;
+        });
+        // Classificação do fim de semana — só conta quando Sábado E
+        // Domingo dessa semana caem os dois dentro do ano pedido (uma
+        // virada de ano a meio do fim de semana nunca acontece, já que
+        // Sábado/Domingo são sempre consecutivos, mas o guard fica
+        // explícito por clareza).
+        const sabISO = escalaDataDoDia(semana.semanaInicio, 'sab'), domISO = escalaDataDoDia(semana.semanaInicio, 'dom');
+        if (sabISO && domISO && sabISO.slice(0, 4) === String(ano) && domISO.slice(0, 4) === String(ano)) {
+          const sab = !!trabalhouNoDia.sab, dom = !!trabalhouNoDia.dom;
+          if (!sab && !dom) s.fdsLivres += 1;
+          else if (sab && dom) s.fdsOcupados += 1;
+          else if (sab && !dom) s.fdsParcialSab += 1;
+          else s.fdsParcialDom += 1;
+        }
+      });
+    });
+    // Horas Extra (pedido explícito 2026-08-14): passagem à parte, por
+    // SEMANA inteira (não por dia como o resto) — soma-se o total
+    // trabalhado de Segunda a Domingo dessa semana e, quando ultrapassa
+    // as 40h, a diferença conta como Horas Extra. Cada semana é atribuída
+    // ao ano da sua própria 2ª feira (semana.semanaInicio) — as raríssimas
+    // semanas a cavalo entre dois anos ficam inteiras no ano em que
+    // começam, para nunca partir o total semanal ao meio.
+    (STATE.escalaSemanas || []).filter(s => s.estado === 'publicado' && String(s.semanaInicio).slice(0, 4) === String(ano)).forEach(semana => {
+      Object.keys(stats).forEach(uid => {
+        let totalSemana = 0;
+        ESCALA_DIAS.forEach(d => {
+          const alvo = escalaVagaDoColaboradorNoDia(semana, d.key, uid);
+          if (!alvo) return;
+          totalSemana += escalaCalcularHorasComPausa(alvo.dia.entrada, alvo.dia.saida, alvo.dia.pausaInicio, alvo.dia.pausaFim);
+        });
+        if (totalSemana > 40) stats[uid].horasExtra += (totalSemana - 40);
+      });
+    });
+    return stats;
+  }
+  function buildVistaEstatisticas() {
+    const { min: anoMin, max: anoMax } = escalaAnosComSemanasPublicadas();
+    if (estatisticasAno < anoMin) estatisticasAno = anoMin;
+    if (estatisticasAno > anoMax) estatisticasAno = anoMax;
+    const prevBtn = h('button', { class: 'btn-fab-sm', title: 'Ano anterior', 'aria-label': 'Ano anterior', disabled: estatisticasAno <= anoMin ? 'disabled' : undefined }, Icon('arrowleft', { size: 14 }));
+    prevBtn.addEventListener('click', () => { estatisticasAno -= 1; rerender(); });
+    const nextBtn = h('button', { class: 'btn-fab-sm', title: 'Ano seguinte', 'aria-label': 'Ano seguinte', disabled: estatisticasAno >= anoMax ? 'disabled' : undefined }, Icon('arrowright', { size: 14 }));
+    nextBtn.addEventListener('click', () => { estatisticasAno += 1; rerender(); });
+    const stats = escalaCalcularEstatisticasAno(estatisticasAno);
+    const colaboradores = usuariosQuadroAtivos();
+    // Agrupado por categoria (pedido explícito 2026-08-14: "detesto
+    // scroll horizontal") — cada grupo é o seu próprio mini-cartão com a
+    // sua própria tabela, nunca mais de 4 colunas de dados por tabela,
+    // em vez de 1 tabela só com 13+ colunas.
+    const GRUPOS_ESTATISTICAS = [
+      {
+        titulo: 'Aberturas, Fechos e Saídas Tardias',
+        colunas: [
+          { key: 'aberturas', label: 'Aberturas (08h)', title: 'Dias com Entrada às 08:00' },
+          { key: 'fechos', label: 'Fechos (00h)', title: 'Dias com Saída às 00:00 (meia-noite)' },
+          { key: 'saidas22', label: 'Saídas 22h', title: 'Dias com Saída às 22:00' },
+          { key: 'saidas23', label: 'Saídas 23h', title: 'Dias com Saída às 23:00' },
+        ],
+      },
+      {
+        titulo: 'Fins de Semana',
+        colunas: [
+          { key: 'fdsLivres', label: 'Livres', title: 'Fins de semana completos de folga (Sábado e Domingo)' },
+          { key: 'fdsOcupados', label: 'Ocupados', title: 'Fins de semana completos a trabalhar (Sábado e Domingo)' },
+          { key: 'fdsParcialSab', label: 'Parcial Sáb', title: 'Fins de semana em que só trabalhou o Sábado' },
+          { key: 'fdsParcialDom', label: 'Parcial Dom', title: 'Fins de semana em que só trabalhou o Domingo' },
+        ],
+      },
+      {
+        titulo: 'Feriados, Noite e Horas Extra',
+        colunas: [
+          { key: 'horasFeriado', label: 'H. em Feriado', title: 'Horas trabalhadas em dias de Feriado' },
+          { key: 'horasNoturnas', label: 'H. Noturnas', title: 'Horas trabalhadas entre as 22:00 e as 00:00' },
+          { key: 'horasExtra', label: 'H. Extra', title: 'Horas acima das 40h numa semana (soma do excesso de todas as semanas do ano)' },
+        ],
+      },
+      {
+        titulo: 'Pausas e Flexibilidade de Horário',
+        colunas: [
+          { key: 'pausasRegistadas', label: 'Pausas Registadas', title: 'Nº de dias com Pausa/Almoço registada (contagem de ocorrências, não soma de horas)' },
+          { key: 'tardesLivres', label: 'Tardes Livres', title: 'Dias com Saída até às 14:00 (tarde de folga)' },
+          { key: 'manhasLivres', label: 'Manhãs Livres', title: 'Dias com Entrada depois das 14:00 (manhã de folga)' },
+        ],
+      },
+    ];
+    const cartoes = GRUPOS_ESTATISTICAS.map(grupo => {
+      const thead = h('thead', {}, h('tr', {}, ['Colaborador', ...grupo.colunas.map(c => h('th', { title: c.title }, c.label))]));
+      const linhas = colaboradores.map(u => {
+        const s = stats[u.id];
+        return h('tr', {}, [
+          h('td', { class: 'cell-strong' }, u.nomeCompleto || u.username),
+          ...grupo.colunas.map(c => h('td', {}, /^horas/i.test(c.key) ? escalaFormatarHoras(s[c.key]) : String(s[c.key]))),
+        ]);
+      });
+      return h('div', { class: 'card', style: 'margin-bottom:16px;' }, [
+        h('h4', { class: 'page-eyebrow', style: 'margin:0;padding:12px 14px 0;color:var(--pharm-700);font-size:12.5px;text-transform:none;letter-spacing:0;font-weight:800;' }, grupo.titulo),
+        h('div', { class: 'table-wrap' }, h('table', {}, [thead, h('tbody', {}, linhas)])),
+      ]);
+    });
+    return h('div', {}, [
+      h('div', { style: 'display:flex;align-items:center;gap:12px;margin-bottom:6px;flex-wrap:wrap;' }, [
+        h('h3', { class: 'page-eyebrow', style: 'margin:0;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, 'Estatísticas — Quadro'),
+        h('div', { style: 'display:flex;align-items:center;gap:8px;' }, [prevBtn, h('span', { class: 'cell-strong', style: 'min-width:44px;text-align:center;' }, String(estatisticasAno)), nextBtn]),
+      ]),
+      h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, 'Calculado só a partir de semanas já publicadas — só para colaboradores do Quadro (Prestadores de Serviço não entram nesta contagem).'),
+      ...cartoes,
     ]);
   }
   // Cria uma exceção de sobreposição diretamente (sem passar pelo
@@ -30647,6 +30871,7 @@ function buildHorariosPage(container, goTo) {
       h('button', { class: 'tab-btn tone-blue' + (activeTab === 'equipa' ? ' active' : ''), onclick: () => { definirActiveTab('equipa'); rerender(); } }, [Icon('users', { size: 14 }), h('span', {}, 'Escala da Equipa')]),
       h('span', { class: 'tabs-row-divider' }),
       h('button', { class: 'tab-btn tone-purple' + (activeTab === 'ferias' ? ' active' : ''), onclick: () => { definirActiveTab('ferias'); rerender(); } }, [Icon('beachUmbrella', { size: 14 }), h('span', {}, 'Férias')]),
+      h('button', { class: 'tab-btn tone-purple' + (activeTab === 'estatisticas' ? ' active' : ''), onclick: () => { definirActiveTab('estatisticas'); rerender(); } }, [Icon('activity', { size: 14 }), h('span', {}, 'Estatísticas')]),
     ]);
     if (isMasterUser() && !ehMobile) {
       tabsRow.appendChild(h('span', { class: 'tabs-row-divider' }));
@@ -30669,6 +30894,7 @@ function buildHorariosPage(container, goTo) {
     }
 
     if (activeTab === 'ferias') { wrap.appendChild(buildVistaFerias()); return wrap; }
+    if (activeTab === 'estatisticas') { wrap.appendChild(buildVistaEstatisticas()); return wrap; }
     if (activeTab === 'validacao' && isMasterUser()) {
       wrap.appendChild(buildVistaValidacaoHorarios());
       return wrap;
