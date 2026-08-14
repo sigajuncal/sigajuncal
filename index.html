@@ -22865,20 +22865,25 @@ ALTER TABLE escala_saldos_ferias ADD COLUMN IF NOT EXISTS ajuste_saldo_transitad
 --     indisponibilidade formal de Prestadores — já existe em
 --     escala_ferias (tipo='indisponivel', bloqueia turnos); esta tabela
 --     cobre só a disponibilidade extra, que não tinha onde ficar
---     registada. Pedido explícito 2026-08-14.
+--     registada. Pedido explícito 2026-08-14. UM só dia por registo
+--     (nunca intervalo — um dia concreto, com hora_inicio/hora_fim
+--     OPCIONAIS dentro desse dia; ambas em branco = disponível o dia
+--     inteiro), revisto no mesmo dia após feedback: um intervalo de
+--     datas não fazia sentido para este conceito.
 CREATE TABLE IF NOT EXISTS escala_disponibilidades (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   colaborador_id bigint NOT NULL REFERENCES usuarios_app(id) ON DELETE CASCADE,
   colaborador_nome text DEFAULT '',
-  data_inicio date NOT NULL,
-  data_fim date NOT NULL,
+  data date NOT NULL,
+  hora_inicio text DEFAULT '',
+  hora_fim text DEFAULT '',
   observacoes text DEFAULT '',
   eliminado boolean NOT NULL DEFAULT false,
   data_eliminacao timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_escala_disponibilidades_intervalo ON escala_disponibilidades (data_inicio, data_fim);
+CREATE INDEX IF NOT EXISTS idx_escala_disponibilidades_data ON escala_disponibilidades (data);
 ALTER TABLE escala_disponibilidades ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS anon_select_escala_disponibilidades ON escala_disponibilidades;
 DROP POLICY IF EXISTS anon_insert_escala_disponibilidades ON escala_disponibilidades;
@@ -22897,6 +22902,16 @@ BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE escala_disponibilidades;
   END IF;
 END $$;
+-- Se já tinhas corrido a versão anterior desta secção (com data_inicio/
+-- data_fim em vez de data única), corre este bloco extra para migrar a
+-- tabela existente em vez de recriá-la:
+-- ALTER TABLE escala_disponibilidades ADD COLUMN IF NOT EXISTS data date;
+-- UPDATE escala_disponibilidades SET data = data_inicio WHERE data IS NULL;
+-- ALTER TABLE escala_disponibilidades ALTER COLUMN data SET NOT NULL;
+-- ALTER TABLE escala_disponibilidades ADD COLUMN IF NOT EXISTS hora_inicio text DEFAULT '';
+-- ALTER TABLE escala_disponibilidades ADD COLUMN IF NOT EXISTS hora_fim text DEFAULT '';
+-- ALTER TABLE escala_disponibilidades DROP COLUMN IF EXISTS data_inicio;
+-- ALTER TABLE escala_disponibilidades DROP COLUMN IF EXISTS data_fim;
 ================================================================= */
 // Lista-base (usada em runtime, não só informativa) da Lista Única de
 // Rotação do Grupo A — ver escalaAtribuirGrupoA() mais abaixo. Serve só de
@@ -24471,23 +24486,34 @@ async function decidirPedidoEspecialViaGaveta(r, novoEstado, onDone) {
    registada. Sem workflow de aprovação (ao contrário de Pedidos
    Especiais): é só um aviso, quem faz o horário decide sempre. */
 function escalaDisponibilidadesAtivas() { return STATE.escalaDisponibilidades || []; }
-// Registos que cobrem um mês (YYYY-MM) — usa sobreposição de intervalo,
-// mesmo critério de escalaPedidosEspeciaisDoMes.
-function escalaDisponibilidadesDoMes(anoMes) {
-  const inicioMes = `${anoMes}-01`;
-  const [ano, mes] = anoMes.split('-').map(Number);
-  const ultimoDia = new Date(ano, mes, 0).getDate();
-  const fimMes = `${anoMes}-${String(ultimoDia).padStart(2, '0')}`;
-  return escalaDisponibilidadesAtivas().filter(d => d.dataInicio <= fimMes && d.dataFim >= inicioMes);
+// Todos os registos ordenados cronologicamente (data + hora de início,
+// crescente) — base para as vistas "Próximas"/"Histórico" do modal.
+function escalaDisponibilidadesOrdenadas() {
+  return escalaDisponibilidadesAtivas().slice().sort((a, b) => (a.data + (a.horaInicio || '00:00')).localeCompare(b.data + (b.horaInicio || '00:00')));
 }
-// Disponibilidade extra (se houver) de um colaborador que cobre uma data
-// exata — usado pelo badge de alerta na Vista Timeline do Gerador, mesmo
-// padrão de escalaPedidoEspecialDoColaboradorNaData.
+// "Próximas" — hoje (inclusive) em diante, ordem crescente (a mais
+// próxima primeiro) — é a vista principal do modal, sempre visível de
+// imediato, sem precisar de navegar mês a mês.
+function escalaDisponibilidadesFuturas() {
+  const hoje = todayISO();
+  return escalaDisponibilidadesOrdenadas().filter(d => d.data >= hoje);
+}
+// "Histórico" — antes de hoje, ordem decrescente (a mais recente
+// primeiro) — fica escondido por omissão atrás de "Ver Histórico", só
+// para consulta pontual.
+function escalaDisponibilidadesPassadas() {
+  const hoje = todayISO();
+  return escalaDisponibilidadesOrdenadas().slice().reverse().filter(d => d.data < hoje);
+}
+// Disponibilidade extra (se houver) de um colaborador numa data exata —
+// usado pelo badge de alerta na Vista Timeline do Gerador, mesmo padrão
+// de escalaPedidoEspecialDoColaboradorNaData. Cada registo é sempre um
+// único dia (nunca um intervalo), por isso a comparação é exata.
 function escalaDisponibilidadeDoColaboradorNaData(colaboradorId, dataISO) {
   if (!colaboradorId || !dataISO) return null;
-  return escalaDisponibilidadesAtivas().find(d => String(d.colaboradorId) === String(colaboradorId) && d.dataInicio <= dataISO && dataISO <= d.dataFim) || null;
+  return escalaDisponibilidadesAtivas().find(d => String(d.colaboradorId) === String(colaboradorId) && d.data === dataISO) || null;
 }
-// Todos os registos de Disponibilidade Extra que tocam nalgum dia de uma
+// Todos os registos de Disponibilidade Extra que caem nalgum dia de uma
 // semana concreta (Segunda a Domingo) — usado pelo banner "Esta Semana"
 // na Vista Timeline do Gerador (pedido explícito 2026-08-14: o aviso tem
 // de aparecer LOGO ao abrir a semana, mesmo dia por defeito é Segunda,
@@ -24495,17 +24521,14 @@ function escalaDisponibilidadeDoColaboradorNaData(colaboradorId, dataISO) {
 // a Vanessa deu disponibilidade, e ter de refazer o horário já feito).
 function escalaDisponibilidadesDaSemana(semanaInicioISO) {
   const datasDaSemana = ESCALA_DIAS.map(d => escalaDataDoDia(semanaInicioISO, d.key));
-  const inicioSemana = datasDaSemana[0], fimSemana = datasDaSemana[datasDaSemana.length - 1];
-  return escalaDisponibilidadesAtivas().filter(d => d.dataInicio <= fimSemana && d.dataFim >= inicioSemana);
+  return escalaDisponibilidadesAtivas().filter(d => datasDaSemana.includes(d.data));
 }
-// Rótulos dos dias da semana (Segunda..Domingo) cobertos por um registo
-// de Disponibilidade Extra concreto — usado para mostrar "Sáb, Dom" em
-// vez de repetir as datas completas no banner semanal.
-function escalaDiasSemanaCobertosPorDisponibilidade(semanaInicioISO, disp) {
-  return ESCALA_DIAS.filter(d => {
-    const dataDia = escalaDataDoDia(semanaInicioISO, d.key);
-    return dataDia >= disp.dataInicio && dataDia <= disp.dataFim;
-  }).map(d => d.label);
+// Rótulo do dia da semana (Segunda..Domingo) correspondente à data de um
+// registo — usado no banner semanal, para mostrar "Domingo" em vez da
+// data completa.
+function escalaDiaSemanaLabelDaData(semanaInicioISO, dataISO) {
+  const dia = ESCALA_DIAS.find(d => escalaDataDoDia(semanaInicioISO, d.key) === dataISO);
+  return dia ? dia.label : formatDate(dataISO);
 }
 function podeEditarDisponibilidade(disp) {
   return isMasterUser() || (!!activeUser && String(disp.colaboradorId) === String(activeUser.id));
@@ -26297,13 +26320,11 @@ function abrirModalDisponibilidade(onFechar, dataPreset) {
   document.addEventListener('keydown', onKeydown);
   overlay.addEventListener('click', (e) => { if (e.target === overlay) fechar(); });
 
-  const agora = new Date();
-  let mesFiltro = dataPreset ? dataPreset.slice(0, 7) : `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(2, '0')}`;
   // Filtro por colaborador — "todos" (por omissão) ou um id concreto, para
-  // dar a vista completa por colaborador pedida explicitamente: escolher
-  // alguém aqui e navegar os meses mostra só os registos dessa pessoa.
+  // dar a vista completa por colaborador pedida explicitamente.
   let colaboradorFiltro = 'todos';
   let mostrarForm = !!dataPreset;
+  let mostrarHistorico = false;
   let editandoId = null;
   let draft = null;
   let saving = false;
@@ -26312,34 +26333,35 @@ function abrirModalDisponibilidade(onFechar, dataPreset) {
   const bodyEl = h('div', {});
 
   function novoDraft() {
-    return { colaboradorId: activeUser.id, dataInicio: dataPreset || '', dataFim: dataPreset || '', observacoes: '' };
-  }
-  function mesLabel(anoMes) {
-    const [ano, mes] = anoMes.split('-').map(Number);
-    return `${MESES_PT[mes - 1]} de ${ano}`;
-  }
-  function mudarMes(delta) {
-    const [ano, mes] = mesFiltro.split('-').map(Number);
-    const d = new Date(ano, mes - 1 + delta, 1);
-    mesFiltro = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-    render();
+    return { colaboradorId: activeUser.id, data: dataPreset || '', horaInicio: '', horaFim: '', observacoes: '' };
   }
   function abrirNovo() {
     draft = novoDraft(); editandoId = null; formError = ''; mostrarForm = true; render();
   }
   function abrirEdicao(disp) {
-    draft = { colaboradorId: disp.colaboradorId, dataInicio: disp.dataInicio, dataFim: disp.dataFim, observacoes: disp.observacoes || '' };
+    draft = { colaboradorId: disp.colaboradorId, data: disp.data, horaInicio: disp.horaInicio || '', horaFim: disp.horaFim || '', observacoes: disp.observacoes || '' };
     editandoId = disp.id; formError = ''; mostrarForm = true; render();
   }
   async function submeter() {
-    if (!draft.dataInicio || !draft.dataFim) { formError = 'Indique a Data de Início e a Data de Fim.'; render(); return; }
-    if (draft.dataFim < draft.dataInicio) { formError = 'A Data de Fim não pode ser anterior à Data de Início.'; render(); return; }
+    if (!draft.data) { formError = 'Escolha a Data.'; render(); return; }
+    // Hora Início/Fim são opcionais, mas sempre AMBAS ou NENHUMA — um
+    // intervalo de horas só faz sentido com as duas pontas definidas
+    // (pedido explícito 2026-08-14: "selecionar (opcionalmente) intervalo
+    // de horas", em vez do antigo intervalo de datas).
+    if ((draft.horaInicio && !draft.horaFim) || (!draft.horaInicio && draft.horaFim)) {
+      formError = 'Preencha a Hora de Início e a Hora de Fim, ou deixe as duas em branco (disponível o dia inteiro).';
+      render(); return;
+    }
+    if (draft.horaInicio && draft.horaFim && draft.horaFim <= draft.horaInicio) {
+      formError = 'A Hora de Fim tem de ser depois da Hora de Início.';
+      render(); return;
+    }
     formError = ''; saving = true; render();
     const colaborador = (STATE.usuarios || []).find(u => String(u.id) === String(draft.colaboradorId));
     const payload = {
       colaboradorId: draft.colaboradorId,
       colaboradorNome: colaborador ? (colaborador.nomeCompleto || colaborador.username) : (activeUser.nomeCompleto || activeUser.username),
-      dataInicio: draft.dataInicio, dataFim: draft.dataFim,
+      data: draft.data, horaInicio: draft.horaInicio || '', horaFim: draft.horaFim || '',
       observacoes: draft.observacoes.trim(),
     };
     let ok;
@@ -26364,18 +26386,22 @@ function abrirModalDisponibilidade(onFechar, dataPreset) {
           return h('div', { class: 'field span2' }, [h('label', {}, 'Colaborador'), sel]);
         })()
       : h('div', { class: 'field span2' }, [h('label', {}, 'Colaborador'), h('p', { class: 'field-helper-text', style: 'margin:0;' }, activeUser.nomeCompleto || activeUser.username)]);
-    const inicioInput = h('input', { class: 'input', type: 'date' }); inicioInput.value = draft.dataInicio;
-    inicioInput.addEventListener('change', () => { draft.dataInicio = inicioInput.value; if (!draft.dataFim || draft.dataFim < draft.dataInicio) draft.dataFim = draft.dataInicio; render(); });
-    const fimInput = h('input', { class: 'input', type: 'date' }); fimInput.value = draft.dataFim;
-    fimInput.addEventListener('change', () => { draft.dataFim = fimInput.value; });
-    const obsInput = h('textarea', { class: 'textarea', rows: '2', placeholder: 'Ex: "Posso este Sábado", "Disponível à noite"... (opcional)' }); obsInput.value = draft.observacoes;
+    const dataInput = h('input', { class: 'input', type: 'date' }); dataInput.value = draft.data;
+    dataInput.addEventListener('change', () => { draft.data = dataInput.value; });
+    // Hora Início/Fim — mesmo time-picker (dropdown Hora/Minuto) usado no
+    // resto do módulo Horários, para consistência visual; ambas opcionais
+    // (ver validação em submeter() — ou as duas, ou nenhuma).
+    const horaInicioInput = campoHora(draft.horaInicio, false, (v) => { draft.horaInicio = v; });
+    const horaFimInput = campoHora(draft.horaFim, true, (v) => { draft.horaFim = v; });
+    const obsInput = h('textarea', { class: 'textarea', rows: '2', placeholder: 'Ex: "Posso este Sábado"... (opcional)' }); obsInput.value = draft.observacoes;
     obsInput.addEventListener('input', () => { draft.observacoes = obsInput.value; });
     const submeterBtn = h('button', { class: 'btn btn-primary', onclick: saving ? null : () => requireAuth(submeter), disabled: saving ? 'disabled' : undefined }, saving ? 'A guardar…' : (editandoId ? 'Guardar Alterações' : 'Registar Disponibilidade'));
     const cancelarBtn = h('button', { class: 'btn btn-secondary', onclick: () => { mostrarForm = false; render(); } }, 'Cancelar');
     const campos = [
       colaboradorField,
-      h('div', { class: 'field field-sm' }, [h('label', {}, 'Data de Início'), inicioInput]),
-      h('div', { class: 'field field-sm' }, [h('label', {}, 'Data de Fim'), fimInput]),
+      h('div', { class: 'field field-sm' }, [h('label', {}, 'Data'), dataInput]),
+      h('div', { class: 'field field-sm' }, [h('label', {}, 'Hora de Início (opcional)'), horaInicioInput]),
+      h('div', { class: 'field field-sm' }, [h('label', {}, 'Hora de Fim (opcional)'), horaFimInput]),
       h('div', { class: 'field span2' }, [h('label', {}, 'Nota (opcional)'), obsInput]),
     ];
     return h('div', { class: 'card card-pad animate-in', style: 'margin-bottom:16px;' }, [
@@ -26386,7 +26412,7 @@ function abrirModalDisponibilidade(onFechar, dataPreset) {
     ]);
   }
   function buildCartaoDisponibilidade(disp) {
-    const dataTexto = disp.dataInicio === disp.dataFim ? formatDate(disp.dataInicio) : `${formatDate(disp.dataInicio)} — ${formatDate(disp.dataFim)}`;
+    const dataTexto = formatDate(disp.data) + (disp.horaInicio && disp.horaFim ? ` · ${disp.horaInicio}–${disp.horaFim}` : ' · Dia inteiro');
     const acoes = [];
     if (podeEditarDisponibilidade(disp)) {
       const editarBtn = h('button', { class: 'btn-fab-sm tone-blue', title: 'Editar' }, Icon('pencil', { size: 13, strokeWidth: 2.2 }));
@@ -26411,16 +26437,9 @@ function abrirModalDisponibilidade(onFechar, dataPreset) {
     clear(bodyEl);
     const novoBtn = !mostrarForm ? h('button', { class: 'btn btn-secondary', style: 'margin-bottom:14px;' }, [Icon('plus', { size: 14 }), ' Nova Disponibilidade']) : null;
     if (novoBtn) novoBtn.addEventListener('click', () => requireAuth(abrirNovo));
-    const navMes = h('div', { style: 'display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;' }, [
-      h('button', { class: 'btn-fab-sm', title: 'Mês anterior' }, Icon('arrowleft', { size: 14 })),
-      h('span', { class: 'cell-strong', style: 'min-width:140px;text-align:center;' }, mesLabel(mesFiltro)),
-      h('button', { class: 'btn-fab-sm', title: 'Mês seguinte' }, Icon('arrowright', { size: 14 })),
-    ]);
-    navMes.children[0].addEventListener('click', () => mudarMes(-1));
-    navMes.children[2].addEventListener('click', () => mudarMes(1));
     // Vista completa por colaborador: dropdown "Todos" + cada colaborador
-    // com incluirHorarios — escolher alguém filtra a lista abaixo (que
-    // continua a navegar por mês) só aos registos dessa pessoa.
+    // com incluirHorarios — escolher alguém filtra as listas abaixo só
+    // aos registos dessa pessoa.
     const colaboradoresOpts = (STATE.usuarios || []).filter(u => u.incluirHorarios && usuarioVisivelParaAtual(u));
     const filtroSel = h('select', { class: 'select', style: 'max-width:220px;' }, [
       h('option', { value: 'todos', selected: colaboradorFiltro === 'todos' ? 'selected' : undefined }, 'Todos os Colaboradores'),
@@ -26431,24 +26450,37 @@ function abrirModalDisponibilidade(onFechar, dataPreset) {
     const filtroWrap = h('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap;' }, [
       h('label', { style: 'font-size:12.5px;font-weight:700;color:var(--pharm-600);' }, 'Ver:'), filtroSel,
     ]);
-    let lista = escalaDisponibilidadesDoMes(mesFiltro).slice().sort((a, b) => a.dataInicio.localeCompare(b.dataInicio));
-    if (colaboradorFiltro !== 'todos') lista = lista.filter(d => String(d.colaboradorId) === String(colaboradorFiltro));
-    const listaEl = lista.length ? lista.map(buildCartaoDisponibilidade) : [EmptyState('Sem disponibilidades extra registadas para este período.')];
+    // Sem navegação por mês (pedido explícito 2026-08-14) — a lista
+    // "Próximas" mostra de imediato TODAS as disponibilidades ainda
+    // válidas (hoje em diante), ordem cronológica crescente; as que já
+    // passaram ficam escondidas atrás de "Ver Histórico".
+    let futuras = escalaDisponibilidadesFuturas();
+    let passadas = escalaDisponibilidadesPassadas();
+    if (colaboradorFiltro !== 'todos') {
+      futuras = futuras.filter(d => String(d.colaboradorId) === String(colaboradorFiltro));
+      passadas = passadas.filter(d => String(d.colaboradorId) === String(colaboradorFiltro));
+    }
+    const listaFuturasEl = futuras.length ? futuras.map(buildCartaoDisponibilidade) : [EmptyState('Sem disponibilidades futuras registadas.')];
+    const historicoToggleBtn = passadas.length ? h('button', { class: 'btn btn-secondary', style: 'margin:18px 0 10px;padding:6px 12px;font-size:12px;' }, mostrarHistorico ? 'Esconder Histórico' : `Ver Histórico (${passadas.length})`) : null;
+    if (historicoToggleBtn) historicoToggleBtn.addEventListener('click', () => { mostrarHistorico = !mostrarHistorico; render(); });
+    const listaHistoricoEl = (mostrarHistorico && passadas.length) ? passadas.map(buildCartaoDisponibilidade) : [];
     bodyEl.appendChild(h('div', {}, [
-      navMes,
       filtroWrap,
       mostrarForm ? buildForm() : novoBtn,
-      ...listaEl,
+      h('h3', { class: 'page-eyebrow', style: 'margin:16px 0 8px;color:var(--pharm-800);font-size:13px;text-transform:none;letter-spacing:0;' }, 'Próximas'),
+      ...listaFuturasEl,
+      historicoToggleBtn,
+      ...listaHistoricoEl,
     ]));
   }
 
   const closeBtn = h('button', { class: 'close-btn', onclick: fechar }, Icon('x', { size: 16 }));
-  const panel = h('div', { class: 'modal-panel', style: 'max-width:640px;' }, [
+  const panel = h('div', { class: 'modal-panel', style: 'max-width:720px;' }, [
     h('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;' }, [
       h('p', { class: 'modal-title', style: 'margin:0;' }, '🖐️ Disponibilidade'),
       closeBtn,
     ]),
-    h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, 'Disponibilidade extra para dias em que normalmente não estaria escalado (ex: um fim de semana) — informativo, nunca atribui turno sozinho; quem faz o horário decide sempre.'),
+    h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, 'Disponibilidade extra para um dia em que normalmente não estaria escalado (ex: um fim de semana), com hora opcional — informativo, nunca atribui turno sozinho; quem faz o horário decide sempre.'),
     bodyEl,
   ]);
   overlay.appendChild(panel);
@@ -31098,9 +31130,10 @@ function buildHorariosPage(container, goTo) {
     const bannerDisponibilidadeSemana = disponibilidadesSemana.length ? h('div', { class: 'card card-pad', style: 'margin-bottom:14px;background:#ecfdf5;border-color:#a7f3d0;' }, [
       h('p', { class: 'cell-strong', style: 'margin:0 0 6px;color:#047857;' }, '🖐️ Disponibilidade Extra Esta Semana'),
       ...disponibilidadesSemana.map(disp => {
-        const diasLabel = escalaDiasSemanaCobertosPorDisponibilidade(semana.semanaInicio, disp).join(', ');
+        const diaLabel = escalaDiaSemanaLabelDaData(semana.semanaInicio, disp.data);
+        const horaTexto = disp.horaInicio && disp.horaFim ? ` · ${disp.horaInicio}–${disp.horaFim}` : '';
         return h('p', { style: 'margin:2px 0;font-size:12.5px;color:#047857;' },
-          `${disp.colaboradorNome || 'Colaborador'} — ${diasLabel}${disp.observacoes ? ` (${disp.observacoes})` : ''}`);
+          `${disp.colaboradorNome || 'Colaborador'} — ${diaLabel}${horaTexto}${disp.observacoes ? ` (${disp.observacoes})` : ''}`);
       }),
     ]) : null;
     const diaKey = ESCALA_DIAS.some(d => d.key === diaVerticalSelecionado) ? diaVerticalSelecionado : 'seg';
@@ -31368,9 +31401,10 @@ function buildHorariosPage(container, goTo) {
       const disponibilidadeColuna = colaboradorIdDoDia ? escalaDisponibilidadeDoColaboradorNaData(colaboradorIdDoDia, dataDoDiaSelecionado) : null;
       if (disponibilidadeColuna) {
         const semTurnoAinda = tipoEfetivoDia === 'folga' || tipoEfetivoDia === 'indisponivel';
+        const horaTextoBadge = disponibilidadeColuna.horaInicio && disponibilidadeColuna.horaFim ? ` (${disponibilidadeColuna.horaInicio}–${disponibilidadeColuna.horaFim})` : '';
         titulo.appendChild(h('span', {
           class: 'escala-vertical-disponibilidade-badge',
-          title: `🖐️ Disponibilidade Extra registada${disponibilidadeColuna.observacoes ? ' — ' + disponibilidadeColuna.observacoes : ''}${semTurnoAinda ? ' (ainda sem turno atribuído — pode estar por aproveitar)' : ''}`,
+          title: `🖐️ Disponibilidade Extra registada${horaTextoBadge}${disponibilidadeColuna.observacoes ? ' — ' + disponibilidadeColuna.observacoes : ''}${semTurnoAinda ? ' (ainda sem turno atribuído — pode estar por aproveitar)' : ''}`,
         }, '🖐️'));
       }
       return h('div', { class: 'escala-vertical-coluna' }, [titulo, trilho]);
