@@ -26778,6 +26778,16 @@ function buildHorariosPage(container, goTo) {
   // (ver buildNotasDirecao); uma semana que já passou fica congelada para
   // sempre, publicada ou não, sem exceção.
   function escalaSemanaCongelada(semana) { return escalaSemanaNoPassado(semana) || (!!semana && semana.estado === 'publicado'); }
+  // Bloqueio específico de "Horas Extra Disponíveis" (pedido explícito
+  // 2026-08-14 — corrige bug): ao contrário da grelha de turnos,
+  // disponibilizar/reivindicar/desistir de Horas Extra é uma ação pensada
+  // para acontecer DEPOIS de a semana já estar publicada (o Gestor publica
+  // o horário base e só depois abre horas extra pontuais para cobrir
+  // falhas). Usar escalaSemanaCongelada (que bloqueia logo que
+  // estado==='publicado') escondia sempre o botão "Reivindicar Horas" —
+  // na prática, ninguém conseguia reivindicar nada, porque a semana já
+  // estava publicada por definição. Aqui só bloqueia semanas já passadas.
+  function escalaHorasExtraBloqueado(semana) { return escalaSemanaNoPassado(semana); }
 
   function buildGrelhaEquipa(semana, permitirEdicao) {
     const editavel = !!permitirEdicao && !escalaSemanaCongelada(semana);
@@ -27621,7 +27631,7 @@ function buildHorariosPage(container, goTo) {
     // reivindicação com o contexto correto (ver escalaHorarioProprioNoDia
     // dentro de abrirReivindicar/guardarReivindicacao).
     const entradas = escalaTodosBlocosHorasExtraFuturos();
-    const congelada = escalaSemanaCongelada(semana);
+    const congelada = escalaHorasExtraBloqueado(semana);
     const tituloRow = h('div', { style: 'display:flex;align-items:center;justify-content:flex-start;gap:10px;margin-bottom:10px;' }, [
       h('h3', { class: 'page-eyebrow', style: 'margin:0;color:var(--pharm-800);font-size:14px;text-transform:none;letter-spacing:0;display:flex;align-items:center;gap:7px;' }, [
         Icon('zap', { size: 15, strokeWidth: 2.3 }),
@@ -27674,7 +27684,7 @@ function buildHorariosPage(container, goTo) {
     }
     entradas.forEach(({ bloco, semana: blocoSemana, dataISO }) => {
       const diaInfo = ESCALA_DIAS.find(d => d.key === bloco.diaKey);
-      const blocoCongelado = escalaSemanaCongelada(blocoSemana);
+      const blocoCongelado = escalaHorasExtraBloqueado(blocoSemana);
       const reivindicacoes = escalaReivindicacoesDoBloco(bloco.id);
       const minhaReivindicacao = activeUser ? reivindicacoes.find(r => String(r.utilizadorId) === String(activeUser.id)) : null;
       // Identificação sempre pela DATA completa (ex: "Sábado, 30/08/2026"),
@@ -31740,7 +31750,19 @@ function buildHorariosPage(container, goTo) {
     // já lá estivesse (troca de dispositivo a meio de sessão), o
     // conteúdo real é substituído por um aviso — nunca só "escondido",
     // sempre com uma explicação clara do porquê.
-    const ehMobile = ehDispositivoMobileOuTablet();
+  // Gestão avançada de Horários (separadores "Gerador de Horário"/
+  // "Validação de Horários"/"Gerir Posições") — pedido explícito
+  // 2026-08-14: restrito estritamente a Hugo Cunha e Paulo Freitas por
+  // NOME, nunca só por perfilNivel Master/Administrador em geral, mesmo
+  // padrão já usado em podeConfigurarFerias/podeGerirBancoHorasEHE — caso
+  // outro utilizador venha a ter esse perfil por outro motivo, não ganha
+  // automaticamente acesso à gestão de Horários.
+  function podeGerirHorarios() {
+    if (!isMasterUser()) return false;
+    const nome = String((activeUser && activeUser.nomeCompleto) || '').trim();
+    return ESCALA_FERIAS_NOMES_CONFIGURACAO.includes(nome);
+  }
+  const ehMobile = ehDispositivoMobileOuTablet();
     horariosEhMobile = ehMobile;
 
     // Barra de separadores numa única linha horizontal: vistas de leitura
@@ -31756,7 +31778,7 @@ function buildHorariosPage(container, goTo) {
       h('button', { class: 'tab-btn tone-purple' + (activeTab === 'ferias' ? ' active' : ''), onclick: () => { definirActiveTab('ferias'); rerender(); } }, [Icon('beachUmbrella', { size: 14 }), h('span', {}, 'Férias')]),
       h('button', { class: 'tab-btn tone-purple' + (activeTab === 'estatisticas' ? ' active' : ''), onclick: () => { definirActiveTab('estatisticas'); rerender(); } }, [Icon('activity', { size: 14 }), h('span', {}, 'Estatísticas')]),
     ]);
-    if (isMasterUser() && !ehMobile) {
+    if (podeGerirHorarios() && !ehMobile) {
       tabsRow.appendChild(h('span', { class: 'tabs-row-divider' }));
       tabsRow.appendChild(h('button', { class: 'tab-btn tone-orange' + (activeTab === 'gerador' ? ' active' : ''), onclick: () => { definirActiveTab('gerador'); rerender(); } }, [Icon('zap', { size: 14 }), h('span', {}, 'Gerador de Horário')]));
       tabsRow.appendChild(h('button', { class: 'tab-btn tone-orange' + (activeTab === 'validacao' ? ' active' : ''), onclick: () => { definirActiveTab('validacao'); rerender(); } }, [Icon('checkcircle', { size: 14 }), h('span', {}, 'Validação de Horários')]));
@@ -31778,11 +31800,11 @@ function buildHorariosPage(container, goTo) {
 
     if (activeTab === 'ferias') { wrap.appendChild(buildVistaFerias()); return wrap; }
     if (activeTab === 'estatisticas') { wrap.appendChild(buildVistaEstatisticas()); return wrap; }
-    if (activeTab === 'validacao' && isMasterUser()) {
+    if (activeTab === 'validacao' && podeGerirHorarios()) {
       wrap.appendChild(buildVistaValidacaoHorarios());
       return wrap;
     }
-    if ((activeTab === 'vagas' || activeTab === 'gerador') && isMasterUser()) {
+    if ((activeTab === 'vagas' || activeTab === 'gerador') && podeGerirHorarios()) {
       if (ehMobile) { wrap.appendChild(buildAvisoGestaoSoDesktop()); return wrap; }
       wrap.appendChild(activeTab === 'vagas' ? buildVistaVagas() : buildVistaGerador());
       return wrap;
