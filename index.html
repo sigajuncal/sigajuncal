@@ -24409,15 +24409,25 @@ function minhasNotificacoes() {
   ).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
 }
 function escalaPedidosEspeciaisAtivos() { return STATE.escalaPedidosEspeciais || []; }
-// Pedidos que cobrem um mês (YYYY-MM) — usa sobreposição de intervalo
-// (não só "começa neste mês"), para um pedido de vários dias a cavalo
-// entre dois meses aparecer em ambos os filtros.
-function escalaPedidosEspeciaisDoMes(anoMes) {
-  const inicioMes = `${anoMes}-01`;
-  const [ano, mes] = anoMes.split('-').map(Number);
-  const ultimoDia = new Date(ano, mes, 0).getDate();
-  const fimMes = `${anoMes}-${String(ultimoDia).padStart(2, '0')}`;
-  return escalaPedidosEspeciaisAtivos().filter(p => p.dataInicio <= fimMes && p.dataFim >= inicioMes);
+// Todos ordenados cronologicamente por Data de Início — base para as
+// vistas "Próximas"/"Histórico" do modal (mesmo padrão do módulo
+// Disponibilidade, pedido explícito 2026-08-14: "janelas completas",
+// sem navegação mês a mês).
+function escalaPedidosEspeciaisOrdenados() {
+  return escalaPedidosEspeciaisAtivos().slice().sort((a, b) => a.dataInicio.localeCompare(b.dataInicio));
+}
+// "Próximas" — ainda não terminaram (Data de Fim hoje ou no futuro),
+// ordem crescente (o mais próximo primeiro).
+function escalaPedidosEspeciaisFuturos() {
+  const hoje = todayISO();
+  return escalaPedidosEspeciaisOrdenados().filter(p => p.dataFim >= hoje);
+}
+// "Histórico" — já terminaram (Data de Fim antes de hoje), ordem
+// decrescente (o mais recente primeiro) — escondido por omissão atrás de
+// "Ver Histórico".
+function escalaPedidosEspeciaisPassados() {
+  const hoje = todayISO();
+  return escalaPedidosEspeciaisOrdenados().slice().reverse().filter(p => p.dataFim < hoje);
 }
 // Pedido especial (qualquer estado) de um colaborador que cobre uma data
 // exata — usado pelo badge de alerta na Vista Timeline do Gerador (item
@@ -26130,15 +26140,15 @@ function abrirModalPedidosEspeciais(onFechar, dataPreset) {
   document.addEventListener('keydown', onKeydown);
   overlay.addEventListener('click', (e) => { if (e.target === overlay) fechar(); });
 
-  const agora = new Date();
   // dataPreset (atalho mobile: clique num dia livre do Calendário —
   // ver buildCalendarioEquipaAnual/horariosEhMobile) já abre direto no
   // formulário "Novo Pedido", com a data pré-preenchida — poupa o
   // segundo toque de "+ Novo Pedido Especial" que seria preciso a
-  // seguir. Sem dataPreset, comportamento inalterado (mês corrente,
-  // lista antes do formulário).
-  let mesFiltro = dataPreset ? dataPreset.slice(0, 7) : `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(2, '0')}`;
+  // seguir. Sem dataPreset, comportamento inalterado (lista antes do
+  // formulário).
+  let colaboradorFiltro = 'todos';
   let mostrarForm = !!dataPreset;
+  let mostrarHistorico = false;
   let editandoId = null;
   let draft = null;
   let saving = false;
@@ -26151,16 +26161,6 @@ function abrirModalPedidosEspeciais(onFechar, dataPreset) {
       colaboradorId: activeUser.id,
       dataInicio: dataPreset || '', dataFim: dataPreset || '', motivo: 'evento_pessoal', outroMotivo: '', observacoes: '',
     };
-  }
-  function mesLabel(anoMes) {
-    const [ano, mes] = anoMes.split('-').map(Number);
-    return `${MESES_PT[mes - 1]} de ${ano}`;
-  }
-  function mudarMes(delta) {
-    const [ano, mes] = mesFiltro.split('-').map(Number);
-    const d = new Date(ano, mes - 1 + delta, 1);
-    mesFiltro = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-    render();
   }
   function abrirNovo() {
     draft = novoDraft(); editandoId = null; formError = ''; mostrarForm = true; render();
@@ -26272,29 +26272,50 @@ function abrirModalPedidosEspeciais(onFechar, dataPreset) {
     clear(bodyEl);
     const novoBtn = !mostrarForm ? h('button', { class: 'btn btn-secondary', style: 'margin-bottom:14px;' }, [Icon('plus', { size: 14 }), ' Novo Pedido Especial']) : null;
     if (novoBtn) novoBtn.addEventListener('click', () => requireAuth(abrirNovo));
-    const navMes = h('div', { style: 'display:flex;align-items:center;gap:10px;margin-bottom:14px;' }, [
-      h('button', { class: 'btn-fab-sm', title: 'Mês anterior' }, Icon('arrowleft', { size: 14 })),
-      h('span', { class: 'cell-strong', style: 'min-width:140px;text-align:center;' }, mesLabel(mesFiltro)),
-      h('button', { class: 'btn-fab-sm', title: 'Mês seguinte' }, Icon('arrowright', { size: 14 })),
+    // Vista completa por colaborador: dropdown "Todos" + cada colaborador
+    // com incluirHorarios — escolher alguém filtra as listas abaixo só
+    // aos registos dessa pessoa (mesmo padrão do módulo Disponibilidade).
+    const colaboradoresOpts = (STATE.usuarios || []).filter(u => u.incluirHorarios && usuarioVisivelParaAtual(u));
+    const filtroSel = h('select', { class: 'select', style: 'max-width:220px;' }, [
+      h('option', { value: 'todos', selected: colaboradorFiltro === 'todos' ? 'selected' : undefined }, 'Todos os Colaboradores'),
+      ...colaboradoresOpts.map(u => h('option', { value: u.id, selected: String(colaboradorFiltro) === String(u.id) ? 'selected' : undefined }, u.nomeCompleto || u.username)),
     ]);
-    navMes.children[0].addEventListener('click', () => mudarMes(-1));
-    navMes.children[2].addEventListener('click', () => mudarMes(1));
-    const lista = escalaPedidosEspeciaisDoMes(mesFiltro).slice().sort((a, b) => a.dataInicio.localeCompare(b.dataInicio));
-    const listaEl = lista.length ? lista.map(buildCartaoPedido) : [EmptyState('Sem pedidos especiais registados para este mês.')];
+    filtroSel.value = String(colaboradorFiltro);
+    filtroSel.addEventListener('change', () => { colaboradorFiltro = filtroSel.value; render(); });
+    const filtroWrap = h('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap;' }, [
+      h('label', { style: 'font-size:12.5px;font-weight:700;color:var(--pharm-600);' }, 'Ver:'), filtroSel,
+    ]);
+    // Sem navegação por mês (pedido explícito 2026-08-14, "janelas
+    // completas") — "Próximas" mostra de imediato tudo o que ainda é
+    // válido (Data de Fim hoje ou no futuro); o que já passou fica atrás
+    // de "Ver Histórico".
+    let futuros = escalaPedidosEspeciaisFuturos();
+    let passados = escalaPedidosEspeciaisPassados();
+    if (colaboradorFiltro !== 'todos') {
+      futuros = futuros.filter(p => String(p.colaboradorId) === String(colaboradorFiltro));
+      passados = passados.filter(p => String(p.colaboradorId) === String(colaboradorFiltro));
+    }
+    const listaFuturosEl = futuros.length ? futuros.map(buildCartaoPedido) : [EmptyState('Sem pedidos especiais válidos registados.')];
+    const historicoToggleBtn = passados.length ? h('button', { class: 'btn btn-secondary', style: 'margin:18px 0 10px;padding:6px 12px;font-size:12px;' }, mostrarHistorico ? 'Esconder Histórico' : `Ver Histórico (${passados.length})`) : null;
+    if (historicoToggleBtn) historicoToggleBtn.addEventListener('click', () => { mostrarHistorico = !mostrarHistorico; render(); });
+    const listaHistoricoEl = (mostrarHistorico && passados.length) ? passados.map(buildCartaoPedido) : [];
     bodyEl.appendChild(h('div', {}, [
-      navMes,
+      filtroWrap,
       mostrarForm ? buildForm() : novoBtn,
-      ...listaEl,
+      h('h3', { class: 'page-eyebrow', style: 'margin:16px 0 8px;color:var(--pharm-800);font-size:13px;text-transform:none;letter-spacing:0;' }, 'Próximas'),
+      ...listaFuturosEl,
+      historicoToggleBtn,
+      ...listaHistoricoEl,
     ]));
   }
 
   const closeBtn = h('button', { class: 'close-btn', onclick: fechar }, Icon('x', { size: 16 }));
-  const panel = h('div', { class: 'modal-panel', style: 'max-width:640px;' }, [
+  const panel = h('div', { class: 'modal-panel', style: 'max-width:720px;' }, [
     h('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;' }, [
       h('p', { class: 'modal-title', style: 'margin:0;' }, '📌 Pedidos Especiais'),
       closeBtn,
     ]),
-    h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, 'Pedidos de indisponibilidade/preferência de horário (Casamentos, Batizados, Eventos Pessoais, etc.) — organizados por mês.'),
+    h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, 'Pedidos de indisponibilidade/preferência de horário (Casamentos, Batizados, Eventos Pessoais, etc.).'),
     bodyEl,
   ]);
   overlay.appendChild(panel);
