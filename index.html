@@ -25378,8 +25378,12 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   // inicio,fim) das horas efetivas do dia (ver guardar() abaixo).
   // Ambas as secções restritas a Hugo Cunha/Paulo Freitas
   // (podeGerirBancoHorasEHE) — para quem não tem permissão, nem sequer
-  // são construídas/mostradas no modal.
-  const podeBancoHoras = podeGerirBancoHorasEHE();
+  // são construídas/mostradas no modal. CORRIGIDO (2026-08-14, pedido
+  // explícito, coerência com a Atribuição Rápida de Tarefas): Prestadores
+  // de Serviço NUNCA têm Horas Extra nem Banco de Horas, mesmo que quem
+  // esteja a editar seja Hugo/Paulo — "fazem sempre as horas que
+  // definirem", não há conceito de hora extra/banco para eles.
+  const podeBancoHoras = podeGerirBancoHorasEHE() && !ehPrestadorCelula;
   // Secção genérica de "blocos" de horário opcionais (até `max`, cada um
   // só com Início/Fim) — pedido explícito 2026-08-09: Horas Extra e
   // Descontar Horas de Banco passam a funcionar exatamente da mesma
@@ -25512,8 +25516,9 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   const errorEl = h('p', { class: 'form-error', style: 'display:none;' }, '');
 
   function camposHorarioVisiveis() { return tipoSelect.value === 'normal'; }
-  function atualizarVisibilidadeTarefaBloco(bloco, i) {
-    const visivel = camposHorarioVisiveis() && i < tarefasVisiveis;
+  function atualizarVisibilidadeTarefaBloco(bloco, i, onTarefasExterno) {
+    const onTarefas = onTarefasExterno !== undefined ? onTarefasExterno : (camposHorarioVisiveis() && !ehPrestadorCelula);
+    const visivel = onTarefas && i < tarefasVisiveis;
     bloco.tarefaSelect.closest('.field').style.display = visivel ? '' : 'none';
     const temTarefa = visivel && !!bloco.tarefaSelect.value;
     bloco.tarefaOutroInput.closest('.field').style.display = (temTarefa && bloco.tarefaSelect.value === 'outro') ? '' : 'none';
@@ -25530,9 +25535,13 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     saidaInput.closest('.field').style.display = on ? '' : 'none';
     pausaInicioInput.closest('.field').style.display = on ? '' : 'none';
     pausaFimInput.closest('.field').style.display = on ? '' : 'none';
-    tarefasSecaoTitulo.style.display = on ? '' : 'none';
-    addTarefaBtn.style.display = (on && tarefasVisiveis < 3) ? '' : 'none';
-    tarefaBlocos.forEach((bloco, i) => atualizarVisibilidadeTarefaBloco(bloco, i));
+    // Tarefas/Cargos Especiais: nunca para Prestadores (pedido explícito
+    // 2026-08-14, coerência com a Atribuição Rápida de Tarefas — só
+    // colaboradores do Quadro fazem Chefe de Turno/Encomendas).
+    const onTarefas = on && !ehPrestadorCelula;
+    tarefasSecaoTitulo.style.display = onTarefas ? '' : 'none';
+    addTarefaBtn.style.display = (onTarefas && tarefasVisiveis < 3) ? '' : 'none';
+    tarefaBlocos.forEach((bloco, i) => atualizarVisibilidadeTarefaBloco(bloco, i, onTarefas));
     if (podeBancoHoras) {
       heSecaoTitulo.style.display = on ? '' : 'none';
       heSecao.atualizarVisibilidadeLocal(on);
@@ -25584,7 +25593,12 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
         return;
       }
       horas = escalaCalcularHorasComPausa(entrada, saida, pausaInicio, pausaFim);
-      for (const bloco of tarefaBlocos) {
+      // Prestadores nunca têm Tarefas/Cargos Especiais (pedido explícito
+      // 2026-08-14) — os campos já ficam escondidos na UI
+      // (atualizarVisibilidade), mas este `if` é a garantia final: mesmo
+      // que algo tivesse ficado preenchido de antes de a pessoa passar a
+      // Prestador, nunca é gravado.
+      if (!ehPrestadorCelula) for (const bloco of tarefaBlocos) {
         const tipoT = bloco.tarefaSelect.value;
         if (!tipoT) continue;
         let outroT = '';
@@ -26040,7 +26054,7 @@ function buildHorariosPage(container, goTo) {
   let reivindicandoBlocoId = null, reivindicarDraft = {}, reivindicarError = '', reivindicarSaving = false;
   // ---- Atribuição Rápida de Tarefas (Chefe de Turno/Encomendas — pedido
   // explícito 2026-08-14) ----
-  let atribuicaoRapidaDraft = { diaKey: 'seg', colaboradorId: '', tipo: '', outro: '', inicio: '', fim: '' };
+  let atribuicaoRapidaDraft = { colaboradorId: '', tipo: '', outro: '', inicio: '', fim: '' };
   let atribuicaoRapidaError = '', atribuicaoRapidaSaving = false;
   let showVagaForm = false, editingVagaId = null, vagaDraft = {}, vagaFormError = '', vagaSaving = false;
   let varianteSelecionada = 'com_mariana'; // 'com_mariana' | 'sem_mariana' — só relevante ao CRIAR uma semana nova
@@ -27083,7 +27097,12 @@ function buildHorariosPage(container, goTo) {
   // cada troço.
   function atribuirTarefaRapida(semana) {
     if (escalaSemanaEstaCongelada(semana)) { atribuicaoRapidaError = 'Esta semana está congelada e não pode ser editada.'; rerender(); return; }
-    const { diaKey, colaboradorId, tipo, outro, inicio, fim } = atribuicaoRapidaDraft;
+    // Usa sempre o MESMO dia selecionado no topo (diaVerticalSelecionado
+    // — os separadores "Segunda, Terça, ..." que também controlam a
+    // Timeline/Vista em Tabela), nunca um dia próprio deste formulário
+    // (pedido explícito 2026-08-14).
+    const diaKey = ESCALA_DIAS.some(d => d.key === diaVerticalSelecionado) ? diaVerticalSelecionado : 'seg';
+    const { colaboradorId, tipo, outro, inicio, fim } = atribuicaoRapidaDraft;
     if (!colaboradorId) { atribuicaoRapidaError = 'Escolha um colaborador.'; rerender(); return; }
     const alvo = escalaVagaDoColaboradorNoDia(semana, diaKey, colaboradorId);
     if (!alvo) { atribuicaoRapidaError = 'Este colaborador não está escalado (turno Normal) nesse dia.'; rerender(); return; }
@@ -27116,10 +27135,10 @@ function buildHorariosPage(container, goTo) {
         STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
         const nomeColab = (STATE.usuarios || []).find(u => String(u.id) === String(colaboradorId));
         showToast(`${escalaTarefaInfo(tipo)?.label || 'Tarefa'} atribuída a ${nomeColab ? (nomeColab.nomeCompleto || nomeColab.username) : 'colaborador'}.`, 'success');
-        // Mantém o Dia escolhido (pedido explícito: atribuir a várias
-        // pessoas seguidas no mesmo dia, sem ter de voltar a escolher
-        // o dia de cada vez) — só limpa Colaborador/Tipo/Início/Fim.
-        atribuicaoRapidaDraft = { diaKey, colaboradorId: '', tipo: '', outro: '', inicio: '', fim: '' };
+        // Mantém o Dia (é o mesmo dos separadores do topo, não muda
+        // sozinho) — só limpa Colaborador/Tipo/Início/Fim, para atribuir
+        // a várias pessoas seguidas no mesmo dia sem repetir passos.
+        atribuicaoRapidaDraft = { colaboradorId: '', tipo: '', outro: '', inicio: '', fim: '' };
       } else {
         atribuicaoRapidaError = `Não foi possível guardar. ${escalaMensagemErroAmigavel(lastDbError)}`;
       }
@@ -27128,40 +27147,27 @@ function buildHorariosPage(container, goTo) {
   }
   function buildPainelAtribuicaoRapidaTarefas(semana) {
     const congelada = escalaSemanaCongelada(semana);
-    const diaSelect = h('select', { class: 'select' }, ESCALA_DIAS.map(d => h('option', { value: d.key, selected: atribuicaoRapidaDraft.diaKey === d.key ? 'selected' : undefined }, d.label)));
-    diaSelect.value = atribuicaoRapidaDraft.diaKey;
-    diaSelect.addEventListener('change', () => { atribuicaoRapidaDraft.diaKey = diaSelect.value; atribuicaoRapidaDraft.colaboradorId = ''; rerender(); });
-    const colaboradores = colaboradoresElegiveisTarefaEspecial();
-    // Filtra a lista pelas opções REALMENTE disponíveis nesse dia (turno
-    // Normal, sem Férias/Baixa/Falta/Indisponibilidade sobreposta — ver
-    // escalaVagaDoColaboradorNoDia) — pedido explícito 2026-08-14: "as
-    // opções disponíveis estão mesmo disponíveis". Quem não está
-    // disponível nem aparece para escolher, em vez de só falhar depois
-    // de selecionado.
-    const colaboradoresDisponiveis = colaboradores.filter(u => !!escalaVagaDoColaboradorNoDia(semana, atribuicaoRapidaDraft.diaKey, u.id));
-    const colabSelect = h('select', { class: 'select' }, [
+    // Dia sempre igual ao dos separadores do topo (diaVerticalSelecionado
+    // — o mesmo que controla a Timeline/Vista em Tabela), nunca um
+    // seletor à parte (pedido explícito 2026-08-14). Continua a mostrar-
+    // se aqui como <select> só para dar contexto imediato de qual é o
+    // dia atual — mudar aqui muda também os separadores/Timeline lá em
+    // cima (é literalmente a mesma variável).
+    const diaAtualKey = ESCALA_DIAS.some(d => d.key === diaVerticalSelecionado) ? diaVerticalSelecionado : 'seg';
+    const diaSelect = h('select', { class: 'select' }, ESCALA_DIAS.map(d => h('option', { value: d.key, selected: diaAtualKey === d.key ? 'selected' : undefined }, d.label)));
+    diaSelect.value = diaAtualKey;
+    diaSelect.addEventListener('change', () => { diaVerticalSelecionado = diaSelect.value; atribuicaoRapidaDraft.colaboradorId = ''; rerender(); });
+    // Tipo de Tarefa PRIMEIRO (pedido explícito 2026-08-14: escolher
+    // antes do Colaborador) — e restrito só às 3 tarefas que este atalho
+    // foi pensado para agilizar (Chefe de Turno/Encomenda Manhã/Tarde);
+    // Conferência/Reunião/Outro continuam só no Editor de Dia célula-a-
+    // célula (não fazem sentido neste fluxo rápido de atribuição única).
+    const TIPOS_ATRIBUICAO_RAPIDA = ['chefe_turno', 'encomenda_manha', 'encomenda_tarde'];
+    const tipoSelect = h('select', { class: 'select' }, [
       h('option', { value: '' }, '— Escolher —'),
-      ...colaboradoresDisponiveis.map(u => h('option', { value: String(u.id), selected: String(atribuicaoRapidaDraft.colaboradorId) === String(u.id) ? 'selected' : undefined }, u.nomeCompleto || u.username)),
+      ...ESCALA_TAREFAS_ESPECIAIS.filter(t => TIPOS_ATRIBUICAO_RAPIDA.includes(t.key)).map(t => h('option', { value: t.key, selected: atribuicaoRapidaDraft.tipo === t.key ? 'selected' : undefined }, `${t.icon} ${t.label}`)),
     ]);
-    colabSelect.value = atribuicaoRapidaDraft.colaboradorId || '';
-    colabSelect.addEventListener('change', () => { atribuicaoRapidaDraft.colaboradorId = colabSelect.value; rerender(); });
-    // Contexto do turno desse colaborador nesse dia — mostra logo o
-    // horário encontrado, para o gestor confirmar que é mesmo a pessoa/
-    // dia certo antes de escrever Início/Fim da tarefa. O aviso "não
-    // disponível" já não é necessário aqui — a pessoa nem aparece na
-    // lista acima quando não está disponível nesse dia.
-    let contextoTurno = null;
-    if (atribuicaoRapidaDraft.colaboradorId) {
-      const alvo = escalaVagaDoColaboradorNoDia(semana, atribuicaoRapidaDraft.diaKey, atribuicaoRapidaDraft.colaboradorId);
-      contextoTurno = alvo
-        ? h('p', { class: 'field-helper-text', style: 'margin:0;color:var(--pharm-600);font-weight:600;' }, `Escalado(a) nesse dia: ${alvo.dia.entrada}–${alvo.dia.saida} (posição ${alvo.codigo}).`)
-        : h('p', { class: 'field-helper-text', style: 'margin:0;color:#b45309;font-weight:600;' }, '⚠️ Não está escalado(a) em turno Normal nesse dia.');
-    }
-    const tipoSelect = h('select', { class: 'select' }, ESCALA_TAREFAS_ESPECIAIS.filter(t => t.key && !t.legado).map(t => h('option', { value: t.key, selected: atribuicaoRapidaDraft.tipo === t.key ? 'selected' : undefined }, `${t.icon} ${t.label}`)));
     tipoSelect.value = atribuicaoRapidaDraft.tipo || '';
-    const outroInput = h('input', { class: 'input', placeholder: 'Escreva a tarefa...', maxlength: '60' });
-    outroInput.value = atribuicaoRapidaDraft.outro || '';
-    outroInput.addEventListener('input', () => { atribuicaoRapidaDraft.outro = outroInput.value; });
     const inicioInput = campoHora(atribuicaoRapidaDraft.inicio, false, (v) => { atribuicaoRapidaDraft.inicio = v; });
     const fimInput = campoHora(atribuicaoRapidaDraft.fim, true, (v) => { atribuicaoRapidaDraft.fim = v; });
     tipoSelect.addEventListener('change', () => {
@@ -27173,9 +27179,30 @@ function buildHorariosPage(container, goTo) {
       }
       rerender();
     });
+    // Colaborador DEPOIS do Tipo — lista filtrada às opções REALMENTE
+    // disponíveis nesse dia (turno Normal, sem Férias/Baixa/Falta/
+    // Indisponibilidade sobreposta — ver escalaVagaDoColaboradorNoDia).
+    const colaboradores = colaboradoresElegiveisTarefaEspecial();
+    const colaboradoresDisponiveis = colaboradores.filter(u => !!escalaVagaDoColaboradorNoDia(semana, diaAtualKey, u.id));
+    const colabSelect = h('select', { class: 'select' }, [
+      h('option', { value: '' }, '— Escolher —'),
+      ...colaboradoresDisponiveis.map(u => h('option', { value: String(u.id), selected: String(atribuicaoRapidaDraft.colaboradorId) === String(u.id) ? 'selected' : undefined }, u.nomeCompleto || u.username)),
+    ]);
+    colabSelect.value = atribuicaoRapidaDraft.colaboradorId || '';
+    colabSelect.addEventListener('change', () => { atribuicaoRapidaDraft.colaboradorId = colabSelect.value; rerender(); });
+    // Contexto do turno desse colaborador nesse dia — mostra logo o
+    // horário encontrado, para o gestor confirmar que é mesmo a pessoa/
+    // dia certo antes de escrever Início/Fim da tarefa.
+    let contextoTurno = null;
+    if (atribuicaoRapidaDraft.colaboradorId) {
+      const alvo = escalaVagaDoColaboradorNoDia(semana, diaAtualKey, atribuicaoRapidaDraft.colaboradorId);
+      contextoTurno = alvo
+        ? h('p', { class: 'field-helper-text', style: 'margin:0;color:var(--pharm-600);font-weight:600;' }, `Escalado(a) nesse dia: ${alvo.dia.entrada}–${alvo.dia.saida} (posição ${alvo.codigo}).`)
+        : h('p', { class: 'field-helper-text', style: 'margin:0;color:#b45309;font-weight:600;' }, '⚠️ Não está escalado(a) em turno Normal nesse dia.');
+    }
     // Atalho "Todo o Horário" — só aparece quando já se sabe o turno
     // desse colaborador nesse dia (ver contextoTurno acima).
-    const alvoAtual = atribuicaoRapidaDraft.colaboradorId ? escalaVagaDoColaboradorNoDia(semana, atribuicaoRapidaDraft.diaKey, atribuicaoRapidaDraft.colaboradorId) : null;
+    const alvoAtual = atribuicaoRapidaDraft.colaboradorId ? escalaVagaDoColaboradorNoDia(semana, diaAtualKey, atribuicaoRapidaDraft.colaboradorId) : null;
     const todoHorarioBtn = alvoAtual ? (() => {
       const btn = h('button', { type: 'button', class: 'btn-link edit', style: 'font-size:11.5px;' }, '🕐 Todo o Horário (Entrada–Saída)');
       btn.addEventListener('click', () => { atribuicaoRapidaDraft.inicio = alvoAtual.dia.entrada; atribuicaoRapidaDraft.fim = alvoAtual.dia.saida; rerender(); });
@@ -27188,11 +27215,10 @@ function buildHorariosPage(container, goTo) {
       h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, 'Chefe de Turno / Encomendas — sem ter de abrir célula a célula. Só Farmacêutico(a)/Diretor(a) Técnico(a) e Adjunto(a).'),
       congelada ? h('p', { class: 'field-helper-text', style: 'margin:0;' }, 'Semana congelada — não é possível atribuir tarefas.') : h('div', { class: 'form-grid' }, [
         atribuicaoRapidaError ? h('p', { class: 'form-error span2' }, atribuicaoRapidaError) : null,
-        h('div', { class: 'field' }, [h('label', {}, 'Dia'), diaSelect]),
-        h('div', { class: 'field' }, [h('label', {}, 'Colaborador'), colabSelect]),
-        contextoTurno ? h('div', { class: 'field span2', style: 'margin-top:-8px;' }, [contextoTurno]) : null,
+        h('div', { class: 'field span2' }, [h('label', {}, 'Dia'), diaSelect]),
         h('div', { class: 'field span2' }, [h('label', {}, 'Tipo de Tarefa'), tipoSelect]),
-        atribuicaoRapidaDraft.tipo === 'outro' ? h('div', { class: 'field span2' }, [h('label', {}, 'Qual? (Outro)'), outroInput]) : null,
+        h('div', { class: 'field span2' }, [h('label', {}, 'Colaborador'), colabSelect]),
+        contextoTurno ? h('div', { class: 'field span2', style: 'margin-top:-8px;' }, [contextoTurno]) : null,
         h('div', { class: 'field field-sm' }, [h('label', {}, 'Início'), inicioInput]),
         h('div', { class: 'field field-sm' }, [h('label', {}, 'Fim'), fimInput]),
         todoHorarioBtn ? h('div', { class: 'field span2', style: 'margin-top:-6px;' }, [todoHorarioBtn]) : null,
