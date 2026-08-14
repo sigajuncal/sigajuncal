@@ -1649,6 +1649,7 @@
   .escala-nota-acao-discreta:hover{color:var(--pharm-600);background:var(--pharm-100);}
   .escala-nota-validacao-toggle{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:var(--pharm-500);cursor:pointer;}
   .escala-nota-validacao-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:#166534;}
+  .escala-nota-pendente-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:#b45309;}
   .escala-pessoal-linha{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;row-gap:4px;
     padding:8px 0;border-bottom:1px solid var(--pharm-100);font-size:13.5px;}
   .escala-pessoal-linha:last-child{border-bottom:none;}
@@ -24039,15 +24040,19 @@ async function notificarDirecaoHorasExtra(bloco, utilizador, intervaloTexto, aca
 // torna visível de imediato na Gaveta do autor (é aí que a ação/aviso
 // realmente vive) e, em segundo plano, no separador "Notificações" de
 // Lembretes (ver buildLembretesPage), que é só uma vista de consulta —
-// não repete a ação. Só ao VALIDAR (nunca ao desmarcar) — desfazer uma
-// validação não é um evento que precise de aviso.
-async function notificarAutorNotaValidada(nota) {
+// não repete a ação. CORRIGIDO (2026-08-14, pedido explícito): agora
+// avisa também ao DESMARCAR a validação (invalidar) — antes só avisava
+// ao validar, nunca ao reverter, mas o colaborador também precisa de
+// saber se a Direção veio a invalidar a nota depois.
+async function notificarAutorNotaValidada(nota, validada) {
   if (!nota || !nota.autorId || String(nota.autorId) === String(activeUser.id)) return;
   const resumo = (nota.texto || '').slice(0, 80) + ((nota.texto || '').length > 80 ? '…' : '');
+  const mensagem = validada
+    ? `A sua nota em "Escala da Equipa" foi validada pela Direção: "${resumo}"`
+    : `A validação da sua nota em "Escala da Equipa" foi anulada pela Direção: "${resumo}"`;
   await dbInsert('gavetaRecados', {
     remetenteId: activeUser.id, destinatarioId: nota.autorId,
-    mensagem: `A sua nota em "Escala da Equipa" foi validada pela Direção: "${resumo}"`,
-    tratado: false, tipo: 'tarefa', referenciaTabela: 'escala_notas_semana', referenciaId: nota.id,
+    mensagem, tratado: false, tipo: 'tarefa', referenciaTabela: 'escala_notas_semana', referenciaId: nota.id,
   });
 }
 // Referências de gaveta_recados que aparecem também no separador
@@ -26437,6 +26442,11 @@ function buildHorariosPage(container, goTo) {
   }
   async function guardarEdicaoNotaEquipa(nota, novoTexto) {
     if (!novoTexto.trim()) return;
+    // Reforço da regra (não só escondido na UI): só o autor edita, e só
+    // antes de a nota ser validada pela Direção — uma vez validada,
+    // fica bloqueada para sempre (pedido explícito 2026-08-14).
+    const souAutor = activeUser && String(nota.autorId) === String(activeUser.id);
+    if (!souAutor || nota.validadoDirecao) { showToast('Já não é possível editar esta nota.', 'error'); rerender(); return; }
     const updated = await dbUpdate('escalaNotasSemana', nota.id, { texto: novoTexto.trim(), updatedAt: new Date().toISOString() });
     if (updated) {
       STATE.escalaNotasSemana = STATE.escalaNotasSemana.map(n => n.id === nota.id ? updated : n);
@@ -26447,6 +26457,12 @@ function buildHorariosPage(container, goTo) {
     rerender();
   }
   function eliminarNotaEquipa(nota) {
+    // Reforço da regra (não só escondido na UI): antes de validada, só o
+    // autor elimina; depois de validada, só a Direção (pedido explícito
+    // 2026-08-14).
+    const souAutor = activeUser && String(nota.autorId) === String(activeUser.id);
+    const podeEliminar = nota.validadoDirecao ? isMasterUser() : souAutor;
+    if (!podeEliminar) { showToast('Não tem permissão para eliminar esta nota.', 'error'); rerender(); return; }
     confirmDialog('Eliminar esta nota? Esta ação não pode ser desfeita.', async () => {
       const ok = await dbDelete('escalaNotasSemana', nota.id);
       if (ok) { STATE.escalaNotasSemana = STATE.escalaNotasSemana.filter(n => n.id !== nota.id); showToast('Nota eliminada.', 'success'); }
@@ -26463,7 +26479,7 @@ function buildHorariosPage(container, goTo) {
     const updated = await dbUpdate('escalaNotasSemana', nota.id, patch);
     if (updated) {
       STATE.escalaNotasSemana = STATE.escalaNotasSemana.map(n => n.id === nota.id ? updated : n);
-      if (novoEstado) await notificarAutorNotaValidada(updated);
+      await notificarAutorNotaValidada(updated, novoEstado);
     }
     else escalaShowErro('Não foi possível atualizar a validação');
     rerender();
@@ -26491,7 +26507,15 @@ function buildHorariosPage(container, goTo) {
         })()
       : h('p', { style: 'margin:0;font-size:13.5px;line-height:1.5;color:var(--pharm-800);white-space:pre-wrap;' }, nota.texto);
     const acoesDiscretas = [];
-    if (!emEdicao && souAutor) {
+    // Antes de validada: só o autor edita/elimina a própria nota (pedido
+    // explícito 2026-08-14). Depois de validada pela Direção, a nota
+    // fica bloqueada para o autor — deixa de poder editar OU eliminar
+    // (é um registo já confirmado, não se mexe mais) — só a própria
+    // Direção (isMasterUser()) consegue eliminá-la a partir daí, nunca
+    // editá-la (edição continua reservada ao autor, só antes da
+    // validação; depois de validada, ninguém edita — só se elimina e
+    // volta a escrever-se de novo, se for caso disso).
+    if (!emEdicao && souAutor && !nota.validadoDirecao) {
       acoesDiscretas.push(h('button', {
         class: 'escala-nota-acao-discreta', title: 'Editar',
         onclick: () => requireAuth(() => { notaEquipaEditandoId = nota.id; notaEquipaEditandoTexto = nota.texto; rerender(); }),
@@ -26500,20 +26524,31 @@ function buildHorariosPage(container, goTo) {
         class: 'escala-nota-acao-discreta', title: 'Eliminar',
         onclick: () => requireAuth(() => eliminarNotaEquipa(nota)),
       }, Icon('trash', { size: 12, strokeWidth: 2.2 })));
+    } else if (!emEdicao && isMasterUser() && nota.validadoDirecao) {
+      acoesDiscretas.push(h('button', {
+        class: 'escala-nota-acao-discreta', title: 'Eliminar (só Direção, nota já validada)',
+        onclick: () => requireAuth(() => eliminarNotaEquipa(nota)),
+      }, Icon('trash', { size: 12, strokeWidth: 2.2 })));
     }
     // "Visto / Validado pela Direção" — checkbox real só para
     // Master/Administrador (pode marcar/desmarcar qualquer nota); para
-    // toda a gente, um badge verde discreto aparece quando já validada.
+    // toda a gente, mostra sempre o estado — "Pendente de validação"
+    // quando ainda não foi vista, ou quem validou e quando, quando já
+    // foi (pedido explícito 2026-08-14: antes não dizia nada enquanto
+    // pendente, e o badge de validada não dizia quem nem quando).
     let validacaoEl;
     if (isMasterUser()) {
       const cb = h('input', { type: 'checkbox' });
       cb.checked = !!nota.validadoDirecao;
       cb.addEventListener('change', () => requireAuth(() => alternarValidacaoNotaEquipa(nota)));
-      validacaoEl = h('label', { class: 'escala-nota-validacao-toggle' }, [cb, ' Visto / Validado pela Direção']);
+      const rotulo = nota.validadoDirecao
+        ? ` Validado por ${nota.validadoPor || '—'} em ${formatCarimboNota(nota.validadoEm)}`
+        : ' Pendente de validação';
+      validacaoEl = h('label', { class: 'escala-nota-validacao-toggle' }, [cb, rotulo]);
     } else if (nota.validadoDirecao) {
-      validacaoEl = h('span', { class: 'escala-nota-validacao-badge' }, [Icon('checkcircle', { size: 12, strokeWidth: 2.4 }), ' Visto pela Direção']);
+      validacaoEl = h('span', { class: 'escala-nota-validacao-badge' }, [Icon('checkcircle', { size: 12, strokeWidth: 2.4 }), ` Validado por ${nota.validadoPor || 'Direção'} em ${formatCarimboNota(nota.validadoEm)}`]);
     } else {
-      validacaoEl = null;
+      validacaoEl = h('span', { class: 'escala-nota-pendente-badge' }, [Icon('clock', { size: 12, strokeWidth: 2.4 }), ' Pendente de validação']);
     }
     return h('div', { class: 'escala-nota-cartao' }, [
       h('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:4px;' }, [
@@ -26961,10 +26996,31 @@ function buildHorariosPage(container, goTo) {
           h('span', { class: 'cell-strong' }, `${diaInfo ? diaInfo.label : bloco.diaKey}, ${formatDate(dataISO)} · ${bloco.horaInicio}–${bloco.horaFim}`),
           bloco.pausaInicio ? h('span', { class: 'field-helper-text', style: 'margin-left:8px;' }, `pausa ${bloco.pausaInicio}-${bloco.pausaFim}`) : null,
           bloco.descricao ? h('p', { class: 'field-helper-text', style: 'margin:2px 0 0;' }, bloco.descricao) : null,
+          // Nuance explícita (pedido 2026-08-14): o intervalo do bloco é
+          // o MÁXIMO disponível, não uma obrigação de o ocupar todo — dá
+          // para reivindicar só uma parte, e mais do que um colega pode
+          // reivindicar partes diferentes do mesmo bloco (ver bloqueio de
+          // sobreposição em guardarReivindicacao, que só impede colidir
+          // com uma parte já reivindicada por outra pessoa).
+          (!ehGestor) ? h('p', { class: 'field-helper-text', style: 'margin:4px 0 0;' }, 'Podes escolher só uma parte deste intervalo — não precisas de ocupar tudo, e outros colegas também podem reivindicar partes diferentes.') : null,
         ]),
         (ehGestor && isMasterUser() && !blocoCongelado) ? (() => {
           const btn = h('button', { class: 'btn-fab-sm tone-red', title: 'Eliminar bloco', 'aria-label': 'Eliminar bloco' }, Icon('trash', { size: 13, strokeWidth: 2.2 }));
           btn.addEventListener('click', () => requireAuth(() => eliminarBlocoHorasExtra(bloco)));
+          return btn;
+        })() : null,
+        // Botão de reivindicar movido para aqui, ao lado da data (pedido
+        // explícito 2026-08-14) — antes ficava pendurado por baixo do
+        // bloco de reivindicações já feitas, meio perdido; agora é a
+        // ação principal do cartão, visível já na primeira linha.
+        // Rótulo mais neutro ("Reivindicar Horas" em vez de "Quero fazer
+        // ESTA hora extra") — a nuance de que é parcial/opcional fica no
+        // texto de apoio acima, não no botão.
+        (!ehGestor && activeUser && !minhaReivindicacao && !blocoCongelado) ? (() => {
+          const btn = h('button', {
+            style: 'flex-shrink:0;background:#f59e0b;color:#fff;font-weight:700;border:none;border-radius:8px;padding:8px 14px;font-size:12.5px;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.12);',
+          }, 'Reivindicar Horas');
+          btn.addEventListener('click', () => abrirReivindicar(bloco, blocoSemana));
           return btn;
         })() : null,
       ]);
@@ -26982,11 +27038,6 @@ function buildHorariosPage(container, goTo) {
             ]);
           }))
         : null;
-      const reivindicarBtn = (!ehGestor && activeUser && !minhaReivindicacao && !blocoCongelado) ? (() => {
-        const btn = h('button', { class: 'btn btn-secondary', style: 'margin-top:8px;padding:6px 12px;font-size:12.5px;' }, 'Quero fazer esta hora extra');
-        btn.addEventListener('click', () => abrirReivindicar(bloco, blocoSemana));
-        return btn;
-      })() : null;
       const formReivindicar = (reivindicandoBlocoId === bloco.id) ? (() => {
         // Seletor Horas+Minutos (campoHora) em vez de 2 campos de texto
         // livre "HH:MM" a largura total (pedido explícito 2026-08-14) —
@@ -27002,7 +27053,7 @@ function buildHorariosPage(container, goTo) {
         cancelarBtn.addEventListener('click', fecharReivindicar);
         return h('div', { style: 'margin-top:8px;padding:10px;background:#fffbeb;border-radius:8px;' }, [
           reivindicarError ? h('p', { class: 'form-error', style: 'margin:0 0 6px;' }, reivindicarError) : null,
-          h('p', { class: 'field-helper-text', style: 'margin:0 0 6px;' }, 'Escolha o intervalo que quer fazer — nunca pode sobrepor o seu horário base.'),
+          h('p', { class: 'field-helper-text', style: 'margin:0 0 6px;' }, 'Escolha o intervalo que quer fazer — pode ser só uma parte do bloco, nunca sobrepor o seu horário base.'),
           h('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;' }, [iniInput, h('span', {}, '–'), fimInput, guardarBtn, cancelarBtn]),
         ]);
       })() : null;
@@ -27014,10 +27065,13 @@ function buildHorariosPage(container, goTo) {
         // resto da página. Mesma paleta já usada no resto do módulo
         // (formulário "Disponibilizar", blocos amarelos da Timeline —
         // ver .escala-vertical-bloco-extra) — nunca uma cor nova.
-        style: 'margin-bottom:10px;background:#fffbeb;border:1px solid #fde68a;border-left:4px solid #f59e0b;',
-      }, [linhaTopo, listaReivindicacoes, reivindicarBtn, formReivindicar]));
+        // max-width igual ao cartão "A Minha Semana" logo acima (pedido
+        // explícito 2026-08-14: sem isto, o cartão esticava à largura
+        // toda do ecrã, desproporcional ao resto da coluna).
+        style: 'margin-bottom:10px;max-width:480px;background:#fffbeb;border:1px solid #fde68a;border-left:4px solid #f59e0b;',
+      }, [linhaTopo, listaReivindicacoes, formReivindicar]));
     });
-    return h('div', { style: 'margin-top:16px;' }, [tituloRow, ...corpo]);
+    return h('div', { style: 'margin-top:16px;max-width:480px;' }, [tituloRow, ...corpo]);
   }
 
   function buildVistaPessoal(semana) {
