@@ -1544,17 +1544,24 @@
      2026-08-14: "detesto scroll horizontal, melhora largura e
      legibilidade". Ao contrário das tabelas normais da app (que ocupam
      sempre 100% da largura disponível, pensadas para muitas colunas),
-     estas têm só 4-5 colunas — herdar width:100% espalhava as colunas
+     estas têm só 3-6 colunas — herdar width:100% espalhava as colunas
      por um ecrã inteiro, com espaços vazios enormes entre números.
      .estatisticas-card limita a largura ao conteúdo real (nunca mais
-     larga do que precisa); .estatisticas-table centra todas as colunas
-     numéricas (a 1ª, do nome, mantém-se à esquerda via .cell-strong) e
-     ganha zebra striping — mais fácil de acompanhar uma linha ao longo
-     de várias colunas à vista. */
-  .estatisticas-card{display:block;width:fit-content;min-width:min(100%, 560px);max-width:100%;margin-bottom:18px;}
-  .estatisticas-table{width:auto;min-width:100%;}
-  .estatisticas-table th, .estatisticas-table td{text-align:center;padding:8px 20px;}
+     larga do que precisa — SEM piso mínimo artificial, correção
+     2026-08-14: um min-width fixo de 560px ainda estava a espalhar
+     tabelas de só 4 colunas curtas); .estatisticas-table centra todas
+     as colunas numéricas (a 1ª, do nome, mantém-se à esquerda via
+     .cell-strong) e ganha zebra striping. O .table-wrap por defeito
+     limita a altura e mete scroll vertical (pensado para tabelas
+     grandes) — .estatisticas-table-wrap cancela isso, para a tabela
+     inteira ficar sempre visível de uma vez, nunca com scroll dentro
+     dela (o scroll normal da página resolve o resto). */
+  .estatisticas-card{display:block;width:fit-content;max-width:100%;margin-bottom:18px;}
+  .estatisticas-table-wrap{max-height:none;overflow:visible;}
+  .estatisticas-table{width:auto;}
+  .estatisticas-table th, .estatisticas-table td{text-align:center;padding:8px 16px;white-space:nowrap;}
   .estatisticas-table th:first-child, .estatisticas-table td:first-child{text-align:left;padding-left:14px;}
+  .estatisticas-table th{position:static;box-shadow:none;}
   .estatisticas-table tbody tr:nth-child(even){background:var(--pharm-50);}
   .estatisticas-table tbody tr:nth-child(even):hover{background:rgba(54,136,176,.08);}
   /* Destaque de "quem tem mais" em cada coluna (pedido explícito
@@ -28350,14 +28357,22 @@ function buildHorariosPage(container, goTo) {
         }
       });
     });
-    // Horas Extra (pedido explícito 2026-08-14): passagem à parte, por
-    // SEMANA inteira (não por dia como o resto) — soma-se o total
-    // trabalhado de Segunda a Domingo dessa semana e, quando ultrapassa
-    // as 40h, a diferença conta como Horas Extra. Cada semana é atribuída
-    // ao ano da sua própria 2ª feira (semana.semanaInicio) — as raríssimas
-    // semanas a cavalo entre dois anos ficam inteiras no ano em que
-    // começam, para nunca partir o total semanal ao meio.
+    // Horas Extra (pedido explícito 2026-08-14, ajustado depois pelo
+    // utilizador): passagem à parte, por SEMANA inteira (não por dia
+    // como o resto) — soma-se o total trabalhado de Segunda a Domingo
+    // dessa semana. O limiar normal é 40h, MAS cada Feriado que caia
+    // nessa semana desconta 8h a esse limiar — a farmácia dá sempre
+    // folga extra por feriado trabalhado (nesse dia ou noutro da mesma
+    // semana), por isso trabalhar até 40h numa semana com 1 feriado já
+    // são, na prática, 8h a mais do que o esperado (2 feriados na mesma
+    // semana, ex: Semana Santa, descontam 16h, etc.) — ver
+    // limiarSemana abaixo. Cada semana é atribuída ao ano da sua própria
+    // 2ª feira (semana.semanaInicio) — as raríssimas semanas a cavalo
+    // entre dois anos ficam inteiras no ano em que começam, para nunca
+    // partir o total semanal ao meio.
     (STATE.escalaSemanas || []).filter(s => s.estado === 'publicado' && String(s.semanaInicio).slice(0, 4) === String(ano)).forEach(semana => {
+      const feriadosNaSemana = ESCALA_DIAS.filter(d => escalaEhFeriado(escalaDataDoDia(semana.semanaInicio, d.key))).length;
+      const limiarSemana = Math.max(0, 40 - feriadosNaSemana * 8);
       colaboradoresQuadro.forEach(u => {
         const uid = u.id;
         let totalSemana = 0;
@@ -28366,11 +28381,58 @@ function buildHorariosPage(container, goTo) {
           if (!alvo) return;
           totalSemana += escalaCalcularHorasComPausa(alvo.dia.entrada, alvo.dia.saida, alvo.dia.pausaInicio, alvo.dia.pausaFim);
         });
-        if (totalSemana > 40) {
-          const excesso = totalSemana - 40;
+        if (totalSemana > limiarSemana) {
+          const excesso = totalSemana - limiarSemana;
           stats[uid].horasExtra += excesso;
-          escalaEmpurrarDetalheEstatistica(stats[uid], 'horasExtra', semana.semanaInicio, `Semana de ${formatDate(semana.semanaInicio)} — total ${escalaFormatarHoras(totalSemana)} (+${escalaFormatarHoras(excesso)} extra)`);
+          const notaFeriado = feriadosNaSemana ? ` · limiar ${limiarSemana}h (${feriadosNaSemana} feriado${feriadosNaSemana > 1 ? 's' : ''} nesta semana)` : '';
+          escalaEmpurrarDetalheEstatistica(stats[uid], 'horasExtra', semana.semanaInicio, `Semana de ${formatDate(semana.semanaInicio)} — total ${escalaFormatarHoras(totalSemana)}${notaFeriado} (+${escalaFormatarHoras(excesso)} extra)`);
         }
+      });
+    });
+    return stats;
+  }
+  // Contagem de Tarefas/Cargos Especiais (Chefe de Turno, Encomenda da
+  // Manhã/Tarde, Conferência, Reunião, Outro) por colaborador do Quadro,
+  // ao longo do ano — pedido explícito 2026-08-14. IMPORTANTE (pedido
+  // explícito): um dia com o turno partido em 2 blocos (ex: Magda com
+  // Pausa grande a meio, Chefe de Turno atribuído em 2 submissões
+  // separadas — uma por bloco, ver Atribuição Rápida) conta como UMA SÓ
+  // ocorrência desse tipo nesse dia, nunca duas — por isso agrupa-se
+  // sempre por (dia, tipo) antes de contar, nunca conta cada entrada do
+  // array de tarefas isoladamente. Um MESMO dia pode ter mais do que uma
+  // tarefa DIFERENTE (ex: Chefe de Turno + Encomenda da Manhã), e cada
+  // tipo diferente conta à parte, normalmente. A chave antiga "encomenda"
+  // (legado, pré-Manhã/Tarde) fica de fora — já não pode ser escolhida,
+  // só existe em dados muito antigos.
+  const TIPOS_TAREFA_CONTAVEIS = ESCALA_TAREFAS_ESPECIAIS.filter(t => t.key && !t.legado);
+  function escalaCalcularTarefasAno(ano) {
+    const stats = {};
+    const colaboradoresQuadro = usuariosQuadroAtivos();
+    colaboradoresQuadro.forEach(u => {
+      stats[u.id] = { nome: u.nomeCompleto || u.username };
+      TIPOS_TAREFA_CONTAVEIS.forEach(t => { stats[u.id][t.key] = 0; });
+    });
+    (STATE.escalaSemanas || []).filter(s => s.estado === 'publicado').forEach(semana => {
+      colaboradoresQuadro.forEach(u => {
+        const uid = u.id;
+        const s = stats[uid];
+        ESCALA_DIAS.forEach(d => {
+          const dataISO = escalaDataDoDia(semana.semanaInicio, d.key);
+          if (!dataISO || dataISO.slice(0, 4) !== String(ano)) return;
+          const alvo = escalaVagaDoColaboradorNoDia(semana, d.key, uid);
+          if (!alvo) return;
+          const tarefasDoDia = escalaTarefasDoDia(alvo.dia);
+          if (!tarefasDoDia.length) return;
+          // Set() garante 1 ocorrência por (dia, tipo) mesmo com vários
+          // blocos do mesmo tipo nesse dia (o caso da Magda).
+          const tiposPresentesHoje = [...new Set(tarefasDoDia.map(t => t.tipo))];
+          tiposPresentesHoje.forEach(tipo => {
+            if (!(tipo in s)) return; // ignora tipo legado/desconhecido
+            s[tipo] += 1;
+            const horarios = tarefasDoDia.filter(t => t.tipo === tipo).map(t => `${t.inicio}-${t.fim}`).join(', ');
+            escalaEmpurrarDetalheEstatistica(s, tipo, dataISO, `${escalaTarefaInfo(tipo)?.label || tipo} · ${horarios}`);
+          });
+        });
       });
     });
     return stats;
@@ -28384,6 +28446,16 @@ function buildHorariosPage(container, goTo) {
     const nextBtn = h('button', { class: 'btn-fab-sm', title: 'Ano seguinte', 'aria-label': 'Ano seguinte', disabled: estatisticasAno >= anoMax ? 'disabled' : undefined }, Icon('arrowright', { size: 14 }));
     nextBtn.addEventListener('click', () => { estatisticasAno += 1; rerender(); });
     const stats = escalaCalcularEstatisticasAno(estatisticasAno);
+    // Tarefas Especiais (pedido explícito 2026-08-14) — calculadas à
+    // parte (fonte de dados diferente: escala_semanas.dados[].tarefas,
+    // não os campos entrada/saida/pausa) e fundidas no mesmo `stats`
+    // para poderem entrar no mesmo mecanismo de renderização/badge de
+    // máximo/popover de detalhe das restantes categorias. O merge é só
+    // um lookup por chave (stats[uid] já existe para todos os mesmos
+    // colaboradores) — nunca usa o uid fora daqui, por isso não sofre do
+    // bug de comparação estrita corrigido antes em escalaVagaDoColaboradorNoDia.
+    const statsTarefas = escalaCalcularTarefasAno(estatisticasAno);
+    Object.keys(statsTarefas).forEach(uid => { if (stats[uid]) Object.assign(stats[uid], statsTarefas[uid]); });
     // Carina Gonçalves e Adriano Lima excluídos desta contagem (pedido
     // explícito 2026-08-14): são Backoffice (Grupo B) — os indicadores
     // aqui (aberturas/fechos de loja, fins de semana de atendimento,
@@ -28436,7 +28508,7 @@ function buildHorariosPage(container, goTo) {
         colunas: [
           { key: 'horasFeriado', label: 'H. em Feriado', title: 'Horas trabalhadas em dias de Feriado', grav: 'verde' },
           { key: 'horasNoturnas', label: 'H. Noturnas', title: 'Horas trabalhadas entre as 22:00 e as 00:00', grav: 'laranja' },
-          { key: 'horasExtra', label: 'H. Extra', title: 'Horas acima das 40h numa semana (soma do excesso de todas as semanas do ano)', grav: 'vermelho' },
+          { key: 'horasExtra', label: 'H. Extra', title: 'Horas acima do limiar semanal (40h, menos 8h por cada Feriado nessa semana — a farmácia dá sempre folga extra por feriado trabalhado)', grav: 'vermelho' },
         ],
       },
       {
@@ -28446,6 +28518,20 @@ function buildHorariosPage(container, goTo) {
           { key: 'tardesLivres', label: 'Tardes Livres', title: 'Dias com Saída até às 14:00 (tarde de folga)', grav: 'verde' },
           { key: 'manhasLivres', label: 'Manhãs Livres', title: 'Dias com Entrada depois das 14:00 (manhã de folga) — menos desejável do que Tardes Livres', grav: 'amarelo' },
         ],
+      },
+      {
+        // Última tabela (pedido explícito 2026-08-14) — Tarefas/Cargos
+        // Especiais atribuídos via Atribuição Rápida/Editor de Dia. Um
+        // dia com o mesmo tipo repetido em 2 blocos (ex: Chefe de Turno
+        // da Magda partido pela Pausa) conta como 1 só ocorrência nesse
+        // dia — ver escalaCalcularTarefasAno. Sem cor de gravidade (não
+        // há "melhor/pior" óbvio em fazer mais ou menos Chefe de Turno).
+        titulo: 'Tarefas Especiais',
+        colunas: TIPOS_TAREFA_CONTAVEIS.map(t => ({
+          key: t.key,
+          label: t.key === 'encomenda_manha' ? 'Enc. Manhã' : t.key === 'encomenda_tarde' ? 'Enc. Tarde' : t.key === 'chefe_turno' ? 'Chefe Turno' : t.label,
+          title: `Dias com ${t.label} atribuída (1 dia com o mesmo tipo em vários blocos conta só 1 vez)`,
+        })),
       },
     ];
     const cartoes = GRUPOS_ESTATISTICAS.map(grupo => {
@@ -28496,7 +28582,7 @@ function buildHorariosPage(container, goTo) {
       });
       return h('div', { class: 'card estatisticas-card' }, [
         h('h4', { class: 'page-eyebrow', style: 'margin:0 0 10px;padding:14px 14px 0;color:var(--pharm-700);font-size:12.5px;text-transform:none;letter-spacing:0;font-weight:800;' }, grupo.titulo),
-        h('div', { class: 'table-wrap' }, h('table', { class: 'estatisticas-table' }, [thead, h('tbody', {}, linhas)])),
+        h('div', { class: 'table-wrap estatisticas-table-wrap' }, h('table', { class: 'estatisticas-table' }, [thead, h('tbody', {}, linhas)])),
       ]);
     });
     return h('div', {}, [
