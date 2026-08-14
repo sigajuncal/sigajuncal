@@ -23960,8 +23960,49 @@ function escalaHorasExtraDaSemana(semanaId) {
 function escalaHorasExtraDoDia(semanaId, diaKey) {
   return escalaHorasExtraDaSemana(semanaId).filter(b => b.diaKey === diaKey);
 }
+// Todos os blocos de Horas Extra Disponíveis a partir de HOJE (inclusive),
+// atravessando TODAS as semanas com dados (não só a semana atualmente
+// aberta no ecrã) — pedido explícito 2026-08-14: um bloco criado para
+// daqui a um mês tem de aparecer listado desde já, devidamente
+// identificado com a sua própria data, não só quando o gestor/colaborador
+// calhar a navegar até essa semana em concreto. Cada entrada devolve
+// também a SEMANA a que esse bloco pertence (nunca a semana atualmente
+// visível no ecrã) — necessária para abrir/gravar a reivindicação com o
+// contexto correto (horário próprio do colaborador NESSA semana, ver
+// escalaHorarioProprioNoDia). Mesma regra de visibilidade de rascunho já
+// usada na Vista Mensal Pessoal (buildVistaPessoalMensal): só entram
+// semanas publicadas, ou com rascunho explicitamente aberto à equipa, ou
+// quando quem está a ver é Master/Administrador.
+function escalaTodosBlocosHorasExtraFuturos() {
+  const hoje = todayISO();
+  const semanasAsc = escalaSemanasOrdenadas().slice().reverse();
+  const resultado = [];
+  semanasAsc.forEach(s => {
+    const visivel = s.estado === 'publicado' || isMasterUser() || escalaMostrarRascunhosEquipa(s);
+    if (!visivel) return;
+    escalaHorasExtraDaSemana(s.id).forEach(bloco => {
+      const dataISO = escalaDataDoDia(s.semanaInicio, bloco.diaKey);
+      if (dataISO < hoje) return;
+      resultado.push({ bloco, semana: s, dataISO });
+    });
+  });
+  resultado.sort((a, b) => a.dataISO.localeCompare(b.dataISO) || String(a.bloco.horaInicio).localeCompare(String(b.bloco.horaInicio)));
+  return resultado;
+}
 function escalaReivindicacoesDoBloco(blocoId) {
   return (STATE.escalaHorasExtraReivindicacoes || []).filter(r => r.ativo && !r.eliminado && String(r.blocoId) === String(blocoId));
+}
+// Reivindicações ATIVAS de um colaborador específico, num dia específico
+// de uma semana — atravessa todos os blocos de Horas Extra Disponíveis
+// desse dia (normalmente só 1, mas suporta mais do que um). Usada para
+// mostrar a hora extra reivindicada também na Vista em Tabela (antes só
+// aparecia na Timeline e no painel "Horas Extra Disponíveis" — pedido
+// explícito 2026-08-14: a mesma informação tem de aparecer em todo o
+// lado, para qualquer colega ver, não só quem reivindicou).
+function escalaReivindicacoesDoColaboradorNoDia(semanaId, diaKey, colaboradorId) {
+  if (!colaboradorId) return [];
+  return escalaHorasExtraDoDia(semanaId, diaKey).flatMap(bloco =>
+    escalaReivindicacoesDoBloco(bloco.id).filter(r => String(r.utilizadorId) === String(colaboradorId)));
 }
 // O turno "normal" (Entrada/Saída) que ESTE colaborador já tem nesse dia,
 // em qualquer vaga da semana — para nunca deixar reivindicar horas que já
@@ -26248,7 +26289,8 @@ function buildHorariosPage(container, goTo) {
         const linha = semana.dados[v.codigo] || { colaboradorNome: '', dias: {} };
         const cells = ESCALA_DIAS.map(d => {
           const dia = linha.dias[d.key] || { tipo: 'folga' };
-          const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, (dia && dia.colaboradorId) || linha.colaboradorId);
+          const colaboradorIdDoDia = (dia && dia.colaboradorId) || linha.colaboradorId;
+          const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, colaboradorIdDoDia);
           let conteudo, classe = 'escala-cell';
           if (tipoEfetivo === 'normal') {
             conteudo = `${dia.entrada}–${dia.saida} (${escalaFormatarHoras(dia.horas)})`;
@@ -26256,12 +26298,19 @@ function buildHorariosPage(container, goTo) {
             if (dia.heHoras) conteudo += ` +${escalaFormatarHoras(dia.heHoras)}HE`;
           }
           else { conteudo = ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—'; classe += ` escala-cell-${tipoEfetivo}`; }
+          // Horas Extra reivindicadas (bloco "Horas Extra Disponíveis",
+          // ver buildPainelHorasExtra) — antes só apareciam na Timeline;
+          // agora aparecem também aqui, para qualquer colega ver ao
+          // olhar para a Vista em Tabela, não só quem reivindicou.
+          const reivindicacoesDoDia = escalaReivindicacoesDoColaboradorNoDia(semana.id, d.key, colaboradorIdDoDia);
+          if (reivindicacoesDoDia.length) {
+            conteudo += ' · ' + reivindicacoesDoDia.map(r => `+HE ${r.intervaloInicio}-${r.intervaloFim}`).join(', ');
+          }
           // Ausência (Férias/Baixa/Falta/...) registada DEPOIS de o turno
           // já ter sido gerado/editado — ver a mesma verificação em
           // buildVistaVertical. Só se aplica a células ainda "normal";
           // um dia já marcado com o tipo de ausência (gerado corretamente
           // à partida) não precisa desta sobreposição.
-          const colaboradorIdDoDia = (dia && dia.colaboradorId) || linha.colaboradorId;
           const ausencia = dia.tipo === 'normal' ? escalaAusenciaDoDia(colaboradorIdDoDia, diasISO[d.key]) : null;
           if (ausencia) classe += ' escala-cell-ausencia-sobreposta';
           const pill = escalaTarefaPill(dia);
@@ -26794,6 +26843,20 @@ function buildHorariosPage(container, goTo) {
       const pIni = escalaMinutosAbsolutos(proprio.entrada, false), pFim = escalaMinutosAbsolutos(proprio.saida, true);
       if (ini < pFim && fim > pIni) { reivindicarError = `Esse intervalo sobrepõe-se ao seu horário base (${proprio.entrada}-${proprio.saida}).`; rerender(); return; }
     }
+    // Bloqueio contra dupla-reivindicação (pedido explícito 2026-08-14):
+    // sem isto, duas pessoas diferentes podiam reivindicar exatamente o
+    // mesmo troço do bloco (ex: ambas 09:00-11:00) sem qualquer aviso —
+    // só o próprio horário base e os limites do bloco eram verificados,
+    // nunca as reivindicações já ativas de OUTRAS pessoas nesse mesmo
+    // bloco. Verifica sobreposição de minutos contra cada reivindicação
+    // ativa alheia (nunca contra as próprias — só pode existir 1 por
+    // pessoa por bloco, ver minhaReivindicacao/reivindicarBtn).
+    const outrasReivindicacoes = escalaReivindicacoesDoBloco(bloco.id).filter(r => String(r.utilizadorId) !== String(activeUser.id));
+    const colisao = outrasReivindicacoes.find(r => {
+      const rIni = escalaMinutosAbsolutos(r.intervaloInicio, false), rFim = escalaMinutosAbsolutos(r.intervaloFim, true);
+      return ini < rFim && fim > rIni;
+    });
+    if (colisao) { reivindicarError = `Esse intervalo já foi reivindicado por ${colisao.utilizadorNome || 'outra pessoa'} (${colisao.intervaloInicio}-${colisao.intervaloFim}). Escolha outro troço do bloco.`; rerender(); return; }
     reivindicarSaving = true; rerender();
     const created = await dbInsert('escalaHorasExtraReivindicacoes', {
       blocoId: bloco.id, utilizadorId: activeUser.id, utilizadorNome: activeUser.nomeCompleto || activeUser.username,
@@ -26827,8 +26890,13 @@ function buildHorariosPage(container, goTo) {
   // reivindicação. ehGestor=false ("A Minha Semana"): só vê e reivindica/
   // desiste das SUAS próprias.
   function buildPainelHorasExtra(semana, ehGestor) {
-    const blocos = escalaHorasExtraDaSemana(semana.id).sort((a, b) =>
-      ESCALA_DIAS.findIndex(d => d.key === a.diaKey) - ESCALA_DIAS.findIndex(d => d.key === b.diaKey) || String(a.horaInicio).localeCompare(String(b.horaInicio)));
+    // Lista TODAS as semanas com blocos a partir de hoje (pedido
+    // explícito 2026-08-14) — não só a semana atualmente aberta no ecrã.
+    // Cada entrada guarda a semana PRÓPRIA desse bloco (blocoSemana),
+    // nunca a `semana` do parâmetro — necessária para abrir/gravar a
+    // reivindicação com o contexto correto (ver escalaHorarioProprioNoDia
+    // dentro de abrirReivindicar/guardarReivindicacao).
+    const entradas = escalaTodosBlocosHorasExtraFuturos();
     const congelada = escalaSemanaCongelada(semana);
     const tituloRow = h('div', { style: 'display:flex;align-items:center;justify-content:flex-start;gap:10px;margin-bottom:10px;' }, [
       h('h3', { class: 'page-eyebrow', style: 'margin:0;color:var(--pharm-800);font-size:14px;text-transform:none;letter-spacing:0;display:flex;align-items:center;gap:7px;' }, [
@@ -26864,6 +26932,7 @@ function buildHorariosPage(container, goTo) {
       cancelarBtn.addEventListener('click', fecharFormHorasExtra);
       corpo.push(h('div', { class: 'card card-pad', style: 'margin-bottom:12px;background:#fffbeb;border-color:#fde68a;' }, [
         horasExtraError ? h('p', { class: 'form-error' }, horasExtraError) : null,
+        h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, `A criar para a semana atualmente aberta (${formatDate(semana.semanaInicio)}) — para outra semana, navegue até lá primeiro.`),
         h('div', { class: 'form-grid' }, [
           h('div', { class: 'field' }, [h('label', {}, 'Dia'), diaSelect]),
           h('div', {}),
@@ -26876,20 +26945,24 @@ function buildHorariosPage(container, goTo) {
         h('div', { class: 'form-actions' }, [guardarBtn, cancelarBtn]),
       ]));
     }
-    if (!blocos.length && !mostrarFormHorasExtra) {
-      corpo.push(h('p', { class: 'field-helper-text' }, ehGestor ? 'Sem horas extra disponibilizadas para esta semana.' : 'Sem horas extra disponíveis esta semana.'));
+    if (!entradas.length && !mostrarFormHorasExtra) {
+      corpo.push(h('p', { class: 'field-helper-text' }, ehGestor ? 'Sem horas extra disponibilizadas.' : 'Sem horas extra disponíveis, para já.'));
     }
-    blocos.forEach(bloco => {
+    entradas.forEach(({ bloco, semana: blocoSemana, dataISO }) => {
       const diaInfo = ESCALA_DIAS.find(d => d.key === bloco.diaKey);
+      const blocoCongelado = escalaSemanaCongelada(blocoSemana);
       const reivindicacoes = escalaReivindicacoesDoBloco(bloco.id);
       const minhaReivindicacao = activeUser ? reivindicacoes.find(r => String(r.utilizadorId) === String(activeUser.id)) : null;
+      // Identificação sempre pela DATA completa (ex: "Sábado, 30/08/2026"),
+      // nunca só o dia da semana — antes disto, dois blocos de "Sábado"
+      // de semanas diferentes eram indistinguíveis um do outro na lista.
       const linhaTopo = h('div', { style: 'display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap;' }, [
         h('div', {}, [
-          h('span', { class: 'cell-strong' }, `${diaInfo ? diaInfo.label : bloco.diaKey} · ${bloco.horaInicio}–${bloco.horaFim}`),
+          h('span', { class: 'cell-strong' }, `${diaInfo ? diaInfo.label : bloco.diaKey}, ${formatDate(dataISO)} · ${bloco.horaInicio}–${bloco.horaFim}`),
           bloco.pausaInicio ? h('span', { class: 'field-helper-text', style: 'margin-left:8px;' }, `pausa ${bloco.pausaInicio}-${bloco.pausaFim}`) : null,
           bloco.descricao ? h('p', { class: 'field-helper-text', style: 'margin:2px 0 0;' }, bloco.descricao) : null,
         ]),
-        (ehGestor && isMasterUser() && !congelada) ? (() => {
+        (ehGestor && isMasterUser() && !blocoCongelado) ? (() => {
           const btn = h('button', { class: 'btn-fab-sm tone-red', title: 'Eliminar bloco', 'aria-label': 'Eliminar bloco' }, Icon('trash', { size: 13, strokeWidth: 2.2 }));
           btn.addEventListener('click', () => requireAuth(() => eliminarBlocoHorasExtra(bloco)));
           return btn;
@@ -26897,7 +26970,7 @@ function buildHorariosPage(container, goTo) {
       ]);
       const listaReivindicacoes = reivindicacoes.length
         ? h('div', { style: 'margin-top:8px;display:flex;flex-direction:column;gap:5px;' }, reivindicacoes.map(r => {
-            const podeDesistir = !congelada && (ehGestor ? isMasterUser() : (activeUser && String(r.utilizadorId) === String(activeUser.id)));
+            const podeDesistir = !blocoCongelado && (ehGestor ? isMasterUser() : (activeUser && String(r.utilizadorId) === String(activeUser.id)));
             const desistirBtn = podeDesistir ? (() => {
               const btn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Desistir/cancelar', 'aria-label': 'Desistir/cancelar' }, Icon('x', { size: 12, strokeWidth: 2.4 }));
               btn.addEventListener('click', () => requireAuth(() => desistirReivindicacao(r, bloco)));
@@ -26909,9 +26982,9 @@ function buildHorariosPage(container, goTo) {
             ]);
           }))
         : null;
-      const reivindicarBtn = (!ehGestor && activeUser && !minhaReivindicacao && !congelada) ? (() => {
+      const reivindicarBtn = (!ehGestor && activeUser && !minhaReivindicacao && !blocoCongelado) ? (() => {
         const btn = h('button', { class: 'btn btn-secondary', style: 'margin-top:8px;padding:6px 12px;font-size:12.5px;' }, 'Quero fazer esta hora extra');
-        btn.addEventListener('click', () => abrirReivindicar(bloco, semana));
+        btn.addEventListener('click', () => abrirReivindicar(bloco, blocoSemana));
         return btn;
       })() : null;
       const formReivindicar = (reivindicandoBlocoId === bloco.id) ? (() => {
@@ -26924,7 +26997,7 @@ function buildHorariosPage(container, goTo) {
         const iniInput = campoHora(reivindicarDraft.horaInicio, false, (v) => { reivindicarDraft.horaInicio = v; });
         const fimInput = campoHora(reivindicarDraft.horaFim, true, (v) => { reivindicarDraft.horaFim = v; });
         const guardarBtn = h('button', { class: 'btn btn-primary', style: 'padding:6px 12px;font-size:12.5px;', disabled: reivindicarSaving ? 'disabled' : undefined }, reivindicarSaving ? 'A guardar…' : 'Confirmar');
-        guardarBtn.addEventListener('click', () => guardarReivindicacao(bloco, semana));
+        guardarBtn.addEventListener('click', () => guardarReivindicacao(bloco, blocoSemana));
         const cancelarBtn = h('button', { class: 'btn btn-secondary', style: 'padding:6px 12px;font-size:12.5px;' }, 'Cancelar');
         cancelarBtn.addEventListener('click', fecharReivindicar);
         return h('div', { style: 'margin-top:8px;padding:10px;background:#fffbeb;border-radius:8px;' }, [
@@ -26962,7 +27035,15 @@ function buildHorariosPage(container, goTo) {
         // estar na grelha — mesma verificação usada em buildGrelhaEquipa/
         // buildVistaVertical (ver comentários lá).
         const ausencia = tipoEfetivo === 'normal' ? escalaAusenciaDoDia(activeUser.id, escalaDataDoDia(semana.semanaInicio, d.key)) : null;
-        const texto = tipoEfetivo === 'normal' ? `${dia.entrada} – ${dia.saida}${(dia.pausaInicio && dia.pausaFim) ? ` (pausa ${dia.pausaInicio}-${dia.pausaFim})` : ''}${dia.heHoras ? ` (+${escalaFormatarHoras(dia.heHoras)} HE)` : ''}` : (ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—');
+        let texto = tipoEfetivo === 'normal' ? `${dia.entrada} – ${dia.saida}${(dia.pausaInicio && dia.pausaFim) ? ` (pausa ${dia.pausaInicio}-${dia.pausaFim})` : ''}${dia.heHoras ? ` (+${escalaFormatarHoras(dia.heHoras)} HE)` : ''}` : (ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—');
+        // Horas Extra reivindicadas por mim (ver buildPainelHorasExtra) —
+        // antes só apareciam no painel "Horas Extra Disponíveis" lá
+        // embaixo, nunca aqui na lista principal da semana (pedido
+        // explícito 2026-08-14).
+        const reivindicacoesDoDia = escalaReivindicacoesDoColaboradorNoDia(semana.id, d.key, activeUser.id);
+        if (reivindicacoesDoDia.length) {
+          texto += ' · ' + reivindicacoesDoDia.map(r => `+HE ${r.intervaloInicio}-${r.intervaloFim}`).join(', ');
+        }
         const pill = escalaTarefaPill(dia);
         const ausenciaBadge = ausencia ? h('span', { class: 'escala-cell-ausencia-badge', style: 'margin-top:2px;' }, ESCALA_TIPOS_DIA.find(t => t.key === ausencia.tipo)?.label || 'Ausência') : null;
         const conteudoDireita = (pill || ausenciaBadge)
