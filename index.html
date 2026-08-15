@@ -16080,19 +16080,27 @@ function abrirModalDefinirMetaAnual(anoDefault, onGuardado) {
 // partir do Painel de Bordo do 4Digital: Faturação = cartão "Vendas"
 // (Vendas − Descontos); Atendimentos = número de atendimentos do dia.
 // Atendimentos é o primeiro campo a preencher (pedido do utilizador). ----
-// Mascara o Valor de Faturação enquanto se escreve, ao estilo português:
-// milhares separados por ponto, vírgula decimal — um ponto escrito pela
-// pessoa é tratado como se fosse vírgula (hábito mais comum ao digitar),
-// nunca aparece um ponto a menos que seja gerado automaticamente como
-// separador de milhares.
+// Mascara o Valor de Faturação enquanto se escreve, ao estilo
+// "calculadora/multibanco": só interessam os DÍGITOS escritos — os
+// últimos 2 são sempre os cêntimos, o resto forma o valor inteiro (com
+// separador de milhares automático). Não é preciso escrever vírgula
+// nem ponto — para 12.774,74€ escreve-se "1277474" seguido.
+// IMPORTANTE: a versão anterior desta função tratava qualquer PONTO já
+// presente no campo (incluindo o próprio separador de milhares que a
+// máscara tinha acabado de inserir, ao editar um valor pré-preenchido)
+// como se fosse uma vírgula decimal nova a processar — isso corrompia
+// o número (ex: "12.774,74" virava "12,77") sempre que se editava um
+// valor já existente. Trabalhar só a partir dos dígitos, ignorando por
+// completo qualquer ponto/vírgula já no campo, elimina esse problema
+// por completo — e garante sempre exatamente 2 casas decimais (décimas
+// e centésimas), sem limite de grandeza no valor inteiro.
 function financeiroMascararInputEuro(bruto) {
-  let limpo = String(bruto || '').replace(/\./g, ',').replace(/[^\d,]/g, '');
-  const primeiraVirgula = limpo.indexOf(',');
-  let inteiro, decimal;
-  if (primeiraVirgula === -1) { inteiro = limpo; decimal = undefined; }
-  else { inteiro = limpo.slice(0, primeiraVirgula); decimal = limpo.slice(primeiraVirgula + 1).replace(/,/g, '').slice(0, 2); }
-  inteiro = inteiro.replace(/^0+(?=\d)/, '').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-  return decimal === undefined ? inteiro : `${inteiro || '0'},${decimal}`;
+  const digitos = String(bruto || '').replace(/\D/g, '').replace(/^0+(?=\d)/, '');
+  if (!digitos) return '';
+  const comZeros = digitos.length < 3 ? digitos.padStart(3, '0') : digitos;
+  const centavos = comZeros.slice(-2);
+  const inteiroPart = (comZeros.slice(0, -2).replace(/^0+(?=\d)/, '') || '0').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  return `${inteiroPart},${centavos}`;
 }
 // Formata um valor numérico já gravado (ex: 12774.74) para o mesmo
 // formato do input (ex: "12.774,74") — usado ao pré-preencher o
@@ -16181,7 +16189,7 @@ function abrirModalRegistarFaturacao(onGuardado, dataInicial) {
     h('div', { class: 'field' }, [h('label', {}, 'Número de Atendimentos'), atendimentosInput,
       h('p', { class: 'field-helper-text' }, 'Ler no Painel de Bordo do 4Digital.')]),
     h('div', { class: 'field' }, [h('label', {}, 'Faturação — Vendas menos Descontos (€)'), faturacaoInput,
-      h('p', { class: 'field-helper-text' }, 'Ler no Painel de Bordo do 4Digital, cartão "Vendas".')]),
+      h('p', { class: 'field-helper-text' }, 'Ler no Painel de Bordo do 4Digital, cartão "Vendas". Escreva só os números seguidos, sem vírgula — os últimos 2 são sempre os cêntimos (ex: 1277474 fica 12.774,74 €).')]),
     h('p', { class: 'field-helper-text', style: 'margin-top:-4px;' }, 'Pode preencher só um dos dois campos — o outro mantém o valor já gravado, se existir.'),
     errorEl,
     h('div', { class: 'form-actions' }, [guardarBtn, cancelBtn]),
