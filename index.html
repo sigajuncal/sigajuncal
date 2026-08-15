@@ -16078,7 +16078,31 @@ function abrirModalDefinirMetaAnual(anoDefault, onGuardado) {
 // campos, cada um independente (dá para gravar só a Faturação, só os
 // Atendimentos, ou os dois). Pensado para o registo diário rápido a
 // partir do Painel de Bordo do 4Digital: Faturação = cartão "Vendas"
-// (Vendas − Descontos); Atendimentos = número de atendimentos do dia. ----
+// (Vendas − Descontos); Atendimentos = número de atendimentos do dia.
+// Atendimentos é o primeiro campo a preencher (pedido do utilizador). ----
+// Mascara o Valor de Faturação enquanto se escreve, ao estilo português:
+// milhares separados por ponto, vírgula decimal — um ponto escrito pela
+// pessoa é tratado como se fosse vírgula (hábito mais comum ao digitar),
+// nunca aparece um ponto a menos que seja gerado automaticamente como
+// separador de milhares.
+function financeiroMascararInputEuro(bruto) {
+  let limpo = String(bruto || '').replace(/\./g, ',').replace(/[^\d,]/g, '');
+  const primeiraVirgula = limpo.indexOf(',');
+  let inteiro, decimal;
+  if (primeiraVirgula === -1) { inteiro = limpo; decimal = undefined; }
+  else { inteiro = limpo.slice(0, primeiraVirgula); decimal = limpo.slice(primeiraVirgula + 1).replace(/,/g, '').slice(0, 2); }
+  inteiro = inteiro.replace(/^0+(?=\d)/, '').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  return decimal === undefined ? inteiro : `${inteiro || '0'},${decimal}`;
+}
+// Formata um valor numérico já gravado (ex: 12774.74) para o mesmo
+// formato do input (ex: "12.774,74") — usado ao pré-preencher o
+// formulário a partir de um registo existente.
+function financeiroFormatarValorInputEuro(v) {
+  if (v === null || v === undefined || v === '') return '';
+  const num = Number(v);
+  if (isNaN(num)) return '';
+  return num.toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
 function abrirModalRegistarFaturacao(onGuardado, dataInicial) {
   if (!podeEditarFinanceiro()) { showToast('Sem permissão para alterar dados financeiros.', 'error'); return; }
   const overlay = h('div', { class: 'modal-overlay' });
@@ -16089,8 +16113,21 @@ function abrirModalRegistarFaturacao(onGuardado, dataInicial) {
 
   const dataInput = h('input', { class: 'input', type: 'date', max: todayISO() });
   dataInput.value = dataInicial || ontemISO();
-  const faturacaoInput = h('input', { class: 'input', type: 'number', step: '0.01', placeholder: '0.00', autofocus: 'autofocus' });
-  const atendimentosInput = h('input', { class: 'input', type: 'number', step: '1', min: '0', placeholder: '0' });
+  // Atendimentos — só dígitos, nunca negativo nem decimal (filtra em
+  // tempo real qualquer caráter que não seja 0-9).
+  const atendimentosInput = h('input', { class: 'input', type: 'text', inputmode: 'numeric', pattern: '[0-9]*', placeholder: '0', autofocus: 'autofocus' });
+  atendimentosInput.addEventListener('input', () => {
+    const limpo = atendimentosInput.value.replace(/[^\d]/g, '');
+    if (limpo !== atendimentosInput.value) atendimentosInput.value = limpo;
+  });
+  // Faturação — texto livre com máscara PT (milhares com ponto, decimal
+  // com vírgula), reformatada a cada tecla.
+  const faturacaoInput = h('input', { class: 'input', type: 'text', inputmode: 'decimal', placeholder: '0,00' });
+  faturacaoInput.addEventListener('input', () => {
+    faturacaoInput.value = financeiroMascararInputEuro(faturacaoInput.value);
+    const len = faturacaoInput.value.length;
+    faturacaoInput.setSelectionRange(len, len);
+  });
   const errorEl = h('p', { class: 'form-error' }, '');
   errorEl.style.display = 'none';
   // Título e botão de Guardar mudam consoante o dia escolhido já ter (ou
@@ -16104,7 +16141,7 @@ function abrirModalRegistarFaturacao(onGuardado, dataInicial) {
   // 0), o que reforça que gravar só um dos dois não apaga o outro.
   function carregarValoresExistentes() {
     const existente = financeiroRegistoDoDia(dataInput.value);
-    faturacaoInput.value = (existente && existente.faturacao !== null && existente.faturacao !== undefined) ? existente.faturacao : '';
+    faturacaoInput.value = (existente && existente.faturacao !== null && existente.faturacao !== undefined) ? financeiroFormatarValorInputEuro(existente.faturacao) : '';
     atendimentosInput.value = (existente && existente.atendimentos !== null && existente.atendimentos !== undefined) ? existente.atendimentos : '';
     tituloEl.textContent = existente ? 'Editar Registo do Dia' : 'Registar o Último Dia';
     guardarBtn.textContent = existente ? 'Guardar Alterações' : 'Guardar';
@@ -16125,7 +16162,7 @@ function abrirModalRegistarFaturacao(onGuardado, dataInicial) {
     const textoOriginalBtn = guardarBtn.textContent;
     guardarBtn.disabled = true; guardarBtn.textContent = 'A guardar…';
     const campos = {
-      faturacao: faturacaoInput.value === '' ? null : (parseFloat(faturacaoInput.value.replace(',', '.')) || 0),
+      faturacao: faturacaoInput.value === '' ? null : (parseFloat(faturacaoInput.value.replace(/\./g, '').replace(',', '.')) || 0),
       atendimentos: atendimentosInput.value === '' ? null : (parseInt(atendimentosInput.value, 10) || 0),
     };
     const resultado = await financeiroGuardarDia(dataInput.value, campos);
@@ -16141,17 +16178,17 @@ function abrirModalRegistarFaturacao(onGuardado, dataInicial) {
     ]),
     h('div', { class: 'field' }, [h('label', {}, 'Data'), melhorarInputData(dataInput),
       h('p', { class: 'field-helper-text' }, 'Por defeito, o dia de ontem — pode escolher qualquer outro dia (incluindo dias mais antigos) para corrigir ou completar um registo.')]),
-    h('div', { class: 'field' }, [h('label', {}, 'Faturação — Vendas menos Descontos (€)'), faturacaoInput,
-      h('p', { class: 'field-helper-text' }, 'Ler no Painel de Bordo do 4Digital, cartão "Vendas".')]),
     h('div', { class: 'field' }, [h('label', {}, 'Número de Atendimentos'), atendimentosInput,
       h('p', { class: 'field-helper-text' }, 'Ler no Painel de Bordo do 4Digital.')]),
+    h('div', { class: 'field' }, [h('label', {}, 'Faturação — Vendas menos Descontos (€)'), faturacaoInput,
+      h('p', { class: 'field-helper-text' }, 'Ler no Painel de Bordo do 4Digital, cartão "Vendas".')]),
     h('p', { class: 'field-helper-text', style: 'margin-top:-4px;' }, 'Pode preencher só um dos dois campos — o outro mantém o valor já gravado, se existir.'),
     errorEl,
     h('div', { class: 'form-actions' }, [guardarBtn, cancelBtn]),
   ]);
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
-  setTimeout(() => faturacaoInput.focus(), 60);
+  setTimeout(() => atendimentosInput.focus(), 60);
 }
 
 // ---- Verificação de Faturação em Falta (só Master/Administrador — ver
@@ -39294,6 +39331,18 @@ function resetInactivityTimer() {
 }
 function clearSessionSilently() {
   if (!activeUser) return;
+  // Se a pessoa está mesmo a trabalhar num formulário/modal aberto (ex: o
+  // registo do Financeiro, que às vezes exige ir consultar outro ecrã —
+  // o 4Digital — antes de escrever o valor, ficando minutos sem tocar no
+  // teclado desta app), adiar a expiração em vez de interromper à força
+  // a meio do preenchimento — só volta a tentar quando a pessoa deixar
+  // mesmo de estar ocupada (ver uiEstaOcupada). Sem isto, o pop-up de
+  // login voltava a aparecer por cima do formulário de tempos a tempos,
+  // mesmo com dados ainda por gravar.
+  if (uiEstaOcupada()) {
+    inactivityTimer = setTimeout(clearSessionSilently, 5000);
+    return;
+  }
   // Antes de limpar a sessão, propaga o marcador de "última leitura" do
   // chat para a chave de convidado — a contagem de não lidas continua
   // correta no ecrã de "Retomar Sessão", sem recontar o que já foi visto.
