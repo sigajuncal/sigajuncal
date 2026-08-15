@@ -1454,6 +1454,18 @@
     margin:0 0 16px;font-size:12.5px;color:#92400e;}
   .fin-alerta-bar-texto{display:flex;align-items:center;gap:8px;}
   .fin-alerta-bar-texto svg{flex-shrink:0;color:#d97706;}
+  /* Registo em Tabela (Vários Dias) — grelha compacta, um dia por
+     linha; linhas já com dados ficam com um fundo verde muito ténue,
+     para dar para ver de relance quais os dias em falta ao percorrer
+     um mês inteiro. */
+  .fin-tabela-massa{width:100%;border-collapse:collapse;}
+  .fin-tabela-massa th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.03em;
+    color:var(--pharm-500);padding:6px 8px;position:sticky;top:0;background:#fff;border-bottom:1px solid var(--pharm-200);}
+  .fin-tabela-massa td{padding:4px 8px;border-bottom:1px solid var(--pharm-100);}
+  .fin-tabela-massa-dia{font-size:12.5px;font-weight:700;color:var(--pharm-700);white-space:nowrap;text-transform:capitalize;}
+  .fin-tabela-massa input{padding:6px 8px;font-size:12.5px;}
+  .fin-tabela-massa tr.tem-dados{background:var(--green-bg);}
+  .fin-tabela-massa tr.tem-dados td:first-child{border-left:3px solid var(--green);}
 
   /* Entregas — ecrã de transição (escolha de farmácia) */
   .entrega-selector-grid{display:grid;grid-template-columns:1fr;gap:18px;max-width:520px;margin:32px 0 0;}
@@ -16265,6 +16277,155 @@ function abrirModalRegistarFaturacao(onGuardado, dataInicial) {
   setTimeout(() => atendimentosInput.focus(), 60);
 }
 
+// ---- Registo em Tabela (Vários Dias) — pensado para pôr em dia dados
+// de anos anteriores (ex: desde 2021): uma grelha com um dia por linha
+// e 2 colunas (Atendimentos, Faturação), ao estilo de uma folha de
+// cálculo — muito mais rápido do que abrir o modal "Registar o Último
+// Dia" um dia de cada vez. Navega por Ano/Mês (selects diretos, para
+// saltar já para qualquer ano sem ter de andar mês a mês) e grava só as
+// linhas alteradas (guarda por dia, mesma RPC/UPSERT de sempre —
+// rpc_financeiro_guardar_dia — cada campo continua independente). Só
+// Paulo/Hugo (podeEditarFinanceiro) têm acesso. ----
+function abrirModalRegistoEmTabela(onGuardado) {
+  if (!podeEditarFinanceiro()) { showToast('Sem permissão para alterar dados financeiros.', 'error'); return; }
+  const hojeReal = new Date();
+  const anoAtualReal = hojeReal.getFullYear();
+  const ANO_MAIS_ANTIGO = 2021;
+  let anoSel = anoAtualReal;
+  let mesSel = hojeReal.getMonth() + 1;
+  // dataISO -> { faturacao, atendimentos } — só as linhas alteradas
+  // desde a última vez que a tabela foi (re)carregada/guardada.
+  let alteracoes = {};
+
+  const overlay = h('div', { class: 'modal-overlay' });
+  function fecharDeVez() { document.removeEventListener('keydown', onKeydown); overlay.remove(); }
+  function close() {
+    if (Object.keys(alteracoes).length) {
+      confirmDialog('Há alterações por guardar — se fechar agora, perdem-se. Deseja continuar mesmo assim?', fecharDeVez, { confirmLabel: 'Fechar assim mesmo' });
+      return;
+    }
+    fecharDeVez();
+  }
+  function onKeydown(e) { if (e.key === 'Escape') close(); }
+  document.addEventListener('keydown', onKeydown);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  const corpoTabela = h('tbody', {});
+  const tabelaWrap = h('div', { class: 'table-wrap', style: 'max-height:52vh;overflow-y:auto;margin-top:12px;' }, [
+    h('table', { class: 'fin-tabela-massa' }, [
+      h('thead', {}, h('tr', {}, ['Dia', 'Atendimentos', 'Faturação (€)'].map(t => h('th', {}, t)))),
+      corpoTabela,
+    ]),
+  ]);
+  const contagemEl = h('p', { class: 'field-helper-text', style: 'margin:10px 0 0;' }, '');
+  const guardarBtn = h('button', { class: 'btn btn-primary' }, 'Guardar Alterações');
+  guardarBtn.disabled = true;
+
+  function marcarAlteracao(dataISO, campo, valor) {
+    if (!alteracoes[dataISO]) alteracoes[dataISO] = {};
+    alteracoes[dataISO][campo] = valor;
+    atualizarContagem();
+  }
+  function atualizarContagem() {
+    const n = Object.keys(alteracoes).length;
+    contagemEl.textContent = n ? `${n} dia${n > 1 ? 's' : ''} por guardar.` : 'Sem alterações por guardar.';
+    guardarBtn.disabled = n === 0;
+  }
+
+  function renderTabela() {
+    clear(corpoTabela);
+    alteracoes = {};
+    atualizarContagem();
+    const diasNoMes = new Date(anoSel, mesSel, 0).getDate();
+    for (let dia = 1; dia <= diasNoMes; dia++) {
+      const dataISO = `${anoSel}-${pad2(mesSel)}-${pad2(dia)}`;
+      if (dataISO > todayISO()) break; // não faz sentido preencher dias futuros
+      const existente = financeiroRegistoDoDia(dataISO);
+      const temDados = !!(existente && ((existente.faturacao !== null && existente.faturacao !== undefined && existente.faturacao !== '') || (existente.atendimentos !== null && existente.atendimentos !== undefined && existente.atendimentos !== '')));
+      const nomeDiaSemana = new Date(dataISO + 'T00:00:00').toLocaleDateString('pt-PT', { weekday: 'short' });
+
+      const atendimentosInput = h('input', { class: 'input', type: 'text', inputmode: 'numeric', pattern: '[0-9]*', placeholder: '—' });
+      atendimentosInput.value = (existente && existente.atendimentos !== null && existente.atendimentos !== undefined) ? existente.atendimentos : '';
+      atendimentosInput.addEventListener('input', () => {
+        const limpo = atendimentosInput.value.replace(/[^\d]/g, '');
+        if (limpo !== atendimentosInput.value) atendimentosInput.value = limpo;
+        marcarAlteracao(dataISO, 'atendimentos', atendimentosInput.value === '' ? null : (parseInt(atendimentosInput.value, 10) || 0));
+      });
+
+      const faturacaoInput = h('input', { class: 'input', type: 'text', inputmode: 'decimal', placeholder: '—' });
+      faturacaoInput.value = (existente && existente.faturacao !== null && existente.faturacao !== undefined) ? financeiroFormatarValorInputEuro(existente.faturacao) : '';
+      faturacaoInput.addEventListener('input', () => {
+        faturacaoInput.value = financeiroMascararInputEuro(faturacaoInput.value);
+        const len = faturacaoInput.value.length;
+        faturacaoInput.setSelectionRange(len, len);
+        marcarAlteracao(dataISO, 'faturacao', faturacaoInput.value === '' ? null : (parseFloat(faturacaoInput.value.replace(/\./g, '').replace(',', '.')) || 0));
+      });
+
+      corpoTabela.appendChild(h('tr', { class: temDados ? 'tem-dados' : undefined }, [
+        h('td', { class: 'fin-tabela-massa-dia' }, `${String(dia).padStart(2, '0')} ${nomeDiaSemana}`),
+        h('td', {}, atendimentosInput),
+        h('td', {}, faturacaoInput),
+      ]));
+    }
+  }
+
+  const anoSelect = h('select', { class: 'input', style: 'max-width:110px;' });
+  for (let a = anoAtualReal; a >= ANO_MAIS_ANTIGO; a--) anoSelect.appendChild(h('option', { value: a }, String(a)));
+  anoSelect.value = String(anoSel);
+  function trocarPeriodo(aplicar) {
+    if (Object.keys(alteracoes).length) {
+      confirmDialog('Há alterações por guardar neste mês — se mudar agora, perdem-se. Deseja continuar mesmo assim?', () => { aplicar(); renderTabela(); }, { confirmLabel: 'Mudar assim mesmo' });
+      // Repõe o valor visual do select se a pessoa cancelar a troca.
+      anoSelect.value = String(anoSel);
+      mesSelect.value = String(mesSel);
+    } else { aplicar(); renderTabela(); }
+  }
+  anoSelect.addEventListener('change', () => trocarPeriodo(() => { anoSel = parseInt(anoSelect.value, 10); }));
+
+  const mesSelect = h('select', { class: 'input', style: 'max-width:160px;' });
+  MESES_PT_NOMES.forEach((nome, i) => mesSelect.appendChild(h('option', { value: i + 1 }, nome)));
+  mesSelect.value = String(mesSel);
+  mesSelect.addEventListener('change', () => trocarPeriodo(() => { mesSel = parseInt(mesSelect.value, 10); }));
+
+  guardarBtn.addEventListener('click', () => requireAuth(async () => {
+    const entradas = Object.entries(alteracoes);
+    if (!entradas.length) return;
+    const textoOriginal = guardarBtn.textContent;
+    guardarBtn.disabled = true;
+    let falhas = [];
+    for (let i = 0; i < entradas.length; i++) {
+      const [dataISO, campos] = entradas[i];
+      guardarBtn.textContent = `A guardar ${i + 1}/${entradas.length}…`;
+      const resultado = await financeiroGuardarDia(dataISO, campos);
+      if (!resultado) falhas.push(dataISO);
+    }
+    guardarBtn.textContent = textoOriginal;
+    renderTabela(); // relê STATE.financeiro já atualizado e limpa "alterações"
+    if (onGuardado) onGuardado();
+    if (falhas.length) showToast(`Guardado com ${falhas.length} falha(s): ${falhas.map(d => formatDate(d)).join(', ')}`, 'error');
+    else showToast(`${entradas.length} dia${entradas.length > 1 ? 's' : ''} guardado${entradas.length > 1 ? 's' : ''}.`, 'success');
+  }));
+  const fecharBtn = h('button', { class: 'btn btn-secondary', onclick: close }, 'Fechar');
+
+  const panel = h('div', { class: 'modal-panel', style: 'max-width:640px;' }, [
+    h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;' }, [
+      h('p', { class: 'modal-title', style: 'margin:0;' }, 'Registo em Tabela — Vários Dias'),
+      h('button', { class: 'close-btn', onclick: close, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
+    ]),
+    h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, 'Útil para pôr em dia dados de anos anteriores — preencha o que tiver e passe ao mês seguinte. Linhas já preenchidas ficam destacadas a verde.'),
+    h('div', { style: 'display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;' }, [
+      h('div', { class: 'field', style: 'margin-bottom:0;' }, [h('label', {}, 'Ano'), anoSelect]),
+      h('div', { class: 'field', style: 'margin-bottom:0;' }, [h('label', {}, 'Mês'), mesSelect]),
+    ]),
+    tabelaWrap,
+    contagemEl,
+    h('div', { class: 'form-actions' }, [guardarBtn, fecharBtn]),
+  ]);
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+  renderTabela();
+}
+
 // ---- Verificação de Faturação em Falta (só Master/Administrador — ver
 // podeEditarFinanceiro) — percorre os dias anteriores a partir de ontem,
 // à procura de dias sem NENHUM valor de Faturação conhecido
@@ -16695,9 +16856,15 @@ function buildFinanceiroPage(container, goTo) {
     // para não duplicar a ação em dois sítios da página. ----
     const csvBtn = h('button', { class: 'btn btn-secondary', style: 'margin:14px 8px 18px 0;font-size:12.5px;' }, [Icon('download', { size: 13 }), ' Exportar CSV']);
     csvBtn.addEventListener('click', () => requireAuth(abrirModalExportarCSV));
-    const pdfBtn = h('button', { class: 'btn btn-secondary', style: 'margin:14px 0 18px;font-size:12.5px;' }, [Icon('printer', { size: 13 }), ' Gerar Relatório PDF']);
+    const pdfBtn = h('button', { class: 'btn btn-secondary', style: 'margin:14px 8px 18px 0;font-size:12.5px;' }, [Icon('printer', { size: 13 }), ' Gerar Relatório PDF']);
     pdfBtn.addEventListener('click', () => requireAuth(abrirModalRelatorioPDF));
-    wrap.appendChild(h('div', {}, [csvBtn, pdfBtn]));
+    const botoesTopo = [csvBtn, pdfBtn];
+    if (podeEditar) {
+      const tabelaBtn = h('button', { class: 'btn btn-secondary', style: 'margin:14px 0 18px;font-size:12.5px;' }, [Icon('clipboard', { size: 13 }), ' Registo em Tabela (Vários Dias)']);
+      tabelaBtn.addEventListener('click', () => requireAuth(() => abrirModalRegistoEmTabela(rerender)));
+      botoesTopo.push(tabelaBtn);
+    }
+    wrap.appendChild(h('div', {}, botoesTopo));
 
     // ---- Barra de alerta discreta para dias em falta — só visível para
     // quem pode editar Faturação (Diretor Técnico/Master ou
