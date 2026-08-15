@@ -16002,7 +16002,8 @@ function buildLinhaCumprimento(acumulado, objetivo) {
 // cima da barra (como um pequeno popup), e destaca a barra selecionada;
 // clicar de novo na mesma barra esconde-o outra vez. Só uma barra fica
 // selecionada de cada vez.
-function buildFinanceiroBarraChart(itens, alturaPx) {
+function buildFinanceiroBarraChart(itens, alturaPx, formatarValor) {
+  formatarValor = formatarValor || ((v) => financeiroFormatarEuro(v, 2));
   const max = Math.max(1, ...itens.map(it => it.valor));
   let selecionado = null; // índice da barra com o valor fixo/visível
 
@@ -16012,7 +16013,7 @@ function buildFinanceiroBarraChart(itens, alturaPx) {
     clear(wrap);
     itens.forEach((it, i) => {
       const ativo = selecionado === i;
-      const valorTexto = financeiroFormatarEuro(it.valor, 2);
+      const valorTexto = formatarValor(it.valor);
       const col = h('div', {
         class: 'fin-chart-col' + (ativo ? ' fin-chart-col-ativo' : ''),
         title: `${it.rotulo}: ${valorTexto}`,
@@ -16253,10 +16254,23 @@ function abrirModalRegistarFaturacao(onGuardado, dataInicial) {
       atendimentos: atendimentosInput.value === '' ? null : (parseInt(atendimentosInput.value, 10) || 0),
     };
     const resultado = await financeiroGuardarDia(dataInput.value, campos);
-    if (resultado) { close(); onGuardado(); }
+    if (resultado) {
+      guardarBtn.disabled = false;
+      showToast('Registo guardado.', 'success');
+      if (onGuardado) onGuardado(); // atualiza os cartões da página por trás, sem fechar este modal
+      // Continua no formulário em vez de fechar — avança automaticamente
+      // para o dia anterior (o sentido em que as setas já estavam a ser
+      // usadas, útil para preencher vários dias seguidos sem reabrir o
+      // modal a cada um); carregarValoresExistentes() já atualiza
+      // título/botão/campos para o novo dia.
+      dataInput.value = financeiroDiaAnterior(dataInput.value);
+      dataStepper.atualizarEstadoNext();
+      carregarValoresExistentes();
+      atendimentosInput.focus();
+    }
     else { guardarBtn.disabled = false; guardarBtn.textContent = textoOriginalBtn; showDbErrorToast('Não foi possível guardar o registo do dia'); }
   }));
-  const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: close }, 'Cancelar');
+  const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: close }, 'Fechar');
 
   const dataStepper = buildDataComSetas(dataInput, () => carregarValoresExistentes(), todayISO());
 
@@ -16560,32 +16574,59 @@ function buildFinanceiroPesquisaCard(onGuardadoGlobal) {
 // ---- Gráfico: Evolução Mensal Homóloga 2025 vs 2026 — cartão em
 // full-width no fundo da página do Financeiro; as barras usam largura
 // flexível (ver .fin-chart-col) para caberem sempre na largura total do
-// cartão, sem precisar de scroll horizontal. ----
+// cartão, sem precisar de scroll horizontal. Tem um seletor Faturação/
+// Atendimentos — mesma estrutura de dados, troca só a métrica. ----
 function buildFinanceiroEvolucaoCard() {
   const anoAtual = new Date().getFullYear();
   const anoAnterior = anoAtual - 1;
-  const itensEvolucao = [];
-  MESES_PT_NOMES.forEach((nome, i) => {
-    const mes = i + 1;
-    const vAnt = financeiroTotalMes(anoAnterior, mes);
-    const vAtual = financeiroTotalMes(anoAtual, mes);
-    if (vAnt) itensEvolucao.push({ rotulo: `${nome.slice(0, 3)} '${String(anoAnterior).slice(2)}`, valor: vAnt, cor: '#94a3b8' });
-    if (vAtual) itensEvolucao.push({ rotulo: `${nome.slice(0, 3)} '${String(anoAtual).slice(2)}`, valor: vAtual, cor: '#3b82f6' });
-  });
-  return h('div', { class: 'card fin-card-compact', style: 'margin-bottom:18px;' }, [
-    h('h3', { class: 'dash-card-title', style: 'margin:0 0 4px;' }, `Evolução Mensal Homóloga — ${anoAnterior} vs ${anoAtual}`),
-    h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, 'Total de Faturação por mês.'),
-    itensEvolucao.length
-      ? buildFinanceiroBarraChart(itensEvolucao, 180)
+  let metrica = 'faturacao'; // ou 'atendimentos'
+
+  function construirItens(campo) {
+    const itens = [];
+    const corAtual = campo === 'atendimentos' ? 'var(--green)' : '#3b82f6';
+    MESES_PT_NOMES.forEach((nome, i) => {
+      const mes = i + 1;
+      const vAnt = financeiroTotalMes(anoAnterior, mes, campo);
+      const vAtual = financeiroTotalMes(anoAtual, mes, campo);
+      if (vAnt) itens.push({ rotulo: `${nome.slice(0, 3)} '${String(anoAnterior).slice(2)}`, valor: vAnt, cor: '#94a3b8' });
+      if (vAtual) itens.push({ rotulo: `${nome.slice(0, 3)} '${String(anoAtual).slice(2)}`, valor: vAtual, cor: corAtual });
+    });
+    return itens;
+  }
+
+  const corpo = h('div', {});
+  const faturacaoBtn = h('button', { type: 'button', class: 'tab-btn' }, 'Faturação');
+  const atendimentosBtn = h('button', { type: 'button', class: 'tab-btn' }, 'Atendimentos');
+  faturacaoBtn.addEventListener('click', () => { metrica = 'faturacao'; renderCorpo(); });
+  atendimentosBtn.addEventListener('click', () => { metrica = 'atendimentos'; renderCorpo(); });
+
+  function renderCorpo() {
+    clear(corpo);
+    faturacaoBtn.classList.toggle('active', metrica === 'faturacao');
+    atendimentosBtn.classList.toggle('active', metrica === 'atendimentos');
+    const itensEvolucao = construirItens(metrica);
+    const formatarValor = metrica === 'atendimentos' ? financeiroFormatarNumero : ((v) => financeiroFormatarEuro(v, 2));
+    corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, metrica === 'atendimentos' ? 'Total de Atendimentos por mês.' : 'Total de Faturação por mês.'));
+    corpo.appendChild(itensEvolucao.length
+      ? buildFinanceiroBarraChart(itensEvolucao, 180, formatarValor)
       : h('div', { class: 'fin-empty-state', style: 'height:180px;justify-content:center;' }, [
           Icon('activity', { size: 24, strokeWidth: 1.7 }),
           h('p', { class: 'fin-empty-titulo' }, 'O gráfico aparece assim que houver dados'),
-          h('p', {}, 'Registe pelo menos um dia de Faturação — as barras deste mês aparecem aqui automaticamente.'),
-        ]),
-    h('div', { style: 'display:flex;gap:16px;margin-top:10px;font-size:11px;color:var(--pharm-500);' }, [
+          h('p', {}, metrica === 'atendimentos' ? 'Registe pelo menos um dia de Atendimentos — as barras deste mês aparecem aqui automaticamente.' : 'Registe pelo menos um dia de Faturação — as barras deste mês aparecem aqui automaticamente.'),
+        ]));
+    corpo.appendChild(h('div', { style: 'display:flex;gap:16px;margin-top:10px;font-size:11px;color:var(--pharm-500);' }, [
       h('span', {}, [h('span', { style: 'display:inline-block;width:9px;height:9px;background:#94a3b8;border-radius:2px;margin-right:5px;' }), String(anoAnterior)]),
-      h('span', {}, [h('span', { style: 'display:inline-block;width:9px;height:9px;background:#3b82f6;border-radius:2px;margin-right:5px;' }), String(anoAtual)]),
+      h('span', {}, [h('span', { style: `display:inline-block;width:9px;height:9px;background:${metrica === 'atendimentos' ? 'var(--green)' : '#3b82f6'};border-radius:2px;margin-right:5px;` }), String(anoAtual)]),
+    ]));
+  }
+  renderCorpo();
+
+  return h('div', { class: 'card fin-card-compact', style: 'margin-bottom:18px;' }, [
+    h('div', { style: 'display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px;' }, [
+      h('h3', { class: 'dash-card-title', style: 'margin:0;' }, `Evolução Mensal Homóloga — ${anoAnterior} vs ${anoAtual}`),
+      h('div', { style: 'display:flex;gap:6px;' }, [faturacaoBtn, atendimentosBtn]),
     ]),
+    corpo,
   ]);
 }
 // ---- Exportação CSV ----
@@ -17018,27 +17059,6 @@ function buildFinanceiroPage(container, goTo) {
     // ---- Evolução Mensal Homóloga — gráfico anual em full-width no
     // fundo, sem scroll horizontal. ----
     wrap.appendChild(buildFinanceiroEvolucaoCard());
-
-    // ---- Últimos registos — qualquer linha com Faturação e/ou
-    // Atendimentos preenchidos (inclui dias antigos registados agora
-    // retroativamente); linhas antigas da tabela sem nenhum dos 2 campos
-    // (só com os campos do modelo anterior) ficam de fora naturalmente. ----
-    const temValor = (v) => v !== null && v !== undefined && v !== '';
-    const recentes = (STATE.financeiro || []).filter(r => temValor(r.faturacao) || temValor(r.atendimentos)).slice().sort((a, b) => (b.data || '').localeCompare(a.data || '')).slice(0, 10);
-    if (recentes.length) {
-      wrap.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:0 0 10px;' }, 'Últimos Registos'));
-      wrap.appendChild(h('div', { class: 'table-wrap card' }, [
-        h('table', {}, [
-          h('thead', {}, h('tr', {}, ['Data', 'Faturação (€)', 'Atendimentos', 'Registado por'].map(t => h('th', {}, t)))),
-          h('tbody', {}, recentes.map(r => h('tr', {}, [
-            h('td', {}, formatDate(r.data)),
-            h('td', { class: 'cell-strong' }, (r.faturacao === null || r.faturacao === undefined || r.faturacao === '') ? '—' : financeiroFormatarEuro(r.faturacao, 2)),
-            h('td', {}, (r.atendimentos === null || r.atendimentos === undefined || r.atendimentos === '') ? '—' : financeiroFormatarNumero(r.atendimentos)),
-            h('td', { title: r.registadoPor || undefined }, r.registadoPor ? formatarNomeResponsavelTabela(r.registadoPor, STATE.usuarios) : '—'),
-          ]))),
-        ]),
-      ]));
-    }
 
     return wrap;
   }
