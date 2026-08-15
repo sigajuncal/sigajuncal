@@ -7727,17 +7727,11 @@ async function dbPermanentDelete(listKey, id) {
 // servidor.
 const CAMPOS_SO_UI_POR_TABELA = {
   entregas: ['entregaEmpresaParceira'],
-  // valorCaixa e faturacaoTotal são colunas GERADAS no Postgres
-  // (numerario+banco+cheque, e numerario+banco+cheque+entidades+credito,
-  // respetivamente — calculadas sempre pelo próprio Supabase) — nunca
-  // podem ser enviadas num INSERT/UPDATE, senão o Postgres rejeita com
-  // erro. São "só de leitura", mesmo sendo dados de negócio reais (ao
-  // contrário de entregaEmpresaParceira acima, que é puramente estado de
-  // UI) — a razão da exclusão é diferente, mas o mecanismo é o mesmo. Na
-  // prática o módulo Financeiro grava sempre via RPC dedicado
-  // (financeiroGuardarDia), nunca pelo dbInsert/dbUpdate genérico — esta
-  // entrada fica como rede de segurança caso isso alguma vez mude.
-  financeiro: ['valorCaixa', 'faturacaoTotal'],
+  // O módulo Financeiro grava sempre via RPC dedicado
+  // (financeiroGuardarDia/rpc_financeiro_guardar_dia), nunca pelo
+  // dbInsert/dbUpdate genérico — esta entrada vazia fica como rede de
+  // segurança caso isso alguma vez mude.
+  financeiro: [],
   // desafios (Prémios): nem "tipo"/"tipo_premio" nem "marca_laboratorio"/
   // "marca" existem na tabela real "farmacia_desafios" — ambos ficam
   // gravados dentro do próprio campo "objetivo" (Objetivo/Regras), com um
@@ -15444,42 +15438,30 @@ function buildValidadesPage(container, goTo) {
 }
 
 /* =================================================================
-   FINANCEIRO — Faturação Total = Valor de Caixa + Entidades + Crédito
-   Cada dia é reduzido a um único valor diário — a "Faturação Real"/
-   "Faturação Total" — que é Numerário+Banco+Cheque (Valor de Caixa) +
-   Entidades + Crédito. Mov. de Caixa e Trocas entre Farmácias são só
-   registos de controlo/ajuste — NUNCA entram nesta soma (ver
-   financeiroFaturacaoDoDia).
-   HISTORICO_CAIXA_DIARIO (abaixo) é o histórico REAL diário, extraído
-   dos relatórios "Totais de Caixa" da Farmácia Juncal, cobrindo 2024,
-   2025 e 2026 (até 01-08-2026) — 942 dias.
-   RECONCILIADO (2026-08-01) com os totais oficiais "Sem Trocas" da
-   Juncal (fonte: FACTURAÇÃO_GRUPO_2025_V1.xlsx / FACTURAÇÃO_GRUPO_2026.xlsx,
-   folhas "Sem Trocas"/"FT Sem Trocas", coluna Juncal Real — mesma
-   métrica que o 4Digital mostra como Faturação Real Líquida) para
-   TODOS os meses de 2025 (Jan-Dez) e 2026 (Jan-Jul): cada mês foi
-   recalculado a partir do ledger diário detalhado por operador
-   (Resumo_Caixa24-26.pdf — Valor Caixa+Crédito+Entidades, excluindo as
-   linhas "Trocas" de cada dia) e depois escalado com o rácio próprio
-   desse mês (oficial/bruto-do-PDF, varia entre ~0,90 e ~0,94 consoante
-   o mês — a proporção de trocas NÃO é constante) para bater
-   exatamente com o valor oficial — mantém a curva/distribuição diária
-   real do PDF, só a escala de cada mês é ajustada. AINDA POR
-   RECONCILIAR: 2024 completo (Jan-Dez) — os 2 ficheiros de faturação
-   do grupo fornecidos só têm o total anual de 2024 (3 844 276,46€,
-   não usado por não ter quebra mensal), sem dados mensais reais;
-   esses 12 meses continuam na aproximação antiga (Valor Caixa +
-   Entidades, sem Crédito, sem dedução de Trocas) até haver uma fonte
-   com granularidade mensal ou diária para 2024.
-   Dias sem entrada (ex: 25 de dezembro) correspondem a farmácia
-   fechada nesse dia, não a uma falha de importação. Esta base
-   incorporada é o que permite a Pesquisa de Data Específica e os
-   comparativos funcionarem já para qualquer dia de 2024/2025/2026,
-   mesmo antes de a equipa registar um único dia novo por este módulo.
-   Um registo manual para uma data tem sempre prioridade sobre o
-   histórico incorporado dessa mesma data (financeiroFaturacaoDoDia),
-   para se poder corrigir um dia importado sem tocar no ficheiro fonte.
+   FINANCEIRO — modelo simplificado (a partir de FINANCEIRO_DATA_CORTE)
+   Cada dia passa a ter só DOIS valores, cada um registável de forma
+   isolada (podem ser gravados em momentos diferentes, um sem mexer no
+   outro): "Faturação" (Vendas − Descontos, exatamente como o 4Digital
+   mostra no cartão "Vendas" do Painel de Bordo) e "Atendimentos"
+   (número de atendimentos/movimentos do dia, também lido do Painel de
+   Bordo). Já não há fórmula nenhuma a calcular (Valor de Caixa,
+   Entidades, Crédito, etc.) — os dois valores são inseridos tal como
+   aparecem no 4Digital.
+   A PEDIDO DO UTILIZADOR (2026-08-15): todos os dados anteriormente
+   registados — quer o histórico embutido HISTORICO_CAIXA_DIARIO
+   (mantido abaixo só como arquivo, já não é lido por nenhuma função),
+   quer quaisquer registos manuais anteriores a FINANCEIRO_DATA_CORTE —
+   deixam de ser usados pela app: métricas, comparativos e Verificação
+   de Dias em Falta só consideram dias a partir dessa data em diante.
+   Isto significa que os comparativos com o "dia/mês/ano homólogo" só
+   voltam a mostrar valores reais quando já existir um ano inteiro de
+   dados novos — até lá mostram "Sem dados suficientes", em vez de
+   misturar com o histórico antigo.
+   Um registo manual tem sempre prioridade — cada campo (Faturação,
+   Atendimentos) é independente: gravar só um deles nunca apaga o
+   outro (ver financeiroGuardarDia / rpc_financeiro_guardar_dia).
 ================================================================= */
+const FINANCEIRO_DATA_CORTE = '2026-08-15';
 const HISTORICO_CAIXA_DIARIO = {
   // 2024
   '2024-01-01':2629.71, '2024-01-02':7719.77, '2024-01-03':10194.24, '2024-01-04':8846.75, '2024-01-05':9079.40, '2024-01-06':7443.52, '2024-01-07':5948.18, '2024-01-08':8666.09,
@@ -15643,59 +15625,44 @@ function financeiroFormatarEuro(v, casas) {
 function financeiroRegistoDoDia(dataISO) {
   return (STATE.financeiro || []).find(r => r.data === dataISO);
 }
-// Faturação Total de UM dia = Valor de Caixa (Numerário+Banco+Cheque) +
-// Entidades + Crédito — fórmula canónica alinhada com os relatórios
-// "Totais de Caixa" do 4Digital (Resumo_Caixa24-26.pdf) e os mapas
-// mensais do grupo (FACTURAÇÃO_GRUPO.xlsx). Movimentos de Caixa e Trocas
-// são campos de controlo/ajuste, gravados para consulta mas NÃO entram
-// nesta fórmula. Prioriza sempre um registo manual sobre o histórico
-// incorporado da mesma data. Devolve null quando não há qualquer valor
-// conhecido para esse dia (dia futuro, ou farmácia fechada — ex: 25 de
-// dezembro).
-// NOTA sobre o histórico incorporado: HISTORICO_CAIXA_DIARIO (942 dias de
-// 2024-2026, extraído dos PDFs "Totais de Caixa" antes desta granularidade
-// existir) continua a refletir só Caixa + Entidades — só os dias
-// registados manualmente a partir de agora têm a granularidade completa
-// (Numerário/Banco/Cheque/Entidades/Crédito/Mov.Caixa/Trocas).
-function financeiroFaturacaoDoDia(dataISO) {
+// Leitura genérica de UM campo ('faturacao' ou 'atendimentos') de UM dia.
+// Ignora sempre: (1) dias anteriores a FINANCEIRO_DATA_CORTE — dados
+// antigos deixaram de contar, a pedido do utilizador; (2) o histórico
+// embutido HISTORICO_CAIXA_DIARIO, que nunca mais é consultado. Devolve
+// null quando não há valor conhecido para esse dia/campo (dia futuro,
+// dia sem registo, ou campo não preenchido nesse registo — cada campo é
+// independente, podem existir dias só com Faturação e sem Atendimentos,
+// ou vice-versa).
+function financeiroValorDoDia(dataISO, campo) {
+  campo = campo || 'faturacao';
+  if (dataISO < FINANCEIRO_DATA_CORTE) return null;
   const registo = financeiroRegistoDoDia(dataISO);
-  if (registo && registo.numerario !== '' && registo.numerario !== undefined && registo.numerario !== null) {
-    const numerario = parseFloat(registo.numerario) || 0;
-    const banco = parseFloat(registo.banco) || 0;
-    const cheque = parseFloat(registo.cheque) || 0;
-    const entidades = parseFloat(registo.entidades) || 0;
-    const credito = parseFloat(registo.credito) || 0;
-    return numerario + banco + cheque + entidades + credito;
-  }
-  if (Object.prototype.hasOwnProperty.call(HISTORICO_CAIXA_DIARIO, dataISO)) return HISTORICO_CAIXA_DIARIO[dataISO];
-  return null;
+  if (!registo) return null;
+  const v = registo[campo];
+  if (v === '' || v === undefined || v === null) return null;
+  return campo === 'atendimentos' ? (parseInt(v, 10) || 0) : (parseFloat(v) || 0);
 }
-// Valor de Caixa (Numerário+Banco+Cheque) de um registo manual — mostrado
-// à parte da Faturação Total na tabela de "Últimos Registos Manuais",
-// para se distinguir sempre o que entrou fisicamente na caixa do que é
-// faturação a terceiros/crédito.
-function financeiroValorCaixaRegisto(registo) {
-  if (!registo) return 0;
-  return (parseFloat(registo.numerario) || 0) + (parseFloat(registo.banco) || 0) + (parseFloat(registo.cheque) || 0);
-}
+// Mantidos por compatibilidade com o resto do módulo (equivalem a
+// financeiroValorDoDia com o campo já escolhido).
+function financeiroFaturacaoDoDia(dataISO) { return financeiroValorDoDia(dataISO, 'faturacao'); }
+function financeiroAtendimentosDoDia(dataISO) { return financeiroValorDoDia(dataISO, 'atendimentos'); }
 // UPSERT via RPC segura (rpc_financeiro_guardar_dia) — a tabela
 // faturacao_diaria continua a não aceitar INSERT/UPDATE diretos da app
 // (ver script SQL de RLS); a função valida no servidor que quem chama é
-// mesmo Master antes de gravar. RPC expandido (2026-08-01) para a
-// granularidade real do relatório "Totais de Caixa" do 4Digital — os 7
-// campos vão cada um para a sua própria coluna, sem combinações/dedução
-// nenhuma feita do lado da app; valor_caixa e faturacao_total são colunas
-// GERADAS no Postgres (ver SQL fornecido). REQUER correr a nova versão do
-// RPC no Supabase (substitui a assinatura anterior de 2 parâmetros).
+// mesmo Master antes de gravar. Modelo simplificado (2026-08-15): só 2
+// campos, cada um independente — p_faturacao/p_atendimentos vão null
+// quando esse campo não foi preenchido no formulário, para o RPC manter
+// (COALESCE) o valor já gravado nesse dia em vez de o apagar. Isto é o
+// que permite "inserir valores de forma isolada" (só a Faturação, só os
+// Atendimentos, ou os dois de uma vez).
 async function financeiroGuardarDia(dataISO, campos) {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível (verifique se o CDN do Supabase carregou).'; return null; }
   if (!activeUser || !activeUserPin) { lastDbError = 'Sessão inválida — inicie sessão novamente.'; return null; }
   try {
     const { data, error } = await sb.rpc('rpc_financeiro_guardar_dia', {
       p_username: activeUser.username, p_pin: activeUserPin, p_data: dataISO,
-      p_numerario: campos.numerario || 0, p_banco: campos.banco || 0, p_cheque: campos.cheque || 0,
-      p_entidades: campos.entidades || 0, p_credito: campos.credito || 0,
-      p_mov_caixa: campos.movCaixa || 0, p_trocas: campos.trocas || 0,
+      p_faturacao: (campos.faturacao === null || campos.faturacao === undefined) ? null : campos.faturacao,
+      p_atendimentos: (campos.atendimentos === null || campos.atendimentos === undefined) ? null : campos.atendimentos,
       p_registado_por: currentUserName(),
     });
     if (error) { if (erroDeRede(error)) marcarConexao(false); lastDbError = error.message; console.error('[Supabase] erro ao guardar faturação do dia:', error.message); return null; }
@@ -15706,45 +15673,49 @@ async function financeiroGuardarDia(dataISO, campos) {
   } catch (e) { if (erroDeRede(e)) marcarConexao(false); lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error('[Supabase] erro de rede ao guardar faturação do dia:', formatarErroSeguro(e)); return null; }
 }
 function financeiroDiasDoMes(ano, mes) { return new Date(ano, mes, 0).getDate(); }
-// Todos os dias de um mês com Faturação Total conhecida (histórico ou
-// registo manual) — dias futuros ou sem dados (farmácia fechada) ficam
-// simplesmente de fora, em vez de contar como zero.
-function financeiroRegistosDoMes(ano, mes) {
+// Todos os dias de um mês com o campo indicado ('faturacao' por defeito,
+// ou 'atendimentos') conhecido — dias futuros, anteriores a
+// FINANCEIRO_DATA_CORTE, ou simplesmente sem esse campo preenchido ficam
+// de fora, em vez de contar como zero.
+function financeiroRegistosDoMes(ano, mes, campo) {
+  campo = campo || 'faturacao';
   const n = financeiroDiasDoMes(ano, mes);
   const out = [];
   for (let dia = 1; dia <= n; dia++) {
     const dataISO = `${ano}-${pad2(mes)}-${pad2(dia)}`;
-    const valor = financeiroFaturacaoDoDia(dataISO);
+    const valor = financeiroValorDoDia(dataISO, campo);
     if (valor !== null) out.push({ data: dataISO, valor });
   }
   return out;
 }
-function financeiroTotalMes(ano, mes) {
-  return financeiroRegistosDoMes(ano, mes).reduce((s, r) => s + r.valor, 0);
+function financeiroTotalMes(ano, mes, campo) {
+  return financeiroRegistosDoMes(ano, mes, campo).reduce((s, r) => s + r.valor, 0);
 }
-function financeiroMediaDiariaMes(ano, mes) {
-  const registos = financeiroRegistosDoMes(ano, mes);
-  return registos.length ? financeiroTotalMes(ano, mes) / registos.length : 0;
+function financeiroMediaDiariaMes(ano, mes, campo) {
+  const registos = financeiroRegistosDoMes(ano, mes, campo);
+  return registos.length ? financeiroTotalMes(ano, mes, campo) / registos.length : 0;
 }
 // Média diária de um ANO inteiro — se ateDataISO for indicado, só conta
 // dias até essa data (inclusive); usada para a Média do Ano em curso,
 // para não deixar um ano incompleto puxar a média para baixo com meses
 // futuros sem dados.
-function financeiroMediaDiariaAno(ano, ateDataISO) {
+function financeiroMediaDiariaAno(ano, ateDataISO, campo) {
+  campo = campo || 'faturacao';
   const registosAno = [];
   for (let mes = 1; mes <= 12; mes++) {
-    financeiroRegistosDoMes(ano, mes).forEach(r => {
+    financeiroRegistosDoMes(ano, mes, campo).forEach(r => {
       if (!ateDataISO || r.data <= ateDataISO) registosAno.push(r);
     });
   }
   if (!registosAno.length) return 0;
   return registosAno.reduce((s, r) => s + r.valor, 0) / registosAno.length;
 }
-// Total de Faturação de um ANO inteiro — soma dos 12 meses. Usado para o
-// Total Homólogo do Ano Anterior na Projeção Anual do cartão Mês Atual.
-function financeiroTotalAno(ano) {
+// Total de um ANO inteiro (Faturação ou Atendimentos) — soma dos 12
+// meses. Usado para o Total Homólogo do Ano Anterior na Projeção Anual
+// do cartão Mês Atual, e para o total anual de Atendimentos.
+function financeiroTotalAno(ano, campo) {
   let total = 0;
-  for (let mes = 1; mes <= 12; mes++) total += financeiroTotalMes(ano, mes);
+  for (let mes = 1; mes <= 12; mes++) total += financeiroTotalMes(ano, mes, campo);
   return total;
 }
 // Projeção/Total Anual de QUALQUER ano — parametrizada, para o bloco
@@ -15758,17 +15729,18 @@ function financeiroTotalAno(ano) {
 //   fechados + Projeção de Fecho do mês em curso + Média diária do ano
 //   × dias restantes até 31 de dezembro. Escalável para 2027/2028/...
 //   sem qualquer alteração de código.
-function financeiroProjecaoAnual(ano) {
+function financeiroProjecaoAnual(ano, campo) {
+  campo = campo || 'faturacao';
   const anoAtualReal = new Date().getFullYear();
-  if (ano < anoAtualReal) return { total: financeiroTotalAno(ano), valida: financeiroTotalAno(ano) > 0 };
+  if (ano < anoAtualReal) return { total: financeiroTotalAno(ano, campo), valida: financeiroTotalAno(ano, campo) > 0 };
   if (ano > anoAtualReal) return { total: 0, valida: false };
   const mesAtualReal = new Date().getMonth() + 1;
   const ontemReal = ontemISO();
   let totalMesesFechados = 0;
-  for (let m = 1; m < mesAtualReal; m++) totalMesesFechados += financeiroTotalMes(ano, m);
-  const mediaMesAtual = financeiroMediaDiariaMes(ano, mesAtualReal);
+  for (let m = 1; m < mesAtualReal; m++) totalMesesFechados += financeiroTotalMes(ano, m, campo);
+  const mediaMesAtual = financeiroMediaDiariaMes(ano, mesAtualReal, campo);
   const projecaoFecho = mediaMesAtual * financeiroDiasDoMes(ano, mesAtualReal);
-  const mediaDiariaAno = financeiroMediaDiariaAno(ano, ontemReal);
+  const mediaDiariaAno = financeiroMediaDiariaAno(ano, ontemReal, campo);
   let diasRestantes = 0;
   for (let m = mesAtualReal + 1; m <= 12; m++) diasRestantes += financeiroDiasDoMes(ano, m);
   const total = totalMesesFechados + projecaoFecho + (mediaDiariaAno * diasRestantes);
@@ -15835,20 +15807,30 @@ function financeiroDiaHomologoAnoAnterior(dataISO) {
   const diaAjustado = Math.min(dia, financeiroDiasDoMes(ano - 1, mes));
   return `${ano - 1}-${pad2(mes)}-${pad2(diaAjustado)}`;
 }
-// Compara o Valor de Caixa de duas datas — devolve sempre os dois
-// valores (podem ser null, se algum dos dias não tiver dados) e a
-// variação percentual (null se não for possível calcular).
-function financeiroComparar(dataAtual, dataReferencia) {
-  const atual = financeiroFaturacaoDoDia(dataAtual);
-  const ref = financeiroFaturacaoDoDia(dataReferencia);
+// Compara o campo indicado ('faturacao' por defeito, ou 'atendimentos')
+// de duas datas — devolve sempre os dois valores (podem ser null, se
+// algum dos dias não tiver dados) e a variação percentual (null se não
+// for possível calcular).
+function financeiroComparar(dataAtual, dataReferencia, campo) {
+  campo = campo || 'faturacao';
+  const atual = financeiroValorDoDia(dataAtual, campo);
+  const ref = financeiroValorDoDia(dataReferencia, campo);
   const pct = (atual !== null && ref !== null && ref !== 0) ? ((atual - ref) / ref) * 100 : null;
   return { atual, ref, pct, dataAtual, dataReferencia };
+}
+// Formata um número inteiro simples (Atendimentos) — sem símbolo de
+// moeda, à portuguesa (separador de milhares).
+function financeiroFormatarNumero(v) {
+  return (Number(v) || 0).toLocaleString('pt-PT', { maximumFractionDigits: 0 });
 }
 // Linha de comparativo partilhada por todos os cartões e pela Pesquisa de
 // Data Específica: "rótulo: (valor de referência €) ▲ 12.3%" — o valor
 // entre parêntesis fica em tom discreto, só a percentagem (com seta) fica
 // em destaque/cor. ref e/ou pct a null mostram "Sem dados suficientes".
-function buildLinhaComparativa(rotulo, ref, pct) {
+// formatarFn é opcional — por defeito formata como euros (Faturação);
+// para Atendimentos, passa-se financeiroFormatarNumero.
+function buildLinhaComparativa(rotulo, ref, pct, formatarFn) {
+  formatarFn = formatarFn || ((v) => financeiroFormatarEuro(v, 2));
   if (pct === null || ref === null || ref === undefined) {
     return h('p', { class: 'fin-comp-linha' }, [
       h('span', { class: 'fin-comp-rotulo' }, `${rotulo}: `),
@@ -15859,7 +15841,7 @@ function buildLinhaComparativa(rotulo, ref, pct) {
   const tone = pct >= 0 ? ' tone-positivo' : ' tone-negativo';
   return h('p', { class: 'fin-comp-linha' }, [
     h('span', { class: 'fin-comp-rotulo' }, `${rotulo}: `),
-    h('span', { class: 'fin-comp-ref' }, `(${financeiroFormatarEuro(ref, 2)}) `),
+    h('span', { class: 'fin-comp-ref' }, `(${formatarFn(ref)}) `),
     h('span', { class: 'fin-comp-pct' + tone }, `${seta} ${Math.abs(pct).toFixed(1)}%`),
   ]);
 }
@@ -16061,12 +16043,11 @@ function abrirModalDefinirMetaAnual(anoDefault, onGuardado) {
   setTimeout(() => metaInput.focus(), 60);
 }
 
-// ---- Formulário "Registar Faturação do Dia" — granularidade alinhada
-// com o relatório "Totais de Caixa" do 4Digital: Recebimentos de Balcão
-// (Numerário/Banco/Cheque → Valor de Caixa), Faturação a Terceiros
-// (Entidades/Crédito) e Ajustes de Controlo de Caixa (Mov. de Caixa/
-// Trocas, gravados só para consulta — não entram na Faturação Total).
-// Fórmula: Faturação Total = Valor de Caixa + Entidades + Crédito. ----
+// ---- Formulário "Registar o Último Dia" — modelo simplificado: só 2
+// campos, cada um independente (dá para gravar só a Faturação, só os
+// Atendimentos, ou os dois). Pensado para o registo diário rápido a
+// partir do Painel de Bordo do 4Digital: Faturação = cartão "Vendas"
+// (Vendas − Descontos); Atendimentos = número de atendimentos do dia. ----
 function abrirModalRegistarFaturacao(onGuardado, dataInicial) {
   if (!podeEditarFinanceiro()) { showToast('Sem permissão para alterar dados financeiros.', 'error'); return; }
   const overlay = h('div', { class: 'modal-overlay' });
@@ -16075,60 +16056,27 @@ function abrirModalRegistarFaturacao(onGuardado, dataInicial) {
   document.addEventListener('keydown', onKeydown);
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 
-  const dataInput = h('input', { class: 'input', type: 'date', max: todayISO() });
+  const dataInput = h('input', { class: 'input', type: 'date', max: todayISO(), min: FINANCEIRO_DATA_CORTE });
   dataInput.value = dataInicial || ontemISO();
-  // Recebimentos de Balcão — compõem o Valor de Caixa.
-  const numerarioInput = h('input', { class: 'input', type: 'number', step: '0.01', placeholder: '0.00', autofocus: 'autofocus' });
-  const bancoInput = h('input', { class: 'input', type: 'number', step: '0.01', placeholder: '0.00' });
-  const chequeInput = h('input', { class: 'input', type: 'number', step: '0.01', placeholder: '0.00' });
-  // Faturação a Terceiros / Diferida — entra na Faturação Total, mas não no Valor de Caixa.
-  const entidadesInput = h('input', { class: 'input', type: 'number', step: '0.01', placeholder: '0.00' });
-  const creditoInput = h('input', { class: 'input', type: 'number', step: '0.01', placeholder: '0.00' });
-  // Ajustes e Controlo de Caixa — só consulta, não entram na fórmula.
-  const movCaixaInput = h('input', { class: 'input', type: 'number', step: '0.01', placeholder: '0.00' });
-  const trocasInput = h('input', { class: 'input', type: 'number', step: '0.01', placeholder: '0.00' });
-  const caixaPreview = h('p', { class: 'fin-comp-linha' }, '');
-  const totalPreview = h('p', { class: 'fin-comp-linha', style: 'margin-top:4px;' }, '');
+  const faturacaoInput = h('input', { class: 'input', type: 'number', step: '0.01', placeholder: '0.00', autofocus: 'autofocus' });
+  const atendimentosInput = h('input', { class: 'input', type: 'number', step: '1', min: '0', placeholder: '0' });
   const errorEl = h('p', { class: 'form-error' }, '');
   errorEl.style.display = 'none';
   // Título e botão de Guardar mudam consoante o dia escolhido já ter (ou
-  // não) um registo manual gravado — permite corrigir qualquer dia
-  // passado de forma limpa, sempre pela mesma RPC/UPSERT
-  // (rpc_financeiro_guardar_dia), sem duplicar formulário.
+  // não) um registo gravado — permite corrigir qualquer dia passado de
+  // forma limpa, sempre pela mesma RPC/UPSERT (rpc_financeiro_guardar_dia).
   const tituloEl = h('p', { class: 'modal-title', style: 'margin:0;' }, '');
   const guardarBtn = h('button', { class: 'btn btn-primary' }, '');
 
-  function atualizarPreview() {
-    const numerario = parseFloat(numerarioInput.value) || 0;
-    const banco = parseFloat(bancoInput.value) || 0;
-    const cheque = parseFloat(chequeInput.value) || 0;
-    const entidades = parseFloat(entidadesInput.value) || 0;
-    const credito = parseFloat(creditoInput.value) || 0;
-    const valorCaixa = numerario + banco + cheque;
-    clear(caixaPreview);
-    caixaPreview.appendChild(h('span', { class: 'fin-comp-rotulo' }, 'Valor Caixa (Numerário+Banco+Cheque): '));
-    caixaPreview.appendChild(h('span', {}, financeiroFormatarEuro(valorCaixa, 2)));
-    clear(totalPreview);
-    totalPreview.appendChild(h('span', { class: 'fin-comp-rotulo' }, 'Faturação Total Calculada: '));
-    totalPreview.appendChild(h('span', { class: 'fin-kpi-valor', style: 'font-size:15px;' }, financeiroFormatarEuro(valorCaixa + entidades + credito, 2)));
-  }
-  [numerarioInput, bancoInput, chequeInput, entidadesInput, creditoInput].forEach(inp => inp.addEventListener('input', atualizarPreview));
-
-  // Só pré-preenche a partir de um registo manual já existente para o
-  // dia — o histórico incorporado (HISTORICO_CAIXA_DIARIO) não tem esta
-  // granularidade, por isso não dá para repor os 7 campos a partir dele.
+  // Pré-preenche a partir de um registo já existente para o dia — cada
+  // campo em branco fica assim visivelmente "por preencher" (em vez de
+  // 0), o que reforça que gravar só um dos dois não apaga o outro.
   function carregarValoresExistentes() {
     const existente = financeiroRegistoDoDia(dataInput.value);
-    numerarioInput.value = existente ? (existente.numerario || '') : '';
-    bancoInput.value = existente ? (existente.banco || '') : '';
-    chequeInput.value = existente ? (existente.cheque || '') : '';
-    entidadesInput.value = existente ? (existente.entidades || '') : '';
-    creditoInput.value = existente ? (existente.credito || '') : '';
-    movCaixaInput.value = existente ? (existente.movCaixa || '') : '';
-    trocasInput.value = existente ? (existente.trocas || '') : '';
-    tituloEl.textContent = existente ? 'Editar Registo do Dia' : 'Registar Faturação do Dia';
-    guardarBtn.textContent = existente ? 'Guardar Alterações' : 'Guardar Faturação';
-    atualizarPreview();
+    faturacaoInput.value = (existente && existente.faturacao !== null && existente.faturacao !== undefined) ? existente.faturacao : '';
+    atendimentosInput.value = (existente && existente.atendimentos !== null && existente.atendimentos !== undefined) ? existente.atendimentos : '';
+    tituloEl.textContent = existente ? 'Editar Registo do Dia' : 'Registar o Último Dia';
+    guardarBtn.textContent = existente ? 'Guardar Alterações' : 'Guardar';
   }
   dataInput.addEventListener('change', carregarValoresExistentes);
   carregarValoresExistentes();
@@ -16138,59 +16086,41 @@ function abrirModalRegistarFaturacao(onGuardado, dataInicial) {
       errorEl.textContent = 'Por favor, indique a Data.';
       errorEl.style.display = ''; return;
     }
+    if (faturacaoInput.value === '' && atendimentosInput.value === '') {
+      errorEl.textContent = 'Preencha pelo menos um dos dois valores (Faturação ou Atendimentos).';
+      errorEl.style.display = ''; return;
+    }
     errorEl.style.display = 'none';
     const textoOriginalBtn = guardarBtn.textContent;
     guardarBtn.disabled = true; guardarBtn.textContent = 'A guardar…';
     const campos = {
-      numerario: parseFloat(numerarioInput.value) || 0,
-      banco: parseFloat(bancoInput.value) || 0,
-      cheque: parseFloat(chequeInput.value) || 0,
-      entidades: parseFloat(entidadesInput.value) || 0,
-      credito: parseFloat(creditoInput.value) || 0,
-      movCaixa: parseFloat(movCaixaInput.value) || 0,
-      trocas: parseFloat(trocasInput.value) || 0,
+      faturacao: faturacaoInput.value === '' ? null : (parseFloat(faturacaoInput.value.replace(',', '.')) || 0),
+      atendimentos: atendimentosInput.value === '' ? null : (parseInt(atendimentosInput.value, 10) || 0),
     };
     const resultado = await financeiroGuardarDia(dataInput.value, campos);
     if (resultado) { close(); onGuardado(); }
-    else { guardarBtn.disabled = false; guardarBtn.textContent = textoOriginalBtn; showDbErrorToast('Não foi possível guardar a faturação do dia'); }
+    else { guardarBtn.disabled = false; guardarBtn.textContent = textoOriginalBtn; showDbErrorToast('Não foi possível guardar o registo do dia'); }
   }));
   const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: close }, 'Cancelar');
 
-  const panel = h('div', { class: 'modal-panel', style: 'max-width:420px;' }, [
+  const panel = h('div', { class: 'modal-panel', style: 'max-width:380px;' }, [
     h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;' }, [
       tituloEl,
       h('button', { class: 'close-btn', onclick: close, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
     ]),
     h('div', { class: 'field' }, [h('label', {}, 'Data'), melhorarInputData(dataInput),
-      h('p', { class: 'field-helper-text' }, 'Por defeito, o dia de ontem — pode escolher qualquer outro dia para corrigir ou completar um registo.')]),
-    h('p', { class: 'page-eyebrow', style: 'margin:14px 0 6px;font-size:12px;' }, 'Recebimentos de Balcão (Valor Caixa)'),
-    h('div', { class: 'form-grid' }, [
-      h('div', { class: 'field field-sm' }, [h('label', {}, 'Numerário (€)'), numerarioInput]),
-      h('div', { class: 'field field-sm' }, [h('label', {}, 'Banco / TPA (€)'), bancoInput]),
-      h('div', { class: 'field field-sm' }, [h('label', {}, 'Cheque (€)'), chequeInput]),
-    ]),
-    caixaPreview,
-    h('p', { class: 'page-eyebrow', style: 'margin:14px 0 6px;font-size:12px;' }, 'Faturação a Terceiros / Diferida'),
-    h('div', { class: 'form-grid' }, [
-      h('div', { class: 'field field-sm' }, [h('label', {}, 'Entidades (€)'), entidadesInput,
-        h('p', { class: 'field-helper-text' }, 'Comparticipações — SNS, ADSE, Seguradoras.')]),
-      h('div', { class: 'field field-sm' }, [h('label', {}, 'Vendas a Crédito (€)'), creditoInput,
-        h('p', { class: 'field-helper-text' }, 'Contas correntes de clientes/empresas.')]),
-    ]),
-    h('p', { class: 'page-eyebrow', style: 'margin:14px 0 6px;font-size:12px;' }, 'Ajustes e Controlo de Caixa (só consulta)'),
-    h('div', { class: 'form-grid' }, [
-      h('div', { class: 'field field-sm' }, [h('label', {}, 'Movimentos de Caixa (€)'), movCaixaInput,
-        h('p', { class: 'field-helper-text' }, 'Entradas/saídas manuais, trocos de fundo — não entra na Faturação Total.')]),
-      h('div', { class: 'field field-sm' }, [h('label', {}, 'Valor das Trocas (€)'), trocasInput,
-        h('p', { class: 'field-helper-text' }, 'Devoluções/trocas de produtos — não entra na Faturação Total.')]),
-    ]),
-    totalPreview,
+      h('p', { class: 'field-helper-text' }, 'Por defeito, o dia de ontem — pode escolher qualquer outro dia (a partir de 15/08/2026) para corrigir ou completar um registo.')]),
+    h('div', { class: 'field' }, [h('label', {}, 'Faturação — Vendas menos Descontos (€)'), faturacaoInput,
+      h('p', { class: 'field-helper-text' }, 'Ler no Painel de Bordo do 4Digital, cartão "Vendas".')]),
+    h('div', { class: 'field' }, [h('label', {}, 'Número de Atendimentos'), atendimentosInput,
+      h('p', { class: 'field-helper-text' }, 'Ler no Painel de Bordo do 4Digital.')]),
+    h('p', { class: 'field-helper-text', style: 'margin-top:-4px;' }, 'Pode preencher só um dos dois campos — o outro mantém o valor já gravado, se existir.'),
     errorEl,
     h('div', { class: 'form-actions' }, [guardarBtn, cancelBtn]),
   ]);
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
-  setTimeout(() => numerarioInput.focus(), 60);
+  setTimeout(() => faturacaoInput.focus(), 60);
 }
 
 // ---- Verificação de Faturação em Falta (só Master/Administrador — ver
@@ -16209,7 +16139,7 @@ function financeiroDiasEmFaltaRecentes() {
   const out = [];
   let d = ontemISO();
   for (let i = 0; i < LIMITE_DIAS_VERIFICACAO_FATURACAO; i++) {
-    if (d < '2024-01-01') break;
+    if (d < FINANCEIRO_DATA_CORTE) break;
     if (financeiroFaturacaoDoDia(d) !== null) break;
     out.push(d);
     d = financeiroDiaAnterior(d);
@@ -16257,7 +16187,7 @@ function buildFinanceiroPesquisaCard(onGuardadoGlobal) {
 
   function render() {
     clear(card);
-    const dataInput = h('input', { class: 'input', type: 'date', max: todayISO(), min: '2024-01-01' });
+    const dataInput = h('input', { class: 'input', type: 'date', max: todayISO(), min: FINANCEIRO_DATA_CORTE });
     dataInput.value = dataEscolhida;
     dataInput.addEventListener('change', () => { if (dataInput.value) { dataEscolhida = dataInput.value; render(); } });
 
@@ -16266,27 +16196,45 @@ function buildFinanceiroPesquisaCard(onGuardadoGlobal) {
     const compMesAnt = financeiroComparar(dataEscolhida, financeiroMesmaDataMesAnterior(dataEscolhida));
     const compAnoAnt = financeiroComparar(dataEscolhida, financeiroDiaHomologoAnoAnterior(dataEscolhida));
 
+    const atendimentosDoDia = financeiroAtendimentosDoDia(dataEscolhida);
+    const compAtDiaAnt = financeiroComparar(dataEscolhida, financeiroDiaAnterior(dataEscolhida), 'atendimentos');
+    const compAtMesAnt = financeiroComparar(dataEscolhida, financeiroMesmaDataMesAnterior(dataEscolhida), 'atendimentos');
+    const compAtAnoAnt = financeiroComparar(dataEscolhida, financeiroDiaHomologoAnoAnterior(dataEscolhida), 'atendimentos');
+
     const jaTemRegisto = !!financeiroRegistoDoDia(dataEscolhida);
     const registarBtn = podeEditar ? h('button', { class: 'btn btn-secondary', style: 'margin-top:10px;font-size:12.5px;' }, [Icon('pencil', { size: 12 }), jaTemRegisto ? ' Editar Registo do Dia' : ' Registar Faturação desta Data']) : null;
     if (registarBtn) registarBtn.addEventListener('click', () => requireAuth(() => abrirModalRegistarFaturacao(() => { render(); if (onGuardadoGlobal) onGuardadoGlobal(); }, dataEscolhida)));
 
-    const resultado = valorDoDia === null
-      ? h('div', {}, [h('p', { class: 'cell-muted', style: 'margin:10px 0 0;' }, 'Sem dados de Valor de Caixa para este dia (dia futuro, ou farmácia encerrada nessa data).'), registarBtn])
+    const blocoFaturacao = valorDoDia === null
+      ? h('p', { class: 'cell-muted', style: 'margin:10px 0 0;' }, 'Sem Faturação registada para este dia.')
       : h('div', {}, [
-          h('p', { class: 'fin-kpi-label', style: 'margin-top:12px;' }, `Faturação Real — ${formatDate(dataEscolhida)}`),
+          h('p', { class: 'fin-kpi-label', style: 'margin-top:12px;' }, `Faturação — ${formatDate(dataEscolhida)}`),
           h('p', { class: 'fin-kpi-valor' }, financeiroFormatarEuro(valorDoDia, 2)),
           h('div', { style: 'margin-top:8px;' }, [
             buildLinhaComparativa('Dia Anterior', compDiaAnt.ref, compDiaAnt.pct),
             buildLinhaComparativa('Mesma Data — Mês Anterior', compMesAnt.ref, compMesAnt.pct),
             buildLinhaComparativa('Dia Homólogo — Ano Anterior', compAnoAnt.ref, compAnoAnt.pct),
           ]),
-          registarBtn,
         ]);
 
-    card.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:0 0 4px;' }, 'Faturação — Consulta e Registo'));
-    card.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, 'Mostra por defeito o dia de ontem — escolha outra data para consultar ou corrigir um registo (2024, 2025 ou 2026).'));
+    const blocoAtendimentos = atendimentosDoDia === null
+      ? h('p', { class: 'cell-muted', style: 'margin:10px 0 0;' }, 'Sem Atendimentos registados para este dia.')
+      : h('div', {}, [
+          h('p', { class: 'fin-kpi-label', style: 'margin-top:12px;' }, `Atendimentos — ${formatDate(dataEscolhida)}`),
+          h('p', { class: 'fin-kpi-valor' }, financeiroFormatarNumero(atendimentosDoDia)),
+          h('div', { style: 'margin-top:8px;' }, [
+            buildLinhaComparativa('Dia Anterior', compAtDiaAnt.ref, compAtDiaAnt.pct, financeiroFormatarNumero),
+            buildLinhaComparativa('Mesma Data — Mês Anterior', compAtMesAnt.ref, compAtMesAnt.pct, financeiroFormatarNumero),
+            buildLinhaComparativa('Dia Homólogo — Ano Anterior', compAtAnoAnt.ref, compAtAnoAnt.pct, financeiroFormatarNumero),
+          ]),
+        ]);
+
+    card.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:0 0 4px;' }, 'Faturação e Atendimentos — Consulta e Registo'));
+    card.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, 'Mostra por defeito o dia de ontem — escolha outra data para consultar ou corrigir um registo.'));
     card.appendChild(h('div', { class: 'field', style: 'max-width:220px;margin-bottom:0;' }, [h('label', {}, 'Data'), melhorarInputData(dataInput)]));
-    card.appendChild(resultado);
+    card.appendChild(blocoFaturacao);
+    card.appendChild(blocoAtendimentos);
+    card.appendChild(registarBtn);
   }
   render();
   return card;
@@ -16324,20 +16272,23 @@ function financeiroRegistosNoIntervalo(dataInicio, dataFim) {
   const fim = new Date(dataFim + 'T00:00:00');
   while (d <= fim) {
     const dataISO = dateToISO(d);
-    const valor = financeiroFaturacaoDoDia(dataISO);
-    if (valor !== null) out.push({ data: dataISO, valorCaixa: valor, registadoPor: (financeiroRegistoDoDia(dataISO) || {}).registadoPor || '' });
+    const faturacao = financeiroFaturacaoDoDia(dataISO);
+    const atendimentos = financeiroAtendimentosDoDia(dataISO);
+    if (faturacao !== null || atendimentos !== null) {
+      out.push({ data: dataISO, faturacao, atendimentos, registadoPor: (financeiroRegistoDoDia(dataISO) || {}).registadoPor || '' });
+    }
     d.setDate(d.getDate() + 1);
   }
   return out;
 }
 function financeiroGerarCSV(dataInicio, dataFim) {
   const linhas = financeiroRegistosNoIntervalo(dataInicio, dataFim);
-  const cabecalho = ['Data', 'Faturação Real (€)', 'Objetivo do Mês (€)', 'Registado Por'];
+  const cabecalho = ['Data', 'Faturação (€)', 'Atendimentos', 'Objetivo do Mês (€)', 'Registado Por'];
   const numPt = (v) => (Number(v) || 0).toFixed(2).replace('.', ',');
   const corpo = linhas.map(r => {
     const [ano, mes] = r.data.split('-').map(Number);
     const meta = financeiroMetaDoMes(ano, mes);
-    return [formatDate(r.data), numPt(r.valorCaixa), meta ? numPt(meta) : '', r.registadoPor || ''];
+    return [formatDate(r.data), r.faturacao === null ? '' : numPt(r.faturacao), r.atendimentos === null ? '' : String(r.atendimentos), meta ? numPt(meta) : '', r.registadoPor || ''];
   });
   const escapar = (v) => /[;"\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
   return [cabecalho, ...corpo].map(l => l.map(escapar).join(';')).join('\r\n');
@@ -16419,7 +16370,7 @@ function abrirModalExportarCSV() {
       h('p', { class: 'modal-title', style: 'margin:0;' }, 'Exportar CSV'),
       h('button', { class: 'close-btn', onclick: close, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
     ]),
-    h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, 'Data, Faturação Real, Objetivo do Mês e Registado Por.'),
+    h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, 'Data, Faturação, Atendimentos, Objetivo do Mês e Registado Por.'),
     seletor.el,
     h('div', { class: 'form-actions', style: 'margin-top:14px;' }, [exportarBtn, cancelBtn]),
   ]);
@@ -16430,8 +16381,12 @@ function abrirModalExportarCSV() {
 // ---- Relatório Executivo PDF ----
 function financeiroResumoPeriodo(dataInicio, dataFim) {
   const registos = financeiroRegistosNoIntervalo(dataInicio, dataFim);
-  const totalCaixa = registos.reduce((s, r) => s + r.valorCaixa, 0);
-  const mediaDiaria = registos.length ? totalCaixa / registos.length : 0;
+  const registosComFaturacao = registos.filter(r => r.faturacao !== null);
+  const registosComAtendimentos = registos.filter(r => r.atendimentos !== null);
+  const totalCaixa = registosComFaturacao.reduce((s, r) => s + r.faturacao, 0);
+  const mediaDiaria = registosComFaturacao.length ? totalCaixa / registosComFaturacao.length : 0;
+  const totalAtendimentos = registosComAtendimentos.reduce((s, r) => s + r.atendimentos, 0);
+  const mediaAtendimentos = registosComAtendimentos.length ? totalAtendimentos / registosComAtendimentos.length : 0;
   // Meta do período: soma da Meta de cada mês tocado pelo intervalo.
   const mesesTocados = new Set();
   let d = new Date(dataInicio + 'T00:00:00');
@@ -16444,7 +16399,7 @@ function financeiroResumoPeriodo(dataInicio, dataFim) {
     if (meta) { metaPeriodo += meta; metaConhecida = true; }
   });
   const pctConcretizacao = metaConhecida && metaPeriodo > 0 ? (totalCaixa / metaPeriodo) * 100 : null;
-  return { registos, totalCaixa, mediaDiaria, metaPeriodo, pctConcretizacao };
+  return { registos, totalCaixa, mediaDiaria, totalAtendimentos, mediaAtendimentos, metaPeriodo, pctConcretizacao };
 }
 function buildRelatorioFinanceiroDoc(dataInicio, dataFim, rotuloPeriodo) {
   const resumo = financeiroResumoPeriodo(dataInicio, dataFim);
@@ -16454,13 +16409,15 @@ function buildRelatorioFinanceiroDoc(dataInicio, dataFim, rotuloPeriodo) {
   ]);
   const tabelaResumo = h('table', { style: 'width:100%;border-collapse:collapse;margin:10px 0 16px;' }, [
     h('tbody', {}, [
-      linhaResumo('Total de Faturação Real', financeiroFormatarEuro(resumo.totalCaixa, 2)),
-      linhaResumo('Média Diária', financeiroFormatarEuro(resumo.mediaDiaria, 2)),
+      linhaResumo('Total de Faturação', financeiroFormatarEuro(resumo.totalCaixa, 2)),
+      linhaResumo('Média Diária de Faturação', financeiroFormatarEuro(resumo.mediaDiaria, 2)),
       linhaResumo('% de Concretização do Objetivo', resumo.pctConcretizacao === null ? 'Sem Objetivo definido' : `${resumo.pctConcretizacao.toFixed(1)}%`),
+      linhaResumo('Total de Atendimentos', financeiroFormatarNumero(resumo.totalAtendimentos)),
+      linhaResumo('Média Diária de Atendimentos', resumo.mediaAtendimentos ? financeiroFormatarNumero(resumo.mediaAtendimentos) : '—'),
     ]),
   ]);
-  const itensGrafico = resumo.registos.map(r => ({
-    rotulo: formatDate(r.data).slice(0, 5), valor: r.valorCaixa, cor: '#16a34a',
+  const itensGrafico = resumo.registos.filter(r => r.faturacao !== null).map(r => ({
+    rotulo: formatDate(r.data).slice(0, 5), valor: r.faturacao, cor: '#16a34a',
   }));
   const grafico = itensGrafico.length
     ? h('div', { style: 'margin:0 0 18px;' }, [buildFinanceiroBarraChart(itensGrafico, 110)])
@@ -16472,22 +16429,23 @@ function buildRelatorioFinanceiroDoc(dataInicio, dataFim, rotuloPeriodo) {
     h('p', { style: 'font-size:10px;color:#64748b;margin:0 0 4px;' }, `Data de emissão: ${formatDate(todayISO())}`),
     h('h3', { style: 'font-size:12px;margin:14px 0 0;' }, 'Resumo dos KPIs'),
     tabelaResumo,
-    h('h3', { style: 'font-size:12px;margin:0 0 0;' }, 'Evolução da Faturação Real Diária'),
+    h('h3', { style: 'font-size:12px;margin:0 0 0;' }, 'Evolução da Faturação Diária'),
     grafico,
     h('h3', { style: 'font-size:12px;margin:0 0 0;' }, 'Registos Diários Detalhados'),
   ];
   return buildListaMultiPaginaDoc({
     cabecalho,
     colunas: [
-      { label: 'Data', width: '30%', align: 'left' },
-      { label: 'Faturação Real (€)', width: '35%', align: 'right' },
-      { label: 'Registado Por', width: '35%', align: 'left', nowrap: true },
+      { label: 'Data', width: '25%', align: 'left' },
+      { label: 'Faturação (€)', width: '30%', align: 'right' },
+      { label: 'Atendimentos', width: '20%', align: 'right' },
+      { label: 'Registado Por', width: '25%', align: 'left', nowrap: true },
     ],
-    linhas: resumo.registos.map(r => [formatDate(r.data), financeiroFormatarEuro(r.valorCaixa, 2), r.registadoPor || '—']),
+    linhas: resumo.registos.map(r => [formatDate(r.data), r.faturacao === null ? '—' : financeiroFormatarEuro(r.faturacao, 2), r.atendimentos === null ? '—' : financeiroFormatarNumero(r.atendimentos), r.registadoPor || '—']),
     linhasPrimeira: 14,
     linhasResto: 50,
-    semDadosTexto: 'Sem registos de faturação diária neste período.',
-    linhaTotalFinal: ['Total', financeiroFormatarEuro(resumo.totalCaixa, 2), ''],
+    semDadosTexto: 'Sem registos diários neste período.',
+    linhaTotalFinal: ['Total', financeiroFormatarEuro(resumo.totalCaixa, 2), financeiroFormatarNumero(resumo.totalAtendimentos), ''],
   });
 }
 function abrirModalRelatorioPDF() {
@@ -16568,7 +16526,7 @@ function buildFinanceiroPage(container, goTo) {
 
   function build() {
     const wrap = h('div', { class: 'animate-in' });
-    wrap.appendChild(withBackButton(buildPageHeader('fileDollar', 'Financeiro', 'Faturação diária (Valor Caixa + Entidades + Crédito) — registo, pesquisa e comparativos.', undefined), goTo));
+    wrap.appendChild(withBackButton(buildPageHeader('fileDollar', 'Financeiro', 'Faturação (Vendas − Descontos) e Atendimentos diários — registo, pesquisa e comparativos.', undefined), goTo));
 
     // ---- Botões de topo — o registo/edição de um dia concreto passou a
     // viver só no cartão "Faturação — Consulta e Registo" (ver abaixo),
@@ -16616,6 +16574,15 @@ function buildFinanceiroPage(container, goTo) {
     const editarMetaBtn = podeEditar ? h('button', { class: 'btn-fab-sm tone-blue', title: 'Definir/Editar Objetivo Mensal', 'aria-label': 'Definir/Editar Objetivo Mensal' }, Icon('pencil', { size: 12, strokeWidth: 2.2 })) : null;
     if (editarMetaBtn) editarMetaBtn.addEventListener('click', () => requireAuth(() => abrirModalDefinirMeta(anoSel, mesSel, rerender)));
 
+    // ---- Mesmas métricas do mês, agora para Atendimentos (sem Objetivo —
+    // esse continua só em €, na Faturação). ----
+    const totalMesSelAt = financeiroTotalMes(anoSel, mesSel, 'atendimentos');
+    const mediaMesSelAt = financeiroMediaDiariaMes(anoSel, mesSel, 'atendimentos');
+    const totalMesAntSelAt = financeiroTotalMes(mesAntSel.ano, mesAntSel.mes, 'atendimentos');
+    const pctVsMesAntSelAt = totalMesAntSelAt > 0 ? ((totalMesSelAt - totalMesAntSelAt) / totalMesAntSelAt) * 100 : null;
+    const totalHomologoMesSelAt = financeiroTotalMes(anoSel - 1, mesSel, 'atendimentos');
+    const pctVsHomologoMesSelAt = totalHomologoMesSelAt > 0 ? ((totalMesSelAt - totalHomologoMesSelAt) / totalHomologoMesSelAt) * 100 : null;
+
     const cardMesAnalisado = h('div', { class: 'card fin-card-compact fin-kpi-card' }, [
       h('div', { style: 'display:flex;align-items:center;justify-content:space-between;' }, [
         h('p', { class: 'fin-kpi-label', style: 'margin:0;' }, `Mês Analisado — ${MESES_PT_NOMES[mesSel - 1]} ${anoSel}`),
@@ -16631,6 +16598,13 @@ function buildFinanceiroPage(container, goTo) {
         buildLinhaCumprimento(totalMesSel, metaMesSel),
         buildLinhaComparativaValor('vs. Objetivo Mensal', 'Projeção', mediaMesSel > 0 ? projecaoFechoMesSel : null, pctProjecaoVsMetaMensal),
       ]) : h('p', { class: 'fin-kpi-sub', style: 'margin-top:6px;' }, 'Sem Objetivo Mensal definido — clique no lápis para definir.'),
+      h('div', { style: 'margin-top:12px;padding-top:10px;border-top:1px solid var(--pharm-border, #e2e8f0);' }, [
+        h('p', { class: 'fin-kpi-label', style: 'margin:0;' }, 'Atendimentos do Mês'),
+        h('p', { class: 'fin-kpi-valor', style: 'font-size:18px;' }, financeiroFormatarNumero(totalMesSelAt)),
+        h('p', { class: 'fin-kpi-sub', style: 'margin-top:2px;' }, `Média Diária: ${mediaMesSelAt > 0 ? financeiroFormatarNumero(mediaMesSelAt) : '—'}`),
+        buildLinhaComparativa(`vs. ${MESES_PT_NOMES[mesAntSel.mes - 1]} ${mesAntSel.ano}`, totalMesAntSelAt || null, pctVsMesAntSelAt, financeiroFormatarNumero),
+        buildLinhaComparativa(`vs. Homólogo ${anoSel - 1}`, totalHomologoMesSelAt || null, pctVsHomologoMesSelAt, financeiroFormatarNumero),
+      ]),
     ]);
 
     // ---- Cartão 3: Projeção Anual — acompanha o Ano do navegador
@@ -16643,6 +16617,12 @@ function buildFinanceiroPage(container, goTo) {
     const editarMetaAnualBtn = podeEditar ? h('button', { class: 'btn-fab-sm tone-blue', title: 'Definir/Editar Objetivo Anual', 'aria-label': 'Definir/Editar Objetivo Anual' }, Icon('pencil', { size: 12, strokeWidth: 2.2 })) : null;
     if (editarMetaAnualBtn) editarMetaAnualBtn.addEventListener('click', () => requireAuth(() => abrirModalDefinirMetaAnual(anoSel, rerender)));
 
+    // ---- Total do Ano em Atendimentos (soma simples dos dias registados
+    // — sem Objetivo/Projeção, esse conceito fica só para a Faturação). ----
+    const totalAnoSelAt = financeiroTotalAno(anoSel, 'atendimentos');
+    const totalAnoAnteriorAt = financeiroTotalAno(anoSel - 1, 'atendimentos');
+    const pctVsAnoAnteriorAt = totalAnoAnteriorAt > 0 ? ((totalAnoSelAt - totalAnoAnteriorAt) / totalAnoAnteriorAt) * 100 : null;
+
     const cardProjecaoAnual = h('div', { class: 'card fin-card-compact fin-kpi-card' }, [
       h('div', { style: 'display:flex;align-items:center;justify-content:space-between;' }, [
         h('p', { class: 'fin-kpi-label', style: 'margin:0;' }, `Projeção Anual ${anoSel}`),
@@ -16653,6 +16633,11 @@ function buildFinanceiroPage(container, goTo) {
       metaAnualSel
         ? buildLinhaComparativaValor('vs. Objetivo Anual', 'Projeção', projecaoAnualValida ? projecaoAnual : null, pctProjecaoVsMetaAnual)
         : h('p', { class: 'fin-comp-linha' }, [h('span', { class: 'fin-comp-rotulo' }, 'Objetivo Anual: '), h('span', { class: 'fin-comp-ref' }, 'Sem Objetivo definido — clique no lápis para definir.')]),
+      h('div', { style: 'margin-top:12px;padding-top:10px;border-top:1px solid var(--pharm-border, #e2e8f0);' }, [
+        h('p', { class: 'fin-kpi-label', style: 'margin:0;' }, `Atendimentos do Ano ${anoSel}`),
+        h('p', { class: 'fin-kpi-valor', style: 'font-size:18px;' }, financeiroFormatarNumero(totalAnoSelAt)),
+        buildLinhaComparativa(`vs. Total ${anoSel - 1}`, totalAnoAnteriorAt || null, pctVsAnoAnteriorAt, financeiroFormatarNumero),
+      ]),
     ]);
 
     // ---- Navegador de Mês/Ano — controla os cartões "Mês Analisado" e
@@ -16686,19 +16671,17 @@ function buildFinanceiroPage(container, goTo) {
     // fundo, sem scroll horizontal. ----
     wrap.appendChild(buildFinanceiroEvolucaoCard());
 
-    // ---- Últimos registos manuais ----
-    const recentes = (STATE.financeiro || []).slice().sort((a, b) => (b.data || '').localeCompare(a.data || '')).slice(0, 10);
+    // ---- Últimos registos ----
+    const recentes = (STATE.financeiro || []).filter(r => r.data >= FINANCEIRO_DATA_CORTE).slice().sort((a, b) => (b.data || '').localeCompare(a.data || '')).slice(0, 10);
     if (recentes.length) {
-      wrap.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:0 0 10px;' }, 'Últimos Registos Manuais'));
+      wrap.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:0 0 10px;' }, 'Últimos Registos'));
       wrap.appendChild(h('div', { class: 'table-wrap card' }, [
         h('table', {}, [
-          h('thead', {}, h('tr', {}, ['Data', 'Valor Caixa', 'Entidades', 'Crédito', 'Faturação Total', 'Registado por'].map(t => h('th', {}, t)))),
+          h('thead', {}, h('tr', {}, ['Data', 'Faturação (€)', 'Atendimentos', 'Registado por'].map(t => h('th', {}, t)))),
           h('tbody', {}, recentes.map(r => h('tr', {}, [
             h('td', {}, formatDate(r.data)),
-            h('td', {}, financeiroFormatarEuro(financeiroValorCaixaRegisto(r), 2)),
-            h('td', {}, financeiroFormatarEuro(r.entidades, 2)),
-            h('td', {}, financeiroFormatarEuro(r.credito, 2)),
-            h('td', { class: 'cell-strong' }, financeiroFormatarEuro(financeiroValorCaixaRegisto(r) + (parseFloat(r.entidades) || 0) + (parseFloat(r.credito) || 0), 2)),
+            h('td', { class: 'cell-strong' }, (r.faturacao === null || r.faturacao === undefined || r.faturacao === '') ? '—' : financeiroFormatarEuro(r.faturacao, 2)),
+            h('td', {}, (r.atendimentos === null || r.atendimentos === undefined || r.atendimentos === '') ? '—' : financeiroFormatarNumero(r.atendimentos)),
             h('td', { title: r.registadoPor || undefined }, r.registadoPor ? formatarNomeResponsavelTabela(r.registadoPor, STATE.usuarios) : '—'),
           ]))),
         ]),
