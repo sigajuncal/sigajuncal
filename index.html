@@ -1065,6 +1065,11 @@
   @media (min-width:640px){.field-sm{grid-column:span 4;}}
   .field label{display:block;font-size:12px;font-weight:700;color:var(--pharm-600);margin-bottom:5px;}
   .field-helper-text{font-size:11.5px;color:var(--pharm-500);margin-top:5px;font-weight:600;}
+  /* Ícone "i" com informação em hover (title nativo) — substitui um
+     texto de ajuda fixo por baixo do campo, quando o rótulo já chega
+     para o essencial e o resto é só detalhe/exemplo. */
+  .campo-ajuda-icon{display:inline-flex;color:var(--pharm-300);cursor:help;flex-shrink:0;}
+  .campo-ajuda-icon:hover,.campo-ajuda-icon:focus-visible{color:var(--pharm-500);}
   /* Tons opcionais (field.helperTone) — usado ex: no aviso de
      idade/elegibilidade da Vacinação, para o feedback ser visual e não só
      por texto (pedido explícito 2026-08-11). */
@@ -15827,6 +15832,50 @@ function financeiroDiaAnterior(dataISO) {
   d.setDate(d.getDate() - 1);
   return dateToISO(d);
 }
+function financeiroDiaSeguinte(dataISO) {
+  const d = new Date(dataISO + 'T00:00:00');
+  d.setDate(d.getDate() + 1);
+  return dateToISO(d);
+}
+// Ícone pequeno de "i" com informação em hover (title nativo do
+// browser) — usado nos rótulos dos campos do Financeiro para dar a
+// mesma informação dos antigos textos de ajuda, sem ocupar espaço
+// permanente no ecrã.
+function buildLabelComAjuda(texto, ajuda) {
+  return h('label', { style: 'display:flex;align-items:center;gap:5px;' }, [
+    h('span', {}, texto),
+    h('span', { class: 'campo-ajuda-icon', title: ajuda, tabIndex: '0' }, Icon('info', { size: 13, strokeWidth: 2.2 })),
+  ]);
+}
+// Envolve um <input type="date"> já existente com setas ◀ ▶ para
+// recuar/avançar um dia sem precisar de abrir o calendário — chama
+// onMudar(novaDataISO) sempre que uma seta é usada. maxISO opcional
+// desativa a seta ▶ ao chegar lá (normalmente todayISO()).
+function buildDataComSetas(dataInput, onMudar, maxISO) {
+  const prevBtn = h('button', { type: 'button', class: 'btn-fab-sm tone-blue', title: 'Dia anterior', 'aria-label': 'Dia anterior' }, Icon('arrowleft', { size: 13, strokeWidth: 2.4 }));
+  const nextBtn = h('button', { type: 'button', class: 'btn-fab-sm tone-blue', title: 'Dia seguinte', 'aria-label': 'Dia seguinte' }, Icon('arrowright', { size: 13, strokeWidth: 2.4 }));
+  function atualizarEstadoNext() {
+    const bloqueado = !!(maxISO && dataInput.value && financeiroDiaSeguinte(dataInput.value) > maxISO);
+    nextBtn.disabled = bloqueado;
+    nextBtn.style.opacity = bloqueado ? '0.35' : '';
+  }
+  prevBtn.addEventListener('click', () => {
+    if (!dataInput.value) return;
+    dataInput.value = financeiroDiaAnterior(dataInput.value);
+    atualizarEstadoNext();
+    onMudar(dataInput.value);
+  });
+  nextBtn.addEventListener('click', () => {
+    if (!dataInput.value) return;
+    const proxima = financeiroDiaSeguinte(dataInput.value);
+    if (maxISO && proxima > maxISO) return;
+    dataInput.value = proxima;
+    atualizarEstadoNext();
+    onMudar(dataInput.value);
+  });
+  atualizarEstadoNext();
+  return { el: h('div', { style: 'display:flex;align-items:center;gap:6px;' }, [prevBtn, melhorarInputData(dataInput), nextBtn]), atualizarEstadoNext };
+}
 function financeiroMesmaDataMesAnterior(dataISO) {
   const [ano, mes, dia] = dataISO.split('-').map(Number);
   const { ano: anoAnt, mes: mesAnt } = financeiroMesAnterior(ano, mes);
@@ -16179,17 +16228,16 @@ function abrirModalRegistarFaturacao(onGuardado, dataInicial) {
   }));
   const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: close }, 'Cancelar');
 
+  const dataStepper = buildDataComSetas(dataInput, () => carregarValoresExistentes(), todayISO());
+
   const panel = h('div', { class: 'modal-panel', style: 'max-width:380px;' }, [
     h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;' }, [
       tituloEl,
       h('button', { class: 'close-btn', onclick: close, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
     ]),
-    h('div', { class: 'field' }, [h('label', {}, 'Data'), melhorarInputData(dataInput),
-      h('p', { class: 'field-helper-text' }, 'Por defeito, o dia de ontem — pode escolher qualquer outro dia (incluindo dias mais antigos) para corrigir ou completar um registo.')]),
-    h('div', { class: 'field' }, [h('label', {}, 'Número de Atendimentos'), atendimentosInput,
-      h('p', { class: 'field-helper-text' }, 'Ler no Painel de Bordo do 4Digital.')]),
-    h('div', { class: 'field' }, [h('label', {}, 'Faturação — Vendas menos Descontos (€)'), faturacaoInput,
-      h('p', { class: 'field-helper-text' }, 'Ler no Painel de Bordo do 4Digital, cartão "Vendas". Escreva só os números seguidos, sem vírgula — os últimos 2 são sempre os cêntimos (ex: 1277474 fica 12.774,74 €).')]),
+    h('div', { class: 'field' }, [buildLabelComAjuda('Data', 'Por defeito, o dia de ontem — use as setas ou o calendário para escolher qualquer outro dia, incluindo mais antigos, para corrigir ou completar um registo.'), dataStepper.el]),
+    h('div', { class: 'field' }, [buildLabelComAjuda('Número de Atendimentos', 'Ler no Painel de Bordo do 4Digital. Só aceita números inteiros positivos.'), atendimentosInput]),
+    h('div', { class: 'field' }, [buildLabelComAjuda('Faturação — Vendas menos Descontos (€)', 'Ler no Painel de Bordo do 4Digital, cartão "Vendas". Escreva só os números seguidos, sem vírgula — os últimos 2 são sempre os cêntimos (ex: 1277474 fica 12.774,74 €).'), faturacaoInput]),
     h('p', { class: 'field-helper-text', style: 'margin-top:-4px;' }, 'Pode preencher só um dos dois campos — o outro mantém o valor já gravado, se existir.'),
     errorEl,
     h('div', { class: 'form-actions' }, [guardarBtn, cancelBtn]),
@@ -16265,6 +16313,7 @@ function buildFinanceiroPesquisaCard(onGuardadoGlobal) {
     clear(card);
     const dataInput = h('input', { class: 'input', type: 'date', max: todayISO() });
     dataInput.value = dataEscolhida;
+    const dataStepper = buildDataComSetas(dataInput, (novaData) => { dataEscolhida = novaData; render(); }, todayISO());
     dataInput.addEventListener('change', () => { if (dataInput.value) { dataEscolhida = dataInput.value; render(); } });
 
     const valorDoDia = financeiroFaturacaoDoDia(dataEscolhida);
@@ -16319,9 +16368,8 @@ function buildFinanceiroPesquisaCard(onGuardadoGlobal) {
           ]),
         ]);
 
-    card.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:0 0 4px;' }, 'Faturação e Atendimentos — Consulta e Registo'));
-    card.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, 'Mostra por defeito o dia de ontem — escolha outra data para consultar ou corrigir um registo.'));
-    card.appendChild(h('div', { class: 'field', style: 'max-width:220px;margin-bottom:0;' }, [h('label', {}, 'Data'), melhorarInputData(dataInput)]));
+    card.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:0 0 8px;' }, 'Faturação e Atendimentos — Consulta e Registo'));
+    card.appendChild(h('div', { class: 'field', style: 'max-width:260px;margin-bottom:0;' }, [buildLabelComAjuda('Data', 'Mostra por defeito o dia de ontem — use as setas ou o calendário para escolher outra data e consultar ou corrigir um registo.'), dataStepper.el]));
     card.appendChild(blocoFaturacao);
     card.appendChild(blocoAtendimentos);
     if (registarBtn) card.appendChild(registarBtn);
@@ -21635,15 +21683,17 @@ function podeVerDashboard(u) {
   return !!u && u.perfilNivel !== 'Estafeta' && u.perfilNivel !== 'Prestador de Serviço' && u.perfilNivel !== 'Farmácia Boa Nova';
 }
 // ---- Permissões do módulo Financeiro (Dados Financeiros) ----
-// Leitura: qualquer perfil "de balcão" da Juncal (Master, Básico,
-// Administrador) — nunca Estafeta, Prestador de Serviço, nem o perfil
-// Farmácia Boa Nova (outra farmácia). Escrita (criar/editar/eliminar):
-// Master ou Administrador — os restantes perfis da Juncal ficam
-// estritamente em modo de leitura. Reforçado também no Supabase via RLS +
-// funções RPC (ver script SQL) — esta verificação aqui é só a camada de
-// interface, nunca a única barreira.
+// Leitura: qualquer colaborador do Quadro (estatutoColaborador==='quadro')
+// — nunca Prestadores (externos, estatuto 'prestador'), nem os perfis de
+// acesso restrito Estafeta/Prestador de Serviço/Farmácia Boa
+// Nova/Enfermeiro (bloqueados à parte, ver navegação e router). Escrita
+// (criar/editar/eliminar): só Paulo (Diretor Técnico — perfilNivel
+// 'Master') e Hugo (Administrador) — os restantes colaboradores do
+// Quadro ficam estritamente em modo de leitura. Reforçado também no
+// Supabase via RLS + funções RPC (ver script SQL) — esta verificação
+// aqui é só a camada de interface, nunca a única barreira.
 function podeVerFinanceiro() {
-  return podeVerDashboard(activeUser);
+  return !!activeUser && activeUser.estatutoColaborador === 'quadro';
 }
 function podeEditarFinanceiro() {
   return !!activeUser && (activeUser.perfilNivel === 'Master' || activeUser.perfilNivel === 'Administrador');
@@ -37612,10 +37662,13 @@ function buildSidebarContent(onClose, goTo, desktopToggle) {
       // visível como aviso — o clique abre primeiro o login (ver aoClicar
       // abaixo).
       if (item.key === 'gaveta' && (estafeta || prestadorServico || boaNovaOperador || enfermeiro)) return;
-      // RESTRIÇÃO TEMPORÁRIA (a pedido): Financeiro só visível para o
-      // Administrador — remove esta condição extra (isAdministrador())
-      // quando quiseres voltar a abrir a Master/Básico como antes.
-      if (item.key === 'financeiro' && (estafeta || prestadorServico || boaNovaOperador || enfermeiro || !isAdministrador())) return;
+      // Financeiro: visível para qualquer colaborador do Quadro (ver
+      // podeVerFinanceiro) — Prestadores de Serviço, Estafeta, Farmácia Boa
+      // Nova e Enfermeiro nunca veem este item. Só Paulo (Diretor
+      // Técnico/Master) e Hugo (Administrador) podem criar/editar/eliminar
+      // valores (ver podeEditarFinanceiro) — os restantes colaboradores do
+      // Quadro ficam em modo de leitura.
+      if (item.key === 'financeiro' && (estafeta || prestadorServico || boaNovaOperador || enfermeiro || !podeVerFinanceiro())) return;
       // Horários: disponível para todos os colaboradores do quadro e
       // restantes perfis com acesso à app — só continua bloqueado para
       // Estafeta, Farmácia Boa Nova, Enfermeiro e Prestadores de Serviço com
@@ -38061,13 +38114,13 @@ function renderInterno(ehTransicaoDePagina) {
       handledByAgenda = true;
     }
   }
-  // Horários abriu para todos os colaboradores com acesso à app (ver item
-  // 1 da evolução de acessibilidade) — só Financeiro continua restrito ao
-  // Administrador. Estafeta/Boa Nova/Prestador de Serviço nunca chegam
-  // sequer a ver o item na sidebar (ver acima); esta linha é só a rede de
-  // segurança do lado do router, para o caso de alguém navegar direto
-  // para a página por STATE.page.
-  if (STATE.page === 'financeiro' && !isAdministrador()) {
+  // Horários abriu para todos os colaboradores com acesso à app; Financeiro
+  // abre para qualquer colaborador do Quadro (ver podeVerFinanceiro) —
+  // Estafeta/Boa Nova/Prestador de Serviço/Enfermeiro nunca chegam sequer a
+  // ver o item na sidebar (ver acima); esta linha é só a rede de segurança
+  // do lado do router, para o caso de alguém navegar direto para a página
+  // por STATE.page.
+  if (STATE.page === 'financeiro' && !podeVerFinanceiro()) {
     STATE.page = 'home';
   }
   if (STATE.page === 'horarios' && (isEstafeta() || isPrestadorServico() || isBoaNovaOperador())) {
@@ -38278,7 +38331,7 @@ function restaurarSessaoPersistente() {
     limparSessaoPersistente();
     return false;
   }
-  activeUser = { id: u.id, username: u.username, nomeCompleto: u.nomeCompleto || u.username, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', prestadorKey: u.prestadorKey || '' };
+  activeUser = { id: u.id, username: u.username, nomeCompleto: u.nomeCompleto || u.username, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', prestadorKey: u.prestadorKey || '', estatutoColaborador: u.estatutoColaborador || '' };
   iniciarPresenca();
   registarLeituraMensagemDoDiaSeNecessario();
   return true;
@@ -39052,7 +39105,7 @@ function showUserLoginScreen(onSuccess, opts) {
   }
 
   async function concluirLogin(u, preservarEcra) {
-    activeUser = { id: u.id, username: u.username, nomeCompleto: u.nomeCompleto || u.username, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', prestadorKey: u.prestadorKey || '' };
+    activeUser = { id: u.id, username: u.username, nomeCompleto: u.nomeCompleto || u.username, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', prestadorKey: u.prestadorKey || '', estatutoColaborador: u.estatutoColaborador || '' };
     activeUserPin = u.pin || null;
     // Herdar do modo convidado o que já tinha sido lido antes do login —
     // evita que o badge reconte mensagens já vistas no ecrã anterior.
