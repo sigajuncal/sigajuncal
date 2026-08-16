@@ -1070,20 +1070,19 @@
      para o essencial e o resto é só detalhe/exemplo. */
   /* Ícone "i" com informação em hover — substitui um texto de ajuda
      fixo por baixo do campo, quando o rótulo já chega para o essencial
-     e o resto é só detalhe/exemplo. Tooltip próprio (::after com
-     data-tooltip), não o "title" nativo do browser — aparece de
-     imediato, sem o atraso/inconsistência do nativo. */
+     e o resto é só detalhe/exemplo. O tooltip em si (.campo-ajuda-
+     tooltip-flutuante, mais abaixo) é gerido em JS com position:fixed
+     e anexado ao <body> — não pode ser um ::after posicionado
+     relativamente ao ícone, porque dentro de um modal com scroll
+     (.modal-panel{overflow-y:auto}) isso força overflow-x:auto no
+     ancestral e corta o tooltip a meio (bug visto em produção). */
   .campo-ajuda-icon{position:relative;display:inline-flex;color:var(--pharm-300);cursor:help;flex-shrink:0;}
   .campo-ajuda-icon:hover,.campo-ajuda-icon:focus-visible{color:var(--pharm-500);outline:none;}
-  .campo-ajuda-icon::after{
-    content:attr(data-tooltip);position:absolute;left:50%;top:calc(100% + 7px);z-index:80;
-    transform:translateX(-50%) translateY(-2px);width:220px;max-width:min(220px,80vw);
-    background:var(--pharm-900);color:#fff;
-    font-size:11.5px;font-weight:600;line-height:1.45;white-space:normal;
-    padding:8px 10px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.22);
-    opacity:0;pointer-events:none;
-    transition:opacity .12s ease,transform .12s ease;}
-  .campo-ajuda-icon:hover::after,.campo-ajuda-icon:focus-visible::after{opacity:1;transform:translateX(-50%) translateY(0);}
+  .campo-ajuda-tooltip-flutuante{
+    display:none;position:fixed;z-index:9999;width:240px;max-width:min(240px,calc(100vw - 24px));
+    background:var(--pharm-900);color:#fff;font-size:11.5px;font-weight:600;line-height:1.5;
+    white-space:pre-line;padding:9px 11px;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.28);
+    pointer-events:none;}
   /* Tons opcionais (field.helperTone) — usado ex: no aviso de
      idade/elegibilidade da Vacinação, para o feedback ser visual e não só
      por texto (pedido explícito 2026-08-11). */
@@ -1449,7 +1448,8 @@
   /* Barra de aviso discreta e não intrusiva para dias de Faturação em
      falta (só Diretor Técnico/Master ou Administrador) — substitui o
      antigo popup bloqueante. */
-  .fin-alerta-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  .fin-alerta-bar{display:inline-flex;align-items:center;justify-content:flex-start;gap:18px;
+    max-width:100%;
     background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:9px 14px;
     margin:0 0 16px;font-size:12.5px;color:#92400e;}
   .fin-alerta-bar-texto{display:flex;align-items:center;gap:8px;}
@@ -1737,6 +1737,14 @@
      horas em si, mas este wrapper flex-column garante que o pill vai
      sempre para uma linha própria, por baixo, nunca colado ao texto. */
   .escala-cell-conteudo{display:flex;flex-direction:column;align-items:flex-start;gap:3px;}
+  /* Ícones compactos de tarefa (Vista em Tabela — escalaTarefaIconesCompactos)
+     — só o emoji, num pequeno badge redondo; o texto completo (tipo +
+     intervalo) só aparece no tooltip flutuante ao passar o rato/focar/
+     clicar, para não sobrecarregar uma grelha com 7 colunas de dias. */
+  .escala-tarefa-icones-wrap{display:inline-flex;gap:3px;flex-wrap:wrap;}
+  .escala-tarefa-icone{display:inline-flex;align-items:center;justify-content:center;
+    width:19px;height:19px;border-radius:999px;font-size:11px;line-height:1;
+    background:#fef3c7;border:1px solid #fde68a;cursor:help;flex-shrink:0;}
   .escala-tarefa-pill{display:inline-flex;align-items:center;gap:3px;padding:1px 7px;border-radius:999px;
     background:#fef3c7;color:#92400e;border:1px solid #fde68a;font-size:10px;font-weight:700;white-space:nowrap;}
   /* Variantes de estado (só no dia de hoje — ver escalaTarefaPill/
@@ -11353,7 +11361,14 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
 
   function build() {
     const wrap = h('div', { class: 'animate-in' });
-    wrap.appendChild(withBackButton(buildPageHeader(icon, title, subtitle, records().length, buildBotaoRotasPedidos()), goTo, showForm ? cancel : undefined));
+    // Rotas + Orçamentos Conhecidos (quando existe) lado a lado no
+    // cabeçalho — antes "Orçamentos Conhecidos" ficava sozinho, centrado,
+    // por baixo de tudo (pedido explícito 2026-08-16: juntar ao Rotas).
+    const botoesCabecalho = h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;' }, [buildBotaoRotasPedidos()]);
+    if (extraButton && !showForm) {
+      botoesCabecalho.appendChild(h('button', { class: 'btn btn-secondary', onclick: extraButton.onClick }, extraButton.label));
+    }
+    wrap.appendChild(withBackButton(buildPageHeader(icon, title, subtitle, records().length, botoesCabecalho), goTo, showForm ? cancel : undefined));
     if (showForm) {
       const estado = resolveFornecedorOrcamentoState(listKey, draft, fornecedorEditadoManualmente);
       const fieldOverrides = categoriaTemOrcamentos(listKey) ? {
@@ -11436,11 +11451,6 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
       wrap.appendChild(statGrid);
       wrap.appendChild(searchCard);
       wrap.appendChild(resultsEl);
-    }
-    if (extraButton && !showForm) {
-      wrap.appendChild(h('div', { style: 'margin-top:18px;text-align:center;' }, [
-        h('button', { class: 'btn btn-secondary', onclick: extraButton.onClick }, extraButton.label),
-      ]));
     }
     if (!showForm) {
       wrap.appendChild(buildBottomActionBar({
@@ -13775,6 +13785,48 @@ function atualizarIndicadorDadosAtualizados() {
   const el = document.getElementById('dados-atualizados-indicador');
   if (el) el.textContent = textoDadosAtualizados();
 }
+// ---- Aviso da "janela morta" das Rotas entre farmácias do grupo
+// (2ªs/4ªs/6ªs) — ver comentário em buildHomepage. Calcula sempre a
+// partir da data real de hoje, sem nenhum registo gravado no Supabase —
+// puramente calculado, por isso nunca desincroniza nem precisa de ser
+// mantido manualmente mês a mês. ----
+function ultimaRotaDoMes(ano, mes) {
+  const ultimoDia = new Date(ano, mes, 0).getDate();
+  for (let d = ultimoDia; d >= 1; d--) {
+    const diaSemana = new Date(ano, mes - 1, d).getDay();
+    if (diaSemana === 1 || diaSemana === 3 || diaSemana === 5) return new Date(ano, mes - 1, d);
+  }
+  return null;
+}
+function primeiraRotaDoMes(ano, mes) {
+  const diasNoMes = new Date(ano, mes, 0).getDate();
+  for (let d = 1; d <= diasNoMes; d++) {
+    const diaSemana = new Date(ano, mes - 1, d).getDay();
+    if (diaSemana === 1 || diaSemana === 3 || diaSemana === 5) return new Date(ano, mes - 1, d);
+  }
+  return null;
+}
+function buildAvisoJanelaMortaRotas() {
+  const hoje = new Date();
+  const ano = hoje.getFullYear(), mes = hoje.getMonth() + 1;
+  const ultimaRota = ultimaRotaDoMes(ano, mes);
+  if (!ultimaRota) return null;
+  const hojeISO = dateToISO(hoje);
+  const ultimaRotaISO = dateToISO(ultimaRota);
+  if (hojeISO <= ultimaRotaISO) return null; // ainda há pelo menos 1 rota este mês — sem problema
+  const proxMes = mes === 12 ? 1 : mes + 1;
+  const proxAno = mes === 12 ? ano + 1 : ano;
+  const proximaRota = primeiraRotaDoMes(proxAno, proxMes);
+  return h('div', { class: 'fin-alerta-bar', style: 'background:#fef2f2;border-color:#fecaca;color:#991b1b;margin:0 0 18px;' }, [
+    h('div', { class: 'fin-alerta-bar-texto' }, [
+      Icon('alert', { size: 15, strokeWidth: 2.2 }),
+      h('span', {}, [
+        h('strong', {}, 'Não faturar produtos para outras farmácias do grupo até ao fim do mês. '),
+        `A última rota de ${MESES_PT_NOMES[mes - 1]} já foi (${formatDate(ultimaRotaISO)}) — a próxima é só a ${proximaRota ? formatDate(dateToISO(proximaRota)) : `início de ${MESES_PT_NOMES[proxMes - 1]}`}, já no mês seguinte. Faturar agora obriga a refazer a fatura, porque tem de dar entrada no mesmo mês em que é emitida.`,
+      ]),
+    ]),
+  ]);
+}
 function buildHomepage(container, goTo) {
   clear(container);
 
@@ -13874,6 +13926,19 @@ function buildHomepage(container, goTo) {
   const tarefasHojeEquipaCard = buildTarefasHojeEquipaCard(goTo);
   const tarefasHomeItens = [tarefasAtivasWidget, minhasTarefasHojeCard, tarefasHojeEquipaCard].filter(Boolean);
   if (tarefasHomeItens.length) wrap.appendChild(h('div', { class: 'home-tarefas-grid' }, tarefasHomeItens));
+
+  // Aviso de "janela morta" das Rotas entre farmácias do grupo (pedido
+  // explícito 2026-08-16): há rota às 2ªs/4ªs/6ªs, e a fatura tem de dar
+  // entrada no MESMO mês em que é emitida — se se faturar depois da
+  // última rota do mês, a entrega só acontece já na rota seguinte, já no
+  // mês a seguir, obrigando a refazer a fatura. Este aviso aparece
+  // sozinho (sem precisar de ser configurado como Lembrete normal — a
+  // condição "depois da última rota do mês" não encaixa em nenhum dos
+  // padrões de repetição existentes) sempre que a data de hoje já
+  // ultrapassou a última rota do mês corrente. Ver
+  // buildAvisoJanelaMortaRotas.
+  const avisoJanelaMortaRotas = buildAvisoJanelaMortaRotas();
+  if (avisoJanelaMortaRotas) wrap.appendChild(avisoJanelaMortaRotas);
 
   // Separador visual entre o bloco de saudação/tarefas e o resto da
   // Página Inicial (Mensagem do Dia, Validades, etc.) — pedido explícito
@@ -15863,18 +15928,50 @@ function financeiroDiaSeguinte(dataISO) {
   d.setDate(d.getDate() + 1);
   return dateToISO(d);
 }
+// Elemento único partilhado do tooltip flutuante — reaproveitado por
+// todos os ícones de ajuda (evita criar/remover elementos do DOM a cada
+// hover). Ver mostrarTooltipFlutuante/esconderTooltipFlutuante.
+let tooltipFlutuanteEl = null;
+function mostrarTooltipFlutuante(alvoEl, texto) {
+  if (!tooltipFlutuanteEl) {
+    tooltipFlutuanteEl = document.createElement('div');
+    tooltipFlutuanteEl.className = 'campo-ajuda-tooltip-flutuante';
+    document.body.appendChild(tooltipFlutuanteEl);
+  }
+  tooltipFlutuanteEl.textContent = texto;
+  tooltipFlutuanteEl.style.display = 'block';
+  const larguraTooltip = tooltipFlutuanteEl.offsetWidth || 240;
+  const rect = alvoEl.getBoundingClientRect();
+  let left = rect.left + rect.width / 2 - larguraTooltip / 2;
+  left = Math.max(8, Math.min(left, window.innerWidth - larguraTooltip - 8));
+  let top = rect.bottom + 7;
+  // Se não houver espaço por baixo (perto do fundo do ecrã), mostra por cima.
+  const alturaEstimativa = tooltipFlutuanteEl.offsetHeight || 60;
+  if (top + alturaEstimativa > window.innerHeight - 8) top = rect.top - alturaEstimativa - 7;
+  tooltipFlutuanteEl.style.left = `${left}px`;
+  tooltipFlutuanteEl.style.top = `${top}px`;
+}
+function esconderTooltipFlutuante() {
+  if (tooltipFlutuanteEl) tooltipFlutuanteEl.style.display = 'none';
+}
 // Ícone pequeno de "i" com informação em hover — usado nos rótulos dos
 // campos do Financeiro para dar a mesma informação dos antigos textos
-// de ajuda, sem ocupar espaço permanente no ecrã. Usa um tooltip
-// próprio via CSS (.campo-ajuda-icon, data-tooltip) em vez do "title"
-// nativo do browser — o nativo demora ~1s a aparecer e é inconsistente
-// entre browsers/SOs, o que na prática dava a sensação de "não
-// funciona"; este aparece de imediato ao passar o rato ou focar (ex:
-// Tab no teclado).
+// de ajuda, sem ocupar espaço permanente no ecrã. O tooltip é
+// posicionado em JS com position:fixed e anexado ao <body>
+// (mostrarTooltipFlutuante) — nunca é cortado por um contentor com
+// scroll (ex: dentro de um modal), ao contrário de um ::after
+// posicionado relativamente ao próprio ícone. Aparece de imediato ao
+// passar o rato ou focar (ex: Tab no teclado) — nunca o "title" nativo
+// do browser, que demora ~1s e é inconsistente entre browsers/SOs.
 function buildLabelComAjuda(texto, ajuda) {
+  const icone = h('span', { class: 'campo-ajuda-icon', tabIndex: '0', role: 'note', 'aria-label': ajuda }, Icon('info', { size: 13, strokeWidth: 2.2 }));
+  icone.addEventListener('mouseenter', () => mostrarTooltipFlutuante(icone, ajuda));
+  icone.addEventListener('mouseleave', esconderTooltipFlutuante);
+  icone.addEventListener('focus', () => mostrarTooltipFlutuante(icone, ajuda));
+  icone.addEventListener('blur', esconderTooltipFlutuante);
   return h('label', { style: 'display:flex;align-items:center;gap:5px;' }, [
     h('span', {}, texto),
-    h('span', { class: 'campo-ajuda-icon', 'data-tooltip': ajuda, tabIndex: '0', role: 'note', 'aria-label': ajuda }, Icon('info', { size: 13, strokeWidth: 2.2 })),
+    icone,
   ]);
 }
 // Envolve um <input type="date"> já existente com setas ◀ ▶ para
@@ -16002,8 +16099,18 @@ function buildLinhaCumprimento(acumulado, objetivo) {
 // cima da barra (como um pequeno popup), e destaca a barra selecionada;
 // clicar de novo na mesma barra esconde-o outra vez. Só uma barra fica
 // selecionada de cada vez.
-function buildFinanceiroBarraChart(itens, alturaPx, formatarValor) {
+// Gráfico de barras "caseiro" (sem Chart.js/ApexCharts) usado no Financeiro.
+// Ao passar o rato numa barra aparece de imediato um tooltip flutuante
+// (mostrarTooltipFlutuante — position:fixed, nunca cortado por overflow
+// de um contentor com scroll); por defeito mostra só rótulo+valor, mas
+// aceita um obterTooltip(it) próprio (ver buildFinanceiroEvolucaoCard,
+// que mostra Faturação E Atendimentos juntos, independentemente de qual
+// dos dois está a definir a altura das barras). Cada barra continua
+// clicável — fixa/mostra o valor por cima da barra (persiste em touch,
+// que não tem hover); clicar de novo esconde. Só uma fica selecionada.
+function buildFinanceiroBarraChart(itens, alturaPx, formatarValor, obterTooltip) {
   formatarValor = formatarValor || ((v) => financeiroFormatarEuro(v, 2));
+  obterTooltip = obterTooltip || ((it) => `${it.rotulo}: ${formatarValor(it.valor)}`);
   const max = Math.max(1, ...itens.map(it => it.valor));
   let selecionado = null; // índice da barra com o valor fixo/visível
 
@@ -16014,10 +16121,7 @@ function buildFinanceiroBarraChart(itens, alturaPx, formatarValor) {
     itens.forEach((it, i) => {
       const ativo = selecionado === i;
       const valorTexto = formatarValor(it.valor);
-      const col = h('div', {
-        class: 'fin-chart-col' + (ativo ? ' fin-chart-col-ativo' : ''),
-        title: `${it.rotulo}: ${valorTexto}`,
-      }, [
+      const col = h('div', { class: 'fin-chart-col' + (ativo ? ' fin-chart-col-ativo' : '') }, [
         h('div', { class: 'fin-chart-valor-slot' }, [
           h('span', { class: 'fin-chart-valor' }, valorTexto),
         ]),
@@ -16026,6 +16130,8 @@ function buildFinanceiroBarraChart(itens, alturaPx, formatarValor) {
         ]),
         h('span', { class: 'fin-chart-label' }, it.rotulo),
       ]);
+      col.addEventListener('mouseenter', () => mostrarTooltipFlutuante(col, obterTooltip(it)));
+      col.addEventListener('mouseleave', esconderTooltipFlutuante);
       col.addEventListener('click', () => { selecionado = ativo ? null : i; render(); });
       wrap.appendChild(col);
     });
@@ -16279,10 +16385,10 @@ function abrirModalRegistarFaturacao(onGuardado, dataInicial) {
       tituloEl,
       h('button', { class: 'close-btn', onclick: close, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
     ]),
-    h('div', { class: 'field' }, [buildLabelComAjuda('Data', 'Por defeito, o dia de ontem — use as setas ou o calendário para escolher qualquer outro dia, incluindo mais antigos, para corrigir ou completar um registo.'), dataStepper.el]),
-    h('div', { class: 'field' }, [buildLabelComAjuda('Número de Atendimentos', 'Ler no Painel de Bordo do 4Digital. Só aceita números inteiros positivos.'), atendimentosInput]),
-    h('div', { class: 'field' }, [buildLabelComAjuda('Faturação — Vendas menos Descontos (€)', 'Ler no Painel de Bordo do 4Digital, cartão "Vendas". Escreva só os números seguidos, sem vírgula — os últimos 2 são sempre os cêntimos (ex: 1277474 fica 12.774,74 €).'), faturacaoInput]),
-    h('p', { class: 'field-helper-text', style: 'margin-top:-4px;' }, 'Pode preencher só um dos dois campos — o outro mantém o valor já gravado, se existir.'),
+    h('div', { class: 'field', style: 'margin-bottom:16px;' }, [buildLabelComAjuda('Data', 'Por defeito, o dia de ontem — use as setas ou o calendário para escolher qualquer outro dia, incluindo mais antigos, para corrigir ou completar um registo.'), dataStepper.el]),
+    h('div', { class: 'field', style: 'margin-bottom:16px;' }, [buildLabelComAjuda('Número de Atendimentos', 'Ler no Painel de Bordo do 4Digital. Só aceita números inteiros positivos.'), atendimentosInput]),
+    h('div', { class: 'field', style: 'margin-bottom:16px;' }, [buildLabelComAjuda('Faturação — Vendas menos Descontos (€)', 'Ler no Painel de Bordo do 4Digital, cartão "Vendas". Escreva só os números seguidos, sem vírgula — os últimos 2 são sempre os cêntimos (ex: 1277474 fica 12.774,74 €).'), faturacaoInput]),
+    h('p', { class: 'field-helper-text', style: 'margin-top:2px;' }, 'Pode preencher só um dos dois campos — o outro mantém o valor já gravado, se existir.'),
     errorEl,
     h('div', { class: 'form-actions' }, [guardarBtn, cancelBtn]),
   ]);
@@ -16524,12 +16630,12 @@ function buildFinanceiroPesquisaCard(onGuardadoGlobal) {
     if (registarBtn) registarBtn.addEventListener('click', () => requireAuth(() => abrirModalRegistarFaturacao(() => { render(); if (onGuardadoGlobal) onGuardadoGlobal(); }, dataEscolhida)));
 
     const blocoFaturacao = valorDoDia === null
-      ? h('div', { class: 'fin-empty-state', style: 'margin-top:12px;' }, [
+      ? h('div', { class: 'fin-empty-state', style: 'margin-top:14px;' }, [
           Icon('banknote', { size: 22, strokeWidth: 1.7 }),
           h('p', { class: 'fin-empty-titulo' }, 'Sem Faturação registada'),
           h('p', {}, `Ainda não há valor de Faturação para ${formatDate(dataEscolhida)}.`),
         ])
-      : h('div', { style: 'margin-top:12px;' }, [
+      : h('div', { style: 'margin-top:14px;' }, [
           h('div', { class: 'fin-metric-header' }, [
             h('span', { class: 'fin-metric-icon tone-money' }, Icon('banknote', { size: 14, strokeWidth: 2 })),
             h('p', { class: 'fin-kpi-label' }, `Faturação — ${formatDate(dataEscolhida)}`),
@@ -16543,7 +16649,7 @@ function buildFinanceiroPesquisaCard(onGuardadoGlobal) {
         ]);
 
     const blocoAtendimentos = atendimentosDoDia === null
-      ? h('div', { class: 'fin-empty-state', style: 'margin-top:12px;' }, [
+      ? h('div', { class: 'fin-empty-state', style: 'margin-top:14px;' }, [
           Icon('users', { size: 22, strokeWidth: 1.7 }),
           h('p', { class: 'fin-empty-titulo' }, 'Sem Atendimentos registados'),
           h('p', {}, `Ainda não há nº de Atendimentos para ${formatDate(dataEscolhida)}.`),
@@ -16586,12 +16692,24 @@ function buildFinanceiroEvolucaoCard() {
     const corAtual = campo === 'atendimentos' ? 'var(--green)' : '#3b82f6';
     MESES_PT_NOMES.forEach((nome, i) => {
       const mes = i + 1;
-      const vAnt = financeiroTotalMes(anoAnterior, mes, campo);
-      const vAtual = financeiroTotalMes(anoAtual, mes, campo);
-      if (vAnt) itens.push({ rotulo: `${nome.slice(0, 3)} '${String(anoAnterior).slice(2)}`, valor: vAnt, cor: '#94a3b8' });
-      if (vAtual) itens.push({ rotulo: `${nome.slice(0, 3)} '${String(anoAtual).slice(2)}`, valor: vAtual, cor: corAtual });
+      // Calcula sempre as DUAS métricas, independentemente de qual está
+      // ativa — a barra usa a métrica escolhida para a altura/cor, mas
+      // o tooltip ao passar o rato mostra sempre as duas juntas.
+      const fatAnt = financeiroTotalMes(anoAnterior, mes, 'faturacao');
+      const fatAtual = financeiroTotalMes(anoAtual, mes, 'faturacao');
+      const atAnt = financeiroTotalMes(anoAnterior, mes, 'atendimentos');
+      const atAtual = financeiroTotalMes(anoAtual, mes, 'atendimentos');
+      const vAnt = campo === 'atendimentos' ? atAnt : fatAnt;
+      const vAtual = campo === 'atendimentos' ? atAtual : fatAtual;
+      if (vAnt) itens.push({ rotulo: `${nome.slice(0, 3)} '${String(anoAnterior).slice(2)}`, valor: vAnt, cor: '#94a3b8', faturacao: fatAnt, atendimentos: atAnt });
+      if (vAtual) itens.push({ rotulo: `${nome.slice(0, 3)} '${String(anoAtual).slice(2)}`, valor: vAtual, cor: corAtual, faturacao: fatAtual, atendimentos: atAtual });
     });
     return itens;
+  }
+  // Tooltip combinado — mostra Faturação e Atendimentos juntos, sempre,
+  // independentemente de qual das duas está a definir a altura da barra.
+  function obterTooltipCombinado(it) {
+    return `${it.rotulo}\nFaturação: ${financeiroFormatarEuro(it.faturacao, 2)}\nAtendimentos: ${financeiroFormatarNumero(it.atendimentos)}`;
   }
 
   const corpo = h('div', {});
@@ -16606,9 +16724,9 @@ function buildFinanceiroEvolucaoCard() {
     atendimentosBtn.classList.toggle('active', metrica === 'atendimentos');
     const itensEvolucao = construirItens(metrica);
     const formatarValor = metrica === 'atendimentos' ? financeiroFormatarNumero : ((v) => financeiroFormatarEuro(v, 2));
-    corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, metrica === 'atendimentos' ? 'Total de Atendimentos por mês.' : 'Total de Faturação por mês.'));
+    corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, 'Passe o rato numa barra para ver a Faturação e os Atendimentos desse mês.'));
     corpo.appendChild(itensEvolucao.length
-      ? buildFinanceiroBarraChart(itensEvolucao, 180, formatarValor)
+      ? buildFinanceiroBarraChart(itensEvolucao, 180, formatarValor, obterTooltipCombinado)
       : h('div', { class: 'fin-empty-state', style: 'height:180px;justify-content:center;' }, [
           Icon('activity', { size: 24, strokeWidth: 1.7 }),
           h('p', { class: 'fin-empty-titulo' }, 'O gráfico aparece assim que houver dados'),
@@ -17042,7 +17160,7 @@ function buildFinanceiroPage(container, goTo) {
       !noMesAtual ? h('button', { class: 'fin-mes-nav-hoje' }, 'Mês Atual') : null,
     ]);
     if (!noMesAtual) labelNav.querySelector('.fin-mes-nav-hoje').addEventListener('click', irParaMesAtual);
-    const navMesAno = h('div', { class: 'fin-mes-nav', style: 'margin:0 0 14px;' }, [prevBtn, labelNav, nextBtn]);
+    const navMesAno = h('div', { class: 'fin-mes-nav', style: 'margin:-6px 0 14px;' }, [prevBtn, labelNav, nextBtn]);
 
     // ---- Grelha de topo em 2 colunas equilibradas: cartão único de
     // Consulta e Registo à esquerda (fusão do antigo "Faturação de
@@ -17918,12 +18036,12 @@ function buildLembretesPage(container, goTo, embedded) {
     return h('div', { class: 'card card-pad animate-in', style: 'margin-bottom:24px;' }, [
       h('h3', { class: 'page-eyebrow', style: 'margin-bottom:14px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, editingId ? 'Editar registo' : 'Novo registo'),
       h('div', { class: 'form-grid' }, [
-        h('div', { class: 'field span2' }, [h('label', {}, 'Informação / Tarefa'), infoInput]),
-        h('div', { class: 'field field-sm' }, [h('label', {}, 'Data'), melhorarInputData(dataInput)]),
-        h('div', { class: 'field field-sm', style: 'justify-content:flex-end;' }, [h('label', {}, ' '), todoDiaField]),
-        !draft.todoDia ? h('div', { class: 'field field-sm' }, [h('label', {}, 'Hora'), horaInput]) : null,
-        h('div', { class: 'field span2' }, [h('label', {}, 'Repetição'), repeticaoSelect, ...camposRepeticao]),
-        h('div', { class: 'field span2' }, [h('label', {}, 'Âmbito'), ambitoSelect, ambitoHelper]),
+        h('div', { class: 'field span2', style: 'max-width:900px;' }, [h('label', {}, 'Informação / Tarefa'), infoInput]),
+        h('div', { class: 'field field-sm', style: 'max-width:190px;' }, [h('label', {}, 'Data'), melhorarInputData(dataInput)]),
+        h('div', { class: 'field field-sm', style: 'max-width:160px;justify-content:flex-end;' }, [h('label', {}, ' '), todoDiaField]),
+        !draft.todoDia ? h('div', { class: 'field field-sm', style: 'max-width:150px;' }, [h('label', {}, 'Hora'), horaInput]) : null,
+        h('div', { class: 'field', style: 'max-width:440px;' }, [h('label', {}, 'Repetição'), repeticaoSelect, ...camposRepeticao]),
+        h('div', { class: 'field', style: 'max-width:380px;' }, [h('label', {}, 'Âmbito'), ambitoSelect, ambitoHelper]),
       ]),
       formError ? h('p', { class: 'form-error' }, formError) : null,
       h('div', { class: 'form-actions' }, actionsRow),
@@ -24434,6 +24552,40 @@ function escalaTarefaTexto(dia) {
 // Hoje" (vermelho a pulsar se a decorrer, âmbar mais forte se prestes a
 // começar — pedido explícito 2026-08-14, para não haver 2 sítios com
 // linguagem visual diferente para a mesma informação).
+// Versão compacta (só ícones, sem texto) das tarefas de um dia — usada na
+// Vista em Tabela ("Escala da Equipa"/Gerador), que fica poluída/a
+// sobrepor-se com pills de texto completo numa grelha tão apertada (7
+// colunas de dias). Passar o rato (ou focar/clicar, em touch) sobre um
+// ícone mostra o texto completo + intervalo num tooltip flutuante (ver
+// mostrarTooltipFlutuante) — a pill de texto completo (escalaTarefaPill,
+// acima) continua a ser usada em "A Minha Semana", onde há espaço de
+// sobra e o texto completo é sempre preferível.
+function escalaTarefaIconesCompactos(dia) {
+  if (!dia || dia.tipo !== 'normal') return null;
+  const tarefas = escalaTarefasDoDia(dia);
+  const icones = tarefas.map(t => {
+    const info = escalaTarefaInfo(t.tipo);
+    const texto = escalaTarefaTextoItem(t);
+    if (!info || !texto) return null;
+    const intervalo = (t.inicio && t.fim) ? ` ${t.inicio}-${t.fim}` : '';
+    const cor = info.cor;
+    const style = cor ? `background:${cor.bg};color:${cor.text};border-color:${cor.border};` : undefined;
+    const icone = h('span', { class: 'escala-tarefa-icone', style, tabIndex: '0' }, info.icon || '•');
+    const tooltipTexto = texto + intervalo;
+    icone.addEventListener('mouseenter', () => mostrarTooltipFlutuante(icone, tooltipTexto));
+    icone.addEventListener('mouseleave', esconderTooltipFlutuante);
+    icone.addEventListener('focus', () => mostrarTooltipFlutuante(icone, tooltipTexto));
+    icone.addEventListener('blur', esconderTooltipFlutuante);
+    icone.addEventListener('click', (e) => {
+      e.stopPropagation();
+      mostrarTooltipFlutuante(icone, tooltipTexto);
+      setTimeout(() => document.addEventListener('click', esconderTooltipFlutuante, { once: true }), 0);
+    });
+    return icone;
+  }).filter(Boolean);
+  if (!icones.length) return null;
+  return h('span', { class: 'escala-tarefa-icones-wrap' }, icones);
+}
 function escalaTarefaPill(dia, agoraMin) {
   if (!dia || dia.tipo !== 'normal') return null;
   const tarefas = escalaTarefasDoDia(dia);
@@ -24687,6 +24839,77 @@ function escalaDataDoDia(semanaInicioISO, diaKey) {
   const d = new Date(semanaInicioISO + 'T12:00:00');
   d.setDate(d.getDate() + Math.max(idx, 0));
   return dateToISO(d);
+}
+// ---- Exportar "A Minha Semana" para a app de Calendário do telemóvel
+// (iOS/Android/Google/Outlook — todas sabem importar .ics, é o formato
+// universal; não há forma de gravar diretamente numa app específica sem
+// integração própria de cada plataforma, por isso este ficheiro standard
+// serve de ponte). Um evento por dia de trabalho normal (ignora Folgas/
+// Férias/outras ausências — só o que interessa "quando é que trabalho"). ----
+function escaparTextoICS(txt) {
+  return String(txt || '').replace(/\\/g, '\\\\').replace(/,/g, '\\,').replace(/;/g, '\\;').replace(/\n/g, '\\n');
+}
+function formatarCarimboICS(d) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}T${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}Z`;
+}
+function formatarDataHoraICS(dataISO, horaHHMM) {
+  return `${dataISO.replace(/-/g, '')}T${horaHHMM.replace(':', '')}00`;
+}
+function descarregarICSSemanaPessoal(semana) {
+  if (!activeUser) { showToast('Inicie sessão para exportar o seu horário.', 'error'); return; }
+  if (!semana) { showToast('Sem horário gerado para esta semana.', 'info'); return; }
+  const codigosMeus = Object.keys(semana.dados || {}).filter(cod => semana.dados[cod].colaboradorId === activeUser.id);
+  if (!codigosMeus.length) { showToast('Não está atribuído a nenhuma posição nesta semana.', 'info'); return; }
+  const eventos = [];
+  const agora = formatarCarimboICS(new Date());
+  codigosMeus.forEach(codigo => {
+    const linha = semana.dados[codigo];
+    ESCALA_DIAS.forEach(d => {
+      const dia = linha.dias[d.key] || { tipo: 'folga' };
+      const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, activeUser.id);
+      if (tipoEfetivo !== 'normal' || !dia.entrada || !dia.saida) return;
+      const dataDoDia = escalaDataDoDia(semana.semanaInicio, d.key);
+      if (escalaAusenciaDoDia(activeUser.id, dataDoDia)) return;
+      let dataFimISO = dataDoDia;
+      // "00:00" como saída = meia-noite do dia seguinte (mesma convenção
+      // já usada no resto do módulo — ver comentários da Timeline).
+      if (dia.saida === '00:00') {
+        const dObj = new Date(dataDoDia + 'T00:00:00');
+        dObj.setDate(dObj.getDate() + 1);
+        dataFimISO = dateToISO(dObj);
+      }
+      const partesDescricao = [];
+      if (dia.pausaInicio && dia.pausaFim) partesDescricao.push(`Pausa: ${dia.pausaInicio}-${dia.pausaFim}`);
+      escalaTarefasDoDia(dia).forEach(t => {
+        const texto = escalaTarefaTextoItem(t);
+        if (texto) partesDescricao.push(`${texto}${(t.inicio && t.fim) ? ` ${t.inicio}-${t.fim}` : ''}`);
+      });
+      eventos.push([
+        'BEGIN:VEVENT',
+        `UID:sigajuncal-${semana.id}-${codigo}-${d.key}@sigajuncal`,
+        `DTSTAMP:${agora}`,
+        `DTSTART:${formatarDataHoraICS(dataDoDia, dia.entrada)}`,
+        `DTEND:${formatarDataHoraICS(dataFimISO, dia.saida)}`,
+        `SUMMARY:${escaparTextoICS('Farmácia Juncal — Turno')}`,
+        `LOCATION:${escaparTextoICS('Farmácia Juncal')}`,
+        ...(partesDescricao.length ? [`DESCRIPTION:${escaparTextoICS(partesDescricao.join('\n'))}`] : []),
+        'END:VEVENT',
+      ].join('\r\n'));
+    });
+  });
+  if (!eventos.length) { showToast('Sem turnos de trabalho nesta semana para exportar (só Folgas/Férias/ausências).', 'info'); return; }
+  const conteudo = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//SigaJuncal//Horario//PT', 'CALSCALE:GREGORIAN', ...eventos, 'END:VCALENDAR'].join('\r\n');
+  const blob = new Blob([conteudo], { type: 'text/calendar;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `horario_${semana.semanaInicio}.ics`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  showToast('Ficheiro do horário descarregado — abra-o para adicionar à sua app de Calendário.', 'success');
 }
 // Ausência (Férias/Extra/Falta/Baixa/Indisponibilidade) de um colaborador
 // que cobre uma data exata — usada tanto na geração automática da semana
@@ -27249,7 +27472,7 @@ function buildHorariosPage(container, goTo) {
           // à partida) não precisa desta sobreposição.
           const ausencia = dia.tipo === 'normal' ? escalaAusenciaDoDia(colaboradorIdDoDia, diasISO[d.key]) : null;
           if (ausencia) classe += ' escala-cell-ausencia-sobreposta';
-          const pill = escalaTarefaPill(dia);
+          const pill = escalaTarefaIconesCompactos(dia);
           // Grupo B: o colaborador muda todos os dias (rotação diária),
           // por isso cada célula mostra também o nome desse dia em
           // concreto (nomeCurtoDesambiguado, mesmo formato usado no
@@ -27716,7 +27939,15 @@ function buildHorariosPage(container, goTo) {
     // sem necessidade (ver extraBotoesDireita em buildVistaVertical). Em
     // Vista em Tabela não há botões de dia — fica sozinho, alinhado à
     // direita da mesma forma.
+    // Descarregar PDF (pedido explícito 2026-08-16, "afixar na parede")
+    // — mesmo documento (buildHorarioSemanaTimelinePDFDoc) já usado no
+    // "Gerador de Horário"; aqui fica disponível a QUALQUER colaborador,
+    // não só à Direção, já que "Escala da Equipa" é a vista aberta a
+    // todos.
+    const baixarPdfEquipaBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Descarregar horário semanal em PDF (para imprimir e afixar)', 'aria-label': 'Descarregar horário semanal em PDF' }, Icon('download', { size: 15, strokeWidth: 2.2 }));
+    baixarPdfEquipaBtn.addEventListener('click', () => baixarPdfDocumento(buildHorarioSemanaTimelinePDFDoc(semana), `horario_semanal_${semana.semanaInicio}.pdf`));
     const botoesViewToggleEquipa = [
+      baixarPdfEquipaBtn,
       h('button', { class: 'tab-btn tone-blue' + (viewModeEquipa === 'vertical' ? ' active' : ''), onclick: () => { definirViewModeEquipa('vertical'); rerender(); } }, [Icon('clock', { size: 14 }), h('span', {}, 'Timeline')]),
       h('button', { class: 'tab-btn tone-blue' + (viewModeEquipa === 'tabela' ? ' active' : ''), onclick: () => { definirViewModeEquipa('tabela'); rerender(); } }, 'Vista em Tabela'),
     ];
@@ -32239,9 +32470,19 @@ function buildHorariosPage(container, goTo) {
     // nestas 2 vistas se o Diretor Técnico/Administrador tiver ligado
     // "Mostrar rascunhos à equipa" (ver toggle em buildVistaGerador) —
     // Master/Administrador continua a ver sempre tudo, rascunho ou não.
-    const nav = buildNavegacaoSemanas();
-    wrap.appendChild(h('div', { style: 'margin-bottom:16px;' }, nav));
     const semana = semanaSelecionada();
+    // "Adicionar ao Calendário" (pedido explícito 2026-08-16) — só em "A
+    // Minha Semana", exporta os turnos de trabalho da própria pessoa para
+    // um ficheiro .ics universal (iOS/Android/Google/Outlook sabem
+    // importar) — ver descarregarICSSemanaPessoal.
+    const extraBotoesNav = [];
+    if (activeTab === 'pessoal' && activeUser) {
+      const icsBtn = h('button', { class: 'btn-fab-sm tone-blue', title: 'Adicionar ao Calendário (exporta .ics)', 'aria-label': 'Adicionar ao Calendário' }, Icon('calendar', { size: 15, strokeWidth: 2.2 }));
+      icsBtn.addEventListener('click', () => descarregarICSSemanaPessoal(semana));
+      extraBotoesNav.push(icsBtn);
+    }
+    const nav = buildNavegacaoSemanas(extraBotoesNav);
+    wrap.appendChild(h('div', { style: 'margin-bottom:16px;' }, nav));
     // Colaborador comum: nem sequer existe rascunho gerado (!semana) OU
     // existe mas não está publicado nem foi autorizado para pré-visualização
     // (escalaMostrarRascunhosEquipa) — nos dois casos mostra o mesmo
