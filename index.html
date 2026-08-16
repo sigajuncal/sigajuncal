@@ -16860,7 +16860,7 @@ function abrirModalRegistoEmTabela(onGuardado) {
 
   const panel = h('div', { class: 'modal-panel', style: 'max-width:640px;' }, [
     h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;' }, [
-      h('p', { class: 'modal-title', style: 'margin:0;' }, 'Registo em Tabela — Vários Dias'),
+      h('p', { class: 'modal-title', style: 'margin:0;' }, 'Registo em Tabela'),
       h('button', { class: 'close-btn', onclick: close, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
     ]),
     h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, 'Útil para pôr em dia dados de anos anteriores — preencha o que tiver e passe ao mês seguinte. Linhas já preenchidas ficam destacadas a verde.'),
@@ -17683,37 +17683,24 @@ function svgEl(tag, attrs) {
 function buildFinanceiroLinhaMultiAnoChart(series, alturaPx, formatarValor, formatarValorEixo) {
   formatarValorEixo = formatarValorEixo || formatarValor;
   const W = 900, H = alturaPx;
-  const ML = 52, MR = 10, MT = 12, MB = 22;
+  const ML = 62, MR = 10, MT = 12, MB = 22;
   const larguraUtil = W - ML - MR, alturaUtil = H - MT - MB;
   const todosValores = series.flatMap(s => s.pontos.map(p => p.valor)).filter(v => v !== null && v !== undefined && v > 0);
   const maxValor = Math.max(1, ...todosValores);
   const minValor = Math.min(...todosValores);
-  // Escala LOGARÍTMICA (pedido explícito 2026-08-16: "quero que o gráfico
-  // reflicta visualmente a proporcionalidade do crescimento") — numa
-  // escala linear, a mesma distância vertical representa quantidades
-  // absolutas diferentes consoante a base (10% de crescimento a partir de
-  // 100 000 € "parece" maior do que 10% a partir de 400 000 €, mesmo
-  // sendo a mesma taxa). Em escala logarítmica, a MESMA distância
-  // vertical representa sempre a MESMA variação percentual — duas linhas
-  // com a mesma inclinação estão a crescer à mesma taxa, seja qual for o
-  // seu nível absoluto. Margem de 10% acima/abaixo dos valores reais
-  // (em espaço logarítmico), nunca inclui 0 (log(0) não existe).
-  const domainMin = minValor * 0.9;
-  const domainMax = maxValor * 1.08;
-  const logMin = Math.log(domainMin), logMax = Math.log(domainMax);
+  // Escala LINEAR, sem forçar base 0 (pedido explícito 2026-08-16: "não
+  // seja logarítmica, mas também eixo não precisa de começar no 0, um
+  // pouco abaixo do mês mais baixo, que se adapte ao crescimento da
+  // farmácia") — margem de 12% abaixo do valor mínimo e 8% acima do
+  // máximo (nunca desce abaixo de 0), calculada sempre a partir dos
+  // valores REAIS de cada vez que o gráfico é desenhado — por isso já
+  // "acompanha" sozinha o crescimento da farmácia ano após ano, sem
+  // precisar de ajuste manual.
+  const amplitude = Math.max(1, maxValor - minValor);
+  const domainMin = Math.max(0, minValor - amplitude * 0.12);
+  const domainMax = maxValor + amplitude * 0.08;
   function x(mes) { return ML + ((mes - 1) / 11) * larguraUtil; }
-  function y(v) { return MT + alturaUtil - ((Math.log(v) - logMin) / (logMax - logMin)) * alturaUtil; }
-  // Arredonda cada valor de referência do eixo a um número "redondo" —
-  // pedido explícito 2026-08-16 ("eixo está estranho"): valores exatos
-  // da escala logarítmica caem em posições arbitrárias (ex: 624 043,17 €)
-  // e mostrar isso com casas decimais no eixo é confuso; arredonda-se
-  // sempre à ordem de grandeza anterior à do próprio número (ex: às
-  // dezenas de milhar para um valor na casa das centenas de milhar).
-  function arredondarEixo(v) {
-    if (v <= 0) return 0;
-    const grandeza = Math.pow(10, Math.floor(Math.log10(v)) - 1);
-    return Math.round(v / grandeza) * grandeza;
-  }
+  function y(v) { return MT + alturaUtil - ((v - domainMin) / (domainMax - domainMin)) * alturaUtil; }
   // Curva suave (Bézier cúbica com pontos de controlo a 1/3 do segmento)
   // em vez de segmentos de reta em ziguezague — pedido explícito
   // 2026-08-16, para as linhas ficarem com um aspeto mais cuidado.
@@ -17728,13 +17715,22 @@ function buildFinanceiroLinhaMultiAnoChart(series, alturaPx, formatarValor, form
     return d;
   }
 
-  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', style: `width:100%;height:${H}px;display:block;overflow:visible;` });
+  // preserveAspectRatio "none" (versão anterior) esticava o desenho todo
+  // de forma NÃO uniforme para preencher a largura do cartão — incluindo
+  // o texto, que ficava visivelmente esticado/distorcido na horizontal
+  // (pedido explícito 2026-08-16: "as letras parecem esticadas e
+  // distorcidas"). Corrigido à raiz: o wrapper usa `aspect-ratio` para o
+  // elemento renderizado ter SEMPRE exatamente a mesma proporção
+  // largura/altura do viewBox — a escala fica uniforme em X e Y (nunca
+  // esticada só num sentido), preenchendo à mesma toda a largura
+  // disponível, mas sem distorcer nada, texto incluído.
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, style: `width:100%;height:auto;aspect-ratio:${W}/${H};display:block;overflow:visible;` });
 
   [0, 0.25, 0.5, 0.75, 1].forEach(f => {
     const yy = MT + alturaUtil * (1 - f);
     svg.appendChild(svgEl('line', { x1: ML, x2: W - MR, y1: yy, y2: yy, stroke: '#e5e9f0', 'stroke-width': 1 }));
     const rotulo = svgEl('text', { x: ML - 6, y: yy + 3, 'text-anchor': 'end', 'font-size': 9.5, fill: '#a0aabb' });
-    rotulo.textContent = formatarValorEixo(arredondarEixo(Math.exp(logMin + (logMax - logMin) * f)));
+    rotulo.textContent = formatarValorEixo(domainMin + (domainMax - domainMin) * f);
     svg.appendChild(rotulo);
   });
   MESES_PT_NOMES.forEach((nome, i) => {
@@ -17921,7 +17917,7 @@ function buildFinanceiroEvolucaoCard() {
     // Rótulos do eixo: sem casas decimais, mesmo em € — arredondado a
     // milhares/centenas de milhar já não faz sentido mostrar cêntimos.
     const formatarValorEixo = metrica === 'atendimentos' ? ((v) => financeiroFormatarNumero(Math.round(v))) : ((v) => financeiroFormatarEuro(v, 0));
-    corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, 'Passe o rato num ponto para ver o valor exato desse mês. Eixo vertical em escala logarítmica — a mesma inclinação representa sempre a mesma variação percentual, independentemente do nível de cada ano.'));
+    corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, 'Passe o rato num ponto para ver o valor exato desse mês.'));
     corpo.appendChild(temAlgumDado
       ? buildFinanceiroLinhaMultiAnoChart(series, 260, formatarValor, formatarValorEixo)
       : h('div', { class: 'fin-empty-state', style: 'height:260px;justify-content:center;' }, [
@@ -17942,11 +17938,9 @@ function buildFinanceiroEvolucaoCard() {
   return h('div', { class: 'card fin-card-compact', style: 'margin-bottom:18px;' }, [
     h('div', { style: 'display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px;' }, [
       h('h3', { class: 'dash-card-title', style: 'margin:0;' }, 'Evolução Mensal Homóloga'),
-      h('div', { style: 'display:flex;gap:6px;align-items:center;flex-wrap:wrap;' }, [
-        anosSelect,
-        h('div', { style: 'display:flex;gap:6px;flex-wrap:nowrap;' }, [faturacaoBtn, atendimentosBtn]),
-      ]),
+      h('div', { style: 'display:flex;gap:6px;flex-wrap:nowrap;' }, [faturacaoBtn, atendimentosBtn]),
     ]),
+    h('div', { style: 'display:flex;align-items:center;justify-content:flex-end;margin-bottom:6px;' }, [anosSelect]),
     corpo,
   ]);
 }
@@ -18222,7 +18216,7 @@ function buildFinanceiroPage(container, goTo) {
     pdfBtn.addEventListener('click', () => requireAuth(abrirModalRelatorioPDF));
     const botoesTopo = [csvBtn, pdfBtn];
     if (podeEditar) {
-      const tabelaBtn = h('button', { class: 'btn btn-secondary', style: 'margin:14px 0 18px;font-size:12.5px;' }, [Icon('clipboard', { size: 13 }), ' Registo em Tabela (Vários Dias)']);
+      const tabelaBtn = h('button', { class: 'btn btn-secondary', style: 'margin:14px 0 18px;font-size:12.5px;' }, [Icon('clipboard', { size: 13 }), ' Registo em Tabela']);
       tabelaBtn.addEventListener('click', () => requireAuth(() => abrirModalRegistoEmTabela(rerender)));
       botoesTopo.push(tabelaBtn);
     }
