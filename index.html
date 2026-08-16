@@ -16128,17 +16128,23 @@ async function financeiroDefinirMetaDoMes(ano, mes, valor) {
     return registo;
   } catch (e) { if (erroDeRede(e)) marcarConexao(false); lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error('[Supabase] erro de rede ao definir a Meta do mês:', formatarErroSeguro(e)); return null; }
 }
-// Objetivo Anual: reaproveita a MESMA tabela/RPC dos objetivos mensais —
-// fica gravado como um registo especial com mes = MES_SENTINELA_ANUAL (0,
-// nunca um mês real), evitando duplicar toda a infraestrutura de RLS/RPC
-// só para o Anual. Escalável para qualquer ano futuro (2027, 2028...) sem
-// alterações de código: basta chamar com o ano pretendido.
-const MES_SENTINELA_ANUAL = 0;
+// Objetivo Anual: já não é um valor guardado à parte — pedido explícito
+// (2026-08-16) "devia, por esses [Objetivos Mensais], calcular
+// automaticamente o objetivo anual que é a soma" — passa a ser sempre a
+// SOMA dos 12 Objetivos Mensais do ano (cada um já com o próprio fallback
+// para a Previsão do histórico importado, via financeiroMetaDoMes). Só
+// entram no somatório os meses que efetivamente têm um Objetivo Mensal
+// (definido ou histórico) — meses sem nenhum dos dois ficam de fora da
+// soma, sem forçar zero. Devolve null quando NENHUM dos 12 meses tem
+// Objetivo, tal como antes.
+const MES_SENTINELA_ANUAL = 0; // legado — registos antigos (mes=0) ficam na BD mas deixam de ser lidos
 function financeiroMetaAnualDoAno(ano) {
-  return financeiroMetaDoMes(ano, MES_SENTINELA_ANUAL);
-}
-async function financeiroDefinirMetaAnualDoAno(ano, valor) {
-  return financeiroDefinirMetaDoMes(ano, MES_SENTINELA_ANUAL, valor);
+  let soma = 0, algumMes = false;
+  for (let m = 1; m <= 12; m++) {
+    const v = financeiroMetaDoMes(ano, m);
+    if (v) { soma += v; algumMes = true; }
+  }
+  return algumMes ? soma : null;
 }
 function financeiroMesAnterior(ano, mes) { return mes === 1 ? { ano: ano - 1, mes: 12 } : { ano, mes: mes - 1 }; }
 
@@ -16483,7 +16489,7 @@ function abrirModalDefinirMeta(anoDefault, mesDefault, onGuardado) {
       h('p', { class: 'modal-title', style: 'margin:0;' }, 'Definir Objetivos Mensais'),
       h('button', { class: 'close-btn', onclick: close, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
     ]),
-    h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, 'Defina ou altere o Objetivo de qualquer mês do ano escolhido — passado, presente ou já planeado. Linhas já com Objetivo definido ficam destacadas a verde.'),
+    h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, 'Defina ou altere o Objetivo de qualquer mês do ano escolhido — passado, presente ou já planeado. Linhas já com Objetivo definido ficam destacadas a verde. O Objetivo Anual é sempre a soma automática destes 12 valores.'),
     h('div', { class: 'field', style: 'max-width:140px;margin-bottom:0;' }, [h('label', {}, 'Ano'), anoSelect]),
     tabelaWrap,
     contagemEl,
@@ -16494,64 +16500,12 @@ function abrirModalDefinirMeta(anoDefault, mesDefault, onGuardado) {
   renderTabela();
 }
 
-// ---- Definir Objetivo Anual — mesmo padrão do Objetivo Mensal, mas só
-// com seletor de Ano (o intervalo de anos é sempre calculado a partir do
-// ano corrente, por isso já cobre 2027/2028/... sem precisar de código
-// novo quando esses anos chegarem). ----
-function abrirModalDefinirMetaAnual(anoDefault, onGuardado) {
-  if (!podeEditarFinanceiro()) { showToast('Sem permissão para alterar dados financeiros.', 'error'); return; }
-  const overlay = h('div', { class: 'modal-overlay' });
-  function close() { document.removeEventListener('keydown', onKeydown); overlay.remove(); }
-  function onKeydown(e) { if (e.key === 'Escape') close(); }
-  document.addEventListener('keydown', onKeydown);
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+// ---- "Definir Objetivo Anual" removido (2026-08-16, pedido explícito) —
+// o Objetivo Anual passou a ser sempre calculado automaticamente como a
+// soma dos 12 Objetivos Mensais (ver financeiroMetaAnualDoAno); o lápis
+// que antes abria este modal manual agora abre abrirModalDefinirMeta
+// (Objetivos Mensais) diretamente.
 
-  const anoAtualReal = new Date().getFullYear();
-  const anos = [];
-  for (let a = anoAtualReal - 1; a <= anoAtualReal + 2; a++) anos.push(a);
-
-  const anoSelect = h('select', { class: 'select' }, anos.map(a => h('option', { value: String(a) }, String(a))));
-  anoSelect.value = String(anoDefault);
-  const metaInput = h('input', { class: 'input', type: 'number', step: '0.01', min: '0', placeholder: '0.00' });
-  const errorEl = h('p', { class: 'form-error' }, '');
-  errorEl.style.display = 'none';
-
-  function carregarMetaAtual() {
-    const m = financeiroMetaAnualDoAno(parseInt(anoSelect.value, 10));
-    metaInput.value = m || '';
-  }
-  anoSelect.addEventListener('change', carregarMetaAtual);
-  carregarMetaAtual();
-
-  const guardarBtn = h('button', { class: 'btn btn-primary' }, 'Guardar');
-  guardarBtn.addEventListener('click', () => requireAuth(async () => {
-    const valor = parseFloat(String(metaInput.value).replace(',', '.'));
-    if (isNaN(valor) || valor <= 0) {
-      errorEl.textContent = 'Por favor, indique um valor de Objetivo Anual válido.'; errorEl.style.display = ''; return;
-    }
-    errorEl.style.display = 'none';
-    guardarBtn.disabled = true; guardarBtn.textContent = 'A guardar…';
-    const resultado = await financeiroDefinirMetaAnualDoAno(parseInt(anoSelect.value, 10), valor);
-    if (resultado) { close(); onGuardado(); }
-    else { guardarBtn.disabled = false; guardarBtn.textContent = 'Guardar'; showDbErrorToast('Não foi possível guardar o Objetivo Anual'); }
-  }));
-  const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: close }, 'Cancelar');
-
-  const panel = h('div', { class: 'modal-panel', style: 'max-width:380px;' }, [
-    h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;' }, [
-      h('p', { class: 'modal-title', style: 'margin:0;' }, 'Definir Objetivo Anual'),
-      h('button', { class: 'close-btn', onclick: close, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
-    ]),
-    h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, 'Pode definir ou alterar o Objetivo de qualquer ano — passado, presente ou já planeado.'),
-    h('div', { class: 'field' }, [h('label', {}, 'Ano'), anoSelect]),
-    h('div', { class: 'field' }, [h('label', {}, 'Objetivo Anual (€)'), metaInput]),
-    errorEl,
-    h('div', { class: 'form-actions' }, [guardarBtn, cancelBtn]),
-  ]);
-  overlay.appendChild(panel);
-  document.body.appendChild(overlay);
-  setTimeout(() => metaInput.focus(), 60);
-}
 
 // ---- Formulário "Registar o Último Dia" — modelo simplificado: só 2
 // campos, cada um independente (dá para gravar só a Faturação, só os
@@ -17490,7 +17444,11 @@ function financeiroLimitesPeriodo(periodo, customInicio, customFim) {
 function buildFinanceiroPadraoMensalCard() {
   let metrica = 'faturacao'; // ou 'atendimentos'
   let vista = 'diaDoMes'; // 'diaDoMes' | 'diaSemana' | 'feriado'
-  let periodo = 'tudo';
+  // Predefinido "Ano Atual" (pedido explícito 2026-08-16) — com todo o
+  // histórico como ponto de partida, o padrão diluía-se com anos antigos
+  // muito diferentes do negócio atual; a pessoa pode sempre alargar para
+  // "Todo o Histórico" ou outro período no seletor.
+  let periodo = 'anoAtual';
   const anoAtualReal = new Date().getFullYear();
   const corpo = h('div', {});
 
@@ -18078,8 +18036,11 @@ function buildFinanceiroPage(container, goTo) {
     const pctVsAnoAnterior = totalAnoAnterior > 0 ? ((projecaoAnual - totalAnoAnterior) / totalAnoAnterior) * 100 : null;
     const metaAnualSel = financeiroMetaAnualDoAno(anoSel);
     const pctProjecaoVsMetaAnual = (metaAnualSel && projecaoAnualValida) ? ((projecaoAnual - metaAnualSel) / metaAnualSel) * 100 : null;
-    const editarMetaAnualBtn = podeEditar ? h('button', { class: 'btn-fab-sm tone-blue', title: 'Definir/Editar Objetivo Anual', 'aria-label': 'Definir/Editar Objetivo Anual' }, Icon('pencil', { size: 12, strokeWidth: 2.2 })) : null;
-    if (editarMetaAnualBtn) editarMetaAnualBtn.addEventListener('click', () => requireAuth(() => abrirModalDefinirMetaAnual(anoSel, rerender)));
+    // Objetivo Anual = soma dos Objetivos Mensais (2026-08-16, pedido
+    // explícito) — deixou de ter edição própria; o lápis abre agora
+    // diretamente "Definir Objetivos Mensais" (fonte real do cálculo).
+    const editarMetaAnualBtn = podeEditar ? h('button', { class: 'btn-fab-sm tone-blue', title: 'Definir/Editar Objetivos Mensais', 'aria-label': 'Definir/Editar Objetivos Mensais' }, Icon('pencil', { size: 12, strokeWidth: 2.2 })) : null;
+    if (editarMetaAnualBtn) editarMetaAnualBtn.addEventListener('click', () => requireAuth(() => abrirModalDefinirMeta(anoSel, mesAtualReal, rerender)));
 
     // ---- Total do Ano em Atendimentos (soma simples dos dias registados
     // — sem Objetivo/Projeção, esse conceito fica só para a Faturação). ----
@@ -18101,7 +18062,7 @@ function buildFinanceiroPage(container, goTo) {
       buildLinhaComparativa(`vs. Total ${anoSel - 1}`, totalAnoAnterior || null, pctVsAnoAnterior),
       metaAnualSel
         ? buildLinhaComparativaValor('vs. Objetivo Anual', 'Projeção', projecaoAnualValida ? projecaoAnual : null, pctProjecaoVsMetaAnual)
-        : h('p', { class: 'fin-comp-linha' }, [h('span', { class: 'fin-comp-rotulo' }, 'Objetivo Anual: '), h('span', { class: 'fin-comp-ref' }, 'Sem Objetivo definido — clique no lápis para definir.')]),
+        : h('p', { class: 'fin-comp-linha' }, [h('span', { class: 'fin-comp-rotulo' }, 'Objetivo Anual: '), h('span', { class: 'fin-comp-ref' }, 'Sem Objetivos Mensais definidos — clique no lápis para definir.')]),
       h('div', { class: 'fin-subbloco-atendimentos' }, [
         h('div', { class: 'fin-metric-header' }, [
           h('span', { class: 'fin-metric-icon tone-atendimentos' }, Icon('users', { size: 14, strokeWidth: 2 })),
