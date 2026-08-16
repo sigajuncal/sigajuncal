@@ -16079,11 +16079,28 @@ function financeiroTotalAno(ano, campo) {
 // - Ano passado (já todo fechado): devolve o total real, sem "projetar"
 //   nada — soma dos 12 meses, que já têm todos dados completos.
 // - Ano futuro (ainda sem nenhum dia): devolve 0, sem dados válidos.
-// - Ano corrente (o de hoje, seja qual for): usa sempre o mês REAL de
-//   hoje como fronteira "fechado vs. em curso" — soma dos meses já
-//   fechados + Projeção de Fecho do mês em curso + Média diária do ano
-//   × dias restantes até 31 de dezembro. Escalável para 2027/2028/...
-//   sem qualquer alteração de código.
+// - Ano corrente (o de hoje, seja qual for): soma dos meses já fechados
+//   (reais) + Projeção de Fecho do mês em curso (ritmo diário desse
+//   próprio mês) + os meses ainda por começar — projetados com o padrão
+//   SAZONAL da farmácia (pedido explícito 2026-08-16), não com uma média
+//   diária plana:
+//   1) Calcula-se o "desempenho" do ano até agora: desempenho real (meses
+//      fechados reais + projeção de fecho do mês em curso) ÷ soma dos
+//      Objetivos Mensais desses MESMOS meses (só entram meses que têm
+//      Objetivo definido). Isto diz "este ano está a X% do que foi
+//      planeado", sem qualquer suposição de sazonalidade própria — só
+//      aritmética entre o real e o que já foi definido.
+//   2) Cada mês FUTURO com Objetivo Mensal definido entra na projeção
+//      como Objetivo desse mês × esse desempenho — ou seja, usa a forma
+//      sazonal que o próprio utilizador já codificou ao definir
+//      Objetivos diferentes por mês (ex: Dezembro mais alto que
+//      Fevereiro), escalada pelo ritmo real do ano.
+//   3) Um mês futuro SEM Objetivo Mensal definido (ou, se não houver
+//      Objetivo em NENHUM mês já decorrido, para não haver desempenho
+//      calculável) cai no método antigo só para esse mês: Média Diária
+//      do Ano até ontem × dias desse mês — a melhor aproximação possível
+//      sem qualquer padrão sazonal conhecido. Escalável para
+//      2027/2028/... sem qualquer alteração de código.
 function financeiroProjecaoAnual(ano, campo) {
   campo = campo || 'faturacao';
   const anoAtualReal = new Date().getFullYear();
@@ -16096,9 +16113,28 @@ function financeiroProjecaoAnual(ano, campo) {
   const mediaMesAtual = financeiroMediaDiariaMes(ano, mesAtualReal, campo);
   const projecaoFecho = mediaMesAtual * financeiroDiasDoMes(ano, mesAtualReal);
   const mediaDiariaAno = financeiroMediaDiariaAno(ano, ontemReal, campo);
-  let diasRestantes = 0;
-  for (let m = mesAtualReal + 1; m <= 12; m++) diasRestantes += financeiroDiasDoMes(ano, m);
-  const total = totalMesesFechados + projecaoFecho + (mediaDiariaAno * diasRestantes);
+
+  // Desempenho vs. Objetivo Mensal até agora (só faz sentido em €, e só
+  // com pelo menos 1 mês decorrido com Objetivo definido).
+  let desempenho = null;
+  if (campo === 'faturacao') {
+    let somaObjetivo = 0, somaReal = 0;
+    for (let m = 1; m <= mesAtualReal; m++) {
+      const obj = financeiroMetaDoMes(ano, m);
+      if (!obj) continue;
+      somaObjetivo += obj;
+      somaReal += (m === mesAtualReal ? projecaoFecho : financeiroTotalMes(ano, m, campo));
+    }
+    if (somaObjetivo > 0) desempenho = somaReal / somaObjetivo;
+  }
+
+  let projecaoMesesFuturos = 0;
+  for (let m = mesAtualReal + 1; m <= 12; m++) {
+    const objMes = campo === 'faturacao' ? financeiroMetaDoMes(ano, m) : null;
+    if (desempenho !== null && objMes) projecaoMesesFuturos += objMes * desempenho;
+    else projecaoMesesFuturos += mediaDiariaAno * financeiroDiasDoMes(ano, m);
+  }
+  const total = totalMesesFechados + projecaoFecho + projecaoMesesFuturos;
   return { total, valida: mediaDiariaAno > 0 };
 }
 // Meta/Previsão do mês: usa primeiro um objetivo gravado em objetivos_mensais
@@ -16197,15 +16233,21 @@ function esconderTooltipFlutuante() {
 // posicionado relativamente ao próprio ícone. Aparece de imediato ao
 // passar o rato ou focar (ex: Tab no teclado) — nunca o "title" nativo
 // do browser, que demora ~1s e é inconsistente entre browsers/SOs.
-function buildLabelComAjuda(texto, ajuda) {
+// Ícone de ajuda sozinho (sem o <label> à volta) — mesmo mecanismo/visual
+// de buildLabelComAjuda, para usar em sítios que não são um rótulo de
+// campo de formulário (ex: cabeçalho de um cartão KPI).
+function construirIconeAjuda(ajuda) {
   const icone = h('span', { class: 'campo-ajuda-icon', tabIndex: '0', role: 'note', 'aria-label': ajuda }, Icon('info', { size: 13, strokeWidth: 2.2 }));
   icone.addEventListener('mouseenter', () => mostrarTooltipFlutuante(icone, ajuda));
   icone.addEventListener('mouseleave', esconderTooltipFlutuante);
   icone.addEventListener('focus', () => mostrarTooltipFlutuante(icone, ajuda));
   icone.addEventListener('blur', esconderTooltipFlutuante);
+  return icone;
+}
+function buildLabelComAjuda(texto, ajuda) {
   return h('label', { style: 'display:flex;align-items:center;gap:5px;' }, [
     h('span', {}, texto),
-    icone,
+    construirIconeAjuda(ajuda),
   ]);
 }
 // Envolve um <input type="date"> já existente com setas ◀ ▶ para
@@ -17472,11 +17514,16 @@ function financeiroLimitesPeriodo(periodo, customInicio, customFim) {
   const hojeISO = todayISO();
   if (periodo === 'anoAtual') {
     const ano = hoje.getFullYear();
-    return { dataInicio: `${ano}-01-01`, dataFim: hojeISO, rotulo: `Ano Atual (${ano})` };
+    // Só o ano dentro dos parênteses (pedido explícito 2026-08-16) — a
+    // legenda ("Média por dia do mês (ROTULO)") já envolve o rótulo em
+    // parênteses por fora, por isso "Ano Atual (2026)" ficava duplicado:
+    // "(Ano Atual (2026))". O ano sozinho já deixa claro, pelo contexto
+    // do próprio seletor, que é o "Ano Atual" selecionado.
+    return { dataInicio: `${ano}-01-01`, dataFim: hojeISO, rotulo: String(ano) };
   }
   if (periodo === 'anoPassado') {
     const ano = hoje.getFullYear() - 1;
-    return { dataInicio: `${ano}-01-01`, dataFim: `${ano}-12-31`, rotulo: `Ano Passado (${ano})` };
+    return { dataInicio: `${ano}-01-01`, dataFim: `${ano}-12-31`, rotulo: String(ano) };
   }
   if (periodo === '3meses' || periodo === '6meses' || periodo === '12meses') {
     const meses = periodo === '3meses' ? 3 : (periodo === '6meses' ? 6 : 12);
@@ -18104,6 +18151,7 @@ function buildFinanceiroPage(container, goTo) {
         h('div', { class: 'fin-metric-header' }, [
           h('span', { class: 'fin-metric-icon tone-money' }, Icon('target', { size: 14, strokeWidth: 2 })),
           h('p', { class: 'fin-kpi-label' }, `Projeção Anual ${anoSel}`),
+          construirIconeAjuda('Meses já fechados: valor real. Mês em curso: ritmo diário desse mês. Meses ainda por começar: usam o Objetivo Mensal já definido para cada um (a forma sazonal que já conheces da farmácia), ajustado pelo desempenho real do ano até agora face ao que estava planeado. Sem Objetivo Mensal definido para algum mês futuro, esse mês usa a média diária do ano.'),
         ]),
         editarMetaAnualBtn,
       ]),
