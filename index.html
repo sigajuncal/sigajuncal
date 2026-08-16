@@ -1117,7 +1117,7 @@
   .campo-ajuda-icon{position:relative;display:inline-flex;color:var(--pharm-300);cursor:help;flex-shrink:0;}
   .campo-ajuda-icon:hover,.campo-ajuda-icon:focus-visible{color:var(--pharm-500);outline:none;}
   .campo-ajuda-tooltip-flutuante{
-    display:none;position:fixed;z-index:9999;width:240px;max-width:min(240px,calc(100vw - 24px));
+    display:none;position:fixed;z-index:9999;width:max-content;max-width:min(240px,calc(100vw - 24px));
     background:var(--pharm-900);color:#fff;font-size:11.5px;font-weight:600;line-height:1.5;
     white-space:pre-line;padding:9px 11px;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.28);
     pointer-events:none;}
@@ -1417,6 +1417,14 @@
     width:26px;height:26px;border-radius:8px;}
   .fin-metric-icon.tone-money{background:var(--pharm-100);color:var(--pharm-600);}
   .fin-metric-icon.tone-atendimentos{background:var(--green-bg);color:var(--green);}
+  .fin-metric-icon.tone-blue{background:var(--blue-bg);color:var(--blue);}
+  .fin-metric-icon.tone-indigo{background:#eef2ff;color:#4338ca;}
+  /* Briefing/Resumo de Situação e Padrões e Sazonalidade (2026-08-16) —
+     parágrafos de texto corrido, tom conversacional, mais espaçados que
+     as linhas de comparativo (.fin-comp-linha) por serem frases inteiras
+     em vez de "rótulo: valor". */
+  .fin-briefing-paragrafo{margin:0 0 8px;font-size:13px;line-height:1.55;color:var(--pharm-700);}
+  .fin-briefing-paragrafo:last-child{margin-bottom:0;}
   .fin-kpi-label{font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;
     color:var(--pharm-500);margin:0;}
   .fin-kpi-valor{font-size:22px;font-weight:800;color:var(--pharm-900);margin:3px 0 0;letter-spacing:-.01em;}
@@ -16869,10 +16877,364 @@ function buildFinanceiroPesquisaCard(onGuardadoGlobal) {
 }
 
 // ---- Gráfico: Evolução Mensal Homóloga 2025 vs 2026 — cartão em
-// full-width no fundo da página do Financeiro; as barras usam largura
-// flexível (ver .fin-chart-col) para caberem sempre na largura total do
-// cartão, sem precisar de scroll horizontal. Tem um seletor Faturação/
-// Atendimentos — mesma estrutura de dados, troca só a métrica. ----
+// ---- Briefing/Resumo de Situação (2026-08-16, pedido explícito; revisto
+// no mesmo dia — clareza da frase de tendência + menção a Atendimentos) —
+// texto gerado a partir dos próprios dados (nunca IA generativa nem texto
+// fixo), tom conversacional/factual, cobrindo último dia/última semana/mês
+// em curso/tendência recente/perspetiva, sempre com Faturação E
+// Atendimentos quando ambos têm dados. Cada frase (ou cláusula) só
+// aparece quando há dados suficientes para a sustentar — nunca inventa
+// uma comparação sem referência (ver buildLinhaComparativa, mesmo
+// princípio). Devolve { paragrafos, temDados } — build fica à parte para
+// não misturar lógica com DOM.
+// Últimos N dias com valor conhecido, terminando em ateDataISO
+// (inclusive) — ordem cronológica ascendente. Usado pelo Briefing (última
+// semana) e disponível para reutilização noutros cartões futuros.
+function financeiroUltimosNDias(n, ateDataISO, campo) {
+  campo = campo || 'faturacao';
+  const out = [];
+  let d = new Date(ateDataISO + 'T00:00:00');
+  for (let i = 0; i < n; i++) {
+    const dataISO = dateToISO(d);
+    const valor = financeiroValorDoDia(dataISO, campo);
+    if (valor !== null) out.push({ data: dataISO, valor });
+    d.setDate(d.getDate() - 1);
+  }
+  return out.reverse();
+}
+// Todos os registos conhecidos de um campo, ordenados cronologicamente —
+// base do Briefing (evolução/tendência) e da análise de Padrões e
+// Sazonalidade. Só considera dias com o campo efetivamente preenchido.
+function financeiroTodosRegistosOrdenados(campo) {
+  campo = campo || 'faturacao';
+  return (STATE.financeiro || [])
+    .map(r => ({ data: r.data, valor: financeiroValorDoDia(r.data, campo) }))
+    .filter(r => r.valor !== null)
+    .sort((a, b) => a.data.localeCompare(b.data));
+}
+function financeiroFraseVariacao(pct) {
+  return pct === null ? '' : `${Math.abs(pct).toFixed(1)}% ${pct >= 0 ? 'acima' : 'abaixo'}`;
+}
+function financeiroGerarBriefing() {
+  const registos = financeiroTodosRegistosOrdenados('faturacao');
+  if (!registos.length) {
+    return { paragrafos: ['Ainda não há nenhum dia de Faturação registado. Assim que o primeiro dia for registado, este resumo aparece aqui automaticamente.'], temDados: false };
+  }
+  const paragrafos = [];
+  const ultimo = registos[registos.length - 1];
+
+  // --- Último dia (Faturação + Atendimentos desse mesmo dia) ---
+  const compDiaAnt = financeiroComparar(ultimo.data, financeiroDiaAnterior(ultimo.data), 'faturacao');
+  const dSemanaAnt = new Date(ultimo.data + 'T00:00:00'); dSemanaAnt.setDate(dSemanaAnt.getDate() - 7);
+  const compSemanaAnt = financeiroComparar(ultimo.data, dateToISO(dSemanaAnt), 'faturacao');
+  let fraseDia = `No último dia registado (${formatDate(ultimo.data)}), a faturação foi de ${financeiroFormatarEuro(ultimo.valor, 2)}`;
+  const partesDia = [];
+  if (compDiaAnt.pct !== null) partesDia.push(`${financeiroFraseVariacao(compDiaAnt.pct)} do dia anterior`);
+  if (compSemanaAnt.pct !== null) partesDia.push(`${financeiroFraseVariacao(compSemanaAnt.pct)} do mesmo dia da semana passada`);
+  if (partesDia.length) fraseDia += ` (${partesDia.join('; ')})`;
+  const atendUlt = financeiroValorDoDia(ultimo.data, 'atendimentos');
+  if (atendUlt !== null) {
+    const compAtDiaAnt = financeiroComparar(ultimo.data, financeiroDiaAnterior(ultimo.data), 'atendimentos');
+    fraseDia += `. Nesse dia registaram-se ${financeiroFormatarNumero(atendUlt)} atendimentos`;
+    if (compAtDiaAnt.pct !== null) fraseDia += ` (${financeiroFraseVariacao(compAtDiaAnt.pct)} do dia anterior)`;
+  }
+  paragrafos.push(fraseDia + '.');
+
+  // --- Última semana registada (Faturação + Atendimentos) ---
+  const ultimos7 = financeiroUltimosNDias(7, ultimo.data, 'faturacao');
+  if (ultimos7.length >= 3) {
+    const totalSemana = ultimos7.reduce((s, r) => s + r.valor, 0);
+    const mediaSemana = totalSemana / ultimos7.length;
+    const semanaAnterior = financeiroUltimosNDias(7, financeiroDiaAnterior(ultimos7[0].data), 'faturacao');
+    let fraseSemana = `Nos últimos ${ultimos7.length} dias registados, a faturação somou ${financeiroFormatarEuro(totalSemana, 2)} (média diária de ${financeiroFormatarEuro(mediaSemana, 2)})`;
+    if (semanaAnterior.length >= 3) {
+      const totalAnt = semanaAnterior.reduce((s, r) => s + r.valor, 0);
+      if (totalAnt !== 0) fraseSemana += `, ${financeiroFraseVariacao(((totalSemana - totalAnt) / totalAnt) * 100)} do período de 7 dias anterior`;
+    }
+    const ultimos7At = financeiroUltimosNDias(7, ultimo.data, 'atendimentos');
+    if (ultimos7At.length >= 3) {
+      const totalAt = ultimos7At.reduce((s, r) => s + r.valor, 0);
+      fraseSemana += `. Em atendimentos, o total foi de ${financeiroFormatarNumero(totalAt)} (média de ${financeiroFormatarNumero(totalAt / ultimos7At.length)}/dia)`;
+      const semanaAntAt = financeiroUltimosNDias(7, financeiroDiaAnterior(ultimos7At[0].data), 'atendimentos');
+      if (semanaAntAt.length >= 3) {
+        const totalAntAt = semanaAntAt.reduce((s, r) => s + r.valor, 0);
+        if (totalAntAt !== 0) fraseSemana += `, ${financeiroFraseVariacao(((totalAt - totalAntAt) / totalAntAt) * 100)} da semana anterior`;
+      }
+    }
+    paragrafos.push(fraseSemana + '.');
+  }
+
+  // --- Mês em curso (o mês do último dia registado, não o navegador de
+  // Mês/Ano dos cartões acima — o Briefing acompanha sempre os dados mais
+  // recentes) — Faturação + Atendimentos ---
+  const [anoUlt, mesUlt] = ultimo.data.split('-').map(Number);
+  const diaDoMesUlt = Number(ultimo.data.split('-')[2]);
+  const diasNoMesUlt = financeiroDiasDoMes(anoUlt, mesUlt);
+  const totalMesUlt = financeiroTotalMes(anoUlt, mesUlt);
+  const mediaMesUlt = financeiroMediaDiariaMes(anoUlt, mesUlt);
+  const mesUltFechado = diaDoMesUlt >= diasNoMesUlt;
+  const projecaoMesUlt = mesUltFechado ? totalMesUlt : mediaMesUlt * diasNoMesUlt;
+  const metaMesUlt = financeiroMetaDoMes(anoUlt, mesUlt);
+  let fraseMes = mesUltFechado
+    ? `${MESES_PT_NOMES[mesUlt - 1]} fechou com ${financeiroFormatarEuro(totalMesUlt, 2)} de faturação`
+    : `Em ${MESES_PT_NOMES[mesUlt - 1]}, a faturação acumulada é de ${financeiroFormatarEuro(totalMesUlt, 2)}, com uma projeção de fecho de ${financeiroFormatarEuro(projecaoMesUlt, 2)}`;
+  if (metaMesUlt) fraseMes += ` — ${financeiroFraseVariacao(((projecaoMesUlt - metaMesUlt) / metaMesUlt) * 100)} do Objetivo Mensal`;
+  const totalMesUltAt = financeiroTotalMes(anoUlt, mesUlt, 'atendimentos');
+  const mediaMesUltAt = financeiroMediaDiariaMes(anoUlt, mesUlt, 'atendimentos');
+  if (totalMesUltAt) fraseMes += `. Em atendimentos, o total do mês é de ${financeiroFormatarNumero(totalMesUltAt)}${mediaMesUltAt > 0 ? ` (média de ${financeiroFormatarNumero(mediaMesUltAt)}/dia)` : ''}`;
+  paragrafos.push(fraseMes + '.');
+
+  // --- Tendência recente: compara EXPLICITAMENTE a média dos últimos 3
+  // dias registados com a média dos 3 dias imediatamente anteriores
+  // (mostrando as datas e os valores de cada janela, para nunca ficar
+  // ambíguo a que se refere) — sinal de subida/descida/estabilidade,
+  // Faturação e Atendimentos lado a lado, só com dados suficientes (6+
+  // dias registados de cada). ---
+  if (registos.length >= 6) {
+    const ultimos3 = registos.slice(-3);
+    const anteriores3 = registos.slice(-6, -3);
+    const mediaUlt3 = ultimos3.reduce((s, r) => s + r.valor, 0) / 3;
+    const mediaAnt3 = anteriores3.reduce((s, r) => s + r.valor, 0) / 3;
+    if (mediaAnt3 !== 0) {
+      const pct = ((mediaUlt3 - mediaAnt3) / mediaAnt3) * 100;
+      const tendenciaTxt = Math.abs(pct) < 3 ? 'estável' : (pct > 0 ? 'de subida' : 'de descida');
+      let fraseTend = `Comparando a média dos últimos 3 dias registados (${formatDate(ultimos3[0].data)} a ${formatDate(ultimos3[2].data)}: ${financeiroFormatarEuro(mediaUlt3, 2)}/dia) com a média dos 3 dias imediatamente anteriores (${formatDate(anteriores3[0].data)} a ${formatDate(anteriores3[2].data)}: ${financeiroFormatarEuro(mediaAnt3, 2)}/dia), a tendência da Faturação é ${tendenciaTxt}${Math.abs(pct) >= 3 ? ` (${pct >= 0 ? '▲' : '▼'} ${Math.abs(pct).toFixed(1)}%)` : ''}`;
+      const registosAt = financeiroTodosRegistosOrdenados('atendimentos');
+      if (registosAt.length >= 6) {
+        const ultimos3At = registosAt.slice(-3);
+        const anteriores3At = registosAt.slice(-6, -3);
+        const mediaUlt3At = ultimos3At.reduce((s, r) => s + r.valor, 0) / 3;
+        const mediaAnt3At = anteriores3At.reduce((s, r) => s + r.valor, 0) / 3;
+        if (mediaAnt3At !== 0) {
+          const pctAt = ((mediaUlt3At - mediaAnt3At) / mediaAnt3At) * 100;
+          const tendenciaAtTxt = Math.abs(pctAt) < 3 ? 'estáveis' : (pctAt > 0 ? 'em subida' : 'em descida');
+          fraseTend += `; os Atendimentos estão ${tendenciaAtTxt}${Math.abs(pctAt) >= 3 ? ` (${pctAt >= 0 ? '▲' : '▼'} ${Math.abs(pctAt).toFixed(1)}%)` : ''}`;
+        }
+      }
+      paragrafos.push(fraseTend + '.');
+    }
+  }
+
+  // --- Perspetiva: dias que faltam para fechar o mês + se o Objetivo está
+  // em risco, mantendo o ritmo atual. ---
+  if (!mesUltFechado && metaMesUlt && mediaMesUlt > 0) {
+    const diasRestantes = diasNoMesUlt - diaDoMesUlt;
+    paragrafos.push(`Falta${diasRestantes === 1 ? '' : 'm'} ${diasRestantes} dia${diasRestantes === 1 ? '' : 's'} para fechar o mês — mantendo o ritmo atual, o Objetivo Mensal ${projecaoMesUlt >= metaMesUlt ? 'deverá ser cumprido' : 'está em risco de não ser cumprido'}.`);
+  }
+
+  return { paragrafos, temDados: true };
+}
+function buildFinanceiroBriefingCard() {
+  const { paragrafos } = financeiroGerarBriefing();
+  return h('div', { class: 'card fin-card-compact', style: 'margin-bottom:18px;' }, [
+    h('div', { class: 'fin-metric-header', style: 'margin-bottom:10px;' }, [
+      h('span', { class: 'fin-metric-icon tone-indigo' }, Icon('messagesSquare', { size: 14, strokeWidth: 2 })),
+      h('h3', { class: 'dash-card-title', style: 'margin:0;' }, 'Resumo da Situação'),
+    ]),
+    ...paragrafos.map(p => h('p', { class: 'fin-briefing-paragrafo' }, p)),
+  ]);
+}
+
+// ---- Padrões e Sazonalidade (2026-08-16, pedido explícito; revisto no
+// mesmo dia com 3 vistas + seletor de métrica) — identifica padrões
+// recorrentes em Faturação/Atendimentos através de TODOS os dias já
+// registados, sem depender de nenhum histórico embutido — cresce sozinho
+// à medida que mais dias forem registados:
+//  - "Dia do Mês": média de cada dia 1-31 (ex.: dia 8 — pensões/reformas
+//    — vs. quebra no final do mês).
+//  - "Dia da Semana": média de cada dia da semana (Segunda a Domingo),
+//    evidenciando diferenças entre dias úteis e fim de semana.
+//  - "Feriados": média dos feriados nacionais (ehFeriadoNacionalPT, já
+//    usado no SASU — cálculo local, sem depender de rede) vs. média dos
+//    restantes dias.
+// financeiroMediaAgrupada é o motor genérico partilhado pelas 3 vistas —
+// agrupa por uma chave arbitrária (keyFn) derivada da data. ----
+function financeiroMediaAgrupada(campo, keyFn) {
+  campo = campo || 'faturacao';
+  const registos = financeiroTodosRegistosOrdenados(campo);
+  const porChave = {};
+  registos.forEach(r => {
+    const chave = keyFn(r.data);
+    if (chave === null || chave === undefined) return;
+    if (!porChave[chave]) porChave[chave] = { soma: 0, n: 0 };
+    porChave[chave].soma += r.valor;
+    porChave[chave].n += 1;
+  });
+  return porChave;
+}
+function financeiroMediaPorDiaDoMes(campo) {
+  const porChave = financeiroMediaAgrupada(campo, (iso) => Number(iso.split('-')[2]));
+  const out = [];
+  for (let dia = 1; dia <= 31; dia++) if (porChave[dia]) out.push({ dia, media: porChave[dia].soma / porChave[dia].n, n: porChave[dia].n });
+  return out;
+}
+const DIAS_SEMANA_PT_NOME = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
+const DIAS_SEMANA_PT_ABREV = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+function financeiroMediaPorDiaSemana(campo) {
+  const porChave = financeiroMediaAgrupada(campo, (iso) => new Date(iso + 'T00:00:00').getDay());
+  const ordem = [1, 2, 3, 4, 5, 6, 0]; // Segunda a Domingo
+  return ordem.filter(k => porChave[k]).map(k => ({
+    diaSemana: k, nome: DIAS_SEMANA_PT_NOME[k], nomeAbrev: DIAS_SEMANA_PT_ABREV[k],
+    media: porChave[k].soma / porChave[k].n, n: porChave[k].n,
+  }));
+}
+function financeiroMediaFeriadoVsNormal(campo) {
+  campo = campo || 'faturacao';
+  const registos = financeiroTodosRegistosOrdenados(campo);
+  const feriado = { soma: 0, n: 0 }, normal = { soma: 0, n: 0 };
+  registos.forEach(r => {
+    const alvo = ehFeriadoNacionalPT(new Date(r.data + 'T00:00:00')) ? feriado : normal;
+    alvo.soma += r.valor; alvo.n += 1;
+  });
+  return {
+    feriado: feriado.n ? { media: feriado.soma / feriado.n, n: feriado.n } : null,
+    normal: normal.n ? { media: normal.soma / normal.n, n: normal.n } : null,
+  };
+}
+// Limiares de "dados suficientes" — abaixo disso qualquer "dia mais
+// forte" seria só ruído de poucas amostras isoladas, não um padrão real.
+function financeiroInsightsDiaDoMes(campo) {
+  const dados = financeiroMediaPorDiaDoMes(campo);
+  if (dados.length < 10) return { suficiente: false, dados };
+  const mediaGeral = dados.reduce((s, d) => s + d.media, 0) / dados.length;
+  const pico = [...dados].sort((a, b) => b.media - a.media)[0];
+  const vale = [...dados].sort((a, b) => a.media - b.media)[0];
+  const inicioMes = dados.filter(d => d.dia <= 5);
+  const fimMes = dados.filter(d => d.dia >= 26);
+  const mediaInicio = inicioMes.length ? inicioMes.reduce((s, d) => s + d.media, 0) / inicioMes.length : null;
+  const mediaFim = fimMes.length ? fimMes.reduce((s, d) => s + d.media, 0) / fimMes.length : null;
+  const diaOito = dados.find(d => d.dia === 8) || null;
+  return { suficiente: true, dados, mediaGeral, pico, vale, mediaInicio, mediaFim, diaOito };
+}
+function financeiroInsightsDiaSemana(campo) {
+  const dados = financeiroMediaPorDiaSemana(campo);
+  if (dados.length < 4) return { suficiente: false, dados };
+  const mediaGeral = dados.reduce((s, d) => s + d.media, 0) / dados.length;
+  const pico = [...dados].sort((a, b) => b.media - a.media)[0];
+  const vale = [...dados].sort((a, b) => a.media - b.media)[0];
+  const fimSemana = dados.filter(d => d.diaSemana === 0 || d.diaSemana === 6);
+  const diasUteis = dados.filter(d => d.diaSemana >= 1 && d.diaSemana <= 5);
+  const mediaFimSemana = fimSemana.length ? fimSemana.reduce((s, d) => s + d.media, 0) / fimSemana.length : null;
+  const mediaDiasUteis = diasUteis.length ? diasUteis.reduce((s, d) => s + d.media, 0) / diasUteis.length : null;
+  return { suficiente: true, dados, mediaGeral, pico, vale, mediaFimSemana, mediaDiasUteis };
+}
+function financeiroInsightsFeriado(campo) {
+  const r = financeiroMediaFeriadoVsNormal(campo);
+  const suficiente = !!(r.feriado && r.normal && r.feriado.n >= 2 && r.normal.n >= 5);
+  return Object.assign({ suficiente }, r);
+}
+function financeiroTextoDiaDoMes(insights, campo) {
+  const formatarFn = campo === 'atendimentos' ? financeiroFormatarNumero : ((v) => financeiroFormatarEuro(v, 2));
+  const nomeMetrica = campo === 'atendimentos' ? 'Atendimentos' : 'Faturação';
+  if (!insights.suficiente) return [`Ainda não há dados de dias-do-mês suficientes (em vários meses distintos) para identificar padrões fiáveis de ${nomeMetrica} — esta vista fica mais precisa à medida que os meses forem passando.`];
+  const frases = [];
+  const pctPico = ((insights.pico.media / insights.mediaGeral) - 1) * 100;
+  frases.push(`Em média, o dia ${insights.pico.dia} do mês é o mais forte em ${nomeMetrica}, com ${formatarFn(insights.pico.media)} — ${Math.abs(pctPico).toFixed(0)}% acima da média diária geral (${formatarFn(insights.mediaGeral)}).`);
+  if (insights.vale.dia !== insights.pico.dia) {
+    const pctVale = ((insights.vale.media / insights.mediaGeral) - 1) * 100;
+    frases.push(`O dia ${insights.vale.dia} é tipicamente o mais fraco, ${Math.abs(pctVale).toFixed(0)}% abaixo da média.`);
+  }
+  if (insights.diaOito && insights.diaOito.dia !== insights.pico.dia) {
+    const pctOito = ((insights.diaOito.media / insights.mediaGeral) - 1) * 100;
+    if (Math.abs(pctOito) >= 5) frases.push(`O dia 8 do mês (habitualmente associado a pensões/reformas) tende a ficar ${pctOito >= 0 ? '▲' : '▼'} ${Math.abs(pctOito).toFixed(0)}% ${pctOito >= 0 ? 'acima' : 'abaixo'} da média.`);
+  }
+  if (insights.mediaInicio !== null && insights.mediaFim !== null && insights.mediaInicio !== 0) {
+    const pctFimVsInicio = ((insights.mediaFim - insights.mediaInicio) / insights.mediaInicio) * 100;
+    if (pctFimVsInicio <= -5) frases.push(`Os últimos dias do mês (26 a 31) tendem a ser mais fracos do que os primeiros 5 dias — em média, ${Math.abs(pctFimVsInicio).toFixed(0)}% abaixo, um sinal de quebra no final do mês.`);
+    else if (pctFimVsInicio >= 5) frases.push(`Os últimos dias do mês (26 a 31) tendem a superar os primeiros 5 dias em ${pctFimVsInicio.toFixed(0)}%, em média.`);
+  }
+  return frases;
+}
+function financeiroTextoDiaSemana(insights, campo) {
+  const formatarFn = campo === 'atendimentos' ? financeiroFormatarNumero : ((v) => financeiroFormatarEuro(v, 2));
+  const nomeMetrica = campo === 'atendimentos' ? 'Atendimentos' : 'Faturação';
+  if (!insights.suficiente) return [`Ainda não há dados suficientes de vários dias da semana para identificar padrões fiáveis de ${nomeMetrica}.`];
+  const frases = [];
+  const pctPico = ((insights.pico.media / insights.mediaGeral) - 1) * 100;
+  frases.push(`${insights.pico.nome} costuma ser o dia mais forte em ${nomeMetrica}, com ${formatarFn(insights.pico.media)} em média — ${Math.abs(pctPico).toFixed(0)}% acima da média semanal.`);
+  if (insights.vale.diaSemana !== insights.pico.diaSemana) {
+    const pctVale = ((insights.vale.media / insights.mediaGeral) - 1) * 100;
+    frases.push(`${insights.vale.nome} costuma ser o mais fraco, ${Math.abs(pctVale).toFixed(0)}% abaixo da média semanal.`);
+  }
+  if (insights.mediaFimSemana !== null && insights.mediaDiasUteis !== null && insights.mediaDiasUteis !== 0) {
+    const pct = ((insights.mediaFimSemana - insights.mediaDiasUteis) / insights.mediaDiasUteis) * 100;
+    if (Math.abs(pct) >= 5) frases.push(`Os fins de semana (sábado e domingo) ficam ${Math.abs(pct).toFixed(0)}% ${pct >= 0 ? 'acima' : 'abaixo'} dos dias úteis, em média.`);
+  }
+  return frases;
+}
+function financeiroTextoFeriado(insights, campo) {
+  const formatarFn = campo === 'atendimentos' ? financeiroFormatarNumero : ((v) => financeiroFormatarEuro(v, 2));
+  const nomeMetrica = campo === 'atendimentos' ? 'Atendimentos' : 'a faturação';
+  if (!insights.suficiente) {
+    const n = insights.feriado ? insights.feriado.n : 0;
+    return [`Ainda não há feriados suficientes registados para comparar com fiabilidade (${n} feriado${n === 1 ? '' : 's'} registado${n === 1 ? '' : 's'} até agora).`];
+  }
+  const pct = ((insights.feriado.media / insights.normal.media) - 1) * 100;
+  return [`Em ${insights.feriado.n} feriados registados até agora, ${nomeMetrica === 'Atendimentos' ? 'os Atendimentos em média foram' : 'a Faturação média foi'} de ${formatarFn(insights.feriado.media)} — ${Math.abs(pct).toFixed(0)}% ${pct >= 0 ? 'acima' : 'abaixo'} da média dos restantes dias (${formatarFn(insights.normal.media)}, com base em ${insights.normal.n} dias).`];
+}
+function buildFinanceiroPadraoMensalCard() {
+  let metrica = 'faturacao'; // ou 'atendimentos'
+  let vista = 'diaDoMes'; // 'diaDoMes' | 'diaSemana' | 'feriado'
+  const corpo = h('div', {});
+
+  const metricaBtns = { faturacao: h('button', { type: 'button', class: 'tab-btn' }, 'Faturação'), atendimentos: h('button', { type: 'button', class: 'tab-btn' }, 'Atendimentos') };
+  const vistaBtns = { diaDoMes: h('button', { type: 'button', class: 'tab-btn' }, 'Dia do Mês'), diaSemana: h('button', { type: 'button', class: 'tab-btn' }, 'Dia da Semana'), feriado: h('button', { type: 'button', class: 'tab-btn' }, 'Feriados') };
+  Object.keys(metricaBtns).forEach(k => metricaBtns[k].addEventListener('click', () => { metrica = k; renderCorpo(); }));
+  Object.keys(vistaBtns).forEach(k => vistaBtns[k].addEventListener('click', () => { vista = k; renderCorpo(); }));
+
+  function renderCorpo() {
+    clear(corpo);
+    Object.keys(metricaBtns).forEach(k => metricaBtns[k].classList.toggle('active', metrica === k));
+    Object.keys(vistaBtns).forEach(k => vistaBtns[k].classList.toggle('active', vista === k));
+    const formatarFn = metrica === 'atendimentos' ? financeiroFormatarNumero : ((v) => financeiroFormatarEuro(v, 2));
+
+    let itensChart = null, frases = [], legenda = '';
+    if (vista === 'diaDoMes') {
+      const insights = financeiroInsightsDiaDoMes(metrica);
+      if (insights.suficiente) {
+        itensChart = insights.dados.map(d => ({ rotulo: String(d.dia), valor: d.media, cor: d.dia === 8 ? '#f59e0b' : (d.dia <= 5 ? '#16a34a' : (d.dia >= 26 ? '#dc2626' : '#3b82f6')) }));
+        legenda = `Média por dia do mês, com base em ${insights.dados.reduce((s, d) => s + d.n, 0)} dias registados ao longo de vários meses. A cor destaca início do mês (verde), dia 8 (laranja) e últimos dias do mês (vermelho).`;
+      }
+      frases = financeiroTextoDiaDoMes(insights, metrica);
+    } else if (vista === 'diaSemana') {
+      const insights = financeiroInsightsDiaSemana(metrica);
+      if (insights.suficiente) {
+        itensChart = insights.dados.map(d => ({ rotulo: d.nomeAbrev, valor: d.media, cor: (d.diaSemana === 0 || d.diaSemana === 6) ? '#dc2626' : '#3b82f6' }));
+        legenda = `Média por dia da semana, com base em ${insights.dados.reduce((s, d) => s + d.n, 0)} dias registados. A cor destaca o fim de semana (vermelho) — dias úteis a azul.`;
+      }
+      frases = financeiroTextoDiaSemana(insights, metrica);
+    } else {
+      const insights = financeiroInsightsFeriado(metrica);
+      if (insights.suficiente) {
+        itensChart = [
+          { rotulo: 'Feriados', valor: insights.feriado.media, cor: '#f59e0b' },
+          { rotulo: 'Restantes Dias', valor: insights.normal.media, cor: '#3b82f6' },
+        ];
+        legenda = `Comparação entre feriados nacionais (${insights.feriado.n} registados) e os restantes dias (${insights.normal.n} registados).`;
+      }
+      frases = financeiroTextoFeriado(insights, metrica);
+    }
+
+    if (itensChart) {
+      corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, legenda));
+      corpo.appendChild(buildFinanceiroBarraChart(itensChart, 150, formatarFn));
+    }
+    frases.forEach((txt, i) => corpo.appendChild(h('p', { class: 'fin-briefing-paragrafo', style: (itensChart || i > 0) ? 'margin-top:10px;' : '' }, txt)));
+  }
+  renderCorpo();
+
+  return h('div', { class: 'card fin-card-compact', style: 'margin-bottom:18px;' }, [
+    h('div', { style: 'display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px;' }, [
+      h('div', { class: 'fin-metric-header' }, [
+        h('span', { class: 'fin-metric-icon tone-blue' }, Icon('calendar', { size: 14, strokeWidth: 2 })),
+        h('h3', { class: 'dash-card-title', style: 'margin:0;' }, 'Padrões e Sazonalidade'),
+      ]),
+      h('div', { style: 'display:flex;gap:6px;' }, [metricaBtns.faturacao, metricaBtns.atendimentos]),
+    ]),
+    h('div', { style: 'display:flex;gap:6px;margin-bottom:10px;' }, [vistaBtns.diaDoMes, vistaBtns.diaSemana, vistaBtns.feriado]),
+    corpo,
+  ]);
+}
 function buildFinanceiroEvolucaoCard() {
   const anoAtual = new Date().getFullYear();
   const anoAnterior = anoAtual - 1;
@@ -17376,6 +17738,17 @@ function buildFinanceiroPage(container, goTo) {
     // ---- Evolução Mensal Homóloga — gráfico anual em full-width no
     // fundo, sem scroll horizontal. ----
     wrap.appendChild(buildFinanceiroEvolucaoCard());
+
+    // ---- Resumo da Situação (Briefing, 2026-08-16) + Padrões e
+    // Sazonalidade — ambos logo a seguir ao gráfico de Evolução Mensal
+    // Homóloga, pedido explícito. O Briefing é texto conversacional gerado
+    // a partir dos dados (último dia/semana/mês/tendência/perspetiva,
+    // Faturação e Atendimentos); Padrões e Sazonalidade tem 3 vistas (Dia
+    // do Mês/Dia da Semana/Feriados) × seletor Faturação/Atendimentos,
+    // destacando dias tipicamente mais fortes (ex.: dia 8, fim de semana)
+    // ou mais fracos (ex.: quebra no final do mês). ----
+    wrap.appendChild(buildFinanceiroBriefingCard());
+    wrap.appendChild(buildFinanceiroPadraoMensalCard());
 
     return wrap;
   }
