@@ -17756,6 +17756,29 @@ function buildFinanceiroLinhaMultiAnoChart(series, alturaPx, formatarValor, form
 
   return h('div', { style: 'overflow-x:auto;' }, [svg]);
 }
+// Valor de um mês, independentemente da métrica — Faturação/Atendimentos
+// são somas do mês; Talão Médio é uma média (Faturação÷Atendimentos), por
+// isso usa financeiroTicketMedioMes em vez de financeiroTotalMes. Helper
+// central para o gráfico e os 2 comentários gerados abaixo funcionarem os
+// 3 igual, sem duplicar a distinção por todo o lado.
+function financeiroValorMesPorMetrica(ano, mes, campo) {
+  if (campo === 'ticketMedio') { const r = financeiroTicketMedioMes(ano, mes); return r ? r.valor : 0; }
+  return financeiroTotalMes(ano, mes, campo);
+}
+// Valor "acumulado" de Janeiro até mesLimite — para Faturação/Atendimentos
+// é mesmo a soma dos meses; para Talão Médio uma soma não faria sentido
+// (a média de médias mensais está estatisticamente errada) — usa antes o
+// Talão Médio PONDERADO do período inteiro (soma Faturação÷soma
+// Atendimentos), a forma correta de agregar um rácio.
+function financeiroValorPeriodoPorMetrica(ano, mesLimite, campo) {
+  if (campo === 'ticketMedio') {
+    const r = financeiroTicketMedioPeriodo(`${ano}-01-01`, `${ano}-${pad2(mesLimite)}-${pad2(financeiroDiasDoMes(ano, mesLimite))}`);
+    return r ? r.valor : 0;
+  }
+  let soma = 0;
+  for (let m = 1; m <= mesLimite; m++) soma += financeiroTotalMes(ano, m, campo);
+  return soma;
+}
 // Comentário gerado a partir dos dados (2026-08-16, pedido explícito) —
 // nunca texto fixo, sempre calculado a partir dos anos efetivamente
 // selecionados. Compara sempre o MESMO intervalo (Janeiro até ao último
@@ -17767,21 +17790,18 @@ function financeiroComentarioEvolucaoAnos(anos, campo) {
   let mesLimite = 12;
   if (anos.includes(anoAtualReal)) {
     mesLimite = 0;
-    for (let m = 1; m <= 12; m++) if (financeiroTotalMes(anoAtualReal, m, campo)) mesLimite = m;
+    for (let m = 1; m <= 12; m++) if (financeiroValorMesPorMetrica(anoAtualReal, m, campo)) mesLimite = m;
     if (mesLimite === 0) return null;
   }
   const nomeMesLimite = MESES_PT_NOMES[mesLimite - 1];
   const formatarValor = campo === 'atendimentos' ? financeiroFormatarNumero : ((v) => financeiroFormatarEuro(v, 2));
-  const totais = anos.map(ano => {
-    let soma = 0;
-    for (let m = 1; m <= mesLimite; m++) soma += financeiroTotalMes(ano, m, campo);
-    return { ano, soma };
-  }).filter(t => t.soma > 0);
+  const totais = anos.map(ano => ({ ano, soma: financeiroValorPeriodoPorMetrica(ano, mesLimite, campo) })).filter(t => t.soma > 0);
   if (totais.length < 2) return null;
 
   const partes = [];
   const base = mesLimite === 12 ? 'todo o ano' : `Janeiro a ${nomeMesLimite}`;
-  partes.push(`Considerando sempre ${base} de cada ano (para comparar de forma justa): `);
+  const rotuloValor = campo === 'ticketMedio' ? ' (Talão Médio ponderado do período)' : '';
+  partes.push(`Considerando sempre ${base} de cada ano${rotuloValor} (para comparar de forma justa): `);
   const variacoes = [];
   totais.forEach((t, i) => {
     if (i === 0) { partes.push(`${t.ano}: ${formatarValor(t.soma)}`); return; }
@@ -17819,28 +17839,31 @@ function financeiroComentarioEvolucaoAnos(anos, campo) {
 // sazonalidade") — só entram anos INTEIROS (com os 12 meses fechados;
 // usa Dezembro como indicador de ano completo), nunca o ano corrente
 // (ainda incompleto, distorceria as percentagens de peso de cada mês no
-// ano). Para cada ano completo, calcula o peso de cada mês no total
-// desse ano (%); a média desses pesos ao longo dos anos é o "padrão"
-// típico. Precisa de pelo menos 2 anos completos para falar em "costuma"
-// — com 1 só ano isso seria um caso, não um padrão.
+// ano). Para cada ano completo, calcula o rácio de cada mês face à MÉDIA
+// dos 12 meses desse ano — funciona tanto para métricas "soma" (Faturação/
+// Atendimentos, onde isto equivale ao peso no total anual) como para
+// métricas "média" (Talão Médio, onde uma soma não faria sentido). A
+// média desses rácios ao longo dos anos é o "padrão" típico. Precisa de
+// pelo menos 2 anos completos para falar em "costuma" — com 1 só ano isso
+// seria um caso, não um padrão.
 function financeiroPadraoSazonalAnos(anos, campo) {
   const anoAtualReal = new Date().getFullYear();
-  const completos = anos.filter(ano => ano < anoAtualReal && financeiroTotalMes(ano, 12, campo) > 0);
+  const completos = anos.filter(ano => ano < anoAtualReal && financeiroValorMesPorMetrica(ano, 12, campo) > 0);
   if (completos.length < 2) return null;
 
-  const somaShare = new Array(12).fill(0);
+  const somaRacio = new Array(12).fill(0);
   const contagemTop = new Array(12).fill(0);
   const contagemFundo = new Array(12).fill(0);
   let anosValidos = 0;
   completos.forEach(ano => {
     const totaisMes = [];
-    let totalAno = 0;
-    for (let m = 1; m <= 12; m++) { const t = financeiroTotalMes(ano, m, campo); totaisMes.push(t); totalAno += t; }
-    if (totalAno <= 0) return;
+    for (let m = 1; m <= 12; m++) totaisMes.push(financeiroValorMesPorMetrica(ano, m, campo));
+    const media = totaisMes.reduce((a, b) => a + b, 0) / 12;
+    if (media <= 0) return;
     anosValidos++;
     let melhorMes = 0, piorMes = 0;
     totaisMes.forEach((t, i) => {
-      somaShare[i] += t / totalAno;
+      somaRacio[i] += t / media;
       if (t > totaisMes[melhorMes]) melhorMes = i;
       if (t < totaisMes[piorMes]) piorMes = i;
     });
@@ -17849,16 +17872,16 @@ function financeiroPadraoSazonalAnos(anos, campo) {
   });
   if (anosValidos < 2) return null;
 
-  const mediaShare = somaShare.map(s => s / anosValidos);
-  const mediaGeral = 1 / 12;
+  const mediaRacio = somaRacio.map(s => s / anosValidos); // 1.0 = na média do próprio ano
   let mesForte = 0, mesFraco = 0;
-  mediaShare.forEach((s, i) => { if (s > mediaShare[mesForte]) mesForte = i; if (s < mediaShare[mesFraco]) mesFraco = i; });
-  const desvioForte = ((mediaShare[mesForte] - mediaGeral) / mediaGeral) * 100;
-  const desvioFraco = ((mediaShare[mesFraco] - mediaGeral) / mediaGeral) * 100;
+  mediaRacio.forEach((r, i) => { if (r > mediaRacio[mesForte]) mesForte = i; if (r < mediaRacio[mesFraco]) mesFraco = i; });
+  const desvioForte = (mediaRacio[mesForte] - 1) * 100;
+  const desvioFraco = (mediaRacio[mesFraco] - 1) * 100;
   const anoInicio = completos[0], anoFim = completos[completos.length - 1];
+  const rotuloMedia = campo === 'ticketMedio' ? 'do Talão Médio do ano' : 'mensal do ano';
 
   let frase = `Olhando para os ${anosValidos} anos completos mais recentes (${anoInicio}–${anoFim}): `;
-  frase += `${MESES_PT_NOMES[mesForte]} tende a ser o mês mais forte (▲ ${desvioForte.toFixed(0)}% acima da média mensal do ano`;
+  frase += `${MESES_PT_NOMES[mesForte]} tende a ser o mês mais forte (▲ ${desvioForte.toFixed(0)}% acima da média ${rotuloMedia}`;
   if (contagemTop[mesForte] >= 2) frase += `, foi o melhor mês em ${contagemTop[mesForte]} desses ${anosValidos} anos`;
   frase += `); ${MESES_PT_NOMES[mesFraco]} tende a ser o mais fraco (▼ ${Math.abs(desvioFraco).toFixed(0)}% abaixo da média`;
   if (contagemFundo[mesFraco] >= 2) frase += `, foi o mês mais fraco em ${contagemFundo[mesFraco]} desses ${anosValidos} anos`;
@@ -17872,10 +17895,23 @@ function buildFinanceiroEvolucaoCard() {
   let metrica = 'faturacao'; // ou 'atendimentos'
   let numAnos = Math.min(2, maxAnosDisponiveis); // "anos consecutivos" por defeito — o mesmo comportamento de sempre
 
-  // Paleta: o ano corrente destaca-se sempre na cor "de marca" (azul/verde,
-  // conforme a métrica); os anteriores usam cores bem distintas entre si
-  // (não uma escala de cinzentos, que se confunde ao fim de 3+ anos).
-  const PALETA_ANOS_ANTERIORES = ['#94a3b8', '#f59e0b', '#a855f7', '#14b8a6'];
+  // Cor por ANO em gradiente azul→vermelho conforme a distância ao ano
+  // corrente (2026-08-16, pedido explícito: "mais próximas azuis até às
+  // mais distantes vermelhas") — mais lógico visualmente do que cores
+  // arbitrárias: o ano mais recente fica sempre azul, o mais antigo
+  // selecionado fica sempre vermelho, com os do meio a fazer a transição
+  // (interpolação em HSL, do azul ~217° ao vermelho ~0°). Recalculado a
+  // cada troca de "N anos" — com 2 anos fica azul+vermelho, com 5 anos
+  // fica uma escala suave em 5 tons.
+  function corPorAno(ano, anos) {
+    const idx = anos.length - 1 - anos.indexOf(ano); // 0 = mais recente
+    const t = anos.length > 1 ? idx / (anos.length - 1) : 0;
+    // De 217° (azul) a 360°/0° (vermelho) SUBINDO pelo lado do roxo/
+    // magenta — nunca descendo pelo verde/amarelo, que daria um
+    // arco-íris em vez de um gradiente azul→vermelho como pedido.
+    const hue = (217 + t * (360 - 217)) % 360;
+    return `hsl(${hue.toFixed(0)}, 70%, 52%)`;
+  }
 
   function anosSelecionados() {
     const anos = [];
@@ -17884,12 +17920,12 @@ function buildFinanceiroEvolucaoCard() {
   }
 
   function construirSeries(campo) {
-    const corAtual = campo === 'atendimentos' ? 'var(--green)' : '#3b82f6';
-    return anosSelecionados().map((ano, idx) => {
-      const cor = ano === anoAtual ? corAtual : PALETA_ANOS_ANTERIORES[(anoAtual - ano - 1) % PALETA_ANOS_ANTERIORES.length];
+    const anos = anosSelecionados();
+    return anos.map((ano) => {
+      const cor = corPorAno(ano, anos);
       const pontos = MESES_PT_NOMES.map((_, i) => {
         const mes = i + 1;
-        const v = financeiroTotalMes(ano, mes, campo);
+        const v = financeiroValorMesPorMetrica(ano, mes, campo);
         return { mes, valor: v || null };
       });
       return { ano, cor, pontos };
@@ -17899,8 +17935,10 @@ function buildFinanceiroEvolucaoCard() {
   const corpo = h('div', {});
   const faturacaoBtn = h('button', { type: 'button', class: 'tab-btn' }, 'Faturação');
   const atendimentosBtn = h('button', { type: 'button', class: 'tab-btn' }, 'Atendimentos');
+  const ticketMedioBtn = h('button', { type: 'button', class: 'tab-btn' }, 'Talão Médio');
   faturacaoBtn.addEventListener('click', () => { metrica = 'faturacao'; renderCorpo(); });
   atendimentosBtn.addEventListener('click', () => { metrica = 'atendimentos'; renderCorpo(); });
+  ticketMedioBtn.addEventListener('click', () => { metrica = 'ticketMedio'; renderCorpo(); });
 
   const anosSelect = h('select', { class: 'input', style: 'max-width:110px;font-size:12.5px;padding:5px 8px;' });
   for (let n = 2; n <= maxAnosDisponiveis; n++) anosSelect.appendChild(h('option', { value: n }, `${n} anos`));
@@ -17911,19 +17949,24 @@ function buildFinanceiroEvolucaoCard() {
     clear(corpo);
     faturacaoBtn.classList.toggle('active', metrica === 'faturacao');
     atendimentosBtn.classList.toggle('active', metrica === 'atendimentos');
+    ticketMedioBtn.classList.toggle('active', metrica === 'ticketMedio');
     const series = construirSeries(metrica);
     const temAlgumDado = series.some(s => s.pontos.some(p => p.valor !== null));
     const formatarValor = metrica === 'atendimentos' ? financeiroFormatarNumero : ((v) => financeiroFormatarEuro(v, 2));
     // Rótulos do eixo: sem casas decimais, mesmo em € — arredondado a
     // milhares/centenas de milhar já não faz sentido mostrar cêntimos.
-    const formatarValorEixo = metrica === 'atendimentos' ? ((v) => financeiroFormatarNumero(Math.round(v))) : ((v) => financeiroFormatarEuro(v, 0));
+    // Talão Médio é a exceção: os valores já são pequenos (~20-50€), por
+    // isso mantém 1 casa decimal no eixo (0 casas perdia toda a variação).
+    const formatarValorEixo = metrica === 'atendimentos' ? ((v) => financeiroFormatarNumero(Math.round(v)))
+      : metrica === 'ticketMedio' ? ((v) => financeiroFormatarEuro(v, 1))
+      : ((v) => financeiroFormatarEuro(v, 0));
     corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, 'Passe o rato num ponto para ver o valor exato desse mês.'));
     corpo.appendChild(temAlgumDado
       ? buildFinanceiroLinhaMultiAnoChart(series, 260, formatarValor, formatarValorEixo)
       : h('div', { class: 'fin-empty-state', style: 'height:260px;justify-content:center;' }, [
           Icon('activity', { size: 24, strokeWidth: 1.7 }),
           h('p', { class: 'fin-empty-titulo' }, 'O gráfico aparece assim que houver dados'),
-          h('p', {}, metrica === 'atendimentos' ? 'Registe pelo menos um dia de Atendimentos — as linhas aparecem aqui automaticamente.' : 'Registe pelo menos um dia de Faturação — as linhas aparecem aqui automaticamente.'),
+          h('p', {}, metrica === 'atendimentos' ? 'Registe pelo menos um dia de Atendimentos — as linhas aparecem aqui automaticamente.' : metrica === 'ticketMedio' ? 'Registe Faturação e Atendimentos do mesmo dia — as linhas aparecem aqui automaticamente.' : 'Registe pelo menos um dia de Faturação — as linhas aparecem aqui automaticamente.'),
         ]));
     corpo.appendChild(h('div', { style: 'display:flex;gap:16px;margin-top:10px;flex-wrap:wrap;font-size:11px;color:var(--pharm-500);' },
       series.map(s => h('span', {}, [h('span', { style: `display:inline-block;width:9px;height:9px;background:${s.cor};border-radius:2px;margin-right:5px;` }), String(s.ano)]))
@@ -17938,7 +17981,7 @@ function buildFinanceiroEvolucaoCard() {
   return h('div', { class: 'card fin-card-compact', style: 'margin-bottom:18px;' }, [
     h('div', { style: 'display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px;' }, [
       h('h3', { class: 'dash-card-title', style: 'margin:0;' }, 'Evolução Mensal Homóloga'),
-      h('div', { style: 'display:flex;gap:6px;flex-wrap:nowrap;' }, [faturacaoBtn, atendimentosBtn]),
+      h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;' }, [faturacaoBtn, atendimentosBtn, ticketMedioBtn]),
     ]),
     h('div', { style: 'display:flex;align-items:center;justify-content:flex-end;margin-bottom:6px;' }, [anosSelect]),
     corpo,
