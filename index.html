@@ -17911,6 +17911,30 @@ function financeiroPadraoSazonalAnos(anos, campo) {
   frase += ').';
   return frase;
 }
+// Cor por ANO em gradiente azul→verde→amarelo→laranja→vermelho conforme a
+// distância ao mais recente do conjunto (2026-08-16, pedido explícito:
+// "prefiro que passem pelo verde, amarelo, laranja, mais contrastantes")
+// — o mais recente fica sempre azul, o mais antigo do conjunto fica
+// sempre vermelho, DESCENDO pela roda de cores (217°→0°), passando mesmo
+// pelo verde/amarelo/laranja pelo meio. Função global — reutilizada tanto
+// pelo cartão "Evolução Mensal Homóloga" como pelo Relatório PDF.
+function financeiroCorPorAnoIndice(idxDoFim, totalAnos) {
+  const t = totalAnos > 1 ? idxDoFim / (totalAnos - 1) : 0;
+  const hue = 217 - t * 217;
+  return `hsl(${hue.toFixed(0)}, 75%, 46%)`;
+}
+function financeiroConstruirSeriesAnos(anos, campo) {
+  return anos.map((ano) => {
+    const idx = anos.length - 1 - anos.indexOf(ano); // 0 = mais recente
+    const cor = financeiroCorPorAnoIndice(idx, anos.length);
+    const pontos = MESES_PT_NOMES.map((_, i) => {
+      const mes = i + 1;
+      const v = financeiroValorMesPorMetrica(ano, mes, campo);
+      return { mes, valor: v || null };
+    });
+    return { ano, cor, pontos };
+  });
+}
 function buildFinanceiroEvolucaoCard() {
   const anoAtual = new Date().getFullYear();
   const ANO_MAIS_ANTIGO = 2021;
@@ -17918,41 +17942,13 @@ function buildFinanceiroEvolucaoCard() {
   let metrica = 'faturacao'; // ou 'atendimentos'
   let numAnos = Math.min(2, maxAnosDisponiveis); // "anos consecutivos" por defeito — o mesmo comportamento de sempre
 
-  // Cor por ANO em gradiente azul→verde→amarelo→laranja→vermelho conforme
-  // a distância ao ano corrente (2026-08-16, pedido explícito: "prefiro
-  // que passem pelo verde, amarelo, laranja, mais contrastantes" —
-  // revisto a partir de uma 1ª versão azul→roxo→vermelho, que ficava com
-  // cores demasiado próximas/pouco distintas). O ano mais recente fica
-  // sempre azul, o mais antigo selecionado fica sempre vermelho, DESCENDO
-  // pela roda de cores (217°→0°) em vez de subir pelo roxo — assim passa
-  // mesmo pelo verde/amarelo/laranja pelo meio, com muito mais contraste
-  // entre anos consecutivos. Recalculado a cada troca de "N anos" — com 2
-  // anos fica azul+vermelho, com 5 anos fica a escala toda.
-  function corPorAno(ano, anos) {
-    const idx = anos.length - 1 - anos.indexOf(ano); // 0 = mais recente
-    const t = anos.length > 1 ? idx / (anos.length - 1) : 0;
-    const hue = 217 - t * 217;
-    return `hsl(${hue.toFixed(0)}, 75%, 46%)`;
-  }
-
   function anosSelecionados() {
     const anos = [];
     for (let i = numAnos - 1; i >= 0; i--) anos.push(anoAtual - i);
     return anos;
   }
 
-  function construirSeries(campo) {
-    const anos = anosSelecionados();
-    return anos.map((ano) => {
-      const cor = corPorAno(ano, anos);
-      const pontos = MESES_PT_NOMES.map((_, i) => {
-        const mes = i + 1;
-        const v = financeiroValorMesPorMetrica(ano, mes, campo);
-        return { mes, valor: v || null };
-      });
-      return { ano, cor, pontos };
-    });
-  }
+  function construirSeries(campo) { return financeiroConstruirSeriesAnos(anosSelecionados(), campo); }
 
   const corpo = h('div', {});
   const faturacaoBtn = h('button', { type: 'button', class: 'tab-btn' }, 'Faturação');
@@ -18027,12 +18023,13 @@ function financeiroRegistosNoIntervalo(dataInicio, dataFim) {
 }
 function financeiroGerarCSV(dataInicio, dataFim) {
   const linhas = financeiroRegistosNoIntervalo(dataInicio, dataFim);
-  const cabecalho = ['Data', 'Faturação (€)', 'Atendimentos', 'Objetivo do Mês (€)', 'Registado Por'];
+  const cabecalho = ['Data', 'Faturação (€)', 'Atendimentos', 'Talão Médio (€)', 'Objetivo do Mês (€)', 'Registado Por'];
   const numPt = (v) => (Number(v) || 0).toFixed(2).replace('.', ',');
   const corpo = linhas.map(r => {
     const [ano, mes] = r.data.split('-').map(Number);
     const meta = financeiroMetaDoMes(ano, mes);
-    return [formatDate(r.data), r.faturacao === null ? '' : numPt(r.faturacao), r.atendimentos === null ? '' : String(r.atendimentos), meta ? numPt(meta) : '', r.registadoPor || ''];
+    const talaoMedio = (r.faturacao !== null && r.atendimentos !== null && r.atendimentos > 0) ? r.faturacao / r.atendimentos : null;
+    return [formatDate(r.data), r.faturacao === null ? '' : numPt(r.faturacao), r.atendimentos === null ? '' : String(r.atendimentos), talaoMedio === null ? '' : numPt(talaoMedio), meta ? numPt(meta) : '', r.registadoPor || ''];
   });
   const escapar = (v) => /[;"\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
   return [cabecalho, ...corpo].map(l => l.map(escapar).join(';')).join('\r\n');
@@ -18101,6 +18098,20 @@ function abrirModalExportarCSV() {
   function close() { overlay.remove(); }
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
   const seletor = buildSeletorPeriodo();
+  // Atalho "Todo o Histórico" (2026-08-16, pedido explícito — confirmar
+  // que a exportação cobre TODOS os dados do módulo) — o seletor
+  // partilhado só tem Mês/Ano ou Intervalo de Datas, sem preset de
+  // histórico completo; este atalho preenche o Intervalo de Datas do
+  // início dos registos (2021) até hoje, sem o utilizador ter de saber a
+  // data exata em que os registos começam.
+  const anoMaisAntigo = 2021;
+  const atalhoTudoBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 10px;' }, 'Todo o Histórico');
+  atalhoTudoBtn.addEventListener('click', () => {
+    seletor.el.querySelectorAll('.gaveta-tipo-envio button')[1].click(); // muda para "Intervalo de Datas"
+    const [inputIni, inputFim] = seletor.el.querySelectorAll('input[type="date"]');
+    inputIni.value = `${anoMaisAntigo}-01-01`; inputIni.dispatchEvent(new Event('change', { bubbles: true }));
+    inputFim.value = todayISO(); inputFim.dispatchEvent(new Event('change', { bubbles: true }));
+  });
   const exportarBtn = h('button', { class: 'btn btn-primary' }, 'Exportar CSV');
   exportarBtn.addEventListener('click', () => {
     const { dataInicio, dataFim } = seletor.obterIntervalo();
@@ -18114,7 +18125,8 @@ function abrirModalExportarCSV() {
       h('p', { class: 'modal-title', style: 'margin:0;' }, 'Exportar CSV'),
       h('button', { class: 'close-btn', onclick: close, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
     ]),
-    h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, 'Data, Faturação, Atendimentos, Objetivo do Mês e Registado Por.'),
+    h('p', { class: 'field-helper-text', style: 'margin:0 0 10px;' }, 'Data, Faturação, Atendimentos, Talão Médio, Objetivo do Mês e Registado Por — uma linha por dia com registo.'),
+    h('div', { style: 'margin-bottom:12px;' }, [atalhoTudoBtn]),
     seletor.el,
     h('div', { class: 'form-actions', style: 'margin-top:14px;' }, [exportarBtn, cancelBtn]),
   ]);
@@ -18143,54 +18155,290 @@ function financeiroResumoPeriodo(dataInicio, dataFim) {
     if (meta) { metaPeriodo += meta; metaConhecida = true; }
   });
   const pctConcretizacao = metaConhecida && metaPeriodo > 0 ? (totalCaixa / metaPeriodo) * 100 : null;
-  return { registos, totalCaixa, mediaDiaria, totalAtendimentos, mediaAtendimentos, metaPeriodo, pctConcretizacao };
+  return { registos, totalCaixa, mediaDiaria, totalAtendimentos, mediaAtendimentos, metaPeriodo, pctConcretizacao, mesesTocados: [...mesesTocados].sort() };
 }
+// Desloca uma data ISO um nº de dias (positivo ou negativo) — helper
+// genérico partilhado pelas comparações do Relatório PDF (período
+// homólogo/período imediatamente anterior).
+function deslocarDiasISO(dataISO, deltaDias) {
+  const d = new Date(dataISO + 'T00:00:00');
+  d.setDate(d.getDate() + deltaDias);
+  return dateToISO(d);
+}
+// Envolve conteúdo numa "folha" A4 própria — mesmo estilo físico (padding
+// 15mm/14mm) das páginas de buildListaMultiPaginaDoc, para as secções
+// narrativas do Relatório PDF (que não são uma tabela) terem cada uma a
+// sua página garantida, sem risco de conteúdo cortado em silêncio por
+// tentar encaixar tudo numa única folha de altura fixa.
+function buildFolhaRelatorio(kids, comQuebraDepois) {
+  return h('div', {
+    class: 'folha-pagina',
+    style: 'padding:15mm 14mm;box-sizing:border-box;font-family:Arial,Helvetica,sans-serif;background:#fff;color:#000;' + (comQuebraDepois ? 'page-break-after:always;break-after:page;' : ''),
+  }, kids);
+}
+// Tabela de KPIs simples (rótulo | valor), reutilizada em várias secções
+// do Relatório PDF.
+function buildTabelaKPIsDoc(linhas) {
+  return h('table', { style: 'width:100%;border-collapse:collapse;margin:10px 0 16px;' }, [
+    h('tbody', {}, linhas.filter(Boolean).map(([label, valor]) => h('tr', {}, [
+      h('td', { style: 'border:1px solid #94a3b8;padding:5px 8px;font-size:10.5px;font-weight:700;' }, label),
+      h('td', { style: 'border:1px solid #94a3b8;padding:5px 8px;font-size:10.5px;text-align:right;' }, valor),
+    ]))),
+  ]);
+}
+function buildTituloSeccaoDoc(texto) {
+  return h('h3', { style: 'font-size:13px;margin:0 0 4px;padding-bottom:4px;border-bottom:1.5px solid #1e293b;' }, texto);
+}
+// ---- Resumo Executivo — parágrafos gerados a partir dos dados reais do
+// período (nunca texto fixo), no mesmo espírito do "Resumo da Situação"
+// já usado na página do Financeiro (financeiroGerarBriefing), mas
+// aplicado a QUALQUER período arbitrário escolhido pelo utilizador, não
+// só ao dia/mês/ano correntes. ----
+function financeiroGerarResumoExecutivo(ctx) {
+  const { resumo, ticketMedio, numDias, resumoHomologo, resumoAnterior, incluiHoje, hojeISO } = ctx;
+  const paragrafos = [];
+  paragrafos.push([
+    `No período analisado (${numDias} dia${numDias === 1 ? '' : 's'}), a Farmácia Juncal registou uma Faturação total de `,
+    h('strong', {}, financeiroFormatarEuro(resumo.totalCaixa, 2)),
+    resumo.mediaDiaria ? [', com uma média diária de ', h('strong', {}, financeiroFormatarEuro(resumo.mediaDiaria, 2)), '.'] : '.',
+  ].flat());
+  if (resumo.totalAtendimentos) {
+    paragrafos.push([
+      `Foram realizados ${financeiroFormatarNumero(resumo.totalAtendimentos)} atendimentos`,
+      ticketMedio ? [', resultando num Talão Médio ponderado de ', h('strong', {}, financeiroFormatarEuro(ticketMedio.valor, 2)), '.'] : '.',
+    ].flat());
+  }
+  if (resumo.pctConcretizacao !== null) {
+    const falta = resumo.metaPeriodo - resumo.totalCaixa;
+    paragrafos.push([
+      `Face ao Objetivo definido para este período (${financeiroFormatarEuro(resumo.metaPeriodo, 2)}), a Faturação atingida representa `,
+      financeiroSpanVariacao(resumo.pctConcretizacao - 100, 1),
+      falta > 0 ? [' do Objetivo — faltam ainda ', h('strong', {}, financeiroFormatarEuro(falta, 2)), ' para o cumprir.'] : [' do Objetivo — já superado em ', h('strong', {}, financeiroFormatarEuro(-falta, 2)), '.'],
+    ].flat());
+  }
+  if (resumoHomologo && resumoHomologo.totalCaixa > 0) {
+    const pct = ((resumo.totalCaixa - resumoHomologo.totalCaixa) / resumoHomologo.totalCaixa) * 100;
+    paragrafos.push([`Comparado com o mesmo período do ano anterior (${financeiroFormatarEuro(resumoHomologo.totalCaixa, 2)}), este resultado representa `, financeiroSpanVariacao(pct, 1), '.']);
+  }
+  if (resumoAnterior && resumoAnterior.totalCaixa > 0) {
+    const pct = ((resumo.totalCaixa - resumoAnterior.totalCaixa) / resumoAnterior.totalCaixa) * 100;
+    paragrafos.push([`Face ao período imediatamente anterior, de igual duração (${financeiroFormatarEuro(resumoAnterior.totalCaixa, 2)}), a variação foi de `, financeiroSpanVariacao(pct, 1), '.']);
+  }
+  if (incluiHoje) {
+    paragrafos.push([`Este período ainda está em curso — os dados apresentados refletem apenas os dias já decorridos e registados até ${formatDate(hojeISO)}.`]);
+  }
+  return paragrafos;
+}
+// ---- Relatório Financeiro PDF (2026-08-16, pedido explícito: "relatório
+// profissional, exaustivo... dados, explicações, comentários, projeções,
+// comparações... adapta à informação solicitada e ao período definido")
+// — substitui o antigo relatório de 1 página (tabela de KPIs + gráfico +
+// lista diária) por um documento multi-secção que se adapta ao TAMANHO do
+// período escolhido:
+// - Resumo Executivo + KPIs + Comparações: sempre presentes.
+// - Gráfico: diário até 45 dias; por MÊS (mais legível) acima disso.
+// - Padrões e Sazonalidade dentro do período: só quando há dados
+//   suficientes (as próprias funções financeiroInsights* já se auto-
+//   -limitam — nunca aparecem "à força" sem base estatística).
+// - Evolução Homóloga multi-ano: só em períodos de escala anual
+//   (≥300 dias), reaproveitando os mesmos cálculos/gráfico já usados no
+//   cartão "Evolução Mensal Homóloga".
+// - Comparações vs. Homólogo/Período Anterior: omitidas em períodos muito
+//   longos (≥400 dias — já multi-ano), onde a Evolução Homóloga acima
+//   cobre melhor essa perspetiva.
+// - Tabela detalhada: diária até 45 dias; por MÊS acima disso (nunca
+//   corta dados — só muda a resolução para continuar legível).
+// Cada secção narrativa vive na sua própria folha A4 (buildFolhaRelatorio)
+// — nunca depende de calcular quanto conteúdo cabe numa folha, elimina o
+// risco de corte silencioso. A tabela detalhada final continua a usar a
+// paginação robusta já validada (buildListaMultiPaginaDoc). ----
 function buildRelatorioFinanceiroDoc(dataInicio, dataFim, rotuloPeriodo) {
+  const hojeISO = todayISO();
   const resumo = financeiroResumoPeriodo(dataInicio, dataFim);
-  const linhaResumo = (label, valor) => h('tr', {}, [
-    h('td', { style: 'border:1px solid #94a3b8;padding:5px 8px;font-size:10.5px;font-weight:700;' }, label),
-    h('td', { style: 'border:1px solid #94a3b8;padding:5px 8px;font-size:10.5px;text-align:right;' }, valor),
-  ]);
-  const tabelaResumo = h('table', { style: 'width:100%;border-collapse:collapse;margin:10px 0 16px;' }, [
-    h('tbody', {}, [
-      linhaResumo('Total de Faturação', financeiroFormatarEuro(resumo.totalCaixa, 2)),
-      linhaResumo('Média Diária de Faturação', financeiroFormatarEuro(resumo.mediaDiaria, 2)),
-      linhaResumo('% de Concretização do Objetivo', resumo.pctConcretizacao === null ? 'Sem Objetivo definido' : `${resumo.pctConcretizacao.toFixed(1)}%`),
-      linhaResumo('Total de Atendimentos', financeiroFormatarNumero(resumo.totalAtendimentos)),
-      linhaResumo('Média Diária de Atendimentos', resumo.mediaAtendimentos ? financeiroFormatarNumero(resumo.mediaAtendimentos) : '—'),
-    ]),
-  ]);
-  const itensGrafico = resumo.registos.filter(r => r.faturacao !== null).map(r => ({
-    rotulo: formatDate(r.data).slice(0, 5), valor: r.faturacao, cor: '#16a34a',
-  }));
-  const grafico = itensGrafico.length
-    ? h('div', { style: 'margin:0 0 18px;' }, [buildFinanceiroBarraChart(itensGrafico, 110)])
-    : h('p', { style: 'font-size:10.5px;color:#64748b;margin:0 0 18px;' }, 'Sem registos diários neste período.');
-  const cabecalho = [
-    buildDocLetterhead(),
-    h('h1', { class: 'doc-title', style: 'font-size:16px;letter-spacing:.02em;text-transform:none;margin-bottom:2px;' }, 'Relatório Financeiro — Farmácia Juncal'),
-    h('p', { style: 'font-size:11px;color:#334155;margin:0 0 2px;' }, `Período analisado: ${rotuloPeriodo}`),
-    h('p', { style: 'font-size:10px;color:#64748b;margin:0 0 4px;' }, `Data de emissão: ${formatDate(todayISO())}`),
-    h('h3', { style: 'font-size:12px;margin:14px 0 0;' }, 'Resumo dos KPIs'),
-    tabelaResumo,
-    h('h3', { style: 'font-size:12px;margin:0 0 0;' }, 'Evolução da Faturação Diária'),
-    grafico,
-    h('h3', { style: 'font-size:12px;margin:0 0 0;' }, 'Registos Diários Detalhados'),
+  const ticketMedio = financeiroTicketMedioPeriodo(dataInicio, dataFim);
+  const numDias = Math.round((new Date(dataFim + 'T00:00:00') - new Date(dataInicio + 'T00:00:00')) / 86400000) + 1;
+  const incluiHoje = dataInicio <= hojeISO && dataFim >= hojeISO;
+  const temDados = resumo.totalCaixa > 0 || resumo.totalAtendimentos > 0;
+
+  const incluirComparacoesCurtas = numDias < 400;
+  const incluirEvolucaoHomologa = numDias >= 300;
+  const usarGraficoMensal = numDias > 45;
+
+  // ---- Comparações: período homólogo (mesmas datas, ano anterior) e
+  // período imediatamente anterior (mesma duração, logo antes) ----
+  let resumoHomologo = null, resumoAnterior = null;
+  if (incluirComparacoesCurtas) {
+    resumoHomologo = financeiroResumoPeriodo(financeiroDiaHomologoAnoAnterior(dataInicio), financeiroDiaHomologoAnoAnterior(dataFim));
+    const dataFimAnterior = financeiroDiaAnterior(dataInicio);
+    resumoAnterior = financeiroResumoPeriodo(deslocarDiasISO(dataFimAnterior, -(numDias - 1)), dataFimAnterior);
+  }
+
+  // ==== PÁGINA 1 — Capa + Resumo Executivo + KPIs ====
+  const paginas = [];
+  const resumoExecutivo = temDados ? financeiroGerarResumoExecutivo({ resumo, ticketMedio, numDias, resumoHomologo, resumoAnterior, incluiHoje, hojeISO }) : null;
+  const kpisPrincipais = [
+    ['Faturação Total', financeiroFormatarEuro(resumo.totalCaixa, 2)],
+    ['Média Diária de Faturação', financeiroFormatarEuro(resumo.mediaDiaria, 2)],
+    ticketMedio ? ['Talão Médio Ponderado', financeiroFormatarEuro(ticketMedio.valor, 2)] : null,
+    ['Total de Atendimentos', financeiroFormatarNumero(resumo.totalAtendimentos)],
+    ['Média Diária de Atendimentos', resumo.mediaAtendimentos ? financeiroFormatarNumero(resumo.mediaAtendimentos) : '—'],
+    ['Objetivo do Período', resumo.metaPeriodo ? financeiroFormatarEuro(resumo.metaPeriodo, 2) : 'Sem Objetivo definido'],
+    resumo.pctConcretizacao !== null ? ['% de Concretização do Objetivo', `${resumo.pctConcretizacao.toFixed(1)}%`] : null,
   ];
-  return buildListaMultiPaginaDoc({
-    cabecalho,
-    colunas: [
-      { label: 'Data', width: '25%', align: 'left' },
-      { label: 'Faturação (€)', width: '30%', align: 'right' },
-      { label: 'Atendimentos', width: '20%', align: 'right' },
-      { label: 'Registado Por', width: '25%', align: 'left', nowrap: true },
-    ],
-    linhas: resumo.registos.map(r => [formatDate(r.data), r.faturacao === null ? '—' : financeiroFormatarEuro(r.faturacao, 2), r.atendimentos === null ? '—' : financeiroFormatarNumero(r.atendimentos), r.registadoPor || '—']),
-    linhasPrimeira: 14,
-    linhasResto: 50,
-    semDadosTexto: 'Sem registos diários neste período.',
-    linhaTotalFinal: ['Total', financeiroFormatarEuro(resumo.totalCaixa, 2), financeiroFormatarNumero(resumo.totalAtendimentos), ''],
-  });
+  paginas.push(buildFolhaRelatorio([
+    buildDocLetterhead(),
+    h('h1', { class: 'doc-title', style: 'font-size:17px;letter-spacing:.02em;text-transform:none;margin-bottom:2px;' }, 'Relatório Financeiro — Farmácia Juncal'),
+    h('p', { style: 'font-size:11.5px;color:#334155;margin:0 0 1px;font-weight:700;' }, `Período analisado: ${rotuloPeriodo}`),
+    h('p', { style: 'font-size:10px;color:#64748b;margin:0 0 4px;' }, `De ${formatDate(dataInicio)} a ${formatDate(dataFim)} (${numDias} dia${numDias === 1 ? '' : 's'}) · Data de emissão: ${formatDate(hojeISO)}`),
+    !temDados ? h('p', { style: 'font-size:11px;color:#64748b;margin:20px 0;' }, 'Não existem registos de Faturação ou Atendimentos neste período.') : null,
+    temDados ? buildTituloSeccaoDoc('Resumo Executivo') : null,
+    temDados ? h('div', {}, resumoExecutivo.map(p => h('p', { style: 'font-size:10.5px;line-height:1.55;margin:0 0 8px;color:#1e293b;' }, p))) : null,
+    temDados ? buildTituloSeccaoDoc('Indicadores-Chave (KPIs)') : null,
+    temDados ? buildTabelaKPIsDoc(kpisPrincipais) : null,
+    h('p', { style: 'font-size:8.5px;color:#94a3b8;margin-top:auto;padding-top:14px;' }, 'Talão Médio Ponderado = soma da Faturação ÷ soma dos Atendimentos do período (nunca a média simples dos rácios diários). Objetivos e projeções seguem sempre a mesma metodologia usada nos indicadores em tempo real da aplicação SigaJuncal.'),
+  ], temDados));
+
+  if (temDados) {
+    // ==== PÁGINA 2 — Comparações + Gráfico de Evolução ====
+    const linhasComp = [];
+    if (resumoHomologo && resumoHomologo.totalCaixa > 0) {
+      const pct = ((resumo.totalCaixa - resumoHomologo.totalCaixa) / resumoHomologo.totalCaixa) * 100;
+      linhasComp.push(['Período Homólogo (ano anterior)', financeiroFormatarEuro(resumoHomologo.totalCaixa, 2), financeiroSpanVariacao(pct, 1)]);
+    }
+    if (resumoAnterior && resumoAnterior.totalCaixa > 0) {
+      const pct = ((resumo.totalCaixa - resumoAnterior.totalCaixa) / resumoAnterior.totalCaixa) * 100;
+      linhasComp.push(['Período Imediatamente Anterior (igual duração)', financeiroFormatarEuro(resumoAnterior.totalCaixa, 2), financeiroSpanVariacao(pct, 1)]);
+    }
+    const tabelaComparacoes = linhasComp.length ? h('table', { style: 'width:100%;border-collapse:collapse;margin:10px 0 4px;' }, [
+      h('thead', {}, h('tr', {}, ['Comparação', 'Faturação', 'Variação'].map((t, i) => h('th', { style: `border:1px solid #94a3b8;padding:5px 8px;font-size:10px;text-align:${i === 0 ? 'left' : 'right'};background:#f1f5f9;` }, t)))),
+      h('tbody', {}, [
+        h('tr', {}, [
+          h('td', { style: 'border:1px solid #94a3b8;padding:5px 8px;font-size:10.5px;font-weight:700;' }, 'Este Período'),
+          h('td', { style: 'border:1px solid #94a3b8;padding:5px 8px;font-size:10.5px;text-align:right;font-weight:700;' }, financeiroFormatarEuro(resumo.totalCaixa, 2)),
+          h('td', { style: 'border:1px solid #94a3b8;padding:5px 8px;font-size:10.5px;text-align:right;' }, '—'),
+        ]),
+        ...linhasComp.map(([label, valor, variacao]) => h('tr', {}, [
+          h('td', { style: 'border:1px solid #94a3b8;padding:5px 8px;font-size:10.5px;' }, label),
+          h('td', { style: 'border:1px solid #94a3b8;padding:5px 8px;font-size:10.5px;text-align:right;' }, valor),
+          h('td', { style: 'border:1px solid #94a3b8;padding:5px 8px;font-size:10.5px;text-align:right;' }, variacao),
+        ])),
+      ]),
+    ]) : h('p', { style: 'font-size:10.5px;color:#64748b;margin:10px 0;' }, 'Sem dados de períodos comparáveis anteriores.');
+
+    // Gráfico: diário (≤45 dias) ou por mês (períodos mais longos).
+    let itensGrafico, legendaGrafico;
+    if (!usarGraficoMensal) {
+      itensGrafico = resumo.registos.filter(r => r.faturacao !== null).map(r => ({ rotulo: formatDate(r.data).slice(0, 5), valor: r.faturacao, cor: '#3b82f6' }));
+      legendaGrafico = 'Faturação diária no período (€).';
+    } else {
+      itensGrafico = resumo.mesesTocados.map(chave => {
+        const [a, m] = chave.split('-').map(Number);
+        return { rotulo: `${MESES_PT_NOMES[m - 1].slice(0, 3)} ${a}`, valor: financeiroTotalMes(a, m, 'faturacao'), cor: '#3b82f6' };
+      }).filter(it => it.valor > 0);
+      legendaGrafico = 'Faturação mensal no período (€) — agregado por mês, dado o período analisado ser longo.';
+    }
+    const grafico = itensGrafico.length
+      ? h('div', { style: 'margin:6px 0 0;' }, [buildFinanceiroBarraChart(itensGrafico, 120, (v) => financeiroFormatarEuro(v, 0))])
+      : h('p', { style: 'font-size:10.5px;color:#64748b;margin:6px 0;' }, 'Sem registos suficientes para o gráfico.');
+
+    paginas.push(buildFolhaRelatorio([
+      buildTituloSeccaoDoc('Comparações'),
+      tabelaComparacoes,
+      buildTituloSeccaoDoc('Evolução da Faturação no Período'),
+      h('p', { style: 'font-size:9.5px;color:#64748b;margin:0 0 4px;' }, legendaGrafico),
+      grafico,
+    ], true));
+
+    // ==== PÁGINA 3 (condicional) — Padrões e Sazonalidade dentro do período ====
+    const insightsDiaMes = financeiroInsightsDiaDoMes('faturacao', dataInicio, dataFim);
+    const insightsDiaSemana = financeiroInsightsDiaSemana('faturacao', dataInicio, dataFim);
+    if (insightsDiaMes.suficiente || insightsDiaSemana.suficiente) {
+      const kids = [buildTituloSeccaoDoc('Padrões e Sazonalidade no Período')];
+      if (insightsDiaMes.suficiente) {
+        const itens = insightsDiaMes.dados.map(d => ({ rotulo: String(d.dia), valor: d.media, cor: d.dia === 8 ? '#f59e0b' : (d.dia <= 5 ? '#16a34a' : (d.dia >= 26 ? '#dc2626' : '#3b82f6')) }));
+        kids.push(h('p', { style: 'font-size:10.5px;font-weight:700;margin:10px 0 4px;' }, 'Média por Dia do Mês'));
+        kids.push(buildFinanceiroBarraChart(itens, 100, (v) => financeiroFormatarEuro(v, 0)));
+        financeiroTextoDiaDoMes(insightsDiaMes, 'faturacao').forEach(txt => kids.push(h('p', { style: 'font-size:10px;line-height:1.5;margin:6px 0 0;color:#1e293b;' }, txt)));
+      }
+      if (insightsDiaSemana.suficiente) {
+        const itens = insightsDiaSemana.dados.map(d => ({ rotulo: d.nomeAbrev, valor: d.media, cor: (d.diaSemana === 0 || d.diaSemana === 6) ? '#dc2626' : '#3b82f6' }));
+        kids.push(h('p', { style: 'font-size:10.5px;font-weight:700;margin:16px 0 4px;' }, 'Média por Dia da Semana'));
+        kids.push(buildFinanceiroBarraChart(itens, 100, (v) => financeiroFormatarEuro(v, 0)));
+        financeiroTextoDiaSemana(insightsDiaSemana, 'faturacao').forEach(txt => kids.push(h('p', { style: 'font-size:10px;line-height:1.5;margin:6px 0 0;color:#1e293b;' }, txt)));
+      }
+      paginas.push(buildFolhaRelatorio(kids, true));
+    }
+
+    // ==== PÁGINA 4 (condicional) — Evolução Homóloga Multi-Ano ====
+    if (incluirEvolucaoHomologa) {
+      const anoRef = incluiHoje ? new Date().getFullYear() : parseInt(dataFim.slice(0, 4), 10);
+      const anoMaisAntigo = 2021;
+      const nAnos = Math.min(5, anoRef - anoMaisAntigo + 1);
+      const anos = []; for (let i = nAnos - 1; i >= 0; i--) anos.push(anoRef - i);
+      const comentarioAnos = financeiroComentarioEvolucaoAnos(anos, 'faturacao');
+      const padraoAnos = financeiroPadraoSazonalAnos(anos, 'faturacao');
+      if (comentarioAnos) {
+        const series = financeiroConstruirSeriesAnos(anos, 'faturacao');
+        const kids = [
+          buildTituloSeccaoDoc(`Evolução Homóloga — Últimos ${anos.length} Anos`),
+          buildFinanceiroLinhaMultiAnoChart(series, 190, (v) => financeiroFormatarEuro(v, 2), (v) => financeiroFormatarEuro(v, 0)),
+          h('div', { style: 'display:flex;gap:14px;margin:6px 0 10px;flex-wrap:wrap;font-size:9px;color:#64748b;' },
+            series.map(s => h('span', {}, [h('span', { style: `display:inline-block;width:8px;height:8px;background:${s.cor};border-radius:2px;margin-right:4px;` }), String(s.ano)]))),
+          h('p', { style: 'font-size:10px;line-height:1.55;margin:0 0 8px;color:#1e293b;' }, comentarioAnos),
+          padraoAnos ? h('p', { style: 'font-size:10px;line-height:1.55;margin:0;color:#1e293b;' }, padraoAnos) : null,
+        ];
+        paginas.push(buildFolhaRelatorio(kids, true));
+      }
+    }
+  }
+
+  // ==== Tabela detalhada final — diária ou mensal, com paginação robusta ====
+  const usarTabelaMensal = usarGraficoMensal;
+  const cabecalhoTabela = [h('h3', { style: 'font-size:13px;margin:0 0 8px;padding-bottom:4px;border-bottom:1.5px solid #1e293b;' }, usarTabelaMensal ? 'Detalhe Mensal' : 'Registos Diários Detalhados')];
+  let doc;
+  if (usarTabelaMensal) {
+    const linhasMensais = resumo.mesesTocados.map(chave => {
+      const [a, m] = chave.split('-').map(Number);
+      const fat = financeiroTotalMes(a, m, 'faturacao');
+      const obj = financeiroMetaDoMes(a, m);
+      const at = financeiroTotalMes(a, m, 'atendimentos');
+      const tk = financeiroTicketMedioMes(a, m);
+      return [`${MESES_PT_NOMES[m - 1]} ${a}`, financeiroFormatarEuro(fat, 2), obj ? financeiroFormatarEuro(obj, 2) : '—', obj ? `${((fat / obj) * 100).toFixed(1)}%` : '—', financeiroFormatarNumero(at), tk ? financeiroFormatarEuro(tk.valor, 2) : '—'];
+    });
+    doc = buildListaMultiPaginaDoc({
+      cabecalho: cabecalhoTabela,
+      colunas: [
+        { label: 'Mês', width: '22%', align: 'left' },
+        { label: 'Faturação (€)', width: '18%', align: 'right' },
+        { label: 'Objetivo (€)', width: '18%', align: 'right' },
+        { label: '% Cumprido', width: '14%', align: 'right' },
+        { label: 'Atendimentos', width: '14%', align: 'right' },
+        { label: 'Talão Médio (€)', width: '14%', align: 'right' },
+      ],
+      linhas: linhasMensais,
+      linhasPrimeira: 34,
+      linhasResto: 42,
+      semDadosTexto: 'Sem registos neste período.',
+      linhaTotalFinal: ['Total', financeiroFormatarEuro(resumo.totalCaixa, 2), resumo.metaPeriodo ? financeiroFormatarEuro(resumo.metaPeriodo, 2) : '—', resumo.pctConcretizacao !== null ? `${resumo.pctConcretizacao.toFixed(1)}%` : '—', financeiroFormatarNumero(resumo.totalAtendimentos), ticketMedio ? financeiroFormatarEuro(ticketMedio.valor, 2) : '—'],
+    });
+  } else {
+    doc = buildListaMultiPaginaDoc({
+      cabecalho: cabecalhoTabela,
+      colunas: [
+        { label: 'Data', width: '25%', align: 'left' },
+        { label: 'Faturação (€)', width: '30%', align: 'right' },
+        { label: 'Atendimentos', width: '20%', align: 'right' },
+        { label: 'Registado Por', width: '25%', align: 'left', nowrap: true },
+      ],
+      linhas: resumo.registos.map(r => [formatDate(r.data), r.faturacao === null ? '—' : financeiroFormatarEuro(r.faturacao, 2), r.atendimentos === null ? '—' : financeiroFormatarNumero(r.atendimentos), r.registadoPor || '—']),
+      linhasPrimeira: 34,
+      linhasResto: 42,
+      semDadosTexto: 'Sem registos diários neste período.',
+      linhaTotalFinal: ['Total', financeiroFormatarEuro(resumo.totalCaixa, 2), financeiroFormatarNumero(resumo.totalAtendimentos), ''],
+    });
+  }
+
+  return h('div', {}, [...paginas, doc]);
 }
 function abrirModalRelatorioPDF() {
   const overlay = h('div', { class: 'modal-overlay' });
@@ -18198,17 +18446,30 @@ function abrirModalRelatorioPDF() {
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
   const seletor = buildSeletorPeriodo();
 
-  // Atalhos rápidos: Mês Atual / Mês Anterior — só afinam o seletor Mês/Ano
-  // já visível, sem precisar de um modo à parte.
+  // Atalhos rápidos: Mês Atual / Mês Anterior (afinam o seletor Mês/Ano) e
+  // Ano Atual / Ano Passado (2026-08-16, pedido explícito — relatório
+  // "profissional, exaustivo"; com um ano inteiro selecionado, o relatório
+  // já ativa sozinho as secções de Evolução Homóloga Multi-Ano e Padrões
+  // de Sazonalidade, que só fazem sentido com uma janela temporal larga).
   const hoje = new Date();
   const atalhoAtualBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 10px;' }, 'Mês Atual');
   const atalhoAnteriorBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 10px;' }, 'Mês Anterior');
+  const atalhoAnoAtualBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 10px;' }, 'Ano Atual');
+  const atalhoAnoAnteriorBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 10px;' }, 'Ano Passado');
   atalhoAtualBtn.addEventListener('click', () => { seletor.el.querySelectorAll('select')[0].value = String(hoje.getMonth() + 1); seletor.el.querySelectorAll('select')[1].value = String(hoje.getFullYear()); });
   atalhoAnteriorBtn.addEventListener('click', () => {
     const anterior = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
     seletor.el.querySelectorAll('select')[0].value = String(anterior.getMonth() + 1);
     seletor.el.querySelectorAll('select')[1].value = String(anterior.getFullYear());
   });
+  function selecionarIntervaloPersonalizado(dataInicio, dataFim) {
+    seletor.el.querySelectorAll('.gaveta-tipo-envio button')[1].click(); // muda para modo "Intervalo de Datas"
+    const [inputIni, inputFim] = seletor.el.querySelectorAll('input[type="date"]');
+    inputIni.value = dataInicio; inputIni.dispatchEvent(new Event('change', { bubbles: true }));
+    inputFim.value = dataFim; inputFim.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  atalhoAnoAtualBtn.addEventListener('click', () => selecionarIntervaloPersonalizado(`${hoje.getFullYear()}-01-01`, todayISO()));
+  atalhoAnoAnteriorBtn.addEventListener('click', () => selecionarIntervaloPersonalizado(`${hoje.getFullYear() - 1}-01-01`, `${hoje.getFullYear() - 1}-12-31`));
 
   const imprimirBtn = h('button', { class: 'btn btn-secondary' }, 'Imprimir');
   const pdfBtn = h('button', { class: 'btn btn-primary' }, 'Descarregar PDF');
@@ -18233,7 +18494,7 @@ function abrirModalRelatorioPDF() {
       h('p', { class: 'modal-title', style: 'margin:0;' }, 'Gerar Relatório PDF'),
       h('button', { class: 'close-btn', onclick: close, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
     ]),
-    h('div', { style: 'display:flex;gap:8px;margin-bottom:12px;' }, [atalhoAtualBtn, atalhoAnteriorBtn]),
+    h('div', { style: 'display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;' }, [atalhoAtualBtn, atalhoAnteriorBtn, atalhoAnoAtualBtn, atalhoAnoAnteriorBtn]),
     seletor.el,
     h('p', { class: 'field-helper-text', style: 'margin:14px 0 0;' },
       'Para períodos longos (vários meses), prefira "Imprimir" e escolha "Guardar como PDF" na caixa do browser — garante todas as páginas. "Descarregar PDF" é mais rápido para relatórios de 1 página.'),
