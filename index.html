@@ -17701,6 +17701,28 @@ function buildFinanceiroLinhaMultiAnoChart(series, alturaPx, formatarValor, form
   const domainMax = maxValor + amplitude * 0.08;
   function x(mes) { return ML + ((mes - 1) / 11) * larguraUtil; }
   function y(v) { return MT + alturaUtil - ((v - domainMin) / (domainMax - domainMin)) * alturaUtil; }
+  // Marcações do eixo em números "redondos" (pedido explícito
+  // 2026-08-16: "valores do eixo um pouco aleatórios... pode ser feito
+  // com valores mais redondos") — em vez de dividir o intervalo em 5
+  // partes iguais (dá valores tipo 384 481 €), calcula o "passo" mais
+  // redondo (1/2/5×10ⁿ) que cobre o intervalo com ~5 marcações, técnica
+  // clássica de eixos de gráficos (Heckbert, "nice numbers").
+  function numeroRedondo(valor, arredondarPCima) {
+    const expoente = Math.floor(Math.log10(valor));
+    const fracao = valor / Math.pow(10, expoente);
+    let fracaoRedonda;
+    if (arredondarPCima) { if (fracao <= 1) fracaoRedonda = 1; else if (fracao <= 2) fracaoRedonda = 2; else if (fracao <= 5) fracaoRedonda = 5; else fracaoRedonda = 10; }
+    else { if (fracao < 1.5) fracaoRedonda = 1; else if (fracao < 3) fracaoRedonda = 2; else if (fracao < 7) fracaoRedonda = 5; else fracaoRedonda = 10; }
+    return fracaoRedonda * Math.pow(10, expoente);
+  }
+  function marcacoesRedondas(min, max, alvo) {
+    const passo = numeroRedondo((max - min) / (alvo - 1), false);
+    const minRedondo = Math.floor(min / passo) * passo;
+    const out = [];
+    for (let v = minRedondo; v <= max + passo * 0.001; v += passo) if (v >= min - passo * 0.001) out.push(v);
+    return out;
+  }
+  const marcacoesEixo = marcacoesRedondas(domainMin, domainMax, 5);
   // Curva suave (Bézier cúbica com pontos de controlo a 1/3 do segmento)
   // em vez de segmentos de reta em ziguezague — pedido explícito
   // 2026-08-16, para as linhas ficarem com um aspeto mais cuidado.
@@ -17726,11 +17748,12 @@ function buildFinanceiroLinhaMultiAnoChart(series, alturaPx, formatarValor, form
   // disponível, mas sem distorcer nada, texto incluído.
   const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, style: `width:100%;height:auto;aspect-ratio:${W}/${H};display:block;overflow:visible;` });
 
-  [0, 0.25, 0.5, 0.75, 1].forEach(f => {
-    const yy = MT + alturaUtil * (1 - f);
+  marcacoesEixo.forEach((v) => {
+    const yy = y(v);
+    if (yy < MT - 1 || yy > H - MB + 1) return; // fora da área visível, não desenha
     svg.appendChild(svgEl('line', { x1: ML, x2: W - MR, y1: yy, y2: yy, stroke: '#e5e9f0', 'stroke-width': 1 }));
     const rotulo = svgEl('text', { x: ML - 6, y: yy + 3, 'text-anchor': 'end', 'font-size': 9.5, fill: '#a0aabb' });
-    rotulo.textContent = formatarValorEixo(domainMin + (domainMax - domainMin) * f);
+    rotulo.textContent = formatarValorEixo(v);
     svg.appendChild(rotulo);
   });
   MESES_PT_NOMES.forEach((nome, i) => {
@@ -17895,22 +17918,21 @@ function buildFinanceiroEvolucaoCard() {
   let metrica = 'faturacao'; // ou 'atendimentos'
   let numAnos = Math.min(2, maxAnosDisponiveis); // "anos consecutivos" por defeito — o mesmo comportamento de sempre
 
-  // Cor por ANO em gradiente azul→vermelho conforme a distância ao ano
-  // corrente (2026-08-16, pedido explícito: "mais próximas azuis até às
-  // mais distantes vermelhas") — mais lógico visualmente do que cores
-  // arbitrárias: o ano mais recente fica sempre azul, o mais antigo
-  // selecionado fica sempre vermelho, com os do meio a fazer a transição
-  // (interpolação em HSL, do azul ~217° ao vermelho ~0°). Recalculado a
-  // cada troca de "N anos" — com 2 anos fica azul+vermelho, com 5 anos
-  // fica uma escala suave em 5 tons.
+  // Cor por ANO em gradiente azul→verde→amarelo→laranja→vermelho conforme
+  // a distância ao ano corrente (2026-08-16, pedido explícito: "prefiro
+  // que passem pelo verde, amarelo, laranja, mais contrastantes" —
+  // revisto a partir de uma 1ª versão azul→roxo→vermelho, que ficava com
+  // cores demasiado próximas/pouco distintas). O ano mais recente fica
+  // sempre azul, o mais antigo selecionado fica sempre vermelho, DESCENDO
+  // pela roda de cores (217°→0°) em vez de subir pelo roxo — assim passa
+  // mesmo pelo verde/amarelo/laranja pelo meio, com muito mais contraste
+  // entre anos consecutivos. Recalculado a cada troca de "N anos" — com 2
+  // anos fica azul+vermelho, com 5 anos fica a escala toda.
   function corPorAno(ano, anos) {
     const idx = anos.length - 1 - anos.indexOf(ano); // 0 = mais recente
     const t = anos.length > 1 ? idx / (anos.length - 1) : 0;
-    // De 217° (azul) a 360°/0° (vermelho) SUBINDO pelo lado do roxo/
-    // magenta — nunca descendo pelo verde/amarelo, que daria um
-    // arco-íris em vez de um gradiente azul→vermelho como pedido.
-    const hue = (217 + t * (360 - 217)) % 360;
-    return `hsl(${hue.toFixed(0)}, 70%, 52%)`;
+    const hue = 217 - t * 217;
+    return `hsl(${hue.toFixed(0)}, 75%, 46%)`;
   }
 
   function anosSelecionados() {
