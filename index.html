@@ -17658,34 +17658,145 @@ function buildFinanceiroPadraoMensalCard() {
     corpo,
   ]);
 }
+// Elemento SVG genérico (namespace correto) — mesmo espírito do h() para
+// HTML, mas para <svg>/<path>/<circle>/etc., que precisam de
+// createElementNS. Devolve um Node normal, que h() já sabe encaixar como
+// filho (appendChild funciona em qualquer Node, HTML ou SVG).
+function svgEl(tag, attrs) {
+  const e = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const k in (attrs || {})) {
+    const v = attrs[k];
+    if (v === undefined || v === null) continue;
+    e.setAttribute(k, v);
+  }
+  return e;
+}
+// ---- Gráfico de linhas — Evolução Homóloga em até 5 anos (2026-08-16,
+// pedido explícito: "permitisse comparar anos consecutivos... até 5 anos
+// distintos, últimos 5 contando com o corrente"). Substitui o antigo
+// gráfico de barras (só comparava 2 anos de cada vez) — com linhas, dá
+// para sobrepor até 5 anos e ver logo a forma/tendência de cada um lado a
+// lado, mês a mês. series = [{ ano, cor, pontos: [{mes, valor}] }], só
+// com meses que têm mesmo dados (não desenha zeros para meses futuros/
+// sem registo — a linha do ano corrente simplesmente pára no último mês
+// com dados). ----
+function buildFinanceiroLinhaMultiAnoChart(series, alturaPx, formatarValor) {
+  const W = 900, H = alturaPx;
+  const ML = 46, MR = 10, MT = 10, MB = 22;
+  const larguraUtil = W - ML - MR, alturaUtil = H - MT - MB;
+  const todosValores = series.flatMap(s => s.pontos.map(p => p.valor)).filter(v => v !== null && v !== undefined);
+  const max = Math.max(1, ...todosValores);
+  function x(mes) { return ML + ((mes - 1) / 11) * larguraUtil; }
+  function y(v) { return MT + alturaUtil - (v / max) * alturaUtil; }
+
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', style: `width:100%;height:${H}px;display:block;overflow:visible;` });
+
+  [0, 0.25, 0.5, 0.75, 1].forEach(f => {
+    const yy = MT + alturaUtil * (1 - f);
+    svg.appendChild(svgEl('line', { x1: ML, x2: W - MR, y1: yy, y2: yy, stroke: '#e5e9f0', 'stroke-width': 1 }));
+  });
+  MESES_PT_NOMES.forEach((nome, i) => {
+    const label = svgEl('text', { x: x(i + 1), y: H - 6, 'text-anchor': 'middle', 'font-size': 11, fill: '#7c8aa0' });
+    label.textContent = nome.slice(0, 3);
+    svg.appendChild(label);
+  });
+
+  // Linhas primeiro (para ficarem por baixo), pontos a seguir (por cima).
+  series.forEach(s => {
+    const pontosValidos = s.pontos.filter(p => p.valor !== null && p.valor !== undefined);
+    if (pontosValidos.length < 2) return;
+    const d = pontosValidos.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(p.mes).toFixed(1)} ${y(p.valor).toFixed(1)}`).join(' ');
+    svg.appendChild(svgEl('path', { d, fill: 'none', stroke: s.cor, 'stroke-width': 2.4, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+  });
+  series.forEach(s => {
+    s.pontos.filter(p => p.valor !== null && p.valor !== undefined).forEach(p => {
+      const c = svgEl('circle', { cx: x(p.mes).toFixed(1), cy: y(p.valor).toFixed(1), r: 4, fill: s.cor, stroke: '#fff', 'stroke-width': 1.5, style: 'cursor:pointer;' });
+      c.addEventListener('mouseenter', () => mostrarTooltipFlutuante(c, `${MESES_PT_NOMES[p.mes - 1]} ${s.ano}\n${formatarValor(p.valor)}`));
+      c.addEventListener('mouseleave', esconderTooltipFlutuante);
+      svg.appendChild(c);
+    });
+  });
+
+  return h('div', { style: 'overflow-x:auto;' }, [svg]);
+}
+// Comentário gerado a partir dos dados (2026-08-16, pedido explícito) —
+// nunca texto fixo, sempre calculado a partir dos anos efetivamente
+// selecionados. Compara sempre o MESMO intervalo (Janeiro até ao último
+// mês com dados do ano corrente) em todos os anos, para a comparação ser
+// justa mesmo com o ano corrente ainda incompleto — comparar Jan-Dez
+// completo de 2025 com Jan-Ago (parcial) de 2026 distorceria a leitura.
+function financeiroComentarioEvolucaoAnos(anos, campo) {
+  const anoAtualReal = new Date().getFullYear();
+  let mesLimite = 12;
+  if (anos.includes(anoAtualReal)) {
+    mesLimite = 0;
+    for (let m = 1; m <= 12; m++) if (financeiroTotalMes(anoAtualReal, m, campo)) mesLimite = m;
+    if (mesLimite === 0) return null;
+  }
+  const nomeMesLimite = MESES_PT_NOMES[mesLimite - 1];
+  const formatarValor = campo === 'atendimentos' ? financeiroFormatarNumero : ((v) => financeiroFormatarEuro(v, 2));
+  const totais = anos.map(ano => {
+    let soma = 0;
+    for (let m = 1; m <= mesLimite; m++) soma += financeiroTotalMes(ano, m, campo);
+    return { ano, soma };
+  }).filter(t => t.soma > 0);
+  if (totais.length < 2) return null;
+
+  const partes = [];
+  const base = mesLimite === 12 ? 'todo o ano' : `Janeiro a ${nomeMesLimite}`;
+  partes.push(`Considerando sempre ${base} de cada ano (para comparar de forma justa): `);
+  const variacoes = [];
+  totais.forEach((t, i) => {
+    if (i === 0) { partes.push(`${t.ano}: ${formatarValor(t.soma)}`); return; }
+    const anterior = totais[i - 1];
+    const pct = ((t.soma - anterior.soma) / anterior.soma) * 100;
+    variacoes.push(pct);
+    partes.push(`; ${t.ano}: ${formatarValor(t.soma)} (${pct >= 0 ? '▲' : '▼'} ${Math.abs(pct).toFixed(1)}% vs. ${anterior.ano})`);
+  });
+  partes.push('. ');
+
+  const primeiro = totais[0], ultimo = totais[totais.length - 1];
+  const pctTotal = ((ultimo.soma - primeiro.soma) / primeiro.soma) * 100;
+  partes.push(`De ${primeiro.ano} a ${ultimo.ano}, a evolução acumulada foi de ${pctTotal >= 0 ? '+' : ''}${pctTotal.toFixed(1)}%`);
+  if (variacoes.length >= 2) {
+    const ultimaVar = variacoes[variacoes.length - 1], penultimaVar = variacoes[variacoes.length - 2];
+    if (ultimaVar > penultimaVar + 1) partes.push(', com o crescimento a acelerar no último ano comparado.');
+    else if (ultimaVar < penultimaVar - 1) partes.push(', com o crescimento a abrandar no último ano comparado.');
+    else partes.push(', a um ritmo relativamente estável.');
+  } else {
+    partes.push('.');
+  }
+  return partes.join('');
+}
 function buildFinanceiroEvolucaoCard() {
   const anoAtual = new Date().getFullYear();
-  const anoAnterior = anoAtual - 1;
+  const ANO_MAIS_ANTIGO = 2021;
+  const maxAnosDisponiveis = Math.min(5, anoAtual - ANO_MAIS_ANTIGO + 1);
   let metrica = 'faturacao'; // ou 'atendimentos'
+  let numAnos = Math.min(2, maxAnosDisponiveis); // "anos consecutivos" por defeito — o mesmo comportamento de sempre
 
-  function construirItens(campo) {
-    const itens = [];
-    const corAtual = campo === 'atendimentos' ? 'var(--green)' : '#3b82f6';
-    MESES_PT_NOMES.forEach((nome, i) => {
-      const mes = i + 1;
-      // Calcula sempre as DUAS métricas, independentemente de qual está
-      // ativa — a barra usa a métrica escolhida para a altura/cor, mas
-      // o tooltip ao passar o rato mostra sempre as duas juntas.
-      const fatAnt = financeiroTotalMes(anoAnterior, mes, 'faturacao');
-      const fatAtual = financeiroTotalMes(anoAtual, mes, 'faturacao');
-      const atAnt = financeiroTotalMes(anoAnterior, mes, 'atendimentos');
-      const atAtual = financeiroTotalMes(anoAtual, mes, 'atendimentos');
-      const vAnt = campo === 'atendimentos' ? atAnt : fatAnt;
-      const vAtual = campo === 'atendimentos' ? atAtual : fatAtual;
-      if (vAnt) itens.push({ rotulo: `${nome.slice(0, 3)} '${String(anoAnterior).slice(2)}`, valor: vAnt, cor: '#94a3b8', faturacao: fatAnt, atendimentos: atAnt });
-      if (vAtual) itens.push({ rotulo: `${nome.slice(0, 3)} '${String(anoAtual).slice(2)}`, valor: vAtual, cor: corAtual, faturacao: fatAtual, atendimentos: atAtual });
-    });
-    return itens;
+  // Paleta: o ano corrente destaca-se sempre na cor "de marca" (azul/verde,
+  // conforme a métrica); os anteriores usam cores bem distintas entre si
+  // (não uma escala de cinzentos, que se confunde ao fim de 3+ anos).
+  const PALETA_ANOS_ANTERIORES = ['#94a3b8', '#f59e0b', '#a855f7', '#14b8a6'];
+
+  function anosSelecionados() {
+    const anos = [];
+    for (let i = numAnos - 1; i >= 0; i--) anos.push(anoAtual - i);
+    return anos;
   }
-  // Tooltip combinado — mostra Faturação e Atendimentos juntos, sempre,
-  // independentemente de qual das duas está a definir a altura da barra.
-  function obterTooltipCombinado(it) {
-    return `${it.rotulo}\nFaturação: ${financeiroFormatarEuro(it.faturacao, 2)}\nAtendimentos: ${financeiroFormatarNumero(it.atendimentos)}`;
+
+  function construirSeries(campo) {
+    const corAtual = campo === 'atendimentos' ? 'var(--green)' : '#3b82f6';
+    return anosSelecionados().map((ano, idx) => {
+      const cor = ano === anoAtual ? corAtual : PALETA_ANOS_ANTERIORES[(anoAtual - ano - 1) % PALETA_ANOS_ANTERIORES.length];
+      const pontos = MESES_PT_NOMES.map((_, i) => {
+        const mes = i + 1;
+        const v = financeiroTotalMes(ano, mes, campo);
+        return { mes, valor: v || null };
+      });
+      return { ano, cor, pontos };
+    });
   }
 
   const corpo = h('div', {});
@@ -17694,31 +17805,38 @@ function buildFinanceiroEvolucaoCard() {
   faturacaoBtn.addEventListener('click', () => { metrica = 'faturacao'; renderCorpo(); });
   atendimentosBtn.addEventListener('click', () => { metrica = 'atendimentos'; renderCorpo(); });
 
+  const anosSelect = h('select', { class: 'input', style: 'max-width:110px;font-size:12.5px;padding:5px 8px;' });
+  for (let n = 2; n <= maxAnosDisponiveis; n++) anosSelect.appendChild(h('option', { value: n }, `${n} anos`));
+  anosSelect.value = String(numAnos);
+  anosSelect.addEventListener('change', () => { numAnos = parseInt(anosSelect.value, 10); renderCorpo(); });
+
   function renderCorpo() {
     clear(corpo);
     faturacaoBtn.classList.toggle('active', metrica === 'faturacao');
     atendimentosBtn.classList.toggle('active', metrica === 'atendimentos');
-    const itensEvolucao = construirItens(metrica);
+    const series = construirSeries(metrica);
+    const temAlgumDado = series.some(s => s.pontos.some(p => p.valor !== null));
     const formatarValor = metrica === 'atendimentos' ? financeiroFormatarNumero : ((v) => financeiroFormatarEuro(v, 2));
-    corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, 'Passe o rato numa barra para ver a Faturação e os Atendimentos desse mês.'));
-    corpo.appendChild(itensEvolucao.length
-      ? buildFinanceiroBarraChart(itensEvolucao, 180, formatarValor, obterTooltipCombinado)
-      : h('div', { class: 'fin-empty-state', style: 'height:180px;justify-content:center;' }, [
+    corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, 'Passe o rato num ponto para ver o valor exato desse mês.'));
+    corpo.appendChild(temAlgumDado
+      ? buildFinanceiroLinhaMultiAnoChart(series, 200, formatarValor)
+      : h('div', { class: 'fin-empty-state', style: 'height:200px;justify-content:center;' }, [
           Icon('activity', { size: 24, strokeWidth: 1.7 }),
           h('p', { class: 'fin-empty-titulo' }, 'O gráfico aparece assim que houver dados'),
-          h('p', {}, metrica === 'atendimentos' ? 'Registe pelo menos um dia de Atendimentos — as barras deste mês aparecem aqui automaticamente.' : 'Registe pelo menos um dia de Faturação — as barras deste mês aparecem aqui automaticamente.'),
+          h('p', {}, metrica === 'atendimentos' ? 'Registe pelo menos um dia de Atendimentos — as linhas aparecem aqui automaticamente.' : 'Registe pelo menos um dia de Faturação — as linhas aparecem aqui automaticamente.'),
         ]));
-    corpo.appendChild(h('div', { style: 'display:flex;gap:16px;margin-top:10px;font-size:11px;color:var(--pharm-500);' }, [
-      h('span', {}, [h('span', { style: 'display:inline-block;width:9px;height:9px;background:#94a3b8;border-radius:2px;margin-right:5px;' }), String(anoAnterior)]),
-      h('span', {}, [h('span', { style: `display:inline-block;width:9px;height:9px;background:${metrica === 'atendimentos' ? 'var(--green)' : '#3b82f6'};border-radius:2px;margin-right:5px;` }), String(anoAtual)]),
-    ]));
+    corpo.appendChild(h('div', { style: 'display:flex;gap:16px;margin-top:10px;flex-wrap:wrap;font-size:11px;color:var(--pharm-500);' },
+      series.map(s => h('span', {}, [h('span', { style: `display:inline-block;width:9px;height:9px;background:${s.cor};border-radius:2px;margin-right:5px;` }), String(s.ano)]))
+    ));
+    const comentario = temAlgumDado ? financeiroComentarioEvolucaoAnos(anosSelecionados(), metrica) : null;
+    if (comentario) corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:12px 0 0;padding-top:10px;border-top:1px solid var(--pharm-100);' }, comentario));
   }
   renderCorpo();
 
   return h('div', { class: 'card fin-card-compact', style: 'margin-bottom:18px;' }, [
     h('div', { style: 'display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px;' }, [
-      h('h3', { class: 'dash-card-title', style: 'margin:0;' }, `Evolução Mensal Homóloga — ${anoAnterior} vs ${anoAtual}`),
-      h('div', { style: 'display:flex;gap:6px;' }, [faturacaoBtn, atendimentosBtn]),
+      h('h3', { class: 'dash-card-title', style: 'margin:0;' }, 'Evolução Mensal Homóloga'),
+      h('div', { style: 'display:flex;gap:6px;align-items:center;flex-wrap:wrap;' }, [anosSelect, faturacaoBtn, atendimentosBtn]),
     ]),
     corpo,
   ]);
