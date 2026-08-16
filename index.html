@@ -16670,8 +16670,21 @@ function abrirModalRegistoEmTabela(onGuardado) {
   let anoSel = anoAtualReal;
   let mesSel = hojeReal.getMonth() + 1;
   // dataISO -> { faturacao, atendimentos } — só as linhas alteradas
-  // desde a última vez que a tabela foi (re)carregada/guardada.
+  // desde a última vez que a tabela foi (re)carregada/guardada. Modo
+  // "Total do Mês" (ver abaixo) usa o MESMO mapa, só que a chave é sempre
+  // o dia 1 de cada mês (o "dia" onde o total fica gravado).
   let alteracoes = {};
+  // Modo por ano (2026-08-16, pedido explícito): anos < FINANCEIRO_
+  // ANO_MINIMO_DIARIO (2021-2025) só vão ter o TOTAL do mês — sem dar o
+  // trabalho de reconstituir dia a dia — por isso mostram uma tabela de
+  // 12 meses (Total Atendimentos/Total Faturação), tal como "Definir
+  // Objetivos Mensais"; anos >= FINANCEIRO_ANO_MINIMO_DIARIO continuam
+  // com o grelha diária de sempre. O total do mês é gravado no DIA 1
+  // desse mês em faturacao_diaria — não precisa de nenhuma coluna nova,
+  // e financeiroTotalMes/financeiroValorDoDia já leem isso corretamente
+  // (somam o que houver nos dias do mês; havendo só o dia 1 preenchido,
+  // o "total" já é exatamente esse valor).
+  function modoMensal() { return anoSel < FINANCEIRO_ANO_MINIMO_DIARIO; }
 
   const overlay = h('div', { class: 'modal-overlay' });
   function fecharDeVez() { document.removeEventListener('keydown', onKeydown); overlay.remove(); }
@@ -16686,10 +16699,11 @@ function abrirModalRegistoEmTabela(onGuardado) {
   document.addEventListener('keydown', onKeydown);
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 
+  const tabelaTituloEl = h('th', {}, 'Dia');
   const corpoTabela = h('tbody', {});
   const tabelaWrap = h('div', { class: 'table-wrap', style: 'max-height:52vh;overflow-y:auto;margin-top:12px;' }, [
     h('table', { class: 'fin-tabela-massa' }, [
-      h('thead', {}, h('tr', {}, ['Dia', 'Atendimentos', 'Faturação (€)'].map(t => h('th', {}, t)))),
+      h('thead', {}, h('tr', {}, [tabelaTituloEl, h('th', {}, 'Atendimentos'), h('th', {}, 'Faturação (€)')])),
       corpoTabela,
     ]),
   ]);
@@ -16704,63 +16718,81 @@ function abrirModalRegistoEmTabela(onGuardado) {
   }
   function atualizarContagem() {
     const n = Object.keys(alteracoes).length;
-    contagemEl.textContent = n ? `${n} dia${n > 1 ? 's' : ''} por guardar.` : 'Sem alterações por guardar.';
+    const unidade = modoMensal() ? 'mês' : 'dia';
+    const unidadePlural = modoMensal() ? 'meses' : 'dias';
+    contagemEl.textContent = n ? `${n} ${n > 1 ? unidadePlural : unidade} por guardar.` : 'Sem alterações por guardar.';
     guardarBtn.disabled = n === 0;
+  }
+
+  function construirLinha(dataISO, rotulo, existente) {
+    const temDados = !!(existente && ((existente.faturacao !== null && existente.faturacao !== undefined && existente.faturacao !== '') || (existente.atendimentos !== null && existente.atendimentos !== undefined && existente.atendimentos !== '')));
+    const atendimentosInput = h('input', { class: 'input', type: 'text', inputmode: 'numeric', pattern: '[0-9]*', placeholder: '—' });
+    atendimentosInput.value = (existente && existente.atendimentos !== null && existente.atendimentos !== undefined) ? existente.atendimentos : '';
+    atendimentosInput.addEventListener('input', () => {
+      const limpo = atendimentosInput.value.replace(/[^\d]/g, '');
+      if (limpo !== atendimentosInput.value) atendimentosInput.value = limpo;
+      marcarAlteracao(dataISO, 'atendimentos', atendimentosInput.value === '' ? null : (parseInt(atendimentosInput.value, 10) || 0));
+    });
+    const faturacaoInput = h('input', { class: 'input', type: 'text', inputmode: 'decimal', placeholder: '—' });
+    faturacaoInput.value = (existente && existente.faturacao !== null && existente.faturacao !== undefined) ? financeiroFormatarValorInputEuro(existente.faturacao) : '';
+    faturacaoInput.addEventListener('input', () => {
+      faturacaoInput.value = financeiroMascararInputEuro(faturacaoInput.value);
+      const len = faturacaoInput.value.length;
+      faturacaoInput.setSelectionRange(len, len);
+      marcarAlteracao(dataISO, 'faturacao', faturacaoInput.value === '' ? null : (parseFloat(faturacaoInput.value.replace(/\./g, '').replace(',', '.')) || 0));
+    });
+    return h('tr', { class: temDados ? 'tem-dados' : undefined }, [
+      h('td', { class: 'fin-tabela-massa-dia' }, rotulo),
+      h('td', {}, atendimentosInput),
+      h('td', {}, faturacaoInput),
+    ]);
   }
 
   function renderTabela() {
     clear(corpoTabela);
     alteracoes = {};
     atualizarContagem();
+    if (modoMensal()) {
+      tabelaTituloEl.textContent = 'Mês';
+      MESES_PT_NOMES.forEach((nome, i) => {
+        const mes = i + 1;
+        const dataISO = `${anoSel}-${pad2(mes)}-01`; // total do mês gravado no dia 1
+        corpoTabela.appendChild(construirLinha(dataISO, nome, financeiroRegistoDoDia(dataISO)));
+      });
+      return;
+    }
+    tabelaTituloEl.textContent = 'Dia';
     const diasNoMes = new Date(anoSel, mesSel, 0).getDate();
     for (let dia = 1; dia <= diasNoMes; dia++) {
       const dataISO = `${anoSel}-${pad2(mesSel)}-${pad2(dia)}`;
       if (dataISO > todayISO()) break; // não faz sentido preencher dias futuros
-      const existente = financeiroRegistoDoDia(dataISO);
-      const temDados = !!(existente && ((existente.faturacao !== null && existente.faturacao !== undefined && existente.faturacao !== '') || (existente.atendimentos !== null && existente.atendimentos !== undefined && existente.atendimentos !== '')));
       const nomeDiaSemana = new Date(dataISO + 'T00:00:00').toLocaleDateString('pt-PT', { weekday: 'short' });
-
-      const atendimentosInput = h('input', { class: 'input', type: 'text', inputmode: 'numeric', pattern: '[0-9]*', placeholder: '—' });
-      atendimentosInput.value = (existente && existente.atendimentos !== null && existente.atendimentos !== undefined) ? existente.atendimentos : '';
-      atendimentosInput.addEventListener('input', () => {
-        const limpo = atendimentosInput.value.replace(/[^\d]/g, '');
-        if (limpo !== atendimentosInput.value) atendimentosInput.value = limpo;
-        marcarAlteracao(dataISO, 'atendimentos', atendimentosInput.value === '' ? null : (parseInt(atendimentosInput.value, 10) || 0));
-      });
-
-      const faturacaoInput = h('input', { class: 'input', type: 'text', inputmode: 'decimal', placeholder: '—' });
-      faturacaoInput.value = (existente && existente.faturacao !== null && existente.faturacao !== undefined) ? financeiroFormatarValorInputEuro(existente.faturacao) : '';
-      faturacaoInput.addEventListener('input', () => {
-        faturacaoInput.value = financeiroMascararInputEuro(faturacaoInput.value);
-        const len = faturacaoInput.value.length;
-        faturacaoInput.setSelectionRange(len, len);
-        marcarAlteracao(dataISO, 'faturacao', faturacaoInput.value === '' ? null : (parseFloat(faturacaoInput.value.replace(/\./g, '').replace(',', '.')) || 0));
-      });
-
-      corpoTabela.appendChild(h('tr', { class: temDados ? 'tem-dados' : undefined }, [
-        h('td', { class: 'fin-tabela-massa-dia' }, `${String(dia).padStart(2, '0')} ${nomeDiaSemana}`),
-        h('td', {}, atendimentosInput),
-        h('td', {}, faturacaoInput),
-      ]));
+      corpoTabela.appendChild(construirLinha(dataISO, `${String(dia).padStart(2, '0')} ${nomeDiaSemana}`, financeiroRegistoDoDia(dataISO)));
     }
   }
 
   const anoSelect = h('select', { class: 'input', style: 'max-width:110px;' });
   for (let a = anoAtualReal; a >= ANO_MAIS_ANTIGO; a--) anoSelect.appendChild(h('option', { value: a }, String(a)));
   anoSelect.value = String(anoSel);
-  function trocarPeriodo(aplicar) {
-    if (Object.keys(alteracoes).length) {
-      confirmDialog('Há alterações por guardar neste mês — se mudar agora, perdem-se. Deseja continuar mesmo assim?', () => { aplicar(); renderTabela(); }, { confirmLabel: 'Mudar assim mesmo' });
-      // Repõe o valor visual do select se a pessoa cancelar a troca.
-      anoSelect.value = String(anoSel);
-      mesSelect.value = String(mesSel);
-    } else { aplicar(); renderTabela(); }
-  }
-  anoSelect.addEventListener('change', () => trocarPeriodo(() => { anoSel = parseInt(anoSelect.value, 10); }));
-
+  const mesCampoWrap = h('div', { class: 'field', style: 'margin-bottom:0;' }, [h('label', {}, 'Mês'), null]);
   const mesSelect = h('select', { class: 'input', style: 'max-width:160px;' });
   MESES_PT_NOMES.forEach((nome, i) => mesSelect.appendChild(h('option', { value: i + 1 }, nome)));
   mesSelect.value = String(mesSel);
+  mesCampoWrap.appendChild(mesSelect);
+  const avisoMensalEl = h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;display:none;' }, `Este ano só regista o TOTAL de cada mês (sem quebra por dia) — pedido explícito, para não ter de reconstituir a faturação dia a dia de anos anteriores a ${FINANCEIRO_ANO_MINIMO_DIARIO}.`);
+  function atualizarVisibilidadeMes() {
+    mesCampoWrap.style.display = modoMensal() ? 'none' : '';
+    avisoMensalEl.style.display = modoMensal() ? '' : 'none';
+  }
+  function trocarPeriodo(aplicar) {
+    if (Object.keys(alteracoes).length) {
+      confirmDialog('Há alterações por guardar neste mês — se mudar agora, perdem-se. Deseja continuar mesmo assim?', () => { aplicar(); atualizarVisibilidadeMes(); renderTabela(); }, { confirmLabel: 'Mudar assim mesmo' });
+      // Repõe o valor visual do select se a pessoa cancelar a troca.
+      anoSelect.value = String(anoSel);
+      mesSelect.value = String(mesSel);
+    } else { aplicar(); atualizarVisibilidadeMes(); renderTabela(); }
+  }
+  anoSelect.addEventListener('change', () => trocarPeriodo(() => { anoSel = parseInt(anoSelect.value, 10); }));
   mesSelect.addEventListener('change', () => trocarPeriodo(() => { mesSel = parseInt(mesSelect.value, 10); }));
 
   guardarBtn.addEventListener('click', () => requireAuth(async () => {
@@ -16778,8 +16810,9 @@ function abrirModalRegistoEmTabela(onGuardado) {
     guardarBtn.textContent = textoOriginal;
     renderTabela(); // relê STATE.financeiro já atualizado e limpa "alterações"
     if (onGuardado) onGuardado();
-    if (falhas.length) showToast(`Guardado com ${falhas.length} falha(s): ${falhas.map(d => formatDate(d)).join(', ')}`, 'error');
-    else showToast(`${entradas.length} dia${entradas.length > 1 ? 's' : ''} guardado${entradas.length > 1 ? 's' : ''}.`, 'success');
+    const unidadePlural = modoMensal() ? 'mês(es)' : 'dia(s)';
+    if (falhas.length) showToast(`Guardado com ${falhas.length} falha(s).`, 'error');
+    else showToast(`${entradas.length} ${unidadePlural} guardado(s).`, 'success');
   }));
   const fecharBtn = h('button', { class: 'btn btn-secondary', onclick: close }, 'Fechar');
 
@@ -16789,9 +16822,10 @@ function abrirModalRegistoEmTabela(onGuardado) {
       h('button', { class: 'close-btn', onclick: close, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
     ]),
     h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, 'Útil para pôr em dia dados de anos anteriores — preencha o que tiver e passe ao mês seguinte. Linhas já preenchidas ficam destacadas a verde.'),
+    avisoMensalEl,
     h('div', { style: 'display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;' }, [
       h('div', { class: 'field', style: 'margin-bottom:0;' }, [h('label', {}, 'Ano'), anoSelect]),
-      h('div', { class: 'field', style: 'margin-bottom:0;' }, [h('label', {}, 'Mês'), mesSelect]),
+      mesCampoWrap,
     ]),
     tabelaWrap,
     contagemEl,
@@ -16799,6 +16833,7 @@ function abrirModalRegistoEmTabela(onGuardado) {
   ]);
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
+  atualizarVisibilidadeMes();
   renderTabela();
 }
 
