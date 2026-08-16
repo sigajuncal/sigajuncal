@@ -17680,9 +17680,10 @@ function svgEl(tag, attrs) {
 // com meses que têm mesmo dados (não desenha zeros para meses futuros/
 // sem registo — a linha do ano corrente simplesmente pára no último mês
 // com dados). ----
-function buildFinanceiroLinhaMultiAnoChart(series, alturaPx, formatarValor) {
+function buildFinanceiroLinhaMultiAnoChart(series, alturaPx, formatarValor, formatarValorEixo) {
+  formatarValorEixo = formatarValorEixo || formatarValor;
   const W = 900, H = alturaPx;
-  const ML = 46, MR = 10, MT = 14, MB = 22;
+  const ML = 52, MR = 10, MT = 20, MB = 22;
   const larguraUtil = W - ML - MR, alturaUtil = H - MT - MB;
   const todosValores = series.flatMap(s => s.pontos.map(p => p.valor)).filter(v => v !== null && v !== undefined && v > 0);
   const maxValor = Math.max(1, ...todosValores);
@@ -17702,6 +17703,17 @@ function buildFinanceiroLinhaMultiAnoChart(series, alturaPx, formatarValor) {
   const logMin = Math.log(domainMin), logMax = Math.log(domainMax);
   function x(mes) { return ML + ((mes - 1) / 11) * larguraUtil; }
   function y(v) { return MT + alturaUtil - ((Math.log(v) - logMin) / (logMax - logMin)) * alturaUtil; }
+  // Arredonda cada valor de referência do eixo a um número "redondo" —
+  // pedido explícito 2026-08-16 ("eixo está estranho"): valores exatos
+  // da escala logarítmica caem em posições arbitrárias (ex: 624 043,17 €)
+  // e mostrar isso com casas decimais no eixo é confuso; arredonda-se
+  // sempre à ordem de grandeza anterior à do próprio número (ex: às
+  // dezenas de milhar para um valor na casa das centenas de milhar).
+  function arredondarEixo(v) {
+    if (v <= 0) return 0;
+    const grandeza = Math.pow(10, Math.floor(Math.log10(v)) - 1);
+    return Math.round(v / grandeza) * grandeza;
+  }
   // Curva suave (Bézier cúbica com pontos de controlo a 1/3 do segmento)
   // em vez de segmentos de reta em ziguezague — pedido explícito
   // 2026-08-16, para as linhas ficarem com um aspeto mais cuidado.
@@ -17717,12 +17729,25 @@ function buildFinanceiroLinhaMultiAnoChart(series, alturaPx, formatarValor) {
   }
 
   const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', style: `width:100%;height:${H}px;display:block;overflow:visible;` });
+  // Etiqueta "log" bem visível no canto superior esquerdo do eixo — com
+  // tooltip ao passar o rato, deixando claro que a escala é logarítmica
+  // mesmo sem ler o texto de ajuda por baixo do gráfico (pedido explícito
+  // 2026-08-16: "deixa claro que escala é logarítmica, nem que seja
+  // quando se faz hover no eixo").
+  const explicacaoLog = 'Escala logarítmica: a mesma distância vertical representa sempre a mesma variação percentual (%), não a mesma diferença em euros/unidades — por isso o crescimento de cada ano é comparável visualmente, seja qual for o seu nível.';
+  const etiquetaLog = svgEl('text', { x: ML, y: 10, 'text-anchor': 'start', 'font-size': 9, 'font-weight': 700, fill: '#94a3b8', style: 'cursor:help;letter-spacing:0.4px;' });
+  etiquetaLog.textContent = 'ESCALA LOG ⓘ';
+  etiquetaLog.addEventListener('mouseenter', () => mostrarTooltipFlutuante(etiquetaLog, explicacaoLog));
+  etiquetaLog.addEventListener('mouseleave', esconderTooltipFlutuante);
+  svg.appendChild(etiquetaLog);
 
   [0, 0.25, 0.5, 0.75, 1].forEach(f => {
     const yy = MT + alturaUtil * (1 - f);
     svg.appendChild(svgEl('line', { x1: ML, x2: W - MR, y1: yy, y2: yy, stroke: '#e5e9f0', 'stroke-width': 1 }));
-    const rotulo = svgEl('text', { x: ML - 6, y: yy + 3, 'text-anchor': 'end', 'font-size': 9.5, fill: '#a0aabb' });
-    rotulo.textContent = formatarValor(Math.exp(logMin + (logMax - logMin) * f));
+    const rotulo = svgEl('text', { x: ML - 6, y: yy + 3, 'text-anchor': 'end', 'font-size': 9.5, fill: '#a0aabb', style: 'cursor:help;' });
+    rotulo.textContent = formatarValorEixo(arredondarEixo(Math.exp(logMin + (logMax - logMin) * f)));
+    rotulo.addEventListener('mouseenter', () => mostrarTooltipFlutuante(rotulo, explicacaoLog));
+    rotulo.addEventListener('mouseleave', esconderTooltipFlutuante);
     svg.appendChild(rotulo);
   });
   MESES_PT_NOMES.forEach((nome, i) => {
@@ -17906,9 +17931,12 @@ function buildFinanceiroEvolucaoCard() {
     const series = construirSeries(metrica);
     const temAlgumDado = series.some(s => s.pontos.some(p => p.valor !== null));
     const formatarValor = metrica === 'atendimentos' ? financeiroFormatarNumero : ((v) => financeiroFormatarEuro(v, 2));
+    // Rótulos do eixo: sem casas decimais, mesmo em € — arredondado a
+    // milhares/centenas de milhar já não faz sentido mostrar cêntimos.
+    const formatarValorEixo = metrica === 'atendimentos' ? ((v) => financeiroFormatarNumero(Math.round(v))) : ((v) => financeiroFormatarEuro(v, 0));
     corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, 'Passe o rato num ponto para ver o valor exato desse mês. Eixo vertical em escala logarítmica — a mesma inclinação representa sempre a mesma variação percentual, independentemente do nível de cada ano.'));
     corpo.appendChild(temAlgumDado
-      ? buildFinanceiroLinhaMultiAnoChart(series, 260, formatarValor)
+      ? buildFinanceiroLinhaMultiAnoChart(series, 260, formatarValor, formatarValorEixo)
       : h('div', { class: 'fin-empty-state', style: 'height:260px;justify-content:center;' }, [
           Icon('activity', { size: 24, strokeWidth: 1.7 }),
           h('p', { class: 'fin-empty-titulo' }, 'O gráfico aparece assim que houver dados'),
