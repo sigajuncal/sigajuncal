@@ -1473,6 +1473,8 @@
   .fin-mes-nav-hoje{font-size:11.5px;color:var(--pharm-600);text-decoration:underline;background:none;border:none;cursor:pointer;padding:0;margin-left:4px;}
   .fin-chart-row{display:flex;align-items:flex-end;gap:6px;width:100%;padding:0 4px;}
   .fin-chart-col{display:flex;flex-direction:column;align-items:center;gap:6px;flex:1 1 0;min-width:0;height:100%;cursor:pointer;}
+  .fin-chart-row-compacta{justify-content:center;}
+  .fin-chart-row-compacta .fin-chart-col{flex:0 0 56px;min-width:56px;}
   /* Slot de altura fixa reservado para o valor exato (só fica visível ao
      clicar) — reservar sempre o mesmo espaço evita que as barras "saltem"
      de tamanho quando se seleciona/desseleciona uma barra. */
@@ -1926,6 +1928,21 @@
   .escala-pessoal-linha.escala-cell-aniversario, .escala-pessoal-linha.escala-cell-outras {
     color: var(--pharm-400); font-style: italic;
   }
+  /* Dia de HOJE identificado em "A Minha Semana" (2026-08-16, pedido
+     explícito) — faixa lateral + fundo muito leve na linha do dia
+     corrente, e um pequeno selo "Hoje" junto ao nome do dia (mesma
+     paleta índigo já usada no cartão "Em Curso Agora" da Página
+     Inicial, para o olho associar de imediato ao "agora"). */
+  .escala-pessoal-linha-hoje{background:#eef2ff;box-shadow:inset 3px 0 0 #4f46e5;
+    padding-left:8px;margin-left:-8px;border-radius:0 6px 6px 0;}
+  .escala-pessoal-hoje-badge{display:inline-block;margin-left:6px;padding:1px 7px;
+    border-radius:999px;background:#4f46e5;color:#fff;font-size:9.5px;font-weight:800;
+    letter-spacing:.03em;text-transform:uppercase;vertical-align:middle;}
+  /* Dia de HOJE na Vista Mensal de "A Minha Semana" (2026-08-16, pedido
+     explícito) — mesmo tratamento (faixa + fundo índigo) da linha
+     equivalente na Vista Semana, aplicado à linha da tabela do mês. */
+  .escala-mes-tabela tr.escala-mes-hoje{background:#eef2ff;}
+  .escala-mes-tabela tr.escala-mes-hoje td.escala-mes-col-dia{box-shadow:inset 3px 0 0 #4f46e5;color:#4f46e5;}
   /* Vista Vertical (Gerador/Vista Vertical, Horários) — timeline por
      horas de um dia, 1 coluna por posição + coluna de totais. Eixo de
      horas à esquerda (posicionamento absoluto, top:% calculado em JS,
@@ -16393,13 +16410,19 @@ function buildLinhaCumprimento(acumulado, objetivo) {
 // dos dois está a definir a altura das barras). Cada barra continua
 // clicável — fixa/mostra o valor por cima da barra (persiste em touch,
 // que não tem hover); clicar de novo esconde. Só uma fica selecionada.
-function buildFinanceiroBarraChart(itens, alturaPx, formatarValor, obterTooltip) {
+function buildFinanceiroBarraChart(itens, alturaPx, formatarValor, obterTooltip, compacto) {
   formatarValor = formatarValor || ((v) => financeiroFormatarEuro(v, 2));
   obterTooltip = obterTooltip || ((it) => `${it.rotulo}: ${formatarValor(it.valor)}`);
   const max = Math.max(1, ...itens.map(it => it.valor));
   let selecionado = null; // índice da barra com o valor fixo/visível
 
-  const wrap = h('div', { class: 'fin-chart-row', style: `height:${alturaPx}px;` });
+  // compacto (2026-08-16, pedido explícito) — quando há poucas barras
+  // (ex.: Dia da Semana com 7, Feriados com 2), flex:1 esticava cada
+  // coluna para preencher toda a largura do cartão, ficando super
+  // largas/vazias. Com poucas barras, mantém-nas com a MESMA largura
+  // estreita da vista Dia do Mês (que tem colunas suficientes para
+  // preencher o espaço sozinha) e centra a fila em vez de esticar.
+  const wrap = h('div', { class: 'fin-chart-row' + (compacto ? ' fin-chart-row-compacta' : ''), style: `height:${alturaPx}px;` });
 
   function render() {
     clear(wrap);
@@ -17377,9 +17400,27 @@ function financeiroMediaPorDiaDoMes(campo, dataInicio, dataFim) {
   for (let dia = 1; dia <= 31; dia++) if (porChave[dia]) out.push({ dia, media: porChave[dia].soma / porChave[dia].n, n: porChave[dia].n });
   return out;
 }
+// Registo diário só existe a partir de 2026 (anos anteriores, 2025
+// incluído, foram acordados e alimentados com granularidade MENSAL —
+// um total por mês, não um valor por dia real) — pedido explícito
+// 2026-08-16. "Dia da Semana" e "Feriados" cruzam a data exata de cada
+// registo (que dia da semana calhou, se é feriado nacional), o que só
+// faz sentido com dados genuinamente diários: um total mensal atribuído
+// a uma data arbitrária não representa nem "aquele dia da semana" nem
+// "aquele feriado". Por isso estas duas vistas ignoram sempre registos
+// anteriores a 2026, INDEPENDENTEMENTE do Período escolhido no seletor
+// — nomeadamente "Ano Passado" (2025) e "Todo o Histórico" nunca devem
+// mostrar dados nestas duas vistas antes de existir histórico diário
+// suficiente a partir de 2026. "Dia do Mês" não é afetado (mantém-se
+// como estava).
+const FINANCEIRO_INICIO_REGISTO_DIARIO = '2026-01-01';
+function financeiroClampInicioRegistoDiario(dataInicio) {
+  return (!dataInicio || dataInicio < FINANCEIRO_INICIO_REGISTO_DIARIO) ? FINANCEIRO_INICIO_REGISTO_DIARIO : dataInicio;
+}
 const DIAS_SEMANA_PT_NOME = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
 const DIAS_SEMANA_PT_ABREV = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 function financeiroMediaPorDiaSemana(campo, dataInicio, dataFim) {
+  dataInicio = financeiroClampInicioRegistoDiario(dataInicio);
   const porChave = campo === 'ticketMedio'
     ? financeiroTicketMedioAgrupado((iso) => new Date(iso + 'T00:00:00').getDay(), dataInicio, dataFim)
     : financeiroMediaAgrupada(campo, (iso) => new Date(iso + 'T00:00:00').getDay(), dataInicio, dataFim);
@@ -17390,6 +17431,7 @@ function financeiroMediaPorDiaSemana(campo, dataInicio, dataFim) {
   }));
 }
 function financeiroMediaFeriadoVsNormal(campo, dataInicio, dataFim) {
+  dataInicio = financeiroClampInicioRegistoDiario(dataInicio);
   if (campo === 'ticketMedio') {
     const porChave = financeiroTicketMedioAgrupado((iso) => (ehFeriadoNacionalPT(new Date(iso + 'T00:00:00')) ? 'feriado' : 'normal'), dataInicio, dataFim);
     return {
@@ -17636,7 +17678,7 @@ function buildFinanceiroPadraoMensalCard() {
 
     if (itensChart) {
       corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, legenda));
-      corpo.appendChild(buildFinanceiroBarraChart(itensChart, 150, formatarFn));
+      corpo.appendChild(buildFinanceiroBarraChart(itensChart, 150, formatarFn, null, vista !== 'diaDoMes'));
     }
     frases.forEach((txt, i) => corpo.appendChild(h('p', { class: 'fin-briefing-paragrafo', style: (itensChart || i > 0) ? 'margin-top:10px;' : '' }, txt)));
   }
@@ -28647,7 +28689,18 @@ function buildHorariosPage(container, goTo) {
   let viewModeEquipa = horariosContextoMemorizado.viewModeEquipa; // 'tabela' | 'vertical'
   function definirViewModeGerador(v) { viewModeGerador = v; horariosContextoMemorizado.viewModeGerador = v; }
   function definirViewModeEquipa(v) { viewModeEquipa = v; horariosContextoMemorizado.viewModeEquipa = v; }
-  let diaVerticalSelecionado = 'seg';
+  // Dia predefinido da Vista Vertical/Timeline (2026-08-16, pedido
+  // explícito — "Escala da Equipa"): quando a semana mostrada é a
+  // semana atual/presente, arranca já no dia de HOJE em vez de sempre
+  // Segunda-feira — mais útil ver logo o dia a decorrer. Nas restantes
+  // semanas (passadas/futuras) mantém-se Segunda-feira, já que "hoje"
+  // não faz sentido fora da semana atual. semanaSelecionadaData só é
+  // null antes do primeiro build() — nesse caso a semana ainda por
+  // resolver É sempre a atual (ver dataSemanaSelecionada()), por isso
+  // conta como semana atual aqui também.
+  let diaVerticalSelecionado = (!semanaSelecionadaData || semanaSelecionadaData === escalaSegundaFeiraHoje())
+    ? ESCALA_DIAS[(new Date().getDay() + 6) % 7].key
+    : 'seg';
   let configVisibilidadeDraft = null; // preenchido só quando o toggle é tocado
 
   // periodos: array de { dataInicio, dataFim } — suporta vários intervalos
@@ -30047,9 +30100,16 @@ function buildHorariosPage(container, goTo) {
         const tarefasEl = h('span', { class: 'escala-pessoal-tarefas' }, [pill, ausenciaBadge].filter(Boolean));
         // Dia por extenso + data completa (pedido explícito 2026-08-09:
         // "Segunda-Feira, 10 de Agosto de 2026" em vez de só "Segunda" —
-        // mais seguro, evita ambiguidade entre semanas.
-        return h('div', { class: 'escala-pessoal-linha' + (tipoEfetivo !== 'normal' ? ` escala-cell-${tipoEfetivo}` : '') + (ausencia ? ' escala-cell-ausencia-sobreposta' : '') }, [
-          h('span', { class: 'escala-pessoal-dia' }, escalaDiaLabelExtenso(d.key, d.label, semana.semanaInicio)),
+        // mais seguro, evita ambiguidade entre semanas. Dia de HOJE
+        // identificado visualmente (2026-08-16, pedido explícito) — só
+        // acontece quando esta linha corresponde à data de hoje (nunca
+        // sinalizado nas outras semanas, ver dataDoDia === hojeISO).
+        const ehHoje = dataDoDia === hojeISO;
+        return h('div', { class: 'escala-pessoal-linha' + (tipoEfetivo !== 'normal' ? ` escala-cell-${tipoEfetivo}` : '') + (ausencia ? ' escala-cell-ausencia-sobreposta' : '') + (ehHoje ? ' escala-pessoal-linha-hoje' : '') }, [
+          h('span', { class: 'escala-pessoal-dia' }, [
+            escalaDiaLabelExtenso(d.key, d.label, semana.semanaInicio),
+            ehHoje ? h('span', { class: 'escala-pessoal-hoje-badge' }, 'Hoje') : null,
+          ]),
           horasEl,
           tarefasEl,
         ]);
@@ -30143,7 +30203,7 @@ function buildHorariosPage(container, goTo) {
       // localizar rapidamente esses dias numa lista de 28-31, sem
       // precisar de nenhuma cor forte nem legenda à parte (pedido
       // explícito 2026-08-09: "espaçar melhor o texto na vista mês").
-      const trClasse = classeExtra + (dObj.getDay() === 0 ? ' escala-mes-domingo' : '') + (escalaFeriadoInfo(dataISO) ? ' escala-mes-feriado' : '');
+      const trClasse = classeExtra + (dObj.getDay() === 0 ? ' escala-mes-domingo' : '') + (escalaFeriadoInfo(dataISO) ? ' escala-mes-feriado' : '') + (dataISO === todayISO() ? ' escala-mes-hoje' : '');
       return h('tr', { class: trClasse.trim() || undefined }, [
         h('td', { class: 'escala-mes-col-dia' }, String(dObj.getDate())),
         h('td', { class: 'escala-mes-col-semana' }, ESCALA_DIAS.find(d => d.key === diaKey).label),
