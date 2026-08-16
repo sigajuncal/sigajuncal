@@ -17682,18 +17682,48 @@ function svgEl(tag, attrs) {
 // com dados). ----
 function buildFinanceiroLinhaMultiAnoChart(series, alturaPx, formatarValor) {
   const W = 900, H = alturaPx;
-  const ML = 46, MR = 10, MT = 10, MB = 22;
+  const ML = 46, MR = 10, MT = 14, MB = 22;
   const larguraUtil = W - ML - MR, alturaUtil = H - MT - MB;
-  const todosValores = series.flatMap(s => s.pontos.map(p => p.valor)).filter(v => v !== null && v !== undefined);
-  const max = Math.max(1, ...todosValores);
+  const todosValores = series.flatMap(s => s.pontos.map(p => p.valor)).filter(v => v !== null && v !== undefined && v > 0);
+  const maxValor = Math.max(1, ...todosValores);
+  const minValor = Math.min(...todosValores);
+  // Escala LOGARÍTMICA (pedido explícito 2026-08-16: "quero que o gráfico
+  // reflicta visualmente a proporcionalidade do crescimento") — numa
+  // escala linear, a mesma distância vertical representa quantidades
+  // absolutas diferentes consoante a base (10% de crescimento a partir de
+  // 100 000 € "parece" maior do que 10% a partir de 400 000 €, mesmo
+  // sendo a mesma taxa). Em escala logarítmica, a MESMA distância
+  // vertical representa sempre a MESMA variação percentual — duas linhas
+  // com a mesma inclinação estão a crescer à mesma taxa, seja qual for o
+  // seu nível absoluto. Margem de 10% acima/abaixo dos valores reais
+  // (em espaço logarítmico), nunca inclui 0 (log(0) não existe).
+  const domainMin = minValor * 0.9;
+  const domainMax = maxValor * 1.08;
+  const logMin = Math.log(domainMin), logMax = Math.log(domainMax);
   function x(mes) { return ML + ((mes - 1) / 11) * larguraUtil; }
-  function y(v) { return MT + alturaUtil - (v / max) * alturaUtil; }
+  function y(v) { return MT + alturaUtil - ((Math.log(v) - logMin) / (logMax - logMin)) * alturaUtil; }
+  // Curva suave (Bézier cúbica com pontos de controlo a 1/3 do segmento)
+  // em vez de segmentos de reta em ziguezague — pedido explícito
+  // 2026-08-16, para as linhas ficarem com um aspeto mais cuidado.
+  function caminhoSuave(pontos) {
+    let d = `M ${x(pontos[0].mes).toFixed(1)} ${y(pontos[0].valor).toFixed(1)}`;
+    for (let i = 1; i < pontos.length; i++) {
+      const x0 = x(pontos[i - 1].mes), y0 = y(pontos[i - 1].valor);
+      const x1 = x(pontos[i].mes), y1 = y(pontos[i].valor);
+      const dx = (x1 - x0) / 2;
+      d += ` C ${(x0 + dx).toFixed(1)} ${y0.toFixed(1)}, ${(x1 - dx).toFixed(1)} ${y1.toFixed(1)}, ${x1.toFixed(1)} ${y1.toFixed(1)}`;
+    }
+    return d;
+  }
 
   const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', style: `width:100%;height:${H}px;display:block;overflow:visible;` });
 
   [0, 0.25, 0.5, 0.75, 1].forEach(f => {
     const yy = MT + alturaUtil * (1 - f);
     svg.appendChild(svgEl('line', { x1: ML, x2: W - MR, y1: yy, y2: yy, stroke: '#e5e9f0', 'stroke-width': 1 }));
+    const rotulo = svgEl('text', { x: ML - 6, y: yy + 3, 'text-anchor': 'end', 'font-size': 9.5, fill: '#a0aabb' });
+    rotulo.textContent = formatarValor(Math.exp(logMin + (logMax - logMin) * f));
+    svg.appendChild(rotulo);
   });
   MESES_PT_NOMES.forEach((nome, i) => {
     const label = svgEl('text', { x: x(i + 1), y: H - 6, 'text-anchor': 'middle', 'font-size': 11, fill: '#7c8aa0' });
@@ -17703,21 +17733,20 @@ function buildFinanceiroLinhaMultiAnoChart(series, alturaPx, formatarValor) {
 
   // Linhas primeiro (para ficarem por baixo), pontos a seguir (por cima).
   series.forEach(s => {
-    const pontosValidos = s.pontos.filter(p => p.valor !== null && p.valor !== undefined);
+    const pontosValidos = s.pontos.filter(p => p.valor !== null && p.valor !== undefined && p.valor > 0);
     if (pontosValidos.length < 2) return;
-    const d = pontosValidos.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(p.mes).toFixed(1)} ${y(p.valor).toFixed(1)}`).join(' ');
-    svg.appendChild(svgEl('path', { d, fill: 'none', stroke: s.cor, 'stroke-width': 2.4, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+    svg.appendChild(svgEl('path', { d: caminhoSuave(pontosValidos), fill: 'none', stroke: s.cor, 'stroke-width': 2.4, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
   });
   series.forEach(s => {
-    s.pontos.filter(p => p.valor !== null && p.valor !== undefined).forEach(p => {
-      const c = svgEl('circle', { cx: x(p.mes).toFixed(1), cy: y(p.valor).toFixed(1), r: 4, fill: s.cor, stroke: '#fff', 'stroke-width': 1.5, style: 'cursor:pointer;' });
+    s.pontos.filter(p => p.valor !== null && p.valor !== undefined && p.valor > 0).forEach(p => {
+      const c = svgEl('circle', { cx: x(p.mes).toFixed(1), cy: y(p.valor).toFixed(1), r: 3.5, fill: s.cor, stroke: '#fff', 'stroke-width': 1.5, style: 'cursor:pointer;' });
       c.addEventListener('mouseenter', () => mostrarTooltipFlutuante(c, `${MESES_PT_NOMES[p.mes - 1]} ${s.ano}\n${formatarValor(p.valor)}`));
       c.addEventListener('mouseleave', esconderTooltipFlutuante);
       svg.appendChild(c);
     });
   });
 
-  return h('div', { style: 'overflow-x:auto;' }, [svg]);
+  return h('div', { style: 'overflow-x:auto;max-width:1000px;margin:0 auto;' }, [svg]);
 }
 // Comentário gerado a partir dos dados (2026-08-16, pedido explícito) —
 // nunca texto fixo, sempre calculado a partir dos anos efetivamente
@@ -17766,7 +17795,67 @@ function financeiroComentarioEvolucaoAnos(anos, campo) {
   } else {
     partes.push('.');
   }
+  // Ano com o maior salto (só interessante mencionar com 2+ variações
+  // para comparar) — pedido explícito 2026-08-16, comentário "mais
+  // esclarecedor e interessante".
+  if (variacoes.length >= 2) {
+    let idxMelhor = 0;
+    variacoes.forEach((v, i) => { if (v > variacoes[idxMelhor]) idxMelhor = i; });
+    const anoMelhor = totais[idxMelhor + 1].ano;
+    partes.push(` O maior salto de crescimento foi em ${anoMelhor} (${variacoes[idxMelhor] >= 0 ? '+' : ''}${variacoes[idxMelhor].toFixed(1)}%).`);
+  }
   return partes.join('');
+}
+// ---- Padrão sazonal (2026-08-16, pedido explícito: "se dezembro costuma
+// ser melhor mês... essas coisas que nos dêem alguma perspetiva,
+// sazonalidade") — só entram anos INTEIROS (com os 12 meses fechados;
+// usa Dezembro como indicador de ano completo), nunca o ano corrente
+// (ainda incompleto, distorceria as percentagens de peso de cada mês no
+// ano). Para cada ano completo, calcula o peso de cada mês no total
+// desse ano (%); a média desses pesos ao longo dos anos é o "padrão"
+// típico. Precisa de pelo menos 2 anos completos para falar em "costuma"
+// — com 1 só ano isso seria um caso, não um padrão.
+function financeiroPadraoSazonalAnos(anos, campo) {
+  const anoAtualReal = new Date().getFullYear();
+  const completos = anos.filter(ano => ano < anoAtualReal && financeiroTotalMes(ano, 12, campo) > 0);
+  if (completos.length < 2) return null;
+
+  const somaShare = new Array(12).fill(0);
+  const contagemTop = new Array(12).fill(0);
+  const contagemFundo = new Array(12).fill(0);
+  let anosValidos = 0;
+  completos.forEach(ano => {
+    const totaisMes = [];
+    let totalAno = 0;
+    for (let m = 1; m <= 12; m++) { const t = financeiroTotalMes(ano, m, campo); totaisMes.push(t); totalAno += t; }
+    if (totalAno <= 0) return;
+    anosValidos++;
+    let melhorMes = 0, piorMes = 0;
+    totaisMes.forEach((t, i) => {
+      somaShare[i] += t / totalAno;
+      if (t > totaisMes[melhorMes]) melhorMes = i;
+      if (t < totaisMes[piorMes]) piorMes = i;
+    });
+    contagemTop[melhorMes]++;
+    contagemFundo[piorMes]++;
+  });
+  if (anosValidos < 2) return null;
+
+  const mediaShare = somaShare.map(s => s / anosValidos);
+  const mediaGeral = 1 / 12;
+  let mesForte = 0, mesFraco = 0;
+  mediaShare.forEach((s, i) => { if (s > mediaShare[mesForte]) mesForte = i; if (s < mediaShare[mesFraco]) mesFraco = i; });
+  const desvioForte = ((mediaShare[mesForte] - mediaGeral) / mediaGeral) * 100;
+  const desvioFraco = ((mediaShare[mesFraco] - mediaGeral) / mediaGeral) * 100;
+  const anoInicio = completos[0], anoFim = completos[completos.length - 1];
+
+  let frase = `Olhando para os ${anosValidos} anos completos mais recentes (${anoInicio}–${anoFim}): `;
+  frase += `${MESES_PT_NOMES[mesForte]} tende a ser o mês mais forte (▲ ${desvioForte.toFixed(0)}% acima da média mensal do ano`;
+  if (contagemTop[mesForte] >= 2) frase += `, foi o melhor mês em ${contagemTop[mesForte]} desses ${anosValidos} anos`;
+  frase += `); ${MESES_PT_NOMES[mesFraco]} tende a ser o mais fraco (▼ ${Math.abs(desvioFraco).toFixed(0)}% abaixo da média`;
+  if (contagemFundo[mesFraco] >= 2) frase += `, foi o mês mais fraco em ${contagemFundo[mesFraco]} desses ${anosValidos} anos`;
+  frase += ').';
+  return frase;
 }
 function buildFinanceiroEvolucaoCard() {
   const anoAtual = new Date().getFullYear();
@@ -17817,10 +17906,10 @@ function buildFinanceiroEvolucaoCard() {
     const series = construirSeries(metrica);
     const temAlgumDado = series.some(s => s.pontos.some(p => p.valor !== null));
     const formatarValor = metrica === 'atendimentos' ? financeiroFormatarNumero : ((v) => financeiroFormatarEuro(v, 2));
-    corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, 'Passe o rato num ponto para ver o valor exato desse mês.'));
+    corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, 'Passe o rato num ponto para ver o valor exato desse mês. Eixo vertical em escala logarítmica — a mesma inclinação representa sempre a mesma variação percentual, independentemente do nível de cada ano.'));
     corpo.appendChild(temAlgumDado
-      ? buildFinanceiroLinhaMultiAnoChart(series, 200, formatarValor)
-      : h('div', { class: 'fin-empty-state', style: 'height:200px;justify-content:center;' }, [
+      ? buildFinanceiroLinhaMultiAnoChart(series, 260, formatarValor)
+      : h('div', { class: 'fin-empty-state', style: 'height:260px;justify-content:center;' }, [
           Icon('activity', { size: 24, strokeWidth: 1.7 }),
           h('p', { class: 'fin-empty-titulo' }, 'O gráfico aparece assim que houver dados'),
           h('p', {}, metrica === 'atendimentos' ? 'Registe pelo menos um dia de Atendimentos — as linhas aparecem aqui automaticamente.' : 'Registe pelo menos um dia de Faturação — as linhas aparecem aqui automaticamente.'),
@@ -17829,7 +17918,9 @@ function buildFinanceiroEvolucaoCard() {
       series.map(s => h('span', {}, [h('span', { style: `display:inline-block;width:9px;height:9px;background:${s.cor};border-radius:2px;margin-right:5px;` }), String(s.ano)]))
     ));
     const comentario = temAlgumDado ? financeiroComentarioEvolucaoAnos(anosSelecionados(), metrica) : null;
+    const padraoSazonal = temAlgumDado ? financeiroPadraoSazonalAnos(anosSelecionados(), metrica) : null;
     if (comentario) corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:12px 0 0;padding-top:10px;border-top:1px solid var(--pharm-100);' }, comentario));
+    if (padraoSazonal) corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:8px 0 0;' }, padraoSazonal));
   }
   renderCorpo();
 
