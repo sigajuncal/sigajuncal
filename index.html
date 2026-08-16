@@ -4231,8 +4231,8 @@ const lembretesSchema = [
 
 // Reclamações: produtos devolvidos/reclamados por clientes ao balcão
 const reclamacoesSchema = [
+  { name: 'numCliente', label: '🔎 Nº de Ficha', type: 'text', size: 'xs', maxLength: 6, placeholder: 'Nº Ficha' },
   { name: 'nome', label: 'Nome do Cliente', type: 'text', col: 2 },
-  { name: 'numCliente', label: 'Nº Cliente', type: 'text', size: 'xs' },
   { name: 'contacto', label: 'Contacto', type: 'text', size: 'sm', maxLength: 11, inputmode: 'numeric', pattern: '[0-9]{9}', digitsOnly: true, phone: true, placeholder: '9 dígitos' },
   { name: 'data', label: 'Data', type: 'date', size: 'xs' },
   { name: 'produto', label: 'Produto', type: 'text', size: 'sm' },
@@ -4307,6 +4307,14 @@ function objetivoProgressoCor(pct) {
 }
 function objetivoAtivo(o) {
   return o.ativo !== 'Não' && o.ativo !== false;
+}
+// Só para a Página Inicial (buildMetasAtivasCard) — um objetivo com Data de
+// Início no futuro só deve aparecer no Dashboard quando essa data chegar
+// (pedido explícito 2026-08-16); dentro do próprio módulo Objetivos, o
+// separador "Ativos" continua a mostrá-lo desde já (é onde se gere/prepara
+// o objetivo antes de começar).
+function objetivoJaComecou(o) {
+  return !o.dataInicio || o.dataInicio <= todayISO();
 }
 // Sempre em unidades — já não há distinção Quantidade/Valor Monetário.
 function objetivoFormatarValor(valor) {
@@ -9781,14 +9789,24 @@ function melhorarInputData(input) {
   icone.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>';
   wrapper.appendChild(input);
   wrapper.appendChild(icone);
-  // 'click' (não 'mousedown', e sem preventDefault) — mantém o comportamento
-  // nativo de focar/posicionar o cursor no segmento clicado (ex: escrever o
-  // dia diretamente, como no Chrome/Firefox), e ADICIONALMENTE tenta abrir
-  // o seletor. No Safari (que não abre nada sozinho ao clicar) é isto que
-  // passa a garantir a abertura do calendário; no Chrome/Firefox, onde o
-  // clique já pode abrir o seletor nativo por si só, chamar showPicker() a
-  // mais é inofensivo.
-  wrapper.addEventListener('click', () => abrirPicker());
+  // Só o ÍCONE abre o calendário nativo ao clicar (corrigido 2026-08-16,
+  // pedido explícito: "não consigo simplesmente escrever a data com o
+  // teclado numérico, tenho de clicar no calendário e percorrer"). Antes,
+  // QUALQUER clique no wrapper — incluindo dentro do próprio campo, ao ir
+  // escrever — já disparava showPicker(), abrindo sempre o calendário por
+  // cima e atrapalhando a escrita direta. Clicar dentro do campo passa a
+  // fazer só o comportamento nativo (focar/posicionar o cursor no segmento
+  // clicado, pronto a escrever); o calendário só abre ao clicar no ícone —
+  // os dois métodos (teclado numérico ou calendário) ficam sempre
+  // disponíveis, um nunca atrapalha o outro.
+  icone.addEventListener('click', (e) => { e.stopPropagation(); abrirPicker(); });
+  // Preenchimento inteligente por dígitos corridos (ver
+  // instalarPreenchimentoInteligenteData) instalado aqui, no ponto único
+  // partilhado por TODOS os campos de data da app — tanto os de schema
+  // (buildField) como os construídos "à mão" fora de schema (ex: Financeiro)
+  // — antes só os campos de schema o tinham, por isso escrever a data pelo
+  // teclado numérico não funcionava fora dos formulários de schema.
+  instalarPreenchimentoInteligenteData(input);
   return wrapper;
 }
 
@@ -9808,11 +9826,14 @@ function melhorarInputData(input) {
 // escritos desde que o campo ganhou foco; a correção para os atalhos sem
 // zero à esquerda (que o preenchimento nativo por segmentos não sabe
 // interpretar) só é aplicada no BLUR — altura em que já se sabe que a
-// pessoa terminou de escrever essa data. `blockPast` (opcional): mesma
-// regra já aplicada no `change` nativo (nunca aceitar uma data passada,
-// ver mais abaixo) — repetida aqui porque a correção de blur pode
-// substituir o valor DEPOIS desse `change` já ter corrido.
-function instalarPreenchimentoInteligenteData(input, blockPast) {
+// pessoa terminou de escrever essa data. Limites (datas passadas/futuras
+// bloqueadas): já não vêm de um parâmetro `blockPast` à parte — lê-se
+// sempre `input.min`/`input.max`, os mesmos atributos nativos já definidos
+// em cada campo (ex: min=hoje na Vacinação, que bloqueia o passado; max=
+// hoje no Financeiro, que bloqueia o futuro) — assim a correção funciona
+// da mesma forma em QUALQUER campo de data da app, instalada uma única vez
+// em melhorarInputData(), em vez de cada sítio ter de pedir/repetir a regra.
+function instalarPreenchimentoInteligenteData(input) {
   let buffer = '';
   function calcularIso() {
     const n = buffer.length;
@@ -9841,9 +9862,12 @@ function instalarPreenchimentoInteligenteData(input, blockPast) {
     // preenchimento nativo já mostra (caso normal de 8 dígitos seguidos)
     // — nunca mexe no valor por engano.
     if (!iso || input.value === iso) return;
-    if (blockPast && iso < todayISO()) {
-      iso = todayISO();
-      showToast('Não é possível selecionar uma data passada — foi reposta a data de hoje.', 'info');
+    if (input.min && iso < input.min) {
+      iso = input.min;
+      showToast(input.min === todayISO() ? 'Não é possível selecionar uma data passada — foi reposta a data de hoje.' : 'Data anterior ao limite permitido — foi corrigida.', 'info');
+    } else if (input.max && iso > input.max) {
+      iso = input.max;
+      showToast(input.max === todayISO() ? 'Não é possível selecionar uma data futura — foi reposta a data de hoje.' : 'Data posterior ao limite permitido — foi corrigida.', 'info');
     }
     input.value = iso;
     // Dispara tanto 'input' (sincroniza draft[field.name], ver listener
@@ -9970,14 +9994,11 @@ function buildField(field, draft) {
     if (field.type === 'date' && control.value) {
       requestAnimationFrame(() => { control.value = control.value; });
     }
-    // Preenchimento inteligente por dígitos corridos — aplicado a todos os
-    // campos de data editáveis da app (pedido explícito 2026-08-11); nunca
-    // nos campos automáticos/não editáveis (field.disabled — ver
-    // buildCampoAutomaticoReadonly), onde a data é sempre calculada pela
-    // app e a pessoa nunca escreve nada ali.
-    if (field.type === 'date' && !field.disabled) {
-      instalarPreenchimentoInteligenteData(control, field.blockPast);
-    }
+    // Preenchimento inteligente por dígitos corridos (2026-08-11, reforçado
+    // 2026-08-16) — instalado dentro de melhorarInputData(), o ponto único
+    // partilhado por TODOS os campos de data da app (ver mais abaixo, onde
+    // field.type==='date' passa por melhorarInputData(control)); nunca
+    // precisa de ser chamado aqui outra vez.
     // do MAPA 48H, etc.) nunca aceitam um dia já passado — além do `min`
     // nativo (que já impede escolher no calendário do próprio browser),
     // valida também no `change`, para o caso de o valor vir de outra forma
@@ -11759,7 +11780,7 @@ function objetivoContagemDecrescente(o) {
   return h('span', { class: 'meta-countdown meta-countdown-' + tom, title: `Data de Fim: ${formatDate(o.dataFim)}` }, texto);
 }
 function buildMetasAtivasCard(onSaved) {
-  const ativos = STATE.objetivos.filter(objetivoAtivo);
+  const ativos = STATE.objetivos.filter(o => objetivoAtivo(o) && objetivoJaComecou(o));
   const listChildren = ativos.length ? ativos.map(o => {
     const pct = objetivoProgressoPct(o);
     const produtosEl = objetivoProdutos(o).map((p, idx) => {
@@ -16990,7 +17011,7 @@ function financeiroTodosRegistosOrdenados(campo, dataInicio, dataFim) {
     .filter(r => (!dataInicio || r.data >= dataInicio) && (!dataFim || r.data <= dataFim))
     .sort((a, b) => a.data.localeCompare(b.data));
 }
-// ---- Ticket Médio = Faturação ÷ Atendimentos (2026-08-16, pedido
+// ---- Talão Médio = Faturação ÷ Atendimentos (2026-08-16, pedido
 // explícito) — não exige nenhum dado novo, só combina os dois campos já
 // registados. Sempre "ponderado" (soma de Faturação ÷ soma de
 // Atendimentos no período), nunca a média das razões diárias — mais
@@ -17081,7 +17102,7 @@ function financeiroGerarBriefing() {
     parteDia.push(`. Nesse dia registaram-se ${financeiroFormatarNumero(atendUlt)} atendimentos`);
     if (compAtDiaAnt.pct !== null) { parteDia.push(' ('); parteDia.push(financeiroSpanVariacao(compAtDiaAnt.pct)); parteDia.push(' do dia anterior)'); }
     const ticketUlt = financeiroTicketMedioDoDia(ultimo.data);
-    if (ticketUlt !== null) parteDia.push(` — Ticket Médio de ${financeiroFormatarEuro(ticketUlt, 2)}`);
+    if (ticketUlt !== null) parteDia.push(` — Talão Médio de ${financeiroFormatarEuro(ticketUlt, 2)}`);
   }
   parteDia.push('.');
   paragrafos.push(parteDia);
@@ -17108,7 +17129,7 @@ function financeiroGerarBriefing() {
       }
     }
     const ticketSemana = financeiroTicketMedioPeriodo(ultimos7[0].data, ultimo.data);
-    if (ticketSemana) parteSemana.push(`. Ticket Médio de ${financeiroFormatarEuro(ticketSemana.valor, 2)} no período (ponderado: soma da Faturação ÷ soma dos Atendimentos, nunca a média dos rácios diários)`);
+    if (ticketSemana) parteSemana.push(`. Talão Médio de ${financeiroFormatarEuro(ticketSemana.valor, 2)} no período (ponderado: soma da Faturação ÷ soma dos Atendimentos, nunca a média dos rácios diários)`);
     parteSemana.push('.');
     paragrafos.push(parteSemana);
   }
@@ -17132,7 +17153,7 @@ function financeiroGerarBriefing() {
   const mediaMesUltAt = financeiroMediaDiariaMes(anoUlt, mesUlt, 'atendimentos');
   if (totalMesUltAt) parteMes.push(`. Em atendimentos, o total do mês é de ${financeiroFormatarNumero(totalMesUltAt)}${mediaMesUltAt > 0 ? ` (média de ${financeiroFormatarNumero(mediaMesUltAt)}/dia)` : ''}`);
   const ticketMesUlt = financeiroTicketMedioMes(anoUlt, mesUlt);
-  if (ticketMesUlt) parteMes.push(`. Ticket Médio de ${financeiroFormatarEuro(ticketMesUlt.valor, 2)}`);
+  if (ticketMesUlt) parteMes.push(`. Talão Médio de ${financeiroFormatarEuro(ticketMesUlt.valor, 2)}`);
   parteMes.push('.');
   paragrafos.push(parteMes);
 
@@ -17273,11 +17294,11 @@ function financeiroMediaAgrupada(campo, keyFn, dataInicio, dataFim) {
   });
   return porChave;
 }
-// Ticket Médio agrupado por uma chave arbitrária (keyFn) — SEMPRE
+// Talão Médio agrupado por uma chave arbitrária (keyFn) — SEMPRE
 // ponderado (soma de Faturação ÷ soma de Atendimentos DENTRO de cada
 // grupo), nunca a média simples dos rácios diários: é o MESMO critério
 // usado em todo o Financeiro (financeiroTicketMedioPeriodo/Mes, Briefing,
-// "Mês Analisado") — garante que o valor de Ticket Médio nunca muda
+// "Mês Analisado") — garante que o valor de Talão Médio nunca muda
 // consoante o cartão onde é mostrado. Só entram dias com AMBOS os campos
 // preenchidos. Devolve no mesmo formato {soma, n} de financeiroMediaAgrupada
 // (aqui "soma" é já média_ponderada×n, matematicamente devolve o mesmo
@@ -17380,10 +17401,10 @@ function financeiroInsightsFeriado(campo, dataInicio, dataFim) {
   return Object.assign({ suficiente }, r);
 }
 // Helpers partilhados de rótulo/formatação por métrica — usados em toda
-// a Padrões e Sazonalidade (Faturação/Atendimentos/Ticket Médio).
+// a Padrões e Sazonalidade (Faturação/Atendimentos/Talão Médio).
 function financeiroNomeMetrica(campo) {
   if (campo === 'atendimentos') return 'Atendimentos';
-  if (campo === 'ticketMedio') return 'Ticket Médio';
+  if (campo === 'ticketMedio') return 'Talão Médio';
   return 'Faturação';
 }
 function financeiroFormatarMetrica(campo) {
@@ -17435,7 +17456,7 @@ function financeiroTextoFeriado(insights, campo) {
     return [`Ainda não há feriados suficientes registados neste período para comparar com fiabilidade (${n} feriado${n === 1 ? '' : 's'} registado${n === 1 ? '' : 's'}) — tente um Período mais alargado.`];
   }
   const pct = ((insights.feriado.media / insights.normal.media) - 1) * 100;
-  const sujeito = campo === 'atendimentos' ? 'os Atendimentos em média foram' : (campo === 'ticketMedio' ? 'o Ticket Médio foi' : 'a Faturação média foi');
+  const sujeito = campo === 'atendimentos' ? 'os Atendimentos em média foram' : (campo === 'ticketMedio' ? 'o Talão Médio foi' : 'a Faturação média foi');
   return [[`Em ${insights.feriado.n} feriados registados neste período, ${sujeito} de ${formatarFn(insights.feriado.media)} — `, financeiroSpanVariacao(pct, 0), ` da média dos restantes dias (${formatarFn(insights.normal.media)}, com base em ${insights.normal.n} dias).`]];
 }
 // Traduz o preset de Período escolhido em { dataInicio, dataFim, rotulo }
@@ -17473,7 +17494,7 @@ function buildFinanceiroPadraoMensalCard() {
   const anoAtualReal = new Date().getFullYear();
   const corpo = h('div', {});
 
-  const metricaBtns = { faturacao: h('button', { type: 'button', class: 'tab-btn' }, 'Faturação'), atendimentos: h('button', { type: 'button', class: 'tab-btn' }, 'Atendimentos'), ticketMedio: h('button', { type: 'button', class: 'tab-btn' }, 'Ticket Médio') };
+  const metricaBtns = { faturacao: h('button', { type: 'button', class: 'tab-btn' }, 'Faturação'), atendimentos: h('button', { type: 'button', class: 'tab-btn' }, 'Atendimentos'), ticketMedio: h('button', { type: 'button', class: 'tab-btn' }, 'Talão Médio') };
   const vistaBtns = { diaDoMes: h('button', { type: 'button', class: 'tab-btn' }, 'Dia do Mês'), diaSemana: h('button', { type: 'button', class: 'tab-btn' }, 'Dia da Semana'), feriado: h('button', { type: 'button', class: 'tab-btn' }, 'Feriados') };
   Object.keys(metricaBtns).forEach(k => metricaBtns[k].addEventListener('click', () => { metrica = k; renderCorpo(); }));
   Object.keys(vistaBtns).forEach(k => vistaBtns[k].addEventListener('click', () => { vista = k; renderCorpo(); }));
@@ -17525,13 +17546,13 @@ function buildFinanceiroPadraoMensalCard() {
     Object.keys(vistaBtns).forEach(k => vistaBtns[k].classList.toggle('active', vista === k));
     const formatarFn = financeiroFormatarMetrica(metrica);
     const { dataInicio, dataFim, rotulo } = financeiroLimitesPeriodo(periodo, customInicioInput.value, customFimInput.value);
-    // Nota do Ticket Médio (2026-08-16, pedido explícito "deixa isso da
+    // Nota do Talão Médio (2026-08-16, pedido explícito "deixa isso da
     // média ponderada clara") — acrescentada a TODAS as legendas quando a
-    // métrica escolhida é Ticket Médio: o cálculo é SEMPRE ponderado (soma
+    // métrica escolhida é Talão Médio: o cálculo é SEMPRE ponderado (soma
     // de Faturação ÷ soma de Atendimentos de cada grupo), nunca a média
     // simples dos rácios diários — mesmo critério em qualquer sítio do
-    // Financeiro onde o Ticket Médio aparece (ver financeiroTicketMedioAgrupado).
-    const notaTicketMedio = metrica === 'ticketMedio' ? ' Ticket Médio ponderado: soma da Faturação ÷ soma dos Atendimentos de cada grupo (nunca a média simples dos rácios diários).' : '';
+    // Financeiro onde o Talão Médio aparece (ver financeiroTicketMedioAgrupado).
+    const notaTicketMedio = metrica === 'ticketMedio' ? ' Talão Médio ponderado: soma da Faturação ÷ soma dos Atendimentos de cada grupo (nunca a média simples dos rácios diários).' : '';
 
     let itensChart = null, frases = [], legenda = '';
     if (vista === 'diaDoMes') {
@@ -17978,7 +17999,7 @@ function buildFinanceiroPage(container, goTo) {
     const temDadosMesSel = financeiroRegistosDoMes(anoSel, mesSel).length > 0;
     const temDadosMesSelAt = financeiroRegistosDoMes(anoSel, mesSel, 'atendimentos').length > 0;
 
-    // ---- Ticket Médio do mês (2026-08-16, pedido explícito) = Faturação
+    // ---- Talão Médio do mês (2026-08-16, pedido explícito) = Faturação
     // ÷ Atendimentos, ponderado pelos dias em que ambos os campos estão
     // preenchidos (ver financeiroTicketMedioMes). Comparativos vs. mês
     // anterior/homólogo no mesmo padrão dos blocos acima. ----
@@ -18041,7 +18062,7 @@ function buildFinanceiroPage(container, goTo) {
       h('div', { class: 'fin-subbloco-atendimentos' }, [
         h('div', { class: 'fin-metric-header' }, [
           h('span', { class: 'fin-metric-icon tone-indigo' }, Icon('tag', { size: 14, strokeWidth: 2 })),
-          h('p', { class: 'fin-kpi-label' }, 'Ticket Médio do Mês'),
+          h('p', { class: 'fin-kpi-label' }, 'Talão Médio do Mês'),
         ]),
         h('p', { class: 'fin-kpi-valor', style: 'font-size:18px;' }, ticketMedioMesSel ? financeiroFormatarEuro(ticketMedioMesSel.valor, 2) : '—'),
         h('p', { class: 'field-helper-text', style: 'margin:2px 0 4px;' }, 'Ponderado: Faturação total ÷ Atendimentos totais do mês (nunca a média dos rácios diários).'),
@@ -19135,14 +19156,18 @@ function buildReclamacoesPage(container, goTo) {
   let formError = '';
   let saving = false;
   let selectedIds = new Set();
+  // Ficha de Cliente carregada pelo Nº de Ficha (mesmo mecanismo/objetivo
+  // do clienteFichaCarregada em Manipulados/Entregas) — usada só para saber
+  // se o campo está a autopreencher a partir de uma ficha conhecida.
+  let clienteFichaCarregada = null;
 
   function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
-  function openNew() { draft = emptyRecord(reclamacoesSchema); editingId = null; formError = ''; showForm = true; rerender(); }
+  function openNew() { draft = emptyRecord(reclamacoesSchema); editingId = null; formError = ''; clienteFichaCarregada = null; showForm = true; rerender(); }
   function openEditSelected() {
     if (selectedIds.size !== 1) return;
     const r = STATE.reclamacoes.find(x => x.id === [...selectedIds][0]);
     if (!r) return;
-    draft = Object.assign({}, r); editingId = r.id; formError = ''; showForm = true; rerender();
+    draft = Object.assign({}, r); editingId = r.id; formError = ''; clienteFichaCarregada = null; showForm = true; rerender();
   }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
   async function submit() {
@@ -19257,9 +19282,16 @@ function buildReclamacoesPage(container, goTo) {
 
     if (showForm) {
       const pendenteAgora = editingId && draft.estado !== 'Resolvido';
+      // "🔎 Nº de Ficha" com autopreenchimento — mesmo mecanismo/campo
+      // reutilizável já usado em Manipulados: ao picar o Nº, procura a
+      // ficha e substitui sempre Nome/Contacto pelos dados guardados (ou
+      // limpa-os, se não encontrar nenhuma ficha com esse número).
+      const fieldOverrides = {
+        numCliente: (f) => buildNumFichaCategoriaField(f, draft, rerender, (novoEstado) => { clienteFichaCarregada = novoEstado; }),
+      };
       wrap.appendChild(buildRecordForm(reclamacoesSchema, draft, {
         editing: !!editingId, onSubmit: submit, onCancel: cancel,
-        errorMessage: formError, saving,
+        errorMessage: formError, saving, fieldOverrides,
         onConclude: (editingId && pendenteAgora) ? () => resolve(editingId) : null, concludeLabel: 'Resolver',
         onRevert: (editingId && draft.estado === 'Resolvido') ? () => unresolve(editingId) : null, revertLabel: 'Anular Resolução',
       }));
