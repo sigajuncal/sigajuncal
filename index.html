@@ -7710,6 +7710,7 @@ const TABLES = {
   escalaPrioridadeFerias: 'escala_prioridade_ferias',
   escalaRotacaoGrupoA: 'escala_rotacao_grupo_a',
   escalaRotacaoGrupoB: 'escala_rotacao_grupo_b',
+  escalaPrioridadeTarefasComuns: 'escala_prioridade_tarefas_comuns',
   escalaCicloMariana: 'escala_ciclo_mariana',
   escalaConfigFerias: 'escala_config_ferias',
   escalaExcecoesSobreposicao: 'escala_excecoes_sobreposicao',
@@ -8941,6 +8942,7 @@ const STATE = {
   escalaPrioridadeFerias: [],
   escalaRotacaoGrupoA: [],
   escalaRotacaoGrupoB: [],
+  escalaPrioridadeTarefasComuns: [],
   escalaCicloMariana: [],
   escalaConfigFerias: [],
   escalaExcecoesSobreposicao: [],
@@ -25226,6 +25228,52 @@ END $$;
 -- ALTER TABLE escala_disponibilidades ADD COLUMN IF NOT EXISTS hora_fim text DEFAULT '';
 -- ALTER TABLE escala_disponibilidades DROP COLUMN IF EXISTS data_inicio;
 -- ALTER TABLE escala_disponibilidades DROP COLUMN IF EXISTS data_fim;
+
+-- 14) escala_prioridade_tarefas_comuns (2026-08-17) — 2 listas de
+--     prioridade independentes (tipo='encomenda' ou tipo='chefe_turno'),
+--     usadas pelo botão "⚡ Atribuir Tarefas Comuns" no Gerador de
+--     Horário para escolher automaticamente quem fica com Encomenda da
+--     Manhã+Tarde / Chefe de Turno em cada dia, sempre a pedido (nunca
+--     sozinho ao gerar/recalcular uma semana) — ver
+--     escalaAtribuirTarefasComunsSemana no index.html. Mesmo espírito da
+--     Lista Única de Rotação do Grupo B (secção 13): "ordem" é a posição
+--     na prioridade dentro do seu próprio "tipo", um colaborador novo
+--     entra sempre no fundo da SUA lista (maior ordem + 1 desse tipo).
+CREATE TABLE IF NOT EXISTS escala_prioridade_tarefas_comuns (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tipo text NOT NULL CHECK (tipo IN ('encomenda', 'chefe_turno')),
+  ordem integer NOT NULL,
+  nome text NOT NULL,
+  utilizador_id bigint REFERENCES usuarios_app(id) ON DELETE SET NULL,
+  eliminado boolean NOT NULL DEFAULT false,
+  data_eliminacao timestamptz,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+-- Mesma proteção da secção 13: nunca 2 linhas ATIVAS para o mesmo
+-- colaborador DENTRO DO MESMO tipo (pode estar nas 2 listas em
+-- simultâneo — Encomenda e Chefe de Turno são independentes — só não
+-- pode repetir-se dentro da mesma lista).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_escala_prioridade_tarefas_comuns_unico
+  ON escala_prioridade_tarefas_comuns (tipo, utilizador_id)
+  WHERE utilizador_id IS NOT NULL AND eliminado = false;
+ALTER TABLE escala_prioridade_tarefas_comuns ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS anon_select_escala_prioridade_tarefas_comuns ON escala_prioridade_tarefas_comuns;
+DROP POLICY IF EXISTS anon_insert_escala_prioridade_tarefas_comuns ON escala_prioridade_tarefas_comuns;
+DROP POLICY IF EXISTS anon_update_escala_prioridade_tarefas_comuns ON escala_prioridade_tarefas_comuns;
+DROP POLICY IF EXISTS anon_delete_escala_prioridade_tarefas_comuns ON escala_prioridade_tarefas_comuns;
+CREATE POLICY anon_select_escala_prioridade_tarefas_comuns ON escala_prioridade_tarefas_comuns FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY anon_insert_escala_prioridade_tarefas_comuns ON escala_prioridade_tarefas_comuns FOR INSERT TO anon, authenticated WITH CHECK (true);
+CREATE POLICY anon_update_escala_prioridade_tarefas_comuns ON escala_prioridade_tarefas_comuns FOR UPDATE TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY anon_delete_escala_prioridade_tarefas_comuns ON escala_prioridade_tarefas_comuns FOR DELETE TO anon, authenticated USING (true);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables
+    WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'escala_prioridade_tarefas_comuns'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE escala_prioridade_tarefas_comuns;
+  END IF;
+END $$;
 ================================================================= */
 // Lista-base (usada em runtime, não só informativa) da Lista Única de
 // Rotação do Grupo A — ver escalaAtribuirGrupoA() mais abaixo. Serve só de
@@ -28789,6 +28837,20 @@ function buildHorariosPage(container, goTo) {
   let rotacaoBGuardando = false;
   let inicializandoRotacaoGrupoB = false;
   let inicializandoPosicoesBaseSeed = false;
+  // Prioridade de Tarefas Comuns (Encomendas Manhã/Tarde + Chefe de
+  // Turno — pedido explícito 2026-08-17): mesmo mecanismo simples de
+  // adicionar/remover/reordenar do Grupo B, mas com botões ▲▼ (em vez de
+  // arrastar) e SEM modo de edição — a lista fica sempre editável
+  // diretamente (só Master chega a "Gerir Posições"), reordenar é
+  // pouco frequente aqui. `prioridadeTarefasDraft` guarda o rascunho de
+  // "quem adicionar a seguir", uma entrada por tipo ('encomenda' |
+  // 'chefe_turno'), para as 2 listas nunca partilharem o mesmo dropdown.
+  let prioridadeTarefasDraft = { encomenda: '', chefe_turno: '' };
+  // Resultado da última corrida de "⚡ Atribuir Tarefas Comuns" — só para
+  // mostrar o resumo (quem ficou com o quê, e que dias ficaram por
+  // atribuir por falta de candidato compatível) logo a seguir ao botão;
+  // nunca persistido, desaparece ao sair da página.
+  let tarefasComunsResumo = null, tarefasComunsAtribuindo = false;
   // Separador "Gerador de Horário" (só Master/Administrador): alterna
   // entre "Timeline" (antiga "Vista Vertical" — timeline por horas, 1 dia
   // de cada vez, VISTA PREDEFINIDA) e "Vista em Tabela" (grelha semanal
@@ -29857,6 +29919,196 @@ function buildHorariosPage(container, goTo) {
       rerender();
     }, { danger: true, confirmLabel: 'Sim, desistir' });
   }
+  // ---- Prioridade de Tarefas Comuns (Encomendas Manhã/Tarde + Chefe de
+  // Turno) — pedido explícito 2026-08-17 ----
+  // 2 listas independentes (tipo='encomenda' | 'chefe_turno'), geridas em
+  // "Gerir Posições" (ver buildGerirPrioridadeTarefasComuns), lidas pelo
+  // botão "⚡ Atribuir Tarefas Comuns" do Gerador — nunca corre sozinho.
+  function escalaPrioridadeTarefasLista(tipo) {
+    return (STATE.escalaPrioridadeTarefasComuns || [])
+      .filter(item => item.tipo === tipo)
+      .sort((a, b) => (a.ordem || 0) - (b.ordem || 0) || (a.id || 0) - (b.id || 0));
+  }
+  async function adicionarPrioridadeTarefa(tipo, utilizadorId) {
+    const utilizador = (STATE.usuarios || []).find(u => String(u.id) === String(utilizadorId));
+    if (!utilizador) { escalaShowErro('Escolhe primeiro um colaborador válido no dropdown.'); return; }
+    const jaNaLista = escalaPrioridadeTarefasLista(tipo).some(item => String(item.utilizadorId) === String(utilizador.id));
+    if (jaNaLista) { showToast(`${utilizador.nomeCompleto || utilizador.username} já está nesta lista de prioridade.`, 'error'); return; }
+    const max = escalaPrioridadeTarefasLista(tipo).reduce((m, x) => Math.max(m, x.ordem || 0), 0);
+    const created = await dbInsert('escalaPrioridadeTarefasComuns', { tipo, ordem: max + 1, nome: utilizador.nomeCompleto || utilizador.username, utilizadorId: utilizador.id });
+    if (created) { STATE.escalaPrioridadeTarefasComuns = [...(STATE.escalaPrioridadeTarefasComuns || []), created]; prioridadeTarefasDraft[tipo] = ''; }
+    else escalaShowErro('Não foi possível adicionar à lista de prioridade');
+    rerender();
+  }
+  function removerPrioridadeTarefa(item) {
+    confirmDialog(`Remover ${item.nome} desta lista de prioridade?`, async () => {
+      const ok = await dbDelete('escalaPrioridadeTarefasComuns', item.id);
+      if (ok) { STATE.escalaPrioridadeTarefasComuns = STATE.escalaPrioridadeTarefasComuns.filter(x => x.id !== item.id); rerender(); }
+      else escalaShowErro('Não foi possível remover');
+    }, { danger: true, confirmLabel: 'Remover' });
+  }
+  async function moverPrioridadeTarefa(item, direcao) {
+    const lista = escalaPrioridadeTarefasLista(item.tipo);
+    const idx = lista.findIndex(x => x.id === item.id);
+    const alvoIdx = idx + direcao;
+    if (idx === -1 || alvoIdx < 0 || alvoIdx >= lista.length) return;
+    const outro = lista[alvoIdx];
+    const ordemItem = item.ordem, ordemOutro = outro.ordem;
+    const [u1, u2] = await Promise.all([
+      dbUpdate('escalaPrioridadeTarefasComuns', item.id, { ordem: ordemOutro }),
+      dbUpdate('escalaPrioridadeTarefasComuns', outro.id, { ordem: ordemItem }),
+    ]);
+    if (u1 && u2) STATE.escalaPrioridadeTarefasComuns = STATE.escalaPrioridadeTarefasComuns.map(x => x.id === u1.id ? u1 : x.id === u2.id ? u2 : x);
+    else escalaShowErro('Não foi possível reordenar');
+    rerender();
+  }
+  // Farmacêuticos elegíveis (colaboradoresElegiveisTarefaEspecial) que
+  // estão mesmo escalados em turno Normal nesse dia — a "presença" que
+  // decide a atribuição automática.
+  function escalaFarmaceuticosPresentesNoDia(semana, diaKey) {
+    return colaboradoresElegiveisTarefaEspecial().filter(u => !!escalaVagaDoColaboradorNoDia(semana, diaKey, u.id));
+  }
+  // Escolhe quem fica com a tarefa (tipo 'encomenda'|'chefe_turno') nesse
+  // dia: o 1º da lista de prioridade que estiver presente; se ninguém da
+  // lista estiver presente (lista vazia, ou todos de folga/férias), cai
+  // para qualquer farmacêutico do Quadro presente (ordenarUsuariosPorHierarquia
+  // — mesma ordem hierárquica usada em toda a app) — nunca deixa o dia por
+  // atribuir só porque a lista de prioridade está incompleta.
+  function escalaPessoaDoDiaParaTarefa(semana, diaKey, tipo) {
+    const presentes = escalaFarmaceuticosPresentesNoDia(semana, diaKey);
+    if (!presentes.length) return null;
+    const prioridade = escalaPrioridadeTarefasLista(tipo);
+    for (const item of prioridade) {
+      const encontrado = presentes.find(u => String(u.id) === String(item.utilizadorId));
+      if (encontrado) return encontrado;
+    }
+    return presentes[0];
+  }
+  // Grava 1 tarefa comum numa célula (posição+dia) de um `novoDados` em
+  // construção — devolve false (sem gravar) se essa célula já tiver as 3
+  // tarefas possíveis, para o chamador reportar no resumo.
+  function escalaAdicionarTarefaComumAoDia(novoDados, codigo, diaKey, tipo, inicio, fim) {
+    const linha = novoDados[codigo];
+    if (!linha || !linha.dias) return false;
+    const diaAtual = linha.dias[diaKey] || { entrada: '', saida: '', pausaInicio: '', pausaFim: '', tipo: 'normal', heHoras: 0, horas: 0, tarefas: [] };
+    const tarefasAtuais = escalaTarefasDoDia(diaAtual);
+    if (tarefasAtuais.length >= 3) return false;
+    const novasTarefas = [...tarefasAtuais, { tipo, outro: '', inicio, fim }];
+    const primeira = novasTarefas[0];
+    linha.dias[diaKey] = { ...diaAtual, tarefas: novasTarefas, tarefaTipo: primeira.tipo, tarefaOutro: primeira.outro, tarefaInicio: primeira.inicio, tarefaFim: primeira.fim };
+    return true;
+  }
+  // Motor de atribuição em massa — pedido explícito 2026-08-17: "de forma
+  // inteligente, atribuir essas tarefas às pessoas de acordo com uma
+  // ordem/raciocínio a estabelecer". SÓ corre quando o botão "⚡ Atribuir
+  // Tarefas Comuns" é clicado (nunca automaticamente ao gerar/recalcular
+  // uma semana — Paulo/Hugo podem sempre ter feito alterações manuais ao
+  // horário base que não querem ver substituídas sem pedir). Idempotente:
+  // cada corrida começa por REMOVER as tarefas destes 3 tipos já gravadas
+  // na semana inteira (qualquer posição/dia, incluindo atribuições
+  // manuais) antes de recalcular do zero — nunca duplica/empilha tarefas
+  // de corridas anteriores; outros tipos (Conferência/Reunião/Outro) nunca
+  // são tocados. Por dia: Chefe de Turno cobre o turno INTEIRO da pessoa
+  // escolhida (todos os segmentos, como o atalho "Todo o Horário" da
+  // Atribuição Rápida); Encomenda da Manhã/Tarde só entra quando o horário
+  // sugerido (11:00-12:00 / 18:00-19:00) cabe dentro de um segmento do
+  // turno da MESMA pessoa nesse dia — nunca força um horário fora do turno
+  // real; quando não cabe, fica de fora e é reportado no resumo para
+  // atribuição manual.
+  async function escalaAtribuirTarefasComunsSemana(semana) {
+    if (escalaSemanaEstaCongelada(semana)) { showToast('Esta semana está congelada e não pode ser editada.', 'error'); return null; }
+    const TIPOS_COMUNS = ['chefe_turno', 'encomenda_manha', 'encomenda_tarde'];
+    const novoDados = JSON.parse(JSON.stringify(semana.dados || {}));
+    Object.keys(novoDados).forEach(codigo => {
+      const dias = novoDados[codigo].dias || {};
+      Object.keys(dias).forEach(diaKey => {
+        const tarefasAtuais = escalaTarefasDoDia(dias[diaKey]);
+        if (!tarefasAtuais.length) return;
+        const restantes = tarefasAtuais.filter(t => !TIPOS_COMUNS.includes(t.tipo));
+        if (restantes.length === tarefasAtuais.length) return;
+        const primeira = restantes[0] || { tipo: '', outro: '', inicio: '', fim: '' };
+        dias[diaKey] = { ...dias[diaKey], tarefas: restantes, tarefaTipo: primeira.tipo, tarefaOutro: primeira.outro, tarefaInicio: primeira.inicio, tarefaFim: primeira.fim };
+      });
+    });
+    const resumo = { atribuidos: [], semCandidato: [] };
+    ESCALA_DIAS.forEach(d => {
+      const chefe = escalaPessoaDoDiaParaTarefa(semana, d.key, 'chefe_turno');
+      if (chefe) {
+        const alvo = escalaVagaDoColaboradorNoDia(semana, d.key, chefe.id);
+        const nomeChefe = chefe.nomeCompleto || chefe.username;
+        if (alvo) {
+          let algumSegmento = false, semEspaco = false;
+          escalaSegmentosTurnoAbsolutos(alvo.dia).forEach(seg => {
+            const ok = escalaAdicionarTarefaComumAoDia(novoDados, alvo.codigo, d.key, 'chefe_turno', escalaAbsMinParaHora(seg.inicioMin), escalaAbsMinParaHora(seg.fimMin));
+            if (ok) algumSegmento = true; else semEspaco = true;
+          });
+          if (algumSegmento) resumo.atribuidos.push(`${d.label}: ⭐ Chefe de Turno — ${nomeChefe}`);
+          if (semEspaco) resumo.semCandidato.push(`${d.label}: Chefe de Turno — turno de ${nomeChefe} já tem 3 tarefas nalgum troço`);
+        }
+      } else {
+        resumo.semCandidato.push(`${d.label}: Chefe de Turno — ninguém elegível presente`);
+      }
+      const encomenda = escalaPessoaDoDiaParaTarefa(semana, d.key, 'encomenda');
+      if (encomenda) {
+        const alvo = escalaVagaDoColaboradorNoDia(semana, d.key, encomenda.id);
+        const nomeEncomenda = encomenda.nomeCompleto || encomenda.username;
+        if (alvo) {
+          const segmentos = escalaSegmentosTurnoAbsolutos(alvo.dia);
+          ['encomenda_manha', 'encomenda_tarde'].forEach(tipo => {
+            const info = escalaTarefaInfo(tipo);
+            const iniMin = escalaMinutosAbsolutos(info.horaSugerida.inicio, false), fimMin = escalaMinutosAbsolutos(info.horaSugerida.fim, true);
+            const segCompativel = segmentos.find(seg => iniMin >= seg.inicioMin && fimMin <= seg.fimMin);
+            if (segCompativel) {
+              const ok = escalaAdicionarTarefaComumAoDia(novoDados, alvo.codigo, d.key, tipo, info.horaSugerida.inicio, info.horaSugerida.fim);
+              if (ok) resumo.atribuidos.push(`${d.label}: ${info.icon} ${info.label} — ${nomeEncomenda}`);
+              else resumo.semCandidato.push(`${d.label}: ${info.label} — turno de ${nomeEncomenda} já tem 3 tarefas`);
+            } else {
+              resumo.semCandidato.push(`${d.label}: ${info.label} — horário de ${nomeEncomenda} não cobre ${info.horaSugerida.inicio}-${info.horaSugerida.fim}`);
+            }
+          });
+        }
+      } else {
+        resumo.semCandidato.push(`${d.label}: Encomendas — ninguém elegível presente`);
+      }
+    });
+    const updated = await dbUpdate('escalaSemanas', semana.id, { dados: novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() });
+    if (updated) {
+      STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
+      tarefasComunsResumo = { semanaId: semana.id, ...resumo };
+      showToast(`Tarefas comuns atribuídas: ${resumo.atribuidos.length} tarefa(s)${resumo.semCandidato.length ? ` · ${resumo.semCandidato.length} por atribuir manualmente` : ''}.`, resumo.semCandidato.length ? 'info' : 'success');
+    } else {
+      showToast(`Não foi possível gravar. ${escalaMensagemErroAmigavel(lastDbError)}`, 'error');
+    }
+    return updated;
+  }
+  // Só há algo a "substituir" se a semana já tiver pelo menos 1 tarefa
+  // destes 3 tipos gravada nalguma posição/dia — usada por
+  // atribuirTarefasComunsClick para decidir se vale a pena avisar antes
+  // de gravar (pedido explícito 2026-08-17: "se não houver tarefas já
+  // atribuídas, não quero que notifiques nada").
+  function escalaSemanaTemTarefasComuns(semana) {
+    const TIPOS_COMUNS = ['chefe_turno', 'encomenda_manha', 'encomenda_tarde'];
+    return Object.values(semana.dados || {}).some(linha =>
+      Object.values(linha.dias || {}).some(dia => escalaTarefasDoDia(dia).some(t => TIPOS_COMUNS.includes(t.tipo))));
+  }
+  function atribuirTarefasComunsClick(semana) {
+    const executar = async () => {
+      tarefasComunsAtribuindo = true; rerender();
+      await escalaAtribuirTarefasComunsSemana(semana);
+      tarefasComunsAtribuindo = false;
+      rerender();
+    };
+    // Semana "limpa" (nenhuma tarefa destes 3 tipos ainda atribuída) —
+    // não há nada a substituir, por isso corre direto, sem confirmDialog
+    // nenhum. Só pede confirmação quando a corrida IA mesmo apagar
+    // atribuições já existentes.
+    if (!escalaSemanaTemTarefasComuns(semana)) { executar(); return; }
+    confirmDialog(
+      'Atribuir Tarefas Comuns (Encomendas Manhã/Tarde e Chefe de Turno) à semana inteira, a partir das listas de prioridade definidas em "Gerir Posições"? Isto SUBSTITUI todas as atribuições destes 3 tipos já feitas nesta semana (incluindo manuais) — Conferência/Reunião/Outro não são tocadas. Continuar?',
+      executar, { confirmLabel: 'Atribuir Tarefas Comuns' },
+    );
+  }
+
   // ---- Atribuição Rápida de Tarefas (Chefe de Turno/Encomendas —
   // pedido explícito 2026-08-14) ----
   // Em vez de abrir célula a célula (Editor de Dia) para atribuir "Chefe
@@ -33522,6 +33774,61 @@ function buildHorariosPage(container, goTo) {
     ]);
   }
 
+  // ---- Atribuição de Tarefas Comuns (Encomendas Manhã/Tarde e Chefes
+  // de Turno) — pedido explícito 2026-08-17 ----
+  // 1 sub-lista de prioridade por tipo, lado a lado. Sem modo de edição
+  // (ao contrário do Grupo A/B) — reordenar aqui é pouco frequente,
+  // fica sempre diretamente editável (só Master chega a "Gerir
+  // Posições"). ▲▼ em vez de arrastar, mais simples para uma lista
+  // tipicamente curta (só farmacêuticos/Direção Técnica do Quadro).
+  function buildListaPrioridadeTarefa(tipo, titulo, ajuda) {
+    const lista = escalaPrioridadeTarefasLista(tipo);
+    const elegiveis = colaboradoresElegiveisTarefaEspecial();
+    const naoIncluidos = elegiveis.filter(u => !lista.some(item => String(item.utilizadorId) === String(u.id)));
+    const linhas = lista.map((item, idx) => {
+      const utilizadorAtual = (STATE.usuarios || []).find(u => String(u.id) === String(item.utilizadorId));
+      const subirBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Subir prioridade', 'aria-label': 'Subir prioridade', disabled: idx === 0 ? 'disabled' : undefined }, Icon('chevronup', { size: 13, strokeWidth: 2.4 }));
+      subirBtn.addEventListener('click', () => requireAuth(() => moverPrioridadeTarefa(item, -1)));
+      const descerBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Descer prioridade', 'aria-label': 'Descer prioridade', disabled: idx === lista.length - 1 ? 'disabled' : undefined }, Icon('chevrondown', { size: 13, strokeWidth: 2.4 }));
+      descerBtn.addEventListener('click', () => requireAuth(() => moverPrioridadeTarefa(item, 1)));
+      const delBtn = h('button', { class: 'btn-fab-sm rotacao-bloco-del', title: 'Remover', 'aria-label': 'Remover' }, Icon('trash', { size: 13, strokeWidth: 2.2 }));
+      delBtn.addEventListener('click', () => requireAuth(() => removerPrioridadeTarefa(item)));
+      return h('div', { class: 'rotacao-bloco rotacao-bloco-bloqueado' }, [
+        h('span', { class: 'rotacao-bloco-ordem' }, String(idx + 1)),
+        h('span', { class: 'rotacao-bloco-nome' }, item.nome + (utilizadorAtual && utilizadorAtual.ativo === false ? ' (inativo)' : '')),
+        h('div', { style: 'display:flex;gap:4px;' }, [subirBtn, descerBtn, delBtn]),
+      ]);
+    });
+    const colaboradorSelect = h('select', { class: 'select' }, [
+      h('option', { value: '' }, '— Escolher colaborador —'),
+      ...naoIncluidos.map(u => h('option', { value: u.id, selected: String(prioridadeTarefasDraft[tipo] || '') === String(u.id) ? 'selected' : undefined }, u.nomeCompleto || u.username)),
+    ]);
+    colaboradorSelect.value = prioridadeTarefasDraft[tipo] || '';
+    colaboradorSelect.addEventListener('change', () => { prioridadeTarefasDraft[tipo] = colaboradorSelect.value; });
+    const addBtn = h('button', { class: 'btn btn-secondary', style: 'padding:8px 14px;font-size:12.5px;' }, [Icon('plus', { size: 13 }), ' Adicionar']);
+    addBtn.addEventListener('click', () => {
+      const idEscolhido = colaboradorSelect.value || prioridadeTarefasDraft[tipo];
+      if (!idEscolhido) { showToast('Escolhe primeiro um colaborador no dropdown.', 'error'); return; }
+      requireAuth(() => adicionarPrioridadeTarefa(tipo, idEscolhido));
+    });
+    return h('div', { style: 'flex:1;min-width:280px;' }, [
+      h('h4', { class: 'page-eyebrow', style: 'margin:0 0 4px;color:var(--pharm-700);font-size:12.5px;text-transform:none;letter-spacing:0;font-weight:800;' }, titulo),
+      h('p', { class: 'field-helper-text', style: 'margin:0 0 10px;' }, ajuda),
+      lista.length ? h('div', { class: 'rotacao-lista' }, linhas) : h('p', { class: 'cell-muted', style: 'margin:0 0 10px;' }, 'Sem prioridades definidas — usa-se qualquer farmacêutico do Quadro presente nesse dia.'),
+      naoIncluidos.length ? h('div', { style: 'display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap;' }, [colaboradorSelect, addBtn]) : null,
+    ]);
+  }
+  function buildGerirPrioridadeTarefasComuns() {
+    return h('div', { class: 'card card-pad', style: 'margin-bottom:20px;background:var(--pharm-50);' }, [
+      h('h3', { class: 'page-eyebrow', style: 'margin-bottom:6px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, [Icon('zap', { size: 15, strokeWidth: 2.2 }), ' Atribuição de Tarefas Comuns (Encomendas Manhã/Tarde e Chefes de Turno)']),
+      h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' },
+        'Só farmacêuticos/Direção Técnica do Quadro entram nestas listas. Em cada dia, fica com a tarefa o 1º da lista que estiver escalado; se ninguém da lista estiver presente, usa-se qualquer farmacêutico do Quadro presente. O botão "⚡" no Gerador de Horário usa estas listas sempre que for clicado — nunca corre sozinho ao gerar/recalcular uma semana.'),
+      h('div', { style: 'display:flex;gap:24px;flex-wrap:wrap;' }, [
+        buildListaPrioridadeTarefa('encomenda', 'Encomendas (Manhã + Tarde)', 'A mesma pessoa fica com a Encomenda da Manhã E da Tarde nesse dia, sempre que o horário dela cobrir os 2 períodos (11:00-12:00 e 18:00-19:00).'),
+        buildListaPrioridadeTarefa('chefe_turno', 'Chefe de Turno', 'Cobre o turno inteiro da pessoa escolhida nesse dia (Entrada–Saída, respeitando a Pausa/Almoço).'),
+      ]),
+    ]);
+  }
   function buildSecaoRotacaoEquipa() {
     const wrap = h('div', {});
     wrap.appendChild(h('h2', { style: 'margin:0 0 4px;color:var(--pharm-800);font-size:16px;font-weight:800;display:flex;align-items:center;gap:8px;' },
@@ -33530,6 +33837,7 @@ function buildHorariosPage(container, goTo) {
       'Fonte de verdade da sequência da equipa nos Grupos A e B, cada um com a sua própria lista independente. A rotação para a semana selecionada é gerada a partir destas sequências, mantendo todo o histórico já gerado 100% imutável.'));
     wrap.appendChild(buildGerirRotacaoGrupoA());
     wrap.appendChild(buildGerirRotacaoGrupoB());
+    wrap.appendChild(buildGerirPrioridadeTarefasComuns());
     return wrap;
   }
 
@@ -33682,7 +33990,14 @@ function buildHorariosPage(container, goTo) {
     // (pedido explícito 2026-08-09: "reduz ruído") — o title já explica.
     const baixarPdfBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Descarregar horário semanal em PDF', 'aria-label': 'Descarregar horário semanal em PDF' }, Icon('download', { size: 15, strokeWidth: 2.2 }));
     baixarPdfBtn.addEventListener('click', () => baixarPdfDocumento(buildHorarioSemanaGridPDFDoc(semana), `horario_semanal_${semana.semanaInicio}.pdf`, { orientacao: 'landscape' }));
-    const botoesDireitaGerador = [baixarPdfBtn, timelineBtn, vistaTabelaBtn];
+    // ⚡ Atribuir Tarefas Comuns (pedido explícito 2026-08-17) — à
+    // esquerda do botão de download, mesmo espírito só-ícone. NUNCA corre
+    // sozinha (ver escalaAtribuirTarefasComunsSemana) — só quando este
+    // botão é clicado, sempre com confirmação explícita antes (é uma
+    // substituição em massa das tarefas já atribuídas).
+    const tarefasComunsBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Atribuir Tarefas Comuns (Encomendas Manhã/Tarde + Chefe de Turno) a partir das listas de prioridade em "Gerir Posições"', 'aria-label': 'Atribuir Tarefas Comuns', disabled: (tarefasComunsAtribuindo || escalaSemanaEstaCongelada(semana)) ? 'disabled' : undefined }, Icon('zap', { size: 15, strokeWidth: 2.2 }));
+    tarefasComunsBtn.addEventListener('click', () => requireAuth(() => atribuirTarefasComunsClick(semana)));
+    const botoesDireitaGerador = [tarefasComunsBtn, baixarPdfBtn, timelineBtn, vistaTabelaBtn];
 
     const permitirEdicao = true; // este separador é sempre de gestão (só Master chega aqui — ver build())
     wrap.appendChild(viewModeGerador === 'vertical'
@@ -33691,6 +34006,16 @@ function buildHorariosPage(container, goTo) {
           h('div', { style: 'display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-bottom:14px;' }, botoesDireitaGerador),
           buildGrelhaEquipa(semana, permitirEdicao),
         ]));
+    // Resumo da última corrida de "⚡ Atribuir Tarefas Comuns" — só
+    // enquanto se está a ver a MESMA semana em que correu (nunca mostra
+    // resumo de outra semana já visitada antes, ver tarefasComunsResumo).
+    if (tarefasComunsResumo && tarefasComunsResumo.semanaId === semana.id) {
+      const temPendentes = tarefasComunsResumo.semCandidato.length > 0;
+      wrap.appendChild(h('div', { class: 'card card-pad', style: `margin-bottom:16px;max-width:720px;${temPendentes ? 'background:#fffbeb;border-color:#fde68a;' : 'background:#f0fdf4;border-color:#bbf7d0;'}` }, [
+        h('p', { class: 'cell-strong', style: `margin:0 0 6px;${temPendentes ? 'color:#92400e;' : 'color:#166534;'}` }, `⚡ Tarefas Comuns atribuídas: ${tarefasComunsResumo.atribuidos.length} tarefa(s)${temPendentes ? ` · ${tarefasComunsResumo.semCandidato.length} por atribuir manualmente` : ''}`),
+        temPendentes ? h('ul', { style: 'margin:0;padding-left:18px;font-size:12.5px;color:#92400e;' }, tarefasComunsResumo.semCandidato.map(txt => h('li', {}, txt))) : null,
+      ]));
+    }
     wrap.appendChild(h('div', { style: 'display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;' }, [
       buildPainelAtribuicaoRapidaTarefas(semana),
       buildPainelHorasExtra(semana, true),
