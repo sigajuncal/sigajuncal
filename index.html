@@ -26309,9 +26309,12 @@ function escalaTarefaTextoItem(t) {
   const label = t.tipo === 'outro' ? (t.outro || 'Outro') : info.label;
   return `${info.icon} ${label}`.trim();
 }
-// Mantido por compatibilidade com código que só conhece "1 tarefa por
-// dia" (ex: widget "Tarefas em Curso" da Página Inicial) — devolve o
-// texto da 1ª tarefa da lista, ou '' se não houver nenhuma.
+// Devolve o texto da 1ª tarefa da lista de um dia, ou '' se não houver
+// nenhuma. Já NÃO é usada pelo widget "Em Curso Agora" (ver
+// escalaTarefasAtivasAgora, 2026-08-17: mostrava sempre a 1ª tarefa da
+// célula em vez da que estava mesmo a decorrer) — mantida só por se
+// alguma integração futura precisar mesmo de "qualquer 1 tarefa" sem se
+// importar com qual.
 function escalaTarefaTexto(dia) {
   const tarefas = escalaTarefasDoDia(dia);
   return tarefas.length ? escalaTarefaTextoItem(tarefas[0]) : '';
@@ -26405,15 +26408,30 @@ function escalaTarefasAtivasAgora() {
   if (!semana) return [];
   if (semana.estado !== 'publicado' && !escalaMostrarRascunhosEquipa(semana) && !isMasterUser()) return [];
   const diaKey = escalaDiaKeyDeData(agora);
+  const hhmm = `${pad2(agora.getHours())}:${pad2(agora.getMinutes())}`;
   const ativas = [];
   Object.keys(semana.dados || {}).forEach(codigo => {
     const linha = semana.dados[codigo];
     const dia = linha && linha.dias ? linha.dias[diaKey] : null;
-    if (escalaTarefaAtivaAgora(dia, agora)) ativas.push({
-      codigo,
-      colaboradorNome: (dia && dia.colaboradorNome) || (linha && linha.colaboradorNome) || '',
-      colaboradorId: (dia && dia.colaboradorId) || (linha && linha.colaboradorId) || null,
-      dia,
+    if (!dia || dia.tipo !== 'normal') return;
+    // Um item por TAREFA realmente a decorrer neste minuto (2026-08-17,
+    // bug reportado: "Encomenda da Tarde" 18:00-19:00 continuava a
+    // aparecer como "Em Curso Agora" às 20:05, já mais de 1h depois de
+    // ter terminado) — antes bastava UMA tarefa qualquer da célula estar
+    // a decorrer (ver escalaTarefaAtivaAgora) para se mostrar sempre o
+    // texto da 1ª tarefa gravada nessa célula (escalaTarefaTexto/
+    // tarefas[0]), mesmo quando era OUTRA tarefa da mesma célula (ex:
+    // Chefe de Turno 18:00-21:00) a estar mesmo ativa. Agora cada tarefa
+    // é avaliada e mostrada individualmente.
+    escalaTarefasDoDia(dia).forEach(t => {
+      if (!t.inicio || !t.fim || !(hhmm >= t.inicio && hhmm < t.fim)) return;
+      ativas.push({
+        codigo,
+        tarefa: t,
+        colaboradorNome: (dia && dia.colaboradorNome) || (linha && linha.colaboradorNome) || '',
+        colaboradorId: (dia && dia.colaboradorId) || (linha && linha.colaboradorId) || null,
+        dia,
+      });
     });
   });
   return ativas;
@@ -41641,7 +41659,7 @@ function buildTarefasAtivasWidget(goTo) {
     const nomeCompletoAtual = a.colaboradorNome || a.codigo;
     return {
       icon: 'star',
-      titulo: escalaTarefaTexto(a.dia),
+      titulo: escalaTarefaTextoItem(a.tarefa),
       // Layout final (pedido explícito 2026-08-15, 3ª iteração): nome à
       // DIREITA, tarefa à ESQUERDA, na mesma linha — sem o rótulo
       // "Atual:" (tinha o mesmo peso visual do nome e não acrescentava
