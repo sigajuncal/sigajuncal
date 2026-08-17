@@ -16516,7 +16516,7 @@ function abrirModalDefinirMeta(anoDefault, mesDefault, onGuardado) {
       const objetivoInput = h('input', { class: 'input', type: 'text', inputmode: 'decimal', placeholder: '—' });
       objetivoInput.value = existente ? financeiroFormatarValorInputEuro(existente) : '';
       objetivoInput.addEventListener('input', () => {
-        objetivoInput.value = financeiroMascararInputEuro(objetivoInput.value);
+        objetivoInput.value = financeiroMascararInputEuroLivre(objetivoInput.value);
         const len = objetivoInput.value.length;
         objetivoInput.setSelectionRange(len, len);
         if (objetivoInput.value === '') { delete alteracoes[mes]; atualizarContagem(); return; }
@@ -16593,27 +16593,32 @@ function abrirModalDefinirMeta(anoDefault, mesDefault, onGuardado) {
 // partir do Painel de Bordo do 4Digital: Faturação = cartão "Vendas"
 // (Vendas − Descontos); Atendimentos = número de atendimentos do dia.
 // Atendimentos é o primeiro campo a preencher (pedido do utilizador). ----
-// Mascara o Valor de Faturação enquanto se escreve, ao estilo
-// "calculadora/multibanco": só interessam os DÍGITOS escritos — os
-// últimos 2 são sempre os cêntimos, o resto forma o valor inteiro (com
-// separador de milhares automático). Não é preciso escrever vírgula
-// nem ponto — para 12.774,74€ escreve-se "1277474" seguido.
-// IMPORTANTE: a versão anterior desta função tratava qualquer PONTO já
-// presente no campo (incluindo o próprio separador de milhares que a
-// máscara tinha acabado de inserir, ao editar um valor pré-preenchido)
-// como se fosse uma vírgula decimal nova a processar — isso corrompia
-// o número (ex: "12.774,74" virava "12,77") sempre que se editava um
-// valor já existente. Trabalhar só a partir dos dígitos, ignorando por
-// completo qualquer ponto/vírgula já no campo, elimina esse problema
-// por completo — e garante sempre exatamente 2 casas decimais (décimas
-// e centésimas), sem limite de grandeza no valor inteiro.
-function financeiroMascararInputEuro(bruto) {
-  const digitos = String(bruto || '').replace(/\D/g, '').replace(/^0+(?=\d)/, '');
-  if (!digitos) return '';
-  const comZeros = digitos.length < 3 ? digitos.padStart(3, '0') : digitos;
-  const centavos = comZeros.slice(-2);
-  const inteiroPart = (comZeros.slice(0, -2).replace(/^0+(?=\d)/, '') || '0').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-  return `${inteiroPart},${centavos}`;
+// Máscara "livre" do Valor de Faturação enquanto se escreve (2026-08-17,
+// pedido explícito — substitui a versão anterior "estilo calculadora" que
+// deslocava sempre os últimos 2 dígitos escritos para os cêntimos,
+// obrigando a escrever ",00" mesmo em valores redondos, ex: para 10.571€
+// tinha de se escrever "1057100"). Nesta versão escreve-se como um número
+// normal — os dígitos vão para a parte inteira (com separador de milhares
+// em tempo real) até se escrever "," ou "." (o primeiro dos dois que
+// aparecer; os seguintes são ignorados), e só a partir daí os dígitos
+// seguintes (no máximo 2) viram cêntimos. Sem separador nenhum, o valor
+// fica sem decimais no campo — ao gravar é interpretado como ",00" na
+// mesma (parseFloat não precisa de decimais explícitos), só deixa de
+// OBRIGAR a escrevê-los.
+function financeiroMascararInputEuroLivre(bruto) {
+  const s = String(bruto || '');
+  let temSeparador = false;
+  let limpo = '';
+  for (const ch of s) {
+    if (ch >= '0' && ch <= '9') limpo += ch;
+    else if ((ch === ',' || ch === '.') && !temSeparador) { limpo += ','; temSeparador = true; }
+  }
+  if (!limpo) return '';
+  const [intRaw, decRaw] = limpo.split(',');
+  const intDigits = (intRaw || '').replace(/^0+(?=\d)/, '') || '0';
+  const intFormatado = intDigits.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  if (!temSeparador) return intFormatado;
+  return `${intFormatado},${(decRaw || '').slice(0, 2)}`;
 }
 // Formata um valor numérico já gravado (ex: 12774.74) para o mesmo
 // formato do input (ex: "12.774,74") — usado ao pré-preencher o
@@ -16643,9 +16648,9 @@ function abrirModalRegistarFaturacao(onGuardado, dataInicial) {
   });
   // Faturação — texto livre com máscara PT (milhares com ponto, decimal
   // com vírgula), reformatada a cada tecla.
-  const faturacaoInput = h('input', { class: 'input', type: 'text', inputmode: 'decimal', placeholder: '0,00' });
+  const faturacaoInput = h('input', { class: 'input', type: 'text', inputmode: 'decimal', placeholder: '0' });
   faturacaoInput.addEventListener('input', () => {
-    faturacaoInput.value = financeiroMascararInputEuro(faturacaoInput.value);
+    faturacaoInput.value = financeiroMascararInputEuroLivre(faturacaoInput.value);
     const len = faturacaoInput.value.length;
     faturacaoInput.setSelectionRange(len, len);
   });
@@ -16691,12 +16696,15 @@ function abrirModalRegistarFaturacao(onGuardado, dataInicial) {
       guardarBtn.disabled = false;
       showToast('Registo guardado.', 'success');
       if (onGuardado) onGuardado(); // atualiza os cartões da página por trás, sem fechar este modal
-      // Continua no formulário em vez de fechar — avança automaticamente
-      // para o dia anterior (o sentido em que as setas já estavam a ser
-      // usadas, útil para preencher vários dias seguidos sem reabrir o
-      // modal a cada um); carregarValoresExistentes() já atualiza
-      // título/botão/campos para o novo dia.
-      dataInput.value = financeiroDiaAnterior(dataInput.value);
+      // Avança automaticamente para o dia anterior só se ESSE dia ainda
+      // não tiver registo — pensado para preencher vários dias seguidos
+      // em fila sem reabrir o modal a cada um (2026-08-16). Mas se o dia
+      // anterior já estiver registado (ex: só faltava corrigir hoje),
+      // avançar não faz sentido — fecha o formulário em vez disso
+      // (2026-08-17, pedido explícito).
+      const diaAnterior = financeiroDiaAnterior(dataInput.value);
+      if (financeiroRegistoDoDia(diaAnterior)) { close(); return; }
+      dataInput.value = diaAnterior;
       dataStepper.atualizarEstadoNext();
       carregarValoresExistentes();
       atendimentosInput.focus();
@@ -16714,7 +16722,7 @@ function abrirModalRegistarFaturacao(onGuardado, dataInicial) {
     ]),
     h('div', { class: 'field', style: 'margin-bottom:16px;' }, [buildLabelComAjuda('Data', 'Por defeito, o dia de ontem — use as setas ou o calendário para escolher qualquer outro dia, incluindo mais antigos, para corrigir ou completar um registo.'), dataStepper.el]),
     h('div', { class: 'field', style: 'margin-bottom:16px;' }, [buildLabelComAjuda('Número de Atendimentos', 'Ler no Painel de Bordo do 4Digital. Só aceita números inteiros positivos.'), atendimentosInput]),
-    h('div', { class: 'field', style: 'margin-bottom:16px;' }, [buildLabelComAjuda('Faturação — Vendas menos Descontos (€)', 'Ler no Painel de Bordo do 4Digital, cartão "Vendas". Escreva só os números seguidos, sem vírgula — os últimos 2 são sempre os cêntimos (ex: 1277474 fica 12.774,74 €).'), faturacaoInput]),
+    h('div', { class: 'field', style: 'margin-bottom:16px;' }, [buildLabelComAjuda('Faturação — Vendas menos Descontos (€)', 'Ler no Painel de Bordo do 4Digital, cartão "Vendas". Escreva o valor normalmente (ex: 10571 fica 10.571 €) — só escreva "," ou "." se houver cêntimos (ex: 10571,04).'), faturacaoInput]),
     h('p', { class: 'field-helper-text', style: 'margin-top:2px;' }, 'Pode preencher só um dos dois campos — o outro mantém o valor já gravado, se existir.'),
     errorEl,
     h('div', { class: 'form-actions' }, [guardarBtn, cancelBtn]),
@@ -16807,7 +16815,7 @@ function abrirModalRegistoEmTabela(onGuardado) {
     const faturacaoInput = h('input', { class: 'input', type: 'text', inputmode: 'decimal', placeholder: '—' });
     faturacaoInput.value = (existente && existente.faturacao !== null && existente.faturacao !== undefined) ? financeiroFormatarValorInputEuro(existente.faturacao) : '';
     faturacaoInput.addEventListener('input', () => {
-      faturacaoInput.value = financeiroMascararInputEuro(faturacaoInput.value);
+      faturacaoInput.value = financeiroMascararInputEuroLivre(faturacaoInput.value);
       const len = faturacaoInput.value.length;
       faturacaoInput.setSelectionRange(len, len);
       marcarAlteracao(dataISO, 'faturacao', faturacaoInput.value === '' ? null : (parseFloat(faturacaoInput.value.replace(/\./g, '').replace(',', '.')) || 0));
@@ -17160,7 +17168,14 @@ function financeiroGerarBriefing() {
   const compDiaAnt = financeiroComparar(ultimo.data, financeiroDiaAnterior(ultimo.data), 'faturacao');
   const dSemanaAnt = new Date(ultimo.data + 'T00:00:00'); dSemanaAnt.setDate(dSemanaAnt.getDate() - 7);
   const compSemanaAnt = financeiroComparar(ultimo.data, dateToISO(dSemanaAnt), 'faturacao');
-  const parteDia = [`No último dia registado (${financeiroDataPorExtenso(ultimo.data)}), a faturação foi de ${financeiroFormatarEuro(ultimo.valor, 2)}`];
+  // Dia da semana + feriado do último dia (2026-08-17, pedido explícito)
+  // — ajuda a perceber variações à primeira vista (ex.: uma quebra ▼ face
+  // ao dia anterior pode ser só porque calhou a Domingo ou a um feriado,
+  // não um sinal de alarme). escalaFeriadoInfo é a mesma fonte única de
+  // feriados já usada em toda a app (Horários/Férias/Agendas).
+  const diaSemanaUlt = DIAS_SEMANA_PT_NOME[new Date(ultimo.data + 'T12:00:00').getDay()].toLowerCase();
+  const feriadoUlt = escalaFeriadoInfo(ultimo.data);
+  const parteDia = [`No último dia registado (${financeiroDataPorExtenso(ultimo.data)}, ${diaSemanaUlt}${feriadoUlt ? ` — feriado: ${feriadoUlt.nome}` : ''}), a faturação foi de ${financeiroFormatarEuro(ultimo.valor, 2)}`];
   const comparativosDia = [];
   if (compDiaAnt.pct !== null) comparativosDia.push([financeiroSpanVariacao(compDiaAnt.pct), ' do dia anterior']);
   if (compSemanaAnt.pct !== null) comparativosDia.push([financeiroSpanVariacao(compSemanaAnt.pct), ' do mesmo dia da semana passada']);
