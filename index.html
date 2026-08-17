@@ -1888,6 +1888,19 @@
      quebrar e transbordava por cima da coluna das Horas ao lado. Aqui
      passa a poder quebrar para 2ª linha dentro da própria coluna. */
   .escala-pessoal-tarefas .escala-tarefa-pill{white-space:normal;text-align:right;max-width:100%;}
+  /* Bug real do desalinhamento (2026-08-17, pedido explícito, 2ª
+     iteração — a 1ª correção mexeu na largura das colunas Dia/Horas,
+     mas a causa real era esta): quando um dia tem 2+ tarefas, elas vêm
+     envolvidas num .escala-tarefa-pills-wrap extra (só nesse caso — 1
+     tarefa não usa wrap, é filha direta de .escala-pessoal-tarefas); esse
+     wrap tem align-items:flex-start FIXO na sua regra base (pensado para
+     outros sítios onde é usado à esquerda), o que alinhava as pills à
+     ESQUERDA umas em relação às outras dentro do wrap, mesmo com o wrap
+     em si encostado à direita — dava o efeito de "escada" visto no
+     ecrã. Aqui, dentro de "A Minha Semana", força-se flex-end também
+     dentro do wrap para as pills ficarem realmente em coluna à direita.
+  */
+  .escala-pessoal-tarefas .escala-tarefa-pills-wrap{align-items:flex-end;}
   @media (max-width:480px){
     .escala-pessoal-linha{grid-template-columns:minmax(96px,1fr) minmax(70px,auto) minmax(84px,1fr);
       column-gap:6px;font-size:12.5px;}
@@ -1929,7 +1942,7 @@
      tabela, dentro do cartão) — uma largura fixa intermédia, generosa
      o suficiente para o texto mais comprido habitual (horário + pausa
      + HE) numa única linha. */
-  .escala-mes-col-horario{width:230px;}
+  .escala-mes-col-horario{width:150px;}
   .escala-mes-domingo{background:var(--pharm-50);}
   .escala-mes-feriado td.escala-mes-col-dia{box-shadow:inset 3px 0 0 var(--orange);}
   .escala-pessoal-linha.escala-cell-ferias, .escala-pessoal-linha.escala-cell-extra,
@@ -17205,6 +17218,32 @@ function financeiroGerarBriefing() {
   parteDia.push('.');
   paragrafos.push(parteDia);
 
+  // --- Este dia da semana vs. média do ano / dos últimos 3 meses
+  // (2026-08-17, pedido explícito) — dá contexto à variação do último
+  // dia: um Domingo mais baixo pode ser perfeitamente normal PARA um
+  // Domingo, não uma anomalia — só se compara com dias do MESMO dia da
+  // semana, nunca com a média geral. Exclui sempre o próprio último dia
+  // das duas médias (financeiroDiaAnterior como dataFim); cada janela só
+  // aparece se houver pelo menos 1 outro dia desse dia da semana nela —
+  // o nº de dias usados fica sempre visível na frase, para nunca passar
+  // por um padrão fiável o que pode ser só 1 ou 2 amostras. Reutiliza
+  // financeiroMediaPorDiaSemana (mesmo motor de "Padrões e Sazonalidade").
+  const diaSemanaUltNum = new Date(ultimo.data + 'T00:00:00').getDay();
+  const antesUltimo = financeiroDiaAnterior(ultimo.data);
+  const anoUltimoDia = ultimo.data.slice(0, 4);
+  const mediaAnoDiaSemana = financeiroMediaPorDiaSemana('faturacao', `${anoUltimoDia}-01-01`, antesUltimo).find(d => d.diaSemana === diaSemanaUltNum);
+  const d3mAtras = new Date(ultimo.data + 'T00:00:00'); d3mAtras.setMonth(d3mAtras.getMonth() - 3);
+  const mediaTrimDiaSemana = financeiroMediaPorDiaSemana('faturacao', dateToISO(d3mAtras), antesUltimo).find(d => d.diaSemana === diaSemanaUltNum);
+  if (mediaAnoDiaSemana || mediaTrimDiaSemana) {
+    const parteDiaSemana = [`Comparando só com outros dias de ${diaSemanaUlt} — `];
+    const subPartes = [];
+    if (mediaAnoDiaSemana) subPartes.push([`média em ${anoUltimoDia}: ${financeiroFormatarEuro(mediaAnoDiaSemana.media, 2)} (`, financeiroSpanVariacao(((ultimo.valor - mediaAnoDiaSemana.media) / mediaAnoDiaSemana.media) * 100), `, ${mediaAnoDiaSemana.n} dia${mediaAnoDiaSemana.n === 1 ? '' : 's'})`]);
+    if (mediaTrimDiaSemana) subPartes.push([`média dos últimos 3 meses: ${financeiroFormatarEuro(mediaTrimDiaSemana.media, 2)} (`, financeiroSpanVariacao(((ultimo.valor - mediaTrimDiaSemana.media) / mediaTrimDiaSemana.media) * 100), `, ${mediaTrimDiaSemana.n} dia${mediaTrimDiaSemana.n === 1 ? '' : 's'})`]);
+    subPartes.forEach((frag, i) => { if (i > 0) parteDiaSemana.push('; '); parteDiaSemana.push(...frag); });
+    parteDiaSemana.push('.');
+    paragrafos.push(parteDiaSemana);
+  }
+
   // --- Última semana registada (Faturação + Atendimentos) ---
   const ultimos7 = financeiroUltimosNDias(7, ultimo.data, 'faturacao');
   if (ultimos7.length >= 3) {
@@ -30261,7 +30300,15 @@ function buildHorariosPage(container, goTo) {
         buildStatCard('calendar', 'Horas de Domingo', escalaFormatarHoras(horasDomingo), 'yellow'),
       ]),
     ]);
-    const listaCard = h('div', { class: 'card card-pad', style: 'max-width:480px;' }, [
+    // width:fit-content (2026-08-17, pedido explícito "muito espaço
+    // branco à direita, desnecessário") — antes tinha max-width:480px
+    // fixo, um valor "à vista" que sobrava face à largura real da
+    // tabela (a coluna Horário também estava exagerada, 230px para
+    // texto como "14:00 – 22:00"); com fit-content o cartão passa a
+    // abraçar exatamente a largura da tabela lá dentro, sem margem
+    // branca a mais, e ajusta-se sozinho a qualquer mudança futura de
+    // conteúdo (nunca mais precisa de um número adivinhado).
+    const listaCard = h('div', { class: 'card card-pad', style: 'width:fit-content;max-width:100%;' }, [
       h('h3', { class: 'dash-card-title', style: 'margin:0 0 10px;' }, escalaMesNomeAno(primeiroDiaMes)),
       h('table', { class: 'escala-mes-tabela' }, [
         h('thead', {}, h('tr', {}, [h('th', { class: 'escala-mes-col-dia' }, 'Dia'), h('th', { class: 'escala-mes-col-semana' }, ''), h('th', { class: 'escala-mes-col-horario' }, 'Horário')])),
