@@ -2171,6 +2171,14 @@
     font-size:11.5px;color:var(--pharm-400);}
   .escala-legenda-item strong{color:var(--pharm-600);font-weight:800;}
   .escala-legenda-separador{color:var(--pharm-200);}
+  /* "A Minha Semana" + "Horas Extra Disponíveis" lado a lado em desktop
+     (pedido explícito 2026-08-17) — mobile continua empilhado (1 coluna,
+     ordem normal do DOM). Cada coluna guarda o seu próprio max-width
+     (720px, já usado nos cartões) para nunca esticar demasiado num
+     monitor largo; align-items:start evita que a coluna mais curta
+     estique para igualar a mais alta. */
+  .escala-semana-he-grid{display:grid;grid-template-columns:1fr;gap:16px;align-items:start;}
+  @media (min-width:1150px){.escala-semana-he-grid{grid-template-columns:minmax(0,720px) minmax(0,720px);}}
   /* Limpeza rápida de linha (Grelha Diária de Posições Base — Normal e
      Mariana FDS) — discreto/baixo contraste de propósito: é uma ação
      frequente de "limpar e recomeçar", não uma ação destrutiva a sério. */
@@ -30073,21 +30081,39 @@ function buildHorariosPage(container, goTo) {
         continue;
       }
       const contiguo = ultimaFim === cursor;
-      const escolhido = disponiveisAgora.find(c => !(contiguo && c.pessoa.id === ultimaPessoaId));
-      if (!escolhido) {
+      // Tenta os candidatos disponíveis por ordem de prioridade (nunca a
+      // mesma pessoa sem intervalo) — se a célula do 1º já estiver cheia
+      // (3 tarefas), tenta o seguinte em vez de desperdiçar o troço
+      // todo (corrigido 2026-08-17: antes desistia logo do troço ao 1º
+      // "sem espaço", podia deixar buracos evitáveis na cobertura).
+      const ordemTentativa = disponiveisAgora.filter(c => !(contiguo && c.pessoa.id === ultimaPessoaId));
+      if (!ordemTentativa.length) {
         // só a mesma pessoa disponível e sem intervalo ainda — força o
         // intervalo mínimo antes de a voltar a considerar.
         cursor += ESCALA_CHEFE_INTERVALO_MIN;
         ultimaPessoaId = null; ultimaFim = null;
         continue;
       }
-      const segAtual = escolhido.segmentos.find(seg => cursor >= seg.inicioMin && cursor < seg.fimMin);
-      const fimBloco = Math.min(cursor + ESCALA_CHEFE_BLOCO_MAX_MIN, segAtual.fimMin, janela.fimMin);
-      const ok = escalaAdicionarTarefaComumAoDia(novoDados, escolhido.codigo, d.key, 'chefe_turno', escalaAbsMinParaHora(cursor), escalaAbsMinParaHora(fimBloco));
-      if (ok) nomesUsados.add(escolhido.pessoa.nomeCompleto || escolhido.pessoa.username);
-      else semEspaco = true;
-      ultimaPessoaId = escolhido.pessoa.id; ultimaFim = fimBloco;
-      cursor = fimBloco;
+      let gravado = false;
+      for (const candidato of ordemTentativa) {
+        const segAtual = candidato.segmentos.find(seg => cursor >= seg.inicioMin && cursor < seg.fimMin);
+        const fimBloco = Math.min(cursor + ESCALA_CHEFE_BLOCO_MAX_MIN, segAtual.fimMin, janela.fimMin);
+        const ok = escalaAdicionarTarefaComumAoDia(novoDados, candidato.codigo, d.key, 'chefe_turno', escalaAbsMinParaHora(cursor), escalaAbsMinParaHora(fimBloco));
+        if (ok) {
+          nomesUsados.add(candidato.pessoa.nomeCompleto || candidato.pessoa.username);
+          ultimaPessoaId = candidato.pessoa.id; ultimaFim = fimBloco; cursor = fimBloco;
+          gravado = true;
+          break;
+        }
+      }
+      if (!gravado) {
+        // Ninguém disponível nesse troço tinha espaço na célula (3
+        // tarefas já lá) — avança o cursor por um bloco mínimo para não
+        // ficar preso no mesmo instante, e reporta no resumo.
+        semEspaco = true;
+        cursor += ESCALA_CHEFE_INTERVALO_MIN;
+        ultimaPessoaId = null; ultimaFim = null;
+      }
     }
     if (nomesUsados.size) resumo.atribuidos.push(`${d.label}: ⭐ Chefe de Turno — ${[...nomesUsados].join(', ')} (repartido, máx. 4h seguidas)`);
     if (semEspaco) resumo.semCandidato.push(`${d.label}: Chefe de Turno — algum troço já tinha 3 tarefas na célula, não coube`);
@@ -30529,6 +30555,11 @@ function buildHorariosPage(container, goTo) {
     if (!codigosMeus.length) return EmptyState('Não está atribuído a nenhuma posição nesta semana.');
     const wrap = h('div', {});
     const hojeISO = dateToISO(new Date());
+    // "A Minha Semana" passou a viver num sub-wrap próprio (2026-08-17,
+    // pedido explícito) para poder ser reposicionado face ao painel
+    // "Horas Extra Disponíveis" consoante o estatuto do colaborador —
+    // ver decisão de layout mais abaixo (ehPrestador).
+    const semanaCardsWrap = h('div', {});
     codigosMeus.forEach(codigo => {
       const linha = semana.dados[codigo];
       const rows = ESCALA_DIAS.map(d => {
@@ -30578,7 +30609,7 @@ function buildHorariosPage(container, goTo) {
           tarefasEl,
         ]);
       });
-      wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:16px;max-width:720px;' }, [
+      semanaCardsWrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:16px;max-width:720px;' }, [
         h('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px;' }, [
           h('div', { style: 'display:flex;align-items:center;gap:8px;' }, [
             escalaBadgePosicao(codigo, escalaGrupoDoCodigo(codigo)),
@@ -30589,11 +30620,33 @@ function buildHorariosPage(container, goTo) {
         ...rows,
       ]));
     });
+    // Posicionamento de "Horas Extra Disponíveis" face a "A Minha Semana"
+    // (2026-08-17, pedido explícito): o próprio painel traz um
+    // margin-top:16px pensado para viver sempre por BAIXO de algo — aqui
+    // é removido porque a moldura à volta (grid ou margem manual) já
+    // trata do espaçamento nos dois novos layouts abaixo.
+    const painelHE = buildPainelHorasExtra(semana, false);
+    painelHE.style.marginTop = '0';
+    const ehPrestador = escalaUtilizadorEhPrestador(activeUser);
+    if (ehPrestador) {
+      // Prestadores de Serviço: "Horas Extra Disponíveis" fica por CIMA
+      // de "A Minha Semana" — tanto em mobile como em desktop, sempre a
+      // mesma ordem, nunca lado a lado (só os colaboradores do Quadro
+      // ganham o layout em 2 colunas, ver ramo else).
+      painelHE.style.marginBottom = '16px';
+      wrap.appendChild(painelHE);
+      wrap.appendChild(semanaCardsWrap);
+    } else {
+      // Colaboradores do Quadro: em desktop (≥1150px) "Horas Extra
+      // Disponíveis" fica ao lado de "A Minha Semana" (2 colunas, ver
+      // .escala-semana-he-grid); em mobile continua empilhado por baixo,
+      // como sempre foi.
+      wrap.appendChild(h('div', { class: 'escala-semana-he-grid' }, [semanaCardsWrap, painelHE]));
+    }
     // Bloco estritamente pessoal — nunca partilhado com mais ninguém (ver
     // buildNotasPessoaisSemana). Substitui o antigo bloco único de
     // "Observações" (esse ficou exclusivo de "Escala da Equipa", agora
     // como feed partilhado — ver buildFeedNotasEquipa).
-    wrap.appendChild(buildPainelHorasExtra(semana, false));
     wrap.appendChild(buildNotasPessoaisSemana(semana));
     return wrap;
   }
@@ -33903,10 +33956,10 @@ function buildHorariosPage(container, goTo) {
     return h('div', { class: 'card card-pad', style: 'margin-bottom:20px;background:var(--pharm-50);' }, [
       h('h3', { class: 'page-eyebrow', style: 'margin-bottom:6px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, [Icon('zap', { size: 15, strokeWidth: 2.2 }), ' Atribuição de Tarefas Comuns (Encomendas Manhã/Tarde e Chefes de Turno)']),
       h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' },
-        'Só farmacêuticos/Direção Técnica do Quadro entram nestas listas. Em cada dia, fica com a tarefa o 1º da lista que estiver escalado; se ninguém da lista estiver presente, usa-se qualquer farmacêutico do Quadro presente. O botão "⚡" no Gerador de Horário usa estas listas sempre que for clicado — nunca corre sozinho ao gerar/recalcular uma semana.'),
+        'Só farmacêuticos/Direção Técnica do Quadro entram nestas listas. Encomendas: fica com a tarefa o 1º da lista que estiver escalado nesse dia (se ninguém da lista estiver presente, usa-se qualquer farmacêutico do Quadro presente). Chefe de Turno: repartido por todo o horário da farmácia, sempre pela ordem de prioridade em cada troço, nunca mais de 4h seguidas pela mesma pessoa. O botão "⚡" no Gerador de Horário usa estas listas sempre que for clicado — nunca corre sozinho ao gerar/recalcular uma semana.'),
       h('div', { style: 'display:flex;gap:24px;flex-wrap:wrap;' }, [
         buildListaPrioridadeTarefa('encomenda', 'Encomendas (Manhã + Tarde)', 'A mesma pessoa fica com a Encomenda da Manhã E da Tarde nesse dia, sempre que o horário dela cobrir os 2 períodos (11:00-12:00 e 18:00-19:00).'),
-        buildListaPrioridadeTarefa('chefe_turno', 'Chefe de Turno', 'Cobre o turno inteiro da pessoa escolhida nesse dia (Entrada–Saída, respeitando a Pausa/Almoço).'),
+        buildListaPrioridadeTarefa('chefe_turno', 'Chefe de Turno', 'Repartido por TODO o horário da farmácia nesse dia — nunca mais de 4h seguidas pela mesma pessoa; pode repetir mais tarde no dia, mas só depois de um intervalo (a Pausa/Almoço já conta). Esta lista só define a ORDEM de preferência em cada troço.'),
       ]),
     ]);
   }
@@ -34363,10 +34416,21 @@ function buildHorariosPage(container, goTo) {
     const colunas = posicoes.map(v => {
       const linha = semana.dados[v.codigo] || { dias: {} };
       const dia = linha.dias[diaKey] || { tipo: 'folga' };
+      // Dono FIXO da vaga, ao vivo a partir de "Gerir Posições" (só
+      // Grupos F/P — ver escalaColaboradorFixoDaVaga) — usado como
+      // reserva sempre que a linha/dia ainda não têm colaboradorNome/Id
+      // gravados (2026-08-17, pedido explícito: uma Posição nova, com
+      // colaborador já atribuído em "Gerir Posições", ficava sem nome
+      // na legenda/tooltip da Timeline até alguém abrir e regravar essa
+      // célula manualmente ou correr "🔄 Recalcular a partir das
+      // Posições" — agora aparece de imediato, sem precisar de nenhum
+      // desses passos extra). Nunca reescreve `dia`/`linha`, é só uma
+      // leitura de apoio para exibição.
+      const fixoDaVagaLive = !((dia && dia.colaboradorNome) || linha.colaboradorNome) ? escalaColaboradorFixoDaVaga(v.codigo) : null;
       // Nome do colaborador, já passado pelo formatador inteligente de
       // nomes (nomeCurtoDesambiguado — mesmo usado no indicador Online e
       // no "Visto por"), para o tooltip flutuante de hover.
-      const nomeColaboradorDoDia = (dia && dia.colaboradorNome) || linha.colaboradorNome || '';
+      const nomeColaboradorDoDia = (dia && dia.colaboradorNome) || linha.colaboradorNome || (fixoDaVagaLive && fixoDaVagaLive.colaboradorNome) || '';
       const colaboradorNome = nomeColaboradorDoDia ? nomeCurtoDesambiguado(nomeColaboradorDoDia) : '';
       legendaEntradas.push({ codigo: v.codigo, nome: colaboradorNome });
       const aoClicarPosicao = () => requireAuth(() => abrirEditorCelulaEscala(semana, v.codigo, diaKey, rerender));
@@ -34379,7 +34443,11 @@ function buildHorariosPage(container, goTo) {
       // reescreve os dados gravados — é só uma camada visual + de
       // contagem (ver também totaisPorHora/validarCoberturaHorario mais
       // abaixo, que já excluem estes turnos das contagens de presença).
-      const colaboradorIdDoDia = (dia && dia.colaboradorId) || linha.colaboradorId;
+      // Mesma reserva ao vivo do nome (fixoDaVagaLive) aplicada aqui ao
+      // ID — sem isto, uma Posição nova ficava também sem Pedidos
+      // Especiais/Disponibilidade/Ausência associados até à mesma
+      // regravação/recálculo manual (2026-08-17).
+      const colaboradorIdDoDia = (dia && dia.colaboradorId) || linha.colaboradorId || (fixoDaVagaLive && fixoDaVagaLive.colaboradorId) || null;
       const ausenciaSobreposta = dia.tipo === 'normal' ? escalaAusenciaDoDia(colaboradorIdDoDia, dataDoDiaSelecionado) : null;
       // Tipo normalizado para EXIBIÇÃO (ver escalaTipoEfetivoDia) — um
       // Prestador com 'folga' gravado antes desta distinção existir
