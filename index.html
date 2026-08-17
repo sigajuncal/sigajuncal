@@ -25796,6 +25796,15 @@ function escalaFormatarHoras(valor) {
   const mins = Math.round((horas - inteiro) * 60);
   return mins ? `${inteiro}h${String(mins).padStart(2, '0')}` : `${inteiro}h`;
 }
+// Mesma formatação, mas preservando o sinal (Saldo de Banco de Horas pode
+// ficar negativo — colaborador "deve" horas) — usa Math.abs para nunca
+// arredondar mal com Math.floor de um número negativo (ex: -2h30 não
+// pode virar "-3h").
+function escalaFormatarHorasComSinal(valor) {
+  const horas = Number(valor) || 0;
+  if (!horas) return '0h';
+  return (horas < 0 ? '-' : '+') + escalaFormatarHoras(Math.abs(horas));
+}
 // ---- Vista Mensal de "A Minha Semana" (pedido explícito 2026-08-09) ----
 // Converte "HH:MM" em minutos absolutos desde a meia-noite [0,1440] — a
 // versão SEM âncora de janela usada na Vista Vertical/Timeline
@@ -26483,6 +26492,25 @@ function escalaVagasGrupoOrdenadas(grupo) {
     .sort((a, b) => (a.ordem || 0) - (b.ordem || 0) || String(a.codigo || '').localeCompare(String(b.codigo || '')));
 }
 function escalaTodasVagasOrdenadas() { return ESCALA_GRUPOS.flatMap(g => escalaVagasGrupoOrdenadas(g.key)); }
+// BUG CORRIGIDO (2026-08-17): ao criar manualmente o 1º turno de uma
+// Posição diretamente na grelha (célula ainda sem entrada em
+// semana.dados), a linha nascia sempre com colaboradorId:null — mesmo
+// quando a Posição já tem um colaborador fixo definido em "Gerir
+// Posições" (Grupos F/P). Isso fazia o turno aparecer certo na
+// Timeline/Escala da Equipa (que lê o turno da célula), mas nunca em "A
+// Minha Semana" (que filtra por colaboradorId AO NÍVEL DA POSIÇÃO — ver
+// buildVistaPessoal), obrigando a um "🔄 Recalcular a partir das
+// Posições" manual. Esta função devolve o colaborador fixo da vaga
+// (só Grupos F/P — A/B são rotativos e não têm dono fixo, teria de vir
+// sempre da rotação da semana, não faz sentido aqui) para o novo
+// registo em semana.dados já nascer com o dono certo.
+function escalaColaboradorFixoDaVaga(codigoVaga) {
+  const vaga = escalaTodasVagasOrdenadas().find(v => v.codigo === codigoVaga);
+  if (!vaga || (vaga.grupo !== 'F' && vaga.grupo !== 'P') || !vaga.utilizadorId) return null;
+  const utilizador = (STATE.usuarios || []).find(u => u.id === vaga.utilizadorId);
+  if (!utilizador) return null;
+  return { colaboradorId: utilizador.id, colaboradorNome: utilizador.nomeCompleto || utilizador.username };
+}
 // Grupo (A/F/P/B) de uma Posição a partir do código — usado só para o
 // badge circular colorido (escalaBadgePosicao) em vistas que só têm o
 // código à mão (ex: "A Minha Semana"); cai de volta na 1ª letra do
@@ -28526,7 +28554,14 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       heFim = heValidos[0] ? heValidos[0].fim : '';
     }
     const novoDados = JSON.parse(JSON.stringify(semana.dados));
-    if (!novoDados[codigoVaga]) novoDados[codigoVaga] = { colaboradorId: null, colaboradorNome: '', dias: {} };
+    if (!novoDados[codigoVaga]) {
+      // Posição nova, criada depois de a semana já estar gerada: puxa
+      // logo o colaborador fixo de "Gerir Posições" (Grupos F/P) para
+      // este 1º turno já nascer "atribuído" e aparecer de imediato em
+      // "A Minha Semana" — ver escalaColaboradorFixoDaVaga acima.
+      const fixo = escalaColaboradorFixoDaVaga(codigoVaga);
+      novoDados[codigoVaga] = fixo ? { colaboradorId: fixo.colaboradorId, colaboradorNome: fixo.colaboradorNome, dias: {} } : { colaboradorId: null, colaboradorNome: '', dias: {} };
+    }
     // Campos singulares (tarefaTipo/tarefaOutro/tarefaInicio/tarefaFim)
     // mantidos em sincronia com a 1ª tarefa da lista — só por
     // compatibilidade com qualquer código que ainda não tenha sido
@@ -28791,7 +28826,25 @@ function buildHorariosPage(container, goTo) {
   let feriasConflitosPendentes = null; // preenchido quando a validação de sobreposição bloqueia e aguarda confirmação explícita
   let feriasAnoSaldos = new Date().getFullYear();
   let estatisticasAno = new Date().getFullYear();
+  // Filtro de período das Estatísticas (pedido explícito 2026-08-17):
+  // além do Ano (comportamento original), passa a suportar Mês, Semana e
+  // "Todo o Histórico" — sempre com o período atual bem identificado por
+  // extenso no cabeçalho (ver escalaIntervaloPeriodoEstatisticas). Cada
+  // referência de navegação (mês/semana) vive na sua própria variável
+  // para não perder a posição ao trocar de tipo de filtro e voltar atrás.
+  let estatisticasPeriodoTipo = 'ano'; // 'ano' | 'mes' | 'semana' | 'sempre'
+  let estatisticasMesRefAno = new Date().getFullYear();
+  let estatisticasMesRefMes = new Date().getMonth() + 1; // 1-12
+  let estatisticasSemanaRef = escalaSegundaFeiraDaSemanaDeISO(todayISO());
   let editingSaldoUserId = null, saldoDraft = {}, saldoSaving = false, saldoError = '';
+  // Ajuste ao Saldo Inicial de Banco de Horas (pedido explícito
+  // 2026-08-17) — mesmo espírito do "Ajuste ao Saldo Transitado" de
+  // Férias: um offset manual (Hugo/Paulo) para arrancar o saldo a partir
+  // do valor que já existia fora da app (ex: última contagem em Excel),
+  // já que o cálculo automático (Ganho por feriado trabalhado − Usado
+  // manualmente) só existe a partir de quando esta funcionalidade foi
+  // introduzida.
+  let editingBancoHorasUserId = null, bancoHorasSaldoDraft = '', bancoHorasSaldoSaving = false, bancoHorasSaldoError = '';
   let prioridadeAno = ESCALA_PRIORIDADE_FERIAS_ANO_BASE;
   let mostrarGerirPrioridade = false;
   let feriadoDraft = { data: '', nome: '', ambito: 'nacional' }, feriadoSaving = false, feriadoError = '';
@@ -28983,32 +29036,30 @@ function buildHorariosPage(container, goTo) {
     );
   }
 
+  // Pedido explícito 2026-08-17: os avisos de confirmação de Publicar/
+  // Editar deixaram de aparecer — eram repetitivos e atrapalhavam a
+  // fluidez da edição de horários (Publicar → pequena correção → Editar
+  // → Publicar de novo, várias vezes numa sessão). A ação passa a ser
+  // imediata, com o mesmo feedback de sempre via showToast — o botão em
+  // si já deixa clara a intenção (🔴 vermelho = ação destrutiva/reversora
+  // continua noutros sítios da app, ex: eliminarSemanaRascunho, que
+  // mantém confirmDialog por ser irreversível).
   async function publicarSemana(semana) {
     if (escalaSemanaNoPassado(semana)) { showToast('Esta semana já passou — o histórico está congelado.', 'error'); return; }
-    confirmDialog(
-      `Publicar o horário de ${formatDate(semana.semanaInicio)}? Fica imediatamente visível para toda a equipa em "A Minha Semana" e "Escala da Equipa", e a grelha passa a ficar congelada (para editar depois, primeiro tem de reverter para Rascunho). Continuar?`,
-      async () => {
-        const updated = await dbUpdate('escalaSemanas', semana.id, { estado: 'publicado', publicadoEm: new Date().toISOString(), publicadoPor: currentUserName() });
-        if (updated) { STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s); showToast('Horário oficial publicado.', 'success'); }
-        else escalaShowErro('Não foi possível publicar o horário');
-        rerender();
-      }, { confirmLabel: 'Publicar Horário Oficial' },
-    );
+    const updated = await dbUpdate('escalaSemanas', semana.id, { estado: 'publicado', publicadoEm: new Date().toISOString(), publicadoPor: currentUserName() });
+    if (updated) { STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s); showToast('Horário oficial publicado.', 'success'); }
+    else escalaShowErro('Não foi possível publicar o horário');
+    rerender();
   }
   async function reabrirSemana(semana) {
     if (escalaSemanaNoPassado(semana)) { showToast('Esta semana já passou — o histórico está congelado e não pode ser reaberto.', 'error'); return; }
     const visivel = escalaMostrarRascunhosEquipa(semana);
-    confirmDialog(
-      `Editar o horário de ${formatDate(semana.semanaInicio)}? Volta a Rascunho para poder editar célula a célula — ${visivel ? 'a equipa continua a ver este rascunho (opção "Permitir à equipa ver o rascunho" ligada), mas deixa de ser o horário oficial' : 'a equipa deixa de ver este horário (opção "Permitir à equipa ver o rascunho" desligada)'} até voltar a publicar. Continuar?`,
-      async () => {
-        const updated = await dbUpdate('escalaSemanas', semana.id, { estado: 'rascunho', publicadoEm: null, publicadoPor: null });
-        if (updated) {
-          STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
-          showToast(`Horário de volta a Rascunho — ${visivel ? 'a equipa continua a vê-lo, mas já não como oficial' : 'deixou de ser visível à equipa'}. Publique de novo quando terminar de editar.`, 'success');
-        } else escalaShowErro('Não foi possível reverter o horário para rascunho');
-        rerender();
-      }, { danger: true, confirmLabel: 'Editar' },
-    );
+    const updated = await dbUpdate('escalaSemanas', semana.id, { estado: 'rascunho', publicadoEm: null, publicadoPor: null });
+    if (updated) {
+      STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
+      showToast(`Horário de volta a Rascunho — ${visivel ? 'a equipa continua a vê-lo, mas já não como oficial' : 'deixou de ser visível à equipa'}. Publique de novo quando terminar de editar.`, 'success');
+    } else escalaShowErro('Não foi possível reverter o horário para rascunho');
+    rerender();
   }
   // Elimina PARA SEMPRE a semana — Rascunho OU Publicada (pedido explícito
   // 2026-08-09: antes só dava para eliminar Rascunhos, tinha de se reverter
@@ -30855,7 +30906,33 @@ function buildHorariosPage(container, goTo) {
     if (!s[listaChave]) s[listaChave] = [];
     s[listaChave].push({ dataISO, texto });
   }
-  function escalaCalcularEstatisticasAno(ano) {
+  // Intervalo [desde,até] (datas ISO, ou null/null para "sempre" — sem
+  // filtro nenhum) + rótulo por extenso do período de Estatísticas
+  // atualmente selecionado (pedido explícito 2026-08-17: "tentar dar uma
+  // perspetiva, desde que sempre bem identificada" — o rótulo aparece
+  // sempre no cabeçalho da página, nunca um filtro "silencioso"). Cada
+  // semana (para os stats calculados por SEMANA INTEIRA, ver mais abaixo)
+  // é atribuída ao período a que pertence a sua própria 2ª feira
+  // (semana.semanaInicio) — mesmo critério simplificador que já existia
+  // só para o Ano, agora aplicado também a Mês/Semana.
+  function escalaIntervaloPeriodoEstatisticas() {
+    if (estatisticasPeriodoTipo === 'mes') {
+      const ano = estatisticasMesRefAno, mes = estatisticasMesRefMes;
+      const ultimoDia = new Date(ano, mes, 0).getDate();
+      return {
+        desde: `${ano}-${pad2(mes)}-01`, ate: `${ano}-${pad2(mes)}-${pad2(ultimoDia)}`,
+        label: `${MESES_PT[mes - 1]} de ${ano}`,
+      };
+    }
+    if (estatisticasPeriodoTipo === 'semana') {
+      const fimISO = escalaDataDoDia(estatisticasSemanaRef, 'dom');
+      return { desde: estatisticasSemanaRef, ate: fimISO, label: `Semana de ${formatDate(estatisticasSemanaRef)} a ${formatDate(fimISO)}` };
+    }
+    if (estatisticasPeriodoTipo === 'sempre') return { desde: null, ate: null, label: 'Todo o Histórico' };
+    // 'ano' (predefinição)
+    return { desde: `${estatisticasAno}-01-01`, ate: `${estatisticasAno}-12-31`, label: `Ano de ${estatisticasAno}` };
+  }
+  function escalaCalcularEstatisticasPeriodo(intervalo) {
     const stats = {};
     // Guarda a lista de colaboradores (não só os IDs) — pedido explícito
     // 2026-08-14, BUG encontrado em testes: usar Object.keys(stats) para
@@ -30876,10 +30953,13 @@ function buildHorariosPage(container, goTo) {
       stats[u.id] = {
         nome: u.nomeCompleto || u.username,
         horasFeriado: 0, aberturas: 0, fechos: 0, saidas22: 0, saidas23: 0, horasNoturnas: 0, pausasRegistadas: 0,
-        tardesLivres: 0, manhasLivres: 0, horasExtra: 0,
+        tardesLivres: 0, manhasLivres: 0, horasExtra: 0, bancoHorasGanho: 0, bancoHorasUsado: 0,
         fdsLivres: 0, fdsOcupados: 0, fdsParcialSab: 0, fdsParcialDom: 0,
       };
     });
+    // Dentro do período pedido? intervalo.desde/ate a null (tipo "sempre")
+    // significa sem filtro nenhum — nunca exclui nada.
+    const dentroPeriodo = (dataISO) => (!intervalo.desde || dataISO >= intervalo.desde) && (!intervalo.ate || dataISO <= intervalo.ate);
     (STATE.escalaSemanas || []).filter(s => s.estado === 'publicado').forEach(semana => {
       colaboradoresQuadro.forEach(u => {
         const uid = u.id;
@@ -30887,7 +30967,7 @@ function buildHorariosPage(container, goTo) {
         const trabalhouNoDia = {};
         ESCALA_DIAS.forEach(d => {
           const dataISO = escalaDataDoDia(semana.semanaInicio, d.key);
-          if (!dataISO || dataISO.slice(0, 4) !== String(ano)) return;
+          if (!dataISO || !dentroPeriodo(dataISO)) return;
           const alvo = escalaVagaDoColaboradorNoDia(semana, d.key, uid);
           if (!alvo) return;
           trabalhouNoDia[d.key] = true;
@@ -30913,15 +30993,21 @@ function buildHorariosPage(container, goTo) {
           if (horasNoiteDia > 0) escalaEmpurrarDetalheEstatistica(s, 'horasNoturnas', dataISO, `${escalaFormatarHoras(horasNoiteDia)} · turno ${rotuloTurno}`);
           if (escalaMinutosAbsolutos(dia.saida, true) <= 14 * 60) { s.tardesLivres += 1; escalaEmpurrarDetalheEstatistica(s, 'tardesLivres', dataISO, `Saída ${dia.saida} · turno ${rotuloTurno}`); }
           if (escalaMinutosAbsolutos(dia.entrada, false) > 14 * 60) { s.manhasLivres += 1; escalaEmpurrarDetalheEstatistica(s, 'manhasLivres', dataISO, `Entrada ${dia.entrada} · turno ${rotuloTurno}`); }
+          // Banco de Horas USADO (pedido explícito 2026-08-17): soma dos
+          // blocos de Banco de Horas descontados manualmente por
+          // Hugo/Paulo célula a célula (dia.bancoHorasDesconto — ver
+          // abrirEditorCelulaEscala/podeGerirBancoHorasEHE). Distinto do
+          // Banco de Horas GANHO automaticamente por feriado trabalhado
+          // (calculado à parte, por semana, mais abaixo).
+          if (dia.bancoHorasDesconto > 0) { s.bancoHorasUsado += dia.bancoHorasDesconto; escalaEmpurrarDetalheEstatistica(s, 'bancoHorasUsado', dataISO, `-${escalaFormatarHoras(dia.bancoHorasDesconto)} · turno ${rotuloTurno}`); }
         });
         // Classificação do fim de semana — só conta quando Sábado E
-        // Domingo dessa semana caem os dois dentro do ano pedido (uma
-        // virada de ano a meio do fim de semana nunca acontece, já que
-        // Sábado/Domingo são sempre consecutivos, mas o guard fica
-
+        // Domingo dessa semana caem os dois dentro do período pedido (uma
+        // virada de período a meio do fim de semana nunca acontece, já
+        // que Sábado/Domingo são sempre consecutivos, mas o guard fica
         // explícito por clareza).
         const sabISO = escalaDataDoDia(semana.semanaInicio, 'sab'), domISO = escalaDataDoDia(semana.semanaInicio, 'dom');
-        if (sabISO && domISO && sabISO.slice(0, 4) === String(ano) && domISO.slice(0, 4) === String(ano)) {
+        if (sabISO && domISO && dentroPeriodo(sabISO) && dentroPeriodo(domISO)) {
           const sab = !!trabalhouNoDia.sab, dom = !!trabalhouNoDia.dom;
           const rotuloFds = `Fim de semana ${formatDate(sabISO)}–${formatDate(domISO)}`;
           if (!sab && !dom) { s.fdsLivres += 1; escalaEmpurrarDetalheEstatistica(s, 'fdsLivres', sabISO, `${rotuloFds} — folga nos 2 dias`); }
@@ -30931,22 +31017,29 @@ function buildHorariosPage(container, goTo) {
         }
       });
     });
-    // Horas Extra (pedido explícito 2026-08-14, ajustado depois pelo
-    // utilizador): passagem à parte, por SEMANA inteira (não por dia
-    // como o resto) — soma-se o total trabalhado de Segunda a Domingo
-    // dessa semana. O limiar normal é 40h, MAS cada Feriado que caia
-    // nessa semana desconta 8h a esse limiar — a farmácia dá sempre
-    // folga extra por feriado trabalhado (nesse dia ou noutro da mesma
-    // semana), por isso trabalhar até 40h numa semana com 1 feriado já
-    // são, na prática, 8h a mais do que o esperado (2 feriados na mesma
-    // semana, ex: Semana Santa, descontam 16h, etc.) — ver
-    // limiarSemana abaixo. Cada semana é atribuída ao ano da sua própria
-    // 2ª feira (semana.semanaInicio) — as raríssimas semanas a cavalo
-    // entre dois anos ficam inteiras no ano em que começam, para nunca
-    // partir o total semanal ao meio.
-    (STATE.escalaSemanas || []).filter(s => s.estado === 'publicado' && String(s.semanaInicio).slice(0, 4) === String(ano)).forEach(semana => {
+    // Horas Extra vs Banco de Horas GANHO (pedido explícito 2026-08-14,
+    // distinção pedida explicitamente 2026-08-17): passagem à parte, por
+    // SEMANA inteira (não por dia como o resto) — soma-se o total
+    // trabalhado de Segunda a Domingo dessa semana. O limiar normal é
+    // 40h, MAS cada Feriado que caia nessa semana desconta 8h a esse
+    // limiar — a farmácia dá sempre folga extra por feriado trabalhado
+    // (nesse dia ou noutro da mesma semana). O excesso sobre esse limiar
+    // reduzido divide-se em 2 partes, nunca as duas juntas como "Horas
+    // Extra": até ao valor do desconto do feriado (feriadosNaSemana×8h) é
+    // só RECUPERAÇÃO do feriado trabalhado → vai para Banco de Horas
+    // (ganho automático); só o que sobra ACIMA das 40h normais da semana
+    // é que é mesmo Horas Extra a pagar/compensar à parte. Exemplo (1
+    // feriado, limiar 32h): trabalhar 40h ⇒ 8h Banco, 0h Extra; trabalhar
+    // 42h ⇒ 8h Banco (o máximo possível de recuperação de feriado) + 2h
+    // Extra (o que passa das 40h normais). Cada semana é atribuída ao
+    // período a que pertence a sua própria 2ª feira (semana.semanaInicio)
+    // — as raríssimas semanas a cavalo entre dois períodos ficam inteiras
+    // no período em que começam, para nunca partir o total semanal ao
+    // meio.
+    (STATE.escalaSemanas || []).filter(s => s.estado === 'publicado' && (!intervalo.desde || s.semanaInicio >= intervalo.desde) && (!intervalo.ate || s.semanaInicio <= intervalo.ate)).forEach(semana => {
       const feriadosNaSemana = ESCALA_DIAS.filter(d => escalaEhFeriado(escalaDataDoDia(semana.semanaInicio, d.key))).length;
-      const limiarSemana = Math.max(0, 40 - feriadosNaSemana * 8);
+      const limiarFeriado = feriadosNaSemana * 8;
+      const limiarSemana = Math.max(0, 40 - limiarFeriado);
       colaboradoresQuadro.forEach(u => {
         const uid = u.id;
         let totalSemana = 0;
@@ -30957,13 +31050,43 @@ function buildHorariosPage(container, goTo) {
         });
         if (totalSemana > limiarSemana) {
           const excesso = totalSemana - limiarSemana;
-          stats[uid].horasExtra += excesso;
+          const banco = Math.min(excesso, limiarFeriado);
+          const extra = Math.max(0, excesso - banco);
           const notaFeriado = feriadosNaSemana ? ` · limiar ${limiarSemana}h (${feriadosNaSemana} feriado${feriadosNaSemana > 1 ? 's' : ''} nesta semana)` : '';
-          escalaEmpurrarDetalheEstatistica(stats[uid], 'horasExtra', semana.semanaInicio, `Semana de ${formatDate(semana.semanaInicio)} — total ${escalaFormatarHoras(totalSemana)}${notaFeriado} (+${escalaFormatarHoras(excesso)} extra)`);
+          if (banco > 0) {
+            stats[uid].bancoHorasGanho += banco;
+            escalaEmpurrarDetalheEstatistica(stats[uid], 'bancoHorasGanho', semana.semanaInicio, `Semana de ${formatDate(semana.semanaInicio)} — total ${escalaFormatarHoras(totalSemana)}${notaFeriado} (+${escalaFormatarHoras(banco)} Banco, recuperação do feriado trabalhado)`);
+          }
+          if (extra > 0) {
+            stats[uid].horasExtra += extra;
+            escalaEmpurrarDetalheEstatistica(stats[uid], 'horasExtra', semana.semanaInicio, `Semana de ${formatDate(semana.semanaInicio)} — total ${escalaFormatarHoras(totalSemana)}, acima das 40h normais (+${escalaFormatarHoras(extra)} extra)`);
+          }
         }
       });
     });
     return stats;
+  }
+  // Saldo de Banco de Horas (pedido explícito 2026-08-17) — SEMPRE
+  // histórico completo (nunca filtrado pelo período das Estatísticas
+  // acima, um saldo é sempre "até hoje", não "só este mês"): Saldo
+  // Inicial (ajuste manual, ver editingBancoHorasUserId) + Ganho
+  // automático acumulado (feriados trabalhados) − Usado manualmente
+  // (descontos lançados célula a célula). Devolve um objeto por
+  // colaborador do Quadro, na mesma forma que escalaCalcularEstatisticasPeriodo.
+  function escalaCalcularSaldoBancoHoras() {
+    const statsSempre = escalaCalcularEstatisticasPeriodo({ desde: null, ate: null });
+    const colaboradoresQuadro = usuariosQuadroAtivos();
+    const saldos = {};
+    colaboradoresQuadro.forEach(u => {
+      const s = statsSempre[u.id] || { bancoHorasGanho: 0, bancoHorasUsado: 0 };
+      const saldoInicial = Math.round((Number(u.bancoHorasSaldoInicial) || 0) * 100) / 100;
+      saldos[u.id] = {
+        nome: u.nomeCompleto || u.username,
+        saldoInicial, ganho: s.bancoHorasGanho || 0, usado: s.bancoHorasUsado || 0,
+        saldoAtual: Math.round((saldoInicial + (s.bancoHorasGanho || 0) - (s.bancoHorasUsado || 0)) * 100) / 100,
+      };
+    });
+    return saldos;
   }
   // Contagem de Tarefas/Cargos Especiais (Chefe de Turno, Encomenda da
   // Manhã/Tarde, Conferência, Reunião, Outro) por colaborador do Quadro,
@@ -30979,7 +31102,7 @@ function buildHorariosPage(container, goTo) {
   // (legado, pré-Manhã/Tarde) fica de fora — já não pode ser escolhida,
   // só existe em dados muito antigos.
   const TIPOS_TAREFA_CONTAVEIS = ESCALA_TAREFAS_ESPECIAIS.filter(t => t.key && !t.legado);
-  function escalaCalcularTarefasAno(ano) {
+  function escalaCalcularTarefasPeriodo(intervalo) {
     const stats = {};
     const colaboradoresQuadro = usuariosQuadroAtivos();
     colaboradoresQuadro.forEach(u => {
@@ -30992,7 +31115,7 @@ function buildHorariosPage(container, goTo) {
         const s = stats[uid];
         ESCALA_DIAS.forEach(d => {
           const dataISO = escalaDataDoDia(semana.semanaInicio, d.key);
-          if (!dataISO || dataISO.slice(0, 4) !== String(ano)) return;
+          if (!dataISO || (intervalo.desde && dataISO < intervalo.desde) || (intervalo.ate && dataISO > intervalo.ate)) return;
           const alvo = escalaVagaDoColaboradorNoDia(semana, d.key, uid);
           if (!alvo) return;
           const tarefasDoDia = escalaTarefasDoDia(alvo.dia);
@@ -31011,15 +31134,117 @@ function buildHorariosPage(container, goTo) {
     });
     return stats;
   }
+  // Guarda o "Ajuste ao Saldo Inicial" de Banco de Horas de um
+  // colaborador — só Hugo/Paulo (podeGerirBancoHorasEHE), mesmo espírito
+  // do ajuste equivalente em Saldos de Férias.
+  async function guardarSaldoBancoHoras(u) {
+    const valor = Math.round((parseFloat(String(bancoHorasSaldoDraft).replace(',', '.')) || 0) * 100) / 100;
+    bancoHorasSaldoSaving = true; bancoHorasSaldoError = ''; rerender();
+    const updated = await dbUpdate('usuarios', u.id, { bancoHorasSaldoInicial: valor });
+    bancoHorasSaldoSaving = false;
+    if (updated) { STATE.usuarios = STATE.usuarios.map(x => x.id === u.id ? updated : x); editingBancoHorasUserId = null; }
+    else bancoHorasSaldoError = 'Não foi possível guardar o saldo inicial.';
+    rerender();
+  }
+  // Cartão "Banco de Horas — Saldo Atual" (pedido explícito 2026-08-17):
+  // SEMPRE histórico completo, independente do filtro de período
+  // selecionado acima na página — um saldo corrente não faz sentido "só
+  // deste mês". Saldo Inicial é o único campo editável (Hugo/Paulo),
+  // pensado para arrancar com o valor que já existia fora da app (ex:
+  // última contagem em Excel) antes desta contabilização automática
+  // existir; Ganho/Usado são sempre calculados, nunca editáveis à mão.
+  function buildCartaoSaldoBancoHoras(colaboradores) {
+    const saldos = escalaCalcularSaldoBancoHoras();
+    const podeEditar = podeGerirBancoHorasEHE();
+    const linhas = colaboradores.map(u => {
+      const s = saldos[u.id];
+      if (!s) return null;
+      const aEditar = editingBancoHorasUserId === u.id;
+      let celInicial, celAcoes;
+      if (aEditar) {
+        const input = h('input', { class: 'input', type: 'number', step: '0.5', style: 'max-width:90px;padding:4px 8px;', value: bancoHorasSaldoDraft });
+        input.addEventListener('input', () => { bancoHorasSaldoDraft = input.value; });
+        celInicial = h('td', {}, input);
+        const guardarBtn = h('button', { class: 'btn-fab-sm tone-green', title: 'Guardar', 'aria-label': 'Guardar', disabled: bancoHorasSaldoSaving ? 'disabled' : undefined }, Icon('check', { size: 13, strokeWidth: 2.4 }));
+        guardarBtn.addEventListener('click', () => guardarSaldoBancoHoras(u));
+        const cancelarBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Cancelar', 'aria-label': 'Cancelar' }, Icon('x', { size: 13, strokeWidth: 2.4 }));
+        cancelarBtn.addEventListener('click', () => { editingBancoHorasUserId = null; bancoHorasSaldoError = ''; rerender(); });
+        celAcoes = h('td', {}, h('div', { style: 'display:flex;gap:4px;' }, [guardarBtn, cancelarBtn]));
+      } else {
+        celInicial = h('td', {}, escalaFormatarHorasComSinal(s.saldoInicial));
+        const editBtn = podeEditar ? h('button', { class: 'btn-fab-sm tone-gray', title: 'Ajustar Saldo Inicial', 'aria-label': 'Ajustar Saldo Inicial' }, Icon('pencil', { size: 13, strokeWidth: 2.4 })) : null;
+        if (editBtn) editBtn.addEventListener('click', () => { editingBancoHorasUserId = u.id; bancoHorasSaldoDraft = String(s.saldoInicial); bancoHorasSaldoError = ''; rerender(); });
+        celAcoes = h('td', {}, editBtn);
+      }
+      return h('tr', {}, [
+        h('td', { class: 'cell-strong' }, s.nome),
+        celInicial,
+        h('td', { title: 'Ganho automático acumulado (Banco de Horas por feriado trabalhado, ver coluna "Banco (Feriado)" acima) — histórico completo' }, escalaFormatarHorasComSinal(s.ganho)),
+        h('td', { title: 'Usado manualmente (descontos lançados célula a célula por Hugo/Paulo) — histórico completo' }, s.usado ? `-${escalaFormatarHoras(s.usado)}` : '0h'),
+        h('td', { class: 'cell-strong' }, escalaFormatarHorasComSinal(s.saldoAtual)),
+        celAcoes,
+      ]);
+    }).filter(Boolean);
+    return h('div', { class: 'card estatisticas-card' }, [
+      h('h4', { class: 'page-eyebrow', style: 'margin:0 0 4px;padding:14px 14px 0;color:var(--pharm-700);font-size:12.5px;text-transform:none;letter-spacing:0;font-weight:800;' }, 'Banco de Horas — Saldo Atual'),
+      h('p', { class: 'field-helper-text', style: 'margin:0;padding:0 14px 10px;' }, 'Histórico completo, independente do período selecionado acima — Saldo Inicial + Ganho (feriados trabalhados) − Usado (descontado manualmente).'),
+      bancoHorasSaldoError ? h('p', { class: 'field-helper-text', style: 'margin:0;padding:0 14px 10px;color:#b91c1c;' }, bancoHorasSaldoError) : null,
+      h('div', { class: 'table-wrap estatisticas-table-wrap' }, h('table', { class: 'estatisticas-table' }, [
+        h('thead', {}, h('tr', {}, [h('th', {}, 'Colaborador'), h('th', {}, 'Saldo Inicial'), h('th', {}, 'Ganho'), h('th', {}, 'Usado'), h('th', {}, 'Saldo Atual'), h('th', {}, '')])),
+        h('tbody', {}, linhas),
+      ])),
+    ]);
+  }
   function buildVistaEstatisticas() {
     const { min: anoMin, max: anoMax } = escalaAnosComSemanasPublicadas();
     if (estatisticasAno < anoMin) estatisticasAno = anoMin;
     if (estatisticasAno > anoMax) estatisticasAno = anoMax;
-    const prevBtn = h('button', { class: 'btn-fab-sm', title: 'Ano anterior', 'aria-label': 'Ano anterior', disabled: estatisticasAno <= anoMin ? 'disabled' : undefined }, Icon('arrowleft', { size: 14 }));
-    prevBtn.addEventListener('click', () => { estatisticasAno -= 1; rerender(); });
-    const nextBtn = h('button', { class: 'btn-fab-sm', title: 'Ano seguinte', 'aria-label': 'Ano seguinte', disabled: estatisticasAno >= anoMax ? 'disabled' : undefined }, Icon('arrowright', { size: 14 }));
-    nextBtn.addEventListener('click', () => { estatisticasAno += 1; rerender(); });
-    const stats = escalaCalcularEstatisticasAno(estatisticasAno);
+    if (estatisticasMesRefAno < anoMin) estatisticasMesRefAno = anoMin;
+    if (estatisticasMesRefAno > anoMax) estatisticasMesRefAno = anoMax;
+    // Seletor de tipo de período (pedido explícito 2026-08-17: Ano/Mês/
+    // Semana/Todo o Histórico) — cada tipo tem a sua própria navegação
+    // ◀▶, nunca partilhada entre si, para não perder a posição ao trocar
+    // de tipo e voltar atrás.
+    const tipoSelect = h('select', { class: 'select', style: 'max-width:170px;' }, [
+      h('option', { value: 'ano', selected: estatisticasPeriodoTipo === 'ano' ? 'selected' : undefined }, 'Este Ano'),
+      h('option', { value: 'mes', selected: estatisticasPeriodoTipo === 'mes' ? 'selected' : undefined }, 'Este Mês'),
+      h('option', { value: 'semana', selected: estatisticasPeriodoTipo === 'semana' ? 'selected' : undefined }, 'Esta Semana'),
+      h('option', { value: 'sempre', selected: estatisticasPeriodoTipo === 'sempre' ? 'selected' : undefined }, 'Todo o Histórico'),
+    ]);
+    tipoSelect.value = estatisticasPeriodoTipo;
+    tipoSelect.addEventListener('change', () => { estatisticasPeriodoTipo = tipoSelect.value; rerender(); });
+    let navEl;
+    if (estatisticasPeriodoTipo === 'ano') {
+      const prevBtn = h('button', { class: 'btn-fab-sm', title: 'Ano anterior', 'aria-label': 'Ano anterior', disabled: estatisticasAno <= anoMin ? 'disabled' : undefined }, Icon('arrowleft', { size: 14 }));
+      prevBtn.addEventListener('click', () => { estatisticasAno -= 1; rerender(); });
+      const nextBtn = h('button', { class: 'btn-fab-sm', title: 'Ano seguinte', 'aria-label': 'Ano seguinte', disabled: estatisticasAno >= anoMax ? 'disabled' : undefined }, Icon('arrowright', { size: 14 }));
+      nextBtn.addEventListener('click', () => { estatisticasAno += 1; rerender(); });
+      navEl = h('div', { style: 'display:flex;align-items:center;gap:8px;' }, [prevBtn, h('span', { class: 'cell-strong', style: 'min-width:44px;text-align:center;' }, String(estatisticasAno)), nextBtn]);
+    } else if (estatisticasPeriodoTipo === 'mes') {
+      const prevBtn = h('button', { class: 'btn-fab-sm', title: 'Mês anterior', 'aria-label': 'Mês anterior' }, Icon('arrowleft', { size: 14 }));
+      prevBtn.addEventListener('click', () => {
+        estatisticasMesRefMes -= 1;
+        if (estatisticasMesRefMes < 1) { estatisticasMesRefMes = 12; estatisticasMesRefAno -= 1; }
+        rerender();
+      });
+      const nextBtn = h('button', { class: 'btn-fab-sm', title: 'Mês seguinte', 'aria-label': 'Mês seguinte' }, Icon('arrowright', { size: 14 }));
+      nextBtn.addEventListener('click', () => {
+        estatisticasMesRefMes += 1;
+        if (estatisticasMesRefMes > 12) { estatisticasMesRefMes = 1; estatisticasMesRefAno += 1; }
+        rerender();
+      });
+      navEl = h('div', { style: 'display:flex;align-items:center;gap:8px;' }, [prevBtn, h('span', { class: 'cell-strong', style: 'min-width:120px;text-align:center;' }, `${MESES_PT[estatisticasMesRefMes - 1]} ${estatisticasMesRefAno}`), nextBtn]);
+    } else if (estatisticasPeriodoTipo === 'semana') {
+      const prevBtn = h('button', { class: 'btn-fab-sm', title: 'Semana anterior', 'aria-label': 'Semana anterior' }, Icon('arrowleft', { size: 14 }));
+      prevBtn.addEventListener('click', () => { const d = new Date(estatisticasSemanaRef + 'T12:00:00'); d.setDate(d.getDate() - 7); estatisticasSemanaRef = dateToISO(d); rerender(); });
+      const nextBtn = h('button', { class: 'btn-fab-sm', title: 'Semana seguinte', 'aria-label': 'Semana seguinte' }, Icon('arrowright', { size: 14 }));
+      nextBtn.addEventListener('click', () => { const d = new Date(estatisticasSemanaRef + 'T12:00:00'); d.setDate(d.getDate() + 7); estatisticasSemanaRef = dateToISO(d); rerender(); });
+      navEl = h('div', { style: 'display:flex;align-items:center;gap:8px;' }, [prevBtn, h('span', { class: 'cell-strong', style: 'min-width:170px;text-align:center;' }, `Semana de ${formatDate(estatisticasSemanaRef)}`), nextBtn]);
+    } else {
+      navEl = null; // "sempre" — sem navegação, é um único período fixo
+    }
+    const intervalo = escalaIntervaloPeriodoEstatisticas();
+    const stats = escalaCalcularEstatisticasPeriodo(intervalo);
     // Tarefas Especiais (pedido explícito 2026-08-14) — calculadas à
     // parte (fonte de dados diferente: escala_semanas.dados[].tarefas,
     // não os campos entrada/saida/pausa) e fundidas no mesmo `stats`
@@ -31028,7 +31253,7 @@ function buildHorariosPage(container, goTo) {
     // um lookup por chave (stats[uid] já existe para todos os mesmos
     // colaboradores) — nunca usa o uid fora daqui, por isso não sofre do
     // bug de comparação estrita corrigido antes em escalaVagaDoColaboradorNoDia.
-    const statsTarefas = escalaCalcularTarefasAno(estatisticasAno);
+    const statsTarefas = escalaCalcularTarefasPeriodo(intervalo);
     Object.keys(statsTarefas).forEach(uid => { if (stats[uid]) Object.assign(stats[uid], statsTarefas[uid]); });
     // Carina Gonçalves e Adriano Lima excluídos desta contagem (pedido
     // explícito 2026-08-14): são Backoffice (Grupo B) — os indicadores
@@ -31078,11 +31303,12 @@ function buildHorariosPage(container, goTo) {
         ],
       },
       {
-        titulo: 'Feriados, Noite e Horas Extra',
+        titulo: 'Feriados, Noite, Banco de Horas e Horas Extra',
         colunas: [
           { key: 'horasFeriado', label: 'H. em Feriado', title: 'Horas trabalhadas em dias de Feriado', grav: 'verde' },
           { key: 'horasNoturnas', label: 'H. Noturnas', title: 'Horas trabalhadas entre as 22:00 e as 00:00', grav: 'laranja' },
-          { key: 'horasExtra', label: 'H. Extra', title: 'Horas acima do limiar semanal (40h, menos 8h por cada Feriado nessa semana — a farmácia dá sempre folga extra por feriado trabalhado)', grav: 'vermelho' },
+          { key: 'bancoHorasGanho', label: 'Banco (Feriado)', title: 'Banco de Horas ganho automaticamente por trabalhar até às 40h normais numa semana com Feriado (recuperação do feriado trabalhado, nunca conta como Horas Extra)', grav: 'verde' },
+          { key: 'horasExtra', label: 'H. Extra', title: 'Horas acima das 40h semanais normais, já descontada a parte que foi para Banco de Horas por feriado nessa semana', grav: 'vermelho' },
         ],
       },
       {
@@ -31098,7 +31324,7 @@ function buildHorariosPage(container, goTo) {
         // Especiais atribuídos via Atribuição Rápida/Editor de Dia. Um
         // dia com o mesmo tipo repetido em 2 blocos (ex: Chefe de Turno
         // da Magda partido pela Pausa) conta como 1 só ocorrência nesse
-        // dia — ver escalaCalcularTarefasAno. Sem cor de gravidade (não
+        // dia — ver escalaCalcularTarefasPeriodo. Sem cor de gravidade (não
         // há "melhor/pior" óbvio em fazer mais ou menos Chefe de Turno).
         titulo: 'Tarefas Especiais',
         colunas: TIPOS_TAREFA_CONTAVEIS.map(t => ({
@@ -31130,7 +31356,7 @@ function buildHorariosPage(container, goTo) {
           h('td', { class: 'cell-strong' }, u.nomeCompleto || u.username),
           ...grupo.colunas.map(c => {
             const valor = s[c.key];
-            const texto = /^horas/i.test(c.key) ? escalaFormatarHoras(valor) : String(valor);
+            const texto = /^(horas|bancoHoras)/i.test(c.key) ? escalaFormatarHoras(valor) : String(valor);
             const ehMaximo = maximos[c.key] > 0 && valor === maximos[c.key];
             const cor = c.grav ? CORES_GRAVIDADE[c.grav] : null;
             const conteudo = ehMaximo ? h('span', { class: 'stat-max', title: 'Quem tem mais nesta coluna' }, texto) : texto;
@@ -31162,10 +31388,12 @@ function buildHorariosPage(container, goTo) {
     return h('div', {}, [
       h('div', { style: 'display:flex;align-items:center;gap:12px;margin-bottom:6px;flex-wrap:wrap;' }, [
         h('h3', { class: 'page-eyebrow', style: 'margin:0;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, 'Estatísticas — Quadro'),
-        h('div', { style: 'display:flex;align-items:center;gap:8px;' }, [prevBtn, h('span', { class: 'cell-strong', style: 'min-width:44px;text-align:center;' }, String(estatisticasAno)), nextBtn]),
+        tipoSelect,
+        navEl,
       ]),
-      h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, 'Calculado só a partir de semanas já publicadas — só para colaboradores do Quadro (Prestadores de Serviço não entram nesta contagem).'),
+      h('p', { class: 'field-helper-text', style: 'margin:0 0 4px;' }, `A mostrar: ${intervalo.label} — calculado só a partir de semanas já publicadas, só para colaboradores do Quadro (Prestadores de Serviço não entram nesta contagem).`),
       ...cartoes,
+      buildCartaoSaldoBancoHoras(colaboradores),
     ]);
   }
   // Cria uma exceção de sobreposição diretamente (sem passar pelo
