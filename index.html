@@ -29998,6 +29998,101 @@ function buildHorariosPage(container, goTo) {
     linha.dias[diaKey] = { ...diaAtual, tarefas: novasTarefas, tarefaTipo: primeira.tipo, tarefaOutro: primeira.outro, tarefaInicio: primeira.inicio, tarefaFim: primeira.fim };
     return true;
   }
+  // Janela operacional da farmácia nesse dia — min(Entrada) a max(Saída)
+  // de TODAS as posições com turno Normal nesse dia (qualquer grupo, não
+  // só farmacêuticos), ou seja "o horário em que a farmácia está mesmo
+  // aberta" (pedido explícito 2026-08-17: Chefe de Turno deve cobrir
+  // "todo o horário da farmácia", não só o turno de 1 pessoa). Devolve
+  // null se não houver nenhum turno Normal gravado nesse dia.
+  function escalaJanelaOperacionalDia(semana, diaKey) {
+    let inicioMin = null, fimMin = null;
+    Object.values(semana.dados || {}).forEach(linha => {
+      const dia = linha.dias && linha.dias[diaKey];
+      if (!dia || dia.tipo !== 'normal' || !dia.entrada || !dia.saida) return;
+      const ini = escalaMinutosAbsolutos(dia.entrada, false), fim = escalaMinutosAbsolutos(dia.saida, true);
+      if (fim <= ini) return;
+      if (inicioMin === null || ini < inicioMin) inicioMin = ini;
+      if (fimMin === null || fim > fimMin) fimMin = fim;
+    });
+    return inicioMin === null ? null : { inicioMin, fimMin };
+  }
+  // Candidatos a Chefe de Turno nesse dia, já ordenados: 1º os da lista
+  // de prioridade (pela ordem definida em "Gerir Posições"), depois o
+  // resto dos farmacêuticos do Quadro presentes (fallback, ordem
+  // hierárquica normal) — cada um com os SEUS segmentos de turno nesse
+  // dia (excluindo Pausa/Almoço), usados pela distribuição ao longo do
+  // dia em escalaAtribuirChefeDeTurnoDia.
+  function escalaCandidatosChefeOrdenados(semana, diaKey) {
+    const presentes = escalaFarmaceuticosPresentesNoDia(semana, diaKey);
+    if (!presentes.length) return [];
+    const ordenados = [];
+    escalaPrioridadeTarefasLista('chefe_turno').forEach(item => {
+      const p = presentes.find(u => String(u.id) === String(item.utilizadorId));
+      if (p && !ordenados.some(x => x.id === p.id)) ordenados.push(p);
+    });
+    presentes.forEach(p => { if (!ordenados.some(x => x.id === p.id)) ordenados.push(p); });
+    return ordenados.map(p => {
+      const alvo = escalaVagaDoColaboradorNoDia(semana, diaKey, p.id);
+      return alvo ? { pessoa: p, codigo: alvo.codigo, segmentos: escalaSegmentosTurnoAbsolutos(alvo.dia) } : null;
+    }).filter(Boolean);
+  }
+  // Distribui o Chefe de Turno ao longo de TODO o horário da farmácia
+  // nesse dia (pedido explícito 2026-08-17), nunca mais de 4h SEGUIDAS
+  // pela mesma pessoa — pode repetir a mesma pessoa mais tarde no dia,
+  // mas só depois de um intervalo mínimo (30min) sem ela ser Chefe de
+  // Turno; uma Pausa/Almoço real da própria pessoa já conta como esse
+  // intervalo (os segmentos já vêm sem a pausa, ver
+  // escalaSegmentosTurnoAbsolutos). Varre a janela operacional
+  // (escalaJanelaOperacionalDia) minuto-a-minuto por blocos: em cada
+  // ponto, escolhe o candidato disponível de maior prioridade que não
+  // seja a mesma pessoa do bloco imediatamente anterior (sem intervalo);
+  // se só essa pessoa estiver disponível, força o intervalo de 30min
+  // antes de a voltar a escolher. Sempre "melhor esforço": troços sem
+  // nenhum farmacêutico elegível presente ficam por cobrir e são
+  // reportados no resumo, nunca inventa disponibilidade que não existe.
+  const ESCALA_CHEFE_BLOCO_MAX_MIN = 240; // 4h
+  const ESCALA_CHEFE_INTERVALO_MIN = 30; // intervalo mínimo antes da MESMA pessoa repetir
+  function escalaAtribuirChefeDeTurnoDia(semana, d, novoDados, resumo) {
+    const candidatos = escalaCandidatosChefeOrdenados(semana, d.key);
+    if (!candidatos.length) { resumo.semCandidato.push(`${d.label}: Chefe de Turno — ninguém elegível presente`); return; }
+    const janela = escalaJanelaOperacionalDia(semana, d.key);
+    if (!janela) { resumo.semCandidato.push(`${d.label}: Chefe de Turno — sem horário definido nesse dia`); return; }
+    let cursor = janela.inicioMin;
+    let ultimaPessoaId = null, ultimaFim = null;
+    const nomesUsados = new Set();
+    let semEspaco = false, faltaCobertura = false;
+    let guarda = 0; // rede de segurança contra loop infinito — nunca deveria disparar
+    while (cursor < janela.fimMin && guarda < 200) {
+      guarda += 1;
+      const disponiveisAgora = candidatos.filter(c => c.segmentos.some(seg => cursor >= seg.inicioMin && cursor < seg.fimMin));
+      if (!disponiveisAgora.length) {
+        const proximosInicios = candidatos.flatMap(c => c.segmentos.map(seg => seg.inicioMin)).filter(ini => ini > cursor);
+        if (!proximosInicios.length) { faltaCobertura = true; break; }
+        if (cursor > janela.inicioMin) faltaCobertura = true; // houve mesmo um buraco, não só o início
+        cursor = Math.min(...proximosInicios);
+        continue;
+      }
+      const contiguo = ultimaFim === cursor;
+      const escolhido = disponiveisAgora.find(c => !(contiguo && c.pessoa.id === ultimaPessoaId));
+      if (!escolhido) {
+        // só a mesma pessoa disponível e sem intervalo ainda — força o
+        // intervalo mínimo antes de a voltar a considerar.
+        cursor += ESCALA_CHEFE_INTERVALO_MIN;
+        ultimaPessoaId = null; ultimaFim = null;
+        continue;
+      }
+      const segAtual = escolhido.segmentos.find(seg => cursor >= seg.inicioMin && cursor < seg.fimMin);
+      const fimBloco = Math.min(cursor + ESCALA_CHEFE_BLOCO_MAX_MIN, segAtual.fimMin, janela.fimMin);
+      const ok = escalaAdicionarTarefaComumAoDia(novoDados, escolhido.codigo, d.key, 'chefe_turno', escalaAbsMinParaHora(cursor), escalaAbsMinParaHora(fimBloco));
+      if (ok) nomesUsados.add(escolhido.pessoa.nomeCompleto || escolhido.pessoa.username);
+      else semEspaco = true;
+      ultimaPessoaId = escolhido.pessoa.id; ultimaFim = fimBloco;
+      cursor = fimBloco;
+    }
+    if (nomesUsados.size) resumo.atribuidos.push(`${d.label}: ⭐ Chefe de Turno — ${[...nomesUsados].join(', ')} (repartido, máx. 4h seguidas)`);
+    if (semEspaco) resumo.semCandidato.push(`${d.label}: Chefe de Turno — algum troço já tinha 3 tarefas na célula, não coube`);
+    if (faltaCobertura) resumo.semCandidato.push(`${d.label}: Chefe de Turno — não foi possível cobrir todo o horário da farmácia (sem farmacêutico elegível presente nalgum troço)`);
+  }
   // Motor de atribuição em massa — pedido explícito 2026-08-17: "de forma
   // inteligente, atribuir essas tarefas às pessoas de acordo com uma
   // ordem/raciocínio a estabelecer". SÓ corre quando o botão "⚡ Atribuir
@@ -30008,13 +30103,14 @@ function buildHorariosPage(container, goTo) {
   // na semana inteira (qualquer posição/dia, incluindo atribuições
   // manuais) antes de recalcular do zero — nunca duplica/empilha tarefas
   // de corridas anteriores; outros tipos (Conferência/Reunião/Outro) nunca
-  // são tocados. Por dia: Chefe de Turno cobre o turno INTEIRO da pessoa
-  // escolhida (todos os segmentos, como o atalho "Todo o Horário" da
-  // Atribuição Rápida); Encomenda da Manhã/Tarde só entra quando o horário
-  // sugerido (11:00-12:00 / 18:00-19:00) cabe dentro de um segmento do
-  // turno da MESMA pessoa nesse dia — nunca força um horário fora do turno
-  // real; quando não cabe, fica de fora e é reportado no resumo para
-  // atribuição manual.
+  // são tocados. Por dia: Chefe de Turno é REPARTIDO por todo o horário da
+  // farmácia (pedido explícito 2026-08-17), nunca mais de 4h seguidas pela
+  // mesma pessoa, com intervalo obrigatório antes de repetir alguém — ver
+  // escalaAtribuirChefeDeTurnoDia; Encomenda da Manhã/Tarde só entra
+  // quando o horário sugerido (11:00-12:00 / 18:00-19:00) cabe dentro de
+  // um segmento do turno da MESMA pessoa nesse dia — nunca força um
+  // horário fora do turno real; quando não cabe, fica de fora e é
+  // reportado no resumo para atribuição manual.
   async function escalaAtribuirTarefasComunsSemana(semana) {
     if (escalaSemanaEstaCongelada(semana)) { showToast('Esta semana está congelada e não pode ser editada.', 'error'); return null; }
     const TIPOS_COMUNS = ['chefe_turno', 'encomenda_manha', 'encomenda_tarde'];
@@ -30032,22 +30128,7 @@ function buildHorariosPage(container, goTo) {
     });
     const resumo = { atribuidos: [], semCandidato: [] };
     ESCALA_DIAS.forEach(d => {
-      const chefe = escalaPessoaDoDiaParaTarefa(semana, d.key, 'chefe_turno');
-      if (chefe) {
-        const alvo = escalaVagaDoColaboradorNoDia(semana, d.key, chefe.id);
-        const nomeChefe = chefe.nomeCompleto || chefe.username;
-        if (alvo) {
-          let algumSegmento = false, semEspaco = false;
-          escalaSegmentosTurnoAbsolutos(alvo.dia).forEach(seg => {
-            const ok = escalaAdicionarTarefaComumAoDia(novoDados, alvo.codigo, d.key, 'chefe_turno', escalaAbsMinParaHora(seg.inicioMin), escalaAbsMinParaHora(seg.fimMin));
-            if (ok) algumSegmento = true; else semEspaco = true;
-          });
-          if (algumSegmento) resumo.atribuidos.push(`${d.label}: ⭐ Chefe de Turno — ${nomeChefe}`);
-          if (semEspaco) resumo.semCandidato.push(`${d.label}: Chefe de Turno — turno de ${nomeChefe} já tem 3 tarefas nalgum troço`);
-        }
-      } else {
-        resumo.semCandidato.push(`${d.label}: Chefe de Turno — ninguém elegível presente`);
-      }
+      escalaAtribuirChefeDeTurnoDia(semana, d, novoDados, resumo);
       const encomenda = escalaPessoaDoDiaParaTarefa(semana, d.key, 'encomenda');
       if (encomenda) {
         const alvo = escalaVagaDoColaboradorNoDia(semana, d.key, encomenda.id);
