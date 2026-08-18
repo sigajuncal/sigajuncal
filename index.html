@@ -6108,7 +6108,7 @@ function abrirItemCalendarioDashboard(item, dateISO, goTo) {
     // com vagas — que não tem nenhum campo específico para Dias
     // Especiais além de "Notas").
     if (item.evento.tipoEvento === 'DiaEspecial') {
-      document.body.appendChild(buildDiaEspecialModal(dateISO, item.evento, () => {}));
+      document.body.appendChild(buildDiaEspecialViewModal(dateISO, item.evento, () => {}));
     } else {
       document.body.appendChild(buildEventoDiaModal(item.evento.tipoEvento, dateISO, item.evento, () => {}));
     }
@@ -14317,7 +14317,7 @@ function buildHomepage(container, goTo) {
         titulo: eventoLabel(ev),
         subtitulo: h('span', {}, [buildBadgeEvento(ev, aDecorrer), vagasSpan]),
         aDecorrer,
-        onClick: () => document.body.appendChild(ev.tipoEvento === 'DiaEspecial' ? buildDiaEspecialModal(ev.dataEvento, ev, () => {}) : buildEventoDiaModal(ev.tipoEvento, ev.dataEvento, ev, () => {})),
+        onClick: () => document.body.appendChild(ev.tipoEvento === 'DiaEspecial' ? buildDiaEspecialViewModal(ev.dataEvento, ev, () => {}) : buildEventoDiaModal(ev.tipoEvento, ev.dataEvento, ev, () => {})),
       };
     }),
   });
@@ -20501,6 +20501,69 @@ function buildEventoCalendarioCarrossel(tipo, onDayClick) {
   render();
   return wrap;
 }
+// Normaliza um URL externo colado pelo utilizador (ex: campo Link dos Dias
+// Especiais) — aceita colar sem "https://" à frente (ex: "forms.gle/xyz")
+// e antepõe-o automaticamente; nunca mexe num URL que já tem esquema
+// (http/https/mailto/tel, etc.). Devolve '' para uma string vazia — nunca
+// lança exceção, ao contrário do que faltava aqui antes (2026-08-18, BUG:
+// esta função era chamada em 2 sítios mas nunca chegou a ser definida —
+// clicar em "Guardar alterações" com um Link preenchido rebentava um erro
+// não apanhado a meio do submit(), deixando o botão preso para sempre em
+// "A guardar…" sem gravar nada nem mostrar erro).
+function normalizarUrlExterna(url) {
+  const limpo = String(url || '').trim();
+  if (!limpo) return '';
+  if (/^[a-z][a-z0-9+.-]*:/i.test(limpo)) return limpo; // já tem esquema (http:, https:, mailto:, tel:...)
+  return `https://${limpo}`;
+}
+// Modal de VISTA de um Dia Especial (2026-08-18, pedido explícito) — só
+// leitura: Título, Data, Descrição, Responsável e um botão "Abrir Link"
+// quando há um link guardado. Aberto a partir do Calendário/"Próximo
+// Evento" da Página Inicial, e agora também da própria página "Dias
+// Especiais" — clicar num dia com iniciativa já registada NUNCA entra
+// logo em modo de edição; "Editar" é sempre um botão explícito, mesmo
+// padrão do resto da app (Rastreios/Conselheira já funcionavam assim,
+// só os Dias Especiais abriam sempre direto no formulário).
+function buildDiaEspecialViewModal(dateISO, evento, onSaved) {
+  const overlay = h('div', { class: 'modal-overlay' });
+  function close() { document.removeEventListener('keydown', onKeydown); overlay.remove(); }
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  function onKeydown(e) { if (e.key === 'Escape') close(); }
+  document.addEventListener('keydown', onKeydown);
+
+  const linkNormalizado = evento.link ? normalizarUrlExterna(evento.link) : '';
+  const abrirLinkBtn = linkNormalizado ? h('button', { class: 'btn btn-secondary', onclick: () => window.open(linkNormalizado, '_blank', 'noopener') }, [Icon('external-link', { size: 16 }), ' Abrir Link']) : null;
+  // Descrição preserva quebras de linha (o texto foi escrito num
+  // <textarea>) — cada linha vira o seu próprio parágrafo, nunca tudo
+  // corrido numa única linha.
+  const descricaoNode = evento.notas
+    ? h('div', {}, String(evento.notas).split('\n').map(linha => h('p', { style: 'margin:0 0 4px;' }, linha || '\u00A0')))
+    : h('p', { class: 'field-helper-text', style: 'margin:0;' }, 'Sem descrição.');
+
+  function editar() {
+    close();
+    document.body.appendChild(buildDiaEspecialModal(dateISO, evento, onSaved));
+  }
+  const editarBtn = h('button', { class: 'btn btn-primary', onclick: () => requireAuth(editar) }, [Icon('pencil', { size: 15 }), ' Editar']);
+  const fecharBtn = h('button', { class: 'btn btn-secondary', onclick: close }, 'Fechar');
+
+  const panel = h('div', { class: 'modal-panel', style: 'max-width:520px;' }, [
+    h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;' }, [
+      h('p', { class: 'modal-title', style: 'margin:0;' }, evento.titulo || 'Dia Especial'),
+      h('button', { class: 'close-btn', onclick: close, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
+    ]),
+    h('p', { class: 'field-helper-text', style: 'margin:0 0 16px;' }, formatDate(evento.dataEvento || dateISO)),
+    h('div', { style: 'margin-bottom:14px;' }, [
+      h('p', { class: 'page-eyebrow', style: 'margin:0 0 4px;font-size:11.5px;' }, 'Descrição / Informação de Balcão'),
+      descricaoNode,
+    ]),
+    evento.responsavel ? h('p', { style: 'margin:0 0 14px;font-size:13px;color:var(--pharm-600);' }, [h('strong', {}, 'Responsável: '), evento.responsavel]) : null,
+    h('div', { class: 'form-actions' }, [editarBtn, abrirLinkBtn, fecharBtn].filter(Boolean)),
+  ].filter(Boolean));
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+  return overlay;
+}
 
 /* ---- Modal do "dia de evento": configuração inicial (se ainda não
    existir) ou grelha de vagas (Agenda-style: marcar, bloquear/
@@ -20572,21 +20635,30 @@ function buildDiaEspecialModal(dateISO, evento, onSaved) {
     if (!draft.data) { errorEl.textContent = 'Por favor, indique a Data.'; errorEl.style.display = ''; return; }
     errorEl.style.display = 'none';
     saveBtn.disabled = true; saveBtn.textContent = 'A guardar…';
-    const payload = {
-      tipoEvento: 'DiaEspecial', titulo: draft.titulo, dataEvento: draft.data,
-      notas: draft.notas, responsavel: draft.responsavel || currentUserName(),
-      link: String(draft.link || '').trim() ? normalizarUrlExterna(draft.link) : '',
-    };
-    const resultado = evento ? await dbUpdate('eventos', evento.id, payload) : await dbInsert('eventos', payload);
-    if (resultado) {
-      STATE.eventos = evento ? STATE.eventos.map(e => e.id === evento.id ? resultado : e) : [resultado, ...STATE.eventos];
-      close();
-      if (onSaved) onSaved();
-    } else {
-      saveBtn.disabled = false; saveBtn.textContent = evento ? 'Guardar alterações' : 'Registar Iniciativa';
+    // try/catch de segurança (2026-08-18) — sem isto, qualquer erro
+    // inesperado a meio (ex: o bug real encontrado aqui, normalizarUrlExterna
+    // chamada mas nunca definida) deixava o botão preso para sempre em "A
+    // guardar…", sem gravar nada nem mostrar erro nenhum ao utilizador.
+    try {
+      const payload = {
+        tipoEvento: 'DiaEspecial', titulo: draft.titulo, dataEvento: draft.data,
+        notas: draft.notas, responsavel: draft.responsavel || currentUserName(),
+        link: String(draft.link || '').trim() ? normalizarUrlExterna(draft.link) : '',
+      };
+      const resultado = evento ? await dbUpdate('eventos', evento.id, payload) : await dbInsert('eventos', payload);
+      if (resultado) {
+        STATE.eventos = evento ? STATE.eventos.map(e => e.id === evento.id ? resultado : e) : [resultado, ...STATE.eventos];
+        close();
+        if (onSaved) onSaved();
+        return;
+      }
       errorEl.textContent = `Não foi possível guardar. ${lastDbError || 'Verifique a ligação e tente novamente.'}`;
-      errorEl.style.display = '';
+    } catch (e) {
+      console.error('[Dia Especial] erro ao guardar:', e);
+      errorEl.textContent = 'Ocorreu um erro inesperado ao guardar. Tente novamente.';
     }
+    saveBtn.disabled = false; saveBtn.textContent = evento ? 'Guardar alterações' : 'Registar Iniciativa';
+    errorEl.style.display = '';
   }
   function eliminar() {
     if (!evento) return;
@@ -21338,10 +21410,14 @@ function buildEventoTipoPage(container, goTo, tipo) {
   function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
   function onDayClick(dateISO, isPast, ev) {
     if (ehDiaEspecial) {
-      // Dias Especiais não têm vagas nem vista de histórico bloqueada —
-      // qualquer dia pode abrir o formulário simplificado, mesmo no
-      // passado, para consultar ou corrigir uma iniciativa já registada.
-      document.body.appendChild(buildDiaEspecialModal(dateISO, ev || null, rerender));
+      // Dias Especiais (2026-08-18, pedido explícito): clicar num dia com
+      // iniciativa já registada abre primeiro a VISTA (só leitura, com
+      // botão "Editar" explícito) — nunca entra logo em modo de edição,
+      // mesmo padrão agora usado em toda a app para este tipo de evento.
+      // Um dia ainda sem iniciativa (ev vazio) vai direto ao formulário,
+      // já que não há nada para "consultar" primeiro.
+      if (ev) document.body.appendChild(buildDiaEspecialViewModal(dateISO, ev, rerender));
+      else document.body.appendChild(buildDiaEspecialModal(dateISO, null, rerender));
       return;
     }
     if (isPast && !ev) return; // dias passados sem evento não abrem nada
