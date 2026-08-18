@@ -8070,6 +8070,22 @@ async function dbMarcarRecadoTratado(id) {
     return rowToRecord(data);
   } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error('[Supabase] erro de rede ao marcar recado como tratado:', formatarErroSeguro(e)); return null; }
 }
+// Atualização genérica de um recado já existente — usada quando uma
+// notificação já enviada precisa de refletir uma alteração no registo a
+// que se refere (ex: nota de "Pedidos e Registos da Semana" editada,
+// 2026-08-18, pedido explícito: "quando é editada, notificação reflete
+// edição") em vez de criar uma notificação nova a acumular ao lado da
+// antiga.
+async function dbAtualizarRecado(id, patch) {
+  if (!sb) { lastDbError = 'Cliente Supabase indisponível.'; return null; }
+  try {
+    const rowBase = recordToRow(patch);
+    const { data, error } = await comAutoLimpezaDeColunas('gavetaRecados', rowBase,
+      (row) => sb.from('gaveta_recados').update(row).eq('id', id).select().single());
+    if (error) { lastDbError = error.message; console.error('[Supabase] erro ao atualizar recado:', error.message); return null; }
+    return rowToRecord(data);
+  } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error('[Supabase] erro de rede ao atualizar recado:', formatarErroSeguro(e)); return null; }
+}
 // Marca uma das duas colunas de "vista no widget da Home" (ver
 // ultimaNotifFoiDescartada/descartarUltimaNotificacao) — campo é sempre
 // 'notifVistaRecebida' ou 'notifVistaConcluida', nunca outro valor.
@@ -13586,20 +13602,37 @@ function abrirModalGaveta(abrirThreadInicial) {
     else showDbErrorToast('Não foi possível marcar a tarefa como concluída');
   }
   // Validação rápida direto da Gaveta (item 7) — quando o recado referencia
-  // uma nota de "Escala da Equipa" (referenciaTabela==='escala_notas_semana'),
-  // Hugo/Paulo podem marcá-la como "Visto/Validado pela Direção" sem sair
-  // da Gaveta nem navegar até à escala; a própria tarefa na Gaveta também
-  // fica marcada como tratada, ao mesmo tempo.
+  // um registo de "Pedidos e Registos da Semana" (referenciaTabela===
+  // 'escala_notas_semana'), Hugo/Paulo podem marcá-lo como "Validado pela
+  // Direção" sem sair da Gaveta nem navegar até à escala; a própria tarefa
+  // na Gaveta também fica marcada como tratada, ao mesmo tempo. CORRIGIDO
+  // (2026-08-18): agora replica exatamente a mesma auto-atribuição no
+  // horário que já existia só na validação feita dentro de Horários (ver
+  // alternarValidacaoNotaEquipa) — antes, validar um pedido de "Atribuição
+  // de Tarefa" por aqui deixava sempre a tarefa por agendar, mesmo quando
+  // a validação em Horários teria conseguido atribuí-la sozinha.
   async function marcarNotaEquipaVistaViaGaveta(r) {
     if (!isMasterUser() || !r.referenciaId) return;
+    const notaAtual = (STATE.escalaNotasSemana || []).find(n => n.id === r.referenciaId);
     const patch = { validadoDirecao: true, validadoPor: activeUser.nomeCompleto || activeUser.username, validadoEm: new Date().toISOString() };
+    if (notaAtual && notaAtual.tipo === 'tarefa' && !notaAtual.aplicadoHorario) {
+      const resultado = escalaAplicarTarefaPedidoNoHorario(notaAtual);
+      if (resultado.ok) {
+        const semanaUpdated = await dbUpdate('escalaSemanas', resultado.semana.id, { dados: resultado.novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() });
+        if (!semanaUpdated) { showDbErrorToast('Não foi possível atribuir a tarefa no horário — validação cancelada'); return; }
+        STATE.escalaSemanas = (STATE.escalaSemanas || []).map(s => s.id === semanaUpdated.id ? semanaUpdated : s);
+        patch.aplicadoHorario = true;
+      } else {
+        showToast(`Validado, mas não foi possível atribuir sozinha (${escalaMensagemErroPedidoTarefa(resultado.motivo)}) — agende a tarefa manualmente.`, 'error');
+      }
+    }
     const updatedNota = await dbUpdate('escalaNotasSemana', r.referenciaId, patch);
     if (!updatedNota) { showDbErrorToast('Não foi possível validar a nota'); return; }
     STATE.escalaNotasSemana = (STATE.escalaNotasSemana || []).map(n => n.id === r.referenciaId ? updatedNota : n);
     const updatedRecado = await dbMarcarRecadoTratado(r.id);
     if (updatedRecado) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === r.id ? updatedRecado : x);
-    await notificarAutorNotaValidada(updatedNota);
-    showToast('Nota validada pela Direção.', 'success');
+    await notificarAutorNotaValidada(updatedNota, true);
+    showToast('Pedido validado pela Direção.', 'success');
     render();
   }
   function eliminarRecado(r) {
@@ -26853,10 +26886,17 @@ async function notificarDirecaoPedidoEspecial(pedido, acaoTexto) {
   if (!destinatarios.length) return;
   const dataTexto = pedido.dataInicio === pedido.dataFim ? formatDate(pedido.dataInicio) : `${formatDate(pedido.dataInicio)} a ${formatDate(pedido.dataFim)}`;
   const mensagem = `${pedido.colaboradorNome || 'Um colaborador'} ${acaoTexto} um Pedido Especial para ${dataTexto} (${escalaMotivoPedidoTexto(pedido)}).`;
-  await Promise.all(destinatarios.map(u => dbInsert('gavetaRecados', {
+  // BUG CORRIGIDO (2026-08-18): usava dbInsert('gavetaRecados', ...), mas
+  // 'gavetaRecados' NUNCA esteve mapeado em TABLES (gaveta_recados é
+  // tabela bespoke, com funções próprias — ver dbInsertRecado) — o
+  // dbInsert falhava sempre, silenciosamente (sb.from(undefined)),
+  // por isso estas notificações à Direção nunca chegavam a ser criadas.
+  const criados = await Promise.all(destinatarios.map(u => dbInsertRecado({
     remetenteId: pedido.colaboradorId, destinatarioId: u.id, mensagem, tratado: false, tipo: 'tarefa',
     referenciaTabela: 'escala_pedidos_especiais', referenciaId: pedido.id,
   })));
+  const novos = criados.filter(Boolean);
+  if (novos.length) STATE.gavetaRecados = [...novos, ...(STATE.gavetaRecados || [])];
 }
 // ---- Horas Extra Disponíveis (pedido explícito 2026-08-10) ----
 // O Diretor Técnico/Administrador disponibiliza um bloco de horas (com
@@ -26991,6 +27031,24 @@ function escalaValidarPedidoTarefaContraTurno(semana, dataISO, autorId, horaInic
   if (sobrepoe) return { ok: false, motivo: 'sobrepõe-se a uma tarefa já atribuída nesse turno', diaInfo, vaga, existentes };
   return { ok: true, diaInfo, vaga, existentes };
 }
+// Traduz o `motivo` (curto, técnico) de escalaValidarPedidoTarefaContraTurno
+// numa frase legível — nível de topo de propósito, para ser reutilizada
+// tanto no formulário/validação dentro de Horários (buildHorariosPage)
+// como no atalho de validação rápida via Gaveta (marcarNotaEquipaVistaViaGaveta).
+function escalaMensagemErroPedidoTarefa(motivo) {
+  const mapa = {
+    'a semana ainda não foi gerada': 'Esta semana ainda não tem horário gerado.',
+    'a semana já passou': 'Esta semana já passou — o histórico está congelado.',
+    'a data pedida não pertence a esta semana': 'Escolha uma data dentro desta semana.',
+    'sem turno normal nesse dia': 'Não tem nenhum turno normal registado nesse dia — não é possível pedir uma tarefa.',
+    'indique o horário': 'Indique a Hora de Início e de Fim.',
+    'o Fim tem de ser depois do Início': 'O Fim tem de ser depois do Início.',
+    'o horário não cabe no turno (ou atravessa a pausa)': 'Esse horário não cabe no seu turno nesse dia (ou atravessa a Pausa/Almoço).',
+    'esse turno já tem as 3 tarefas possíveis': 'Esse turno já tem o máximo de 3 tarefas atribuídas.',
+    'sobrepõe-se a uma tarefa já atribuída nesse turno': 'Esse horário sobrepõe-se a uma tarefa já atribuída nesse turno.',
+  };
+  return mapa[motivo] || motivo;
+}
 // Auto-atribuição no horário de um pedido de "Atribuição de Tarefa" (ver
 // ESCALA_TIPOS_PEDIDO_SEMANA/buildFeedNotasEquipa) — chamada ao validar o
 // pedido pela Direção. Sempre "melhor esforço", nunca bloqueia a
@@ -27090,10 +27148,14 @@ async function notificarDirecaoHorasExtra(bloco, utilizador, intervaloTexto, aca
   if (!destinatarios.length) return;
   const diaInfo = ESCALA_DIAS.find(d => d.key === bloco.diaKey);
   const mensagem = `${utilizador.nomeCompleto || utilizador.username} ${acaoTexto} ${intervaloTexto} das Horas Extra de ${diaInfo ? diaInfo.label : bloco.diaKey} (${bloco.horaInicio}-${bloco.horaFim}).`;
-  await Promise.all(destinatarios.map(u => dbInsert('gavetaRecados', {
+  // BUG CORRIGIDO (2026-08-18): ver nota em notificarDirecaoPedidoEspecial
+  // — mesmo problema, dbInsert('gavetaRecados', ...) falhava sempre.
+  const criados = await Promise.all(destinatarios.map(u => dbInsertRecado({
     remetenteId: utilizador.id, destinatarioId: u.id, mensagem, tratado: false, tipo: 'tarefa',
     referenciaTabela: 'escala_horas_extra', referenciaId: bloco.id,
   })));
+  const novos = criados.filter(Boolean);
+  if (novos.length) STATE.gavetaRecados = [...novos, ...(STATE.gavetaRecados || [])];
 }
 // Notifica o AUTOR de uma nota de "Escala da Equipa" assim que a Direção
 // a valida — usada tanto pela validação rápida via Gaveta
@@ -27113,12 +27175,15 @@ async function notificarAutorNotaValidada(nota, validada) {
   if (!nota || !nota.autorId || String(nota.autorId) === String(activeUser.id)) return;
   const resumo = (nota.texto || '').slice(0, 80) + ((nota.texto || '').length > 80 ? '…' : '');
   const mensagem = validada
-    ? `A sua nota em "Escala da Equipa" foi validada pela Direção: "${resumo}"`
-    : `A validação da sua nota em "Escala da Equipa" foi anulada pela Direção: "${resumo}"`;
-  await dbInsert('gavetaRecados', {
+    ? `O seu pedido em "Pedidos e Registos da Semana" foi validado pela Direção: "${resumo}"`
+    : `A validação do seu pedido em "Pedidos e Registos da Semana" foi anulada pela Direção: "${resumo}"`;
+  // BUG CORRIGIDO (2026-08-18): ver nota em notificarDirecaoPedidoEspecial
+  // — mesmo problema, dbInsert('gavetaRecados', ...) falhava sempre.
+  const criado = await dbInsertRecado({
     remetenteId: activeUser.id, destinatarioId: nota.autorId,
     mensagem, tratado: false, tipo: 'tarefa', referenciaTabela: 'escala_notas_semana', referenciaId: nota.id,
   });
+  if (criado) STATE.gavetaRecados = [criado, ...(STATE.gavetaRecados || [])];
 }
 // Referências de gaveta_recados que aparecem também no separador
 // "Notificações" de Lembretes — Horas Extra Disponíveis
@@ -29160,6 +29225,14 @@ function buildHorariosPage(container, goTo) {
   // nunca fixado aqui de uma vez por todas (ver "clamp" logo no início
   // dessa função).
   let novoPedidoData = '';
+  // Enquanto false, a Data do formulário segue automaticamente o dia
+  // selecionado nos separadores da Timeline logo acima (diaVerticalSelecionado
+  // — pedido explícito 2026-08-18: "quando altero dia em cima, a data
+  // deve ajustar dinamicamente em baixo também"); assim que o próprio
+  // colaborador edita a Data à mão, fica true e o campo passa a ser
+  // inteiramente dele — deixa de saltar sozinho atrás dos separadores.
+  // Volta a false ao enviar o pedido (novo pedido, novo acompanhamento).
+  let novoPedidoDataManual = false;
   let novoPedidoHoraInicio = '';
   let novoPedidoHoraFim = '';
   let novoPedidoTarefaTipo = 'conferencia';
@@ -29588,14 +29661,44 @@ function buildHorariosPage(container, goTo) {
     if (!activeUser) return;
     const destinatarios = usuariosDirecao().filter(u => String(u.id) !== String(activeUser.id));
     const trecho = nota.texto.length > 140 ? nota.texto.slice(0, 140) + '…' : nota.texto;
-    const mensagem = `${nota.autorNome || 'Um colaborador'} ${acaoTexto} em "Escala da Equipa" (semana de ${formatDate(nota.semanaInicio)}): "${trecho}"`;
-    await Promise.all(destinatarios.map(u => dbInsert('gavetaRecados', {
-      remetenteId: activeUser.id, destinatarioId: u.id, mensagem, tratado: false, tipo: 'tarefa',
-      referenciaTabela: 'escala_notas_semana', referenciaId: nota.id,
-    })));
+    const mensagem = `${nota.autorNome || 'Um colaborador'} ${acaoTexto} em "Pedidos e Registos da Semana" (semana de ${formatDate(nota.semanaInicio)}): "${trecho}"`;
+    // BUG CORRIGIDO (2026-08-18): usava dbInsert('gavetaRecados', ...), que
+    // falhava sempre — 'gavetaRecados' nunca esteve mapeado em TABLES
+    // (ver notificarDirecaoPedidoEspecial) — estas notificações nunca
+    // chegavam mesmo a ser criadas na base de dados.
+    // Ao mesmo tempo, pedido explícito 2026-08-18: quando o pedido é
+    // EDITADO, a notificação já enviada deve refletir a edição (não
+    // acumular uma notificação nova ao lado da antiga, com texto
+    // desatualizado) — por isso, para cada destinatário, atualiza a
+    // notificação já existente referente a este pedido (se houver) em vez
+    // de criar sempre uma nova; só cria de novo se ainda não existir
+    // nenhuma para essa pessoa (o caso normal na criação do pedido).
+    const existentes = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_notas_semana' && String(r.referenciaId) === String(nota.id));
+    const resultados = await Promise.all(destinatarios.map(async u => {
+      const existente = existentes.find(r => String(r.destinatarioId) === String(u.id));
+      if (existente) return { tipo: 'update', registo: await dbAtualizarRecado(existente.id, { mensagem, tratado: false, tratadoEm: null }) };
+      return { tipo: 'novo', registo: await dbInsertRecado({ remetenteId: activeUser.id, destinatarioId: u.id, mensagem, tratado: false, tipo: 'tarefa', referenciaTabela: 'escala_notas_semana', referenciaId: nota.id }) };
+    }));
+    resultados.forEach(({ tipo, registo }) => {
+      if (!registo) return;
+      STATE.gavetaRecados = tipo === 'update'
+        ? STATE.gavetaRecados.map(r => r.id === registo.id ? registo : r)
+        : [registo, ...(STATE.gavetaRecados || [])];
+    });
     // Best-effort: se a Gaveta estiver aberta na sessão do próprio autor,
     // o Realtime já trata de mostrar a notificação aos destinatários —
-    // aqui só se garante que o pedido de INSERT foi mesmo disparado.
+    // aqui só se garante que o pedido de INSERT/UPDATE foi mesmo disparado.
+  }
+  // Elimina TODAS as notificações da Gaveta já enviadas por causa deste
+  // pedido — pedido explícito 2026-08-18: "quando responsável por pedido
+  // elimina a notificação também desaparece para Paulo/Hugo". Recados são
+  // sempre hard delete (ver dbEliminarRecado), nunca passam pelo Lixo.
+  async function eliminarNotificacoesNotaEquipa(nota) {
+    const alvos = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_notas_semana' && String(r.referenciaId) === String(nota.id));
+    if (!alvos.length) return;
+    await Promise.all(alvos.map(r => dbEliminarRecado(r.id)));
+    const idsAlvo = new Set(alvos.map(r => r.id));
+    STATE.gavetaRecados = (STATE.gavetaRecados || []).filter(r => !idsAlvo.has(r.id));
   }
   // Ordenação do feed (pedido explícito 2026-08-18): registos já
   // VALIDADOS pela Direção sobem sempre para o topo — "para não passarem
@@ -29617,24 +29720,6 @@ function buildHorariosPage(container, goTo) {
     const info = escalaTarefaInfo(novoPedidoTarefaTipo);
     const label = novoPedidoTarefaTipo === 'outro' ? (novoPedidoTarefaDescricao || 'Outro') : (info ? info.label : '');
     return `Pedido de tarefa: ${label} em ${formatDate(novoPedidoData)} das ${novoPedidoHoraInicio} às ${novoPedidoHoraFim}.`;
-  }
-  // Traduz o `motivo` (curto, técnico) de escalaValidarPedidoTarefaContraTurno
-  // numa frase legível para o formulário — mensagem única reutilizada em
-  // ambos os pontos que usam essa validação (aqui e o preview em tempo
-  // real, ver buildFeedNotasEquipa).
-  function escalaMensagemErroPedidoTarefa(motivo) {
-    const mapa = {
-      'a semana ainda não foi gerada': 'Esta semana ainda não tem horário gerado.',
-      'a semana já passou': 'Esta semana já passou — o histórico está congelado.',
-      'a data pedida não pertence a esta semana': 'Escolha uma data dentro desta semana.',
-      'sem turno normal nesse dia': 'Não tem nenhum turno normal registado nesse dia — não é possível pedir uma tarefa.',
-      'indique o horário': 'Indique a Hora de Início e de Fim.',
-      'o Fim tem de ser depois do Início': 'O Fim tem de ser depois do Início.',
-      'o horário não cabe no turno (ou atravessa a pausa)': 'Esse horário não cabe no seu turno nesse dia (ou atravessa a Pausa/Almoço).',
-      'esse turno já tem as 3 tarefas possíveis': 'Esse turno já tem o máximo de 3 tarefas atribuídas.',
-      'sobrepõe-se a uma tarefa já atribuída nesse turno': 'Esse horário sobrepõe-se a uma tarefa já atribuída nesse turno.',
-    };
-    return mapa[motivo] || motivo;
   }
   async function criarNotaEquipa(semana, texto, aoTerminar) {
     if (!activeUser || notaEquipaSaving) return;
@@ -29662,7 +29747,7 @@ function buildHorariosPage(container, goTo) {
     if (created) {
       STATE.escalaNotasSemana = [...(STATE.escalaNotasSemana || []), created];
       notificarDirecaoNotaEquipa(created, 'criou um novo registo');
-      novoPedidoTipo = 'nota'; novoPedidoData = ''; novoPedidoHoraInicio = ''; novoPedidoHoraFim = ''; novoPedidoTarefaTipo = 'conferencia'; novoPedidoTarefaDescricao = '';
+      novoPedidoTipo = 'nota'; novoPedidoData = ''; novoPedidoDataManual = false; novoPedidoHoraInicio = ''; novoPedidoHoraFim = ''; novoPedidoTarefaTipo = 'conferencia'; novoPedidoTarefaDescricao = '';
       if (aoTerminar) aoTerminar();
     }
     else escalaShowErro('Não foi possível guardar o registo');
@@ -29679,7 +29764,7 @@ function buildHorariosPage(container, goTo) {
     if (updated) {
       STATE.escalaNotasSemana = STATE.escalaNotasSemana.map(n => n.id === nota.id ? updated : n);
       notaEquipaEditandoId = null;
-      notificarDirecaoNotaEquipa(updated, 'editou uma nota');
+      notificarDirecaoNotaEquipa(updated, 'editou um registo');
     }
     else escalaShowErro('Não foi possível atualizar a nota');
     rerender();
@@ -29693,7 +29778,11 @@ function buildHorariosPage(container, goTo) {
     if (!podeEliminar) { showToast('Não tem permissão para eliminar esta nota.', 'error'); rerender(); return; }
     confirmDialog('Eliminar esta nota? Esta ação não pode ser desfeita.', async () => {
       const ok = await dbDelete('escalaNotasSemana', nota.id);
-      if (ok) { STATE.escalaNotasSemana = STATE.escalaNotasSemana.filter(n => n.id !== nota.id); showToast('Nota eliminada.', 'success'); }
+      if (ok) {
+        STATE.escalaNotasSemana = STATE.escalaNotasSemana.filter(n => n.id !== nota.id);
+        await eliminarNotificacoesNotaEquipa(nota);
+        showToast('Nota eliminada.', 'success');
+      }
       else escalaShowErro('Não foi possível eliminar a nota');
       rerender();
     }, { danger: true, confirmLabel: 'Eliminar' });
@@ -29846,23 +29935,29 @@ function buildHorariosPage(container, goTo) {
       // próprio calendário impede escolher um dia fora daqui.
       const semanaMinISO = semana.semanaInicio;
       const semanaMaxISO = escalaDataDoDia(semana.semanaInicio, 'dom');
-      // Predefinição/correção automática da Data (pedido explícito
-      // 2026-08-18): hoje, se a semana em vista for a semana corrente
-      // (hoje cai dentro dela); senão a Segunda-feira dessa semana. Corre
-      // a cada render — assim, se o colaborador mudar de semana a meio do
-      // preenchimento, a data nunca fica "presa" fora dos limites da nova
-      // semana (o próprio min/max do calendário impede o utilizador de a
-      // pôr lá manualmente, mas o valor de partida também tem de se
-      // ajustar sozinho).
-      if (!novoPedidoData || novoPedidoData < semanaMinISO || novoPedidoData > semanaMaxISO) {
+      // Predefinição/acompanhamento automático da Data (pedido explícito
+      // 2026-08-18): enquanto o colaborador não editar a Data à mão
+      // (novoPedidoDataManual===false), segue sempre o dia selecionado
+      // nos separadores da Timeline logo acima (diaVerticalSelecionado)
+      // — muda de separador em cima, muda a Data aqui em baixo. Assim que
+      // edita a Data diretamente, o campo passa a ser dela (deixa de
+      // seguir os separadores) — só volta a seguir depois de enviar o
+      // pedido (reset) ou se ficar fora dos limites da semana (ex: mudou
+      // de semana a meio do preenchimento), caso em que recai em hoje/
+      // Segunda-feira, tal como antes.
+      if (!novoPedidoDataManual) {
+        const diaKeyAtivo = ESCALA_DIAS.some(d => d.key === diaVerticalSelecionado) ? diaVerticalSelecionado : 'seg';
+        novoPedidoData = escalaDataDoDia(semana.semanaInicio, diaKeyAtivo);
+      } else if (!novoPedidoData || novoPedidoData < semanaMinISO || novoPedidoData > semanaMaxISO) {
         const hojeISO = todayISO();
         novoPedidoData = (hojeISO >= semanaMinISO && hojeISO <= semanaMaxISO) ? hojeISO : semanaMinISO;
+        novoPedidoDataManual = false;
       }
 
       let previewEl = null;
       if (novoPedidoTipo === 'tarefa') {
         const dataInput = h('input', { class: 'input', type: 'date', min: semanaMinISO, max: semanaMaxISO }); dataInput.value = novoPedidoData;
-        dataInput.addEventListener('change', () => { novoPedidoData = dataInput.value; novoPedidoErro = ''; rerender(); });
+        dataInput.addEventListener('change', () => { novoPedidoData = dataInput.value; novoPedidoDataManual = true; novoPedidoErro = ''; rerender(); });
         const horaIniInput = h('input', { class: 'input', type: 'time' }); horaIniInput.value = novoPedidoHoraInicio;
         horaIniInput.addEventListener('change', () => { novoPedidoHoraInicio = horaIniInput.value; novoPedidoErro = ''; rerender(); });
         const horaFimInput = h('input', { class: 'input', type: 'time' }); horaFimInput.value = novoPedidoHoraFim;
@@ -29906,7 +30001,7 @@ function buildHorariosPage(container, goTo) {
         }
       } else if (novoPedidoTipo === 'troca' || novoPedidoTipo === 'banco') {
         const dataInput = h('input', { class: 'input', type: 'date', min: semanaMinISO, max: semanaMaxISO }); dataInput.value = novoPedidoData;
-        dataInput.addEventListener('change', () => { novoPedidoData = dataInput.value; });
+        dataInput.addEventListener('change', () => { novoPedidoData = dataInput.value; novoPedidoDataManual = true; rerender(); });
         linha1.push(h('div', { class: 'field', style: 'width:150px;margin:0;' }, [h('label', {}, 'Data (opcional)'), melhorarInputData(dataInput)]));
       }
       linha2.push(h('div', { class: 'field span2', style: 'margin:0;' }, [h('label', {}, novoPedidoTipo === 'tarefa' ? 'Notas' : 'Descrição'), novoInput]));
