@@ -20472,8 +20472,8 @@ function buildDiaEspecialModal(dateISO, evento, onSaved) {
   document.addEventListener('keydown', onKeydown);
 
   const draft = evento
-    ? { titulo: evento.titulo || '', data: evento.dataEvento || dateISO, notas: evento.notas || '', responsavel: evento.responsavel || currentUserName() }
-    : { titulo: '', data: dateISO, notas: '', responsavel: currentUserName() };
+    ? { titulo: evento.titulo || '', data: evento.dataEvento || dateISO, notas: evento.notas || '', responsavel: evento.responsavel || currentUserName(), link: evento.link || '' }
+    : { titulo: '', data: dateISO, notas: '', responsavel: currentUserName(), link: '' };
 
   const tituloInput = h('input', { class: 'input', placeholder: 'Ex: Oferta de Guarda-chuvas, Dia da Marca...', maxlength: '150' });
   tituloInput.value = draft.titulo;
@@ -20491,11 +20491,30 @@ function buildDiaEspecialModal(dateISO, evento, onSaved) {
   respInput.value = draft.responsavel;
   respInput.addEventListener('input', () => { draft.responsavel = respInput.value; });
 
+  // Link opcional (ex: página de inscrições) — botão "Abrir" ao lado só
+  // fica ativo quando há um URL preenchido; normalizarUrlExterna() aceita
+  // colar o endereço sem "https://" à frente.
+  const linkInput = h('input', { class: 'input', type: 'url', placeholder: 'https://...', maxlength: '500' });
+  linkInput.value = draft.link;
+  const abrirLinkBtn = h('button', { type: 'button', class: 'btn btn-secondary', title: 'Abrir link numa nova aba' }, [Icon('external-link', { size: 16 }), ' Abrir']);
+  function atualizarEstadoBotaoLink() { abrirLinkBtn.disabled = !String(draft.link || '').trim(); }
+  linkInput.addEventListener('input', () => { draft.link = linkInput.value; atualizarEstadoBotaoLink(); });
+  abrirLinkBtn.addEventListener('click', () => {
+    const url = normalizarUrlExterna(draft.link);
+    if (url) window.open(url, '_blank', 'noopener');
+  });
+  atualizarEstadoBotaoLink();
+  const linkRow = h('div', { style: 'display:flex;gap:8px;align-items:flex-start;' }, [
+    h('div', { style: 'flex:1;' }, linkInput),
+    abrirLinkBtn,
+  ]);
+
   const grid = h('div', { class: 'form-grid' }, [
     h('div', { class: 'field span2' }, [h('label', {}, 'Título da Iniciativa'), tituloInput]),
     h('div', { class: 'field field-xs' }, [h('label', {}, 'Data'), melhorarInputData(dataInput)]),
     h('div', { class: 'field span2' }, [h('label', {}, 'Descrição / Informação de Balcão'), descInput]),
     h('div', { class: 'field field-sm' }, [h('label', {}, 'Responsável'), respInput]),
+    h('div', { class: 'field span2' }, [h('label', {}, 'Link (opcional — ex: página de inscrições)'), linkRow]),
   ]);
   attachFormEnterNavigation(grid, () => requireAuth(submit));
 
@@ -20509,6 +20528,7 @@ function buildDiaEspecialModal(dateISO, evento, onSaved) {
     const payload = {
       tipoEvento: 'DiaEspecial', titulo: draft.titulo, dataEvento: draft.data,
       notas: draft.notas, responsavel: draft.responsavel || currentUserName(),
+      link: String(draft.link || '').trim() ? normalizarUrlExterna(draft.link) : '',
     };
     const resultado = evento ? await dbUpdate('eventos', evento.id, payload) : await dbInsert('eventos', payload);
     if (resultado) {
@@ -24819,12 +24839,25 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_escala_rotacao_grupo_a_unico_colaborador_a
 --     validado_direcao/validado_por/validado_em: só Hugo/Paulo (Master)
 --     marcam/desmarcam — controlado inteiramente pela app (isMasterUser()),
 --     não pela base de dados.
+-- tipo/data_pedido/hora_inicio/hora_fim/tarefa_tipo/tarefa_descricao/
+-- aplicado_horario (2026-08-18, redesenho "Pedidos e Registos da Semana",
+-- pedido explícito): distinguem os 4 tipos de registo (nota/tarefa/troca/
+-- banco) — só 'tarefa' usa os campos de data/hora/tarefa_* e só essa é
+-- auto-atribuída no horário ao ser validada (aplicado_horario marca se
+-- resultou); os outros tipos ficam sempre só registados.
 CREATE TABLE IF NOT EXISTS escala_notas_semana (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   semana_inicio date NOT NULL,
   autor_id bigint REFERENCES usuarios_app(id) ON DELETE SET NULL,
   autor_nome text DEFAULT '',
   texto text NOT NULL DEFAULT '',
+  tipo text NOT NULL DEFAULT 'nota',
+  data_pedido date,
+  hora_inicio text,
+  hora_fim text,
+  tarefa_tipo text,
+  tarefa_descricao text,
+  aplicado_horario boolean NOT NULL DEFAULT false,
   validado_direcao boolean NOT NULL DEFAULT false,
   validado_por text DEFAULT '',
   validado_em timestamptz,
@@ -26288,6 +26321,24 @@ const ESCALA_TAREFAS_ESPECIAIS = [
   { key: 'encomenda', label: 'Encomenda (antiga)', icon: '📦', legado: true, cor: { bg: '#f1f5f9', border: '#cbd5e1', text: '#334155' } },
 ];
 function escalaTarefaInfo(tipoKey) { return ESCALA_TAREFAS_ESPECIAIS.find(t => t.key === tipoKey) || null; }
+// Tipos de pedido/registo do feed "Pedidos e Registos da Semana" (antigo
+// "Observações Partilhadas", redesenhado 2026-08-18, pedido explícito):
+// só o tipo 'tarefa' tem auto-atribuição no horário ao ser validado pela
+// Direção — os outros (troca/banco/nota) ficam sempre só registados, para
+// a Direção editar manualmente o que for preciso. Só as tarefas MANUAIS
+// (Conferência/Reunião/Outro) podem ser pedidas assim — Chefe de
+// Turno/Encomenda continuam exclusivas do motor de Tarefas Comuns.
+const ESCALA_TIPOS_PEDIDO_SEMANA = [
+  { key: 'nota', label: 'Aviso / Nota Geral', icon: '💬', ajuda: 'Um aviso à equipa, ou qualquer outra informação partilhada que não se encaixa nos tipos abaixo.' },
+  { key: 'tarefa', label: 'Atribuição de Tarefa', icon: '⭐', ajuda: 'Pede que uma tarefa sua (Conferência, Reunião ou Outra) seja agendada num dia/horário específico — ao ser validado, fica logo atribuída no horário oficial, sem precisar de edição manual.' },
+  { key: 'troca', label: 'Troca de Turno', icon: '🔁', ajuda: 'Informa uma troca de turno já combinada com um colega. Fica registado para constância (inclusive no PDF do horário), mas a grelha oficial continua a editar-se manualmente.' },
+  { key: 'banco', label: 'Descontar Horas de Banco', icon: '🕒', ajuda: 'Pede para descontar horas do seu saldo de Banco de Horas (ex: sair mais cedo num dia). Fica registado como pedido — a Direção é que ajusta depois o horário e o saldo.' },
+];
+function escalaPedidoTipoInfo(tipoKey) { return ESCALA_TIPOS_PEDIDO_SEMANA.find(t => t.key === tipoKey) || ESCALA_TIPOS_PEDIDO_SEMANA[0]; }
+// Tarefas MANUAIS elegíveis para o pedido "Atribuição de Tarefa" — nunca
+// Chefe de Turno/Encomenda (essas só pelo motor de Tarefas Comuns/edição
+// direta, ver escalaAdicionarTarefaComumAoDia).
+const ESCALA_TAREFAS_MANUAIS_PEDIVEIS = ESCALA_TAREFAS_ESPECIAIS.filter(t => ['conferencia', 'reuniao', 'outro'].includes(t.key));
 // Lista normalizada de tarefas de um "dia" (até 3) — usa `dia.tarefas`
 // quando existe (formato atual), senão cai para os campos singulares
 // antigos (dia.tarefaTipo/...), envolvidos num array de 1 item, para
@@ -26909,6 +26960,40 @@ function escalaVagaDoColaboradorNoDia(semana, diaKey, utilizadorId) {
     return { codigo, dia };
   }
   return null;
+}
+// Auto-atribuição no horário de um pedido de "Atribuição de Tarefa" (ver
+// ESCALA_TIPOS_PEDIDO_SEMANA/buildFeedNotasEquipa) — chamada ao validar o
+// pedido pela Direção. Sempre "melhor esforço", nunca bloqueia a
+// validação em si (ver alternarValidacaoNotaEquipa): se não conseguir
+// atribuir sozinha (semana ainda não gerada, sem turno normal nesse dia,
+// horário não cabe no turno/atravessa a pausa, ou já há 3 tarefas nesse
+// turno), devolve o motivo para a Direção agendar manualmente — pedido
+// fica validado na mesma, só sem `aplicadoHorario`.
+function escalaAplicarTarefaPedidoNoHorario(nota) {
+  const semana = (STATE.escalaSemanas || []).find(s => s.semanaInicio === nota.semanaInicio);
+  if (!semana) return { ok: false, motivo: 'a semana ainda não foi gerada' };
+  if (escalaSemanaEstaCongelada(semana)) return { ok: false, motivo: 'a semana já está publicada/congelada' };
+  const diaInfo = ESCALA_DIAS.find(d => escalaDataDoDia(semana.semanaInicio, d.key) === nota.dataPedido);
+  if (!diaInfo) return { ok: false, motivo: 'a data pedida não pertence a esta semana' };
+  const vaga = escalaVagaDoColaboradorNoDia(semana, diaInfo.key, nota.autorId);
+  if (!vaga) return { ok: false, motivo: 'sem turno normal nesse dia para atribuir a tarefa' };
+  const iniMin = escalaMinutosAbsolutos(nota.horaInicio, false);
+  const fimMin = escalaMinutosAbsolutos(nota.horaFim, true);
+  const cabe = escalaSegmentosTurnoAbsolutos(vaga.dia).some(s => iniMin >= s.inicioMin && fimMin <= s.fimMin);
+  if (!(fimMin > iniMin) || !cabe) return { ok: false, motivo: 'o horário pedido não cabe no turno (ou atravessa a pausa)' };
+  if (escalaTarefasDoDia(vaga.dia).length >= 3) return { ok: false, motivo: 'esse turno já tem as 3 tarefas possíveis' };
+  const novoDados = JSON.parse(JSON.stringify(semana.dados));
+  escalaAdicionarTarefaComumAoDia(novoDados, vaga.codigo, diaInfo.key, nota.tarefaTipo, nota.horaInicio, nota.horaFim);
+  // escalaAdicionarTarefaComumAoDia grava sempre `outro:''` — a descrição
+  // livre do pedido (só relevante quando tarefaTipo==='outro') entra a
+  // seguir, diretamente na última tarefa acabada de inserir.
+  if (nota.tarefaTipo === 'outro' && nota.tarefaDescricao) {
+    const dia = novoDados[vaga.codigo].dias[diaInfo.key];
+    const tarefas = escalaTarefasDoDia(dia);
+    tarefas[tarefas.length - 1].outro = nota.tarefaDescricao;
+    novoDados[vaga.codigo].dias[diaInfo.key] = { ...dia, tarefas, tarefaOutro: tarefas.length === 1 ? nota.tarefaDescricao : dia.tarefaOutro };
+  }
+  return { ok: true, semana, novoDados };
 }
 // Categorias Profissionais elegíveis para tarefas especiais (Chefe de
 // Turno/Encomendas) na Atribuição Rápida — pedido explícito 2026-08-14:
@@ -29023,13 +29108,23 @@ function buildHorariosPage(container, goTo) {
   let editingPrioridadeId = null, prioridadeDraft = {}, prioridadeSaving = false, prioridadeError = '';
   let prioridadeMovendoId = null;
   let prioridadeInicializando = false; // evita disparar inicializarPrioridadeBase() em duplicado enquanto o seed automático corre
-  // Feed de Observações Partilhadas ("Escala da Equipa") — id da nota
-  // atualmente em edição inline (null = nenhuma), texto de rascunho da
-  // nova nota, e um "saving" simples para desativar o botão a meio do
-  // pedido (evita duplo-clique a criar 2 notas iguais).
+  // Feed "Pedidos e Registos da Semana" (escala_notas_semana, antigo
+  // "Observações Partilhadas") — id da nota atualmente em edição inline
+  // (null = nenhuma), texto de rascunho da nova nota, e um "saving"
+  // simples para desativar o botão a meio do pedido (evita duplo-clique a
+  // criar 2 registos iguais). Campos extra do novo formulário (2026-08-18,
+  // redesenho pedido explícito): só usados consoante `novoPedidoTipo` —
+  // ver buildFeedNotasEquipa/criarNotaEquipa.
   let notaEquipaEditandoId = null;
   let notaEquipaEditandoTexto = '';
   let notaEquipaSaving = false;
+  let novoPedidoTipo = 'nota';
+  let novoPedidoData = todayISO();
+  let novoPedidoHoraInicio = '';
+  let novoPedidoHoraFim = '';
+  let novoPedidoTarefaTipo = 'conferencia';
+  let novoPedidoTarefaDescricao = '';
+  let novoPedidoErro = '';
   // Bloco Pessoal ("A Minha Semana") — mesma lógica/UX do Bloco de Notas
   // Pessoal (buildBlocoNotasWidget): entrada no topo + checkbox Pendente/
   // Tratada em vez de editar o texto, só sem barra de pesquisa.
@@ -29462,23 +29557,57 @@ function buildHorariosPage(container, goTo) {
     // o Realtime já trata de mostrar a notificação aos destinatários —
     // aqui só se garante que o pedido de INSERT foi mesmo disparado.
   }
+  // Ordenação do feed (pedido explícito 2026-08-18): registos já
+  // VALIDADOS pela Direção sobem sempre para o topo — "para não passarem
+  // despercebidos aos colegas" — e só depois os pendentes; dentro de cada
+  // grupo, mais recente primeiro.
   function escalaNotasSemanaDaSemana(semanaInicioISO) {
     return (STATE.escalaNotasSemana || [])
       .filter(n => n.semanaInicio === semanaInicioISO)
-      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+      .sort((a, b) => {
+        if (!!a.validadoDirecao !== !!b.validadoDirecao) return a.validadoDirecao ? -1 : 1;
+        return (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0);
+      });
+  }
+  // Resumo automático para o texto do pedido de "Atribuição de Tarefa"
+  // quando o colaborador não escreve nada no campo de texto livre — fica
+  // sempre com a informação essencial (dia/horário/tipo), mesmo que o
+  // campo de notas fique em branco.
+  function resumoPedidoTarefa() {
+    const info = escalaTarefaInfo(novoPedidoTarefaTipo);
+    const label = novoPedidoTarefaTipo === 'outro' ? (novoPedidoTarefaDescricao || 'Outro') : (info ? info.label : '');
+    return `Pedido de tarefa: ${label} em ${formatDate(novoPedidoData)} das ${novoPedidoHoraInicio} às ${novoPedidoHoraFim}.`;
   }
   async function criarNotaEquipa(semanaInicioISO, texto, aoTerminar) {
-    if (!activeUser || !texto.trim() || notaEquipaSaving) return;
+    if (!activeUser || notaEquipaSaving) return;
+    novoPedidoErro = '';
+    const tipo = novoPedidoTipo;
+    const payload = { semanaInicio: semanaInicioISO, autorId: activeUser.id, autorNome: activeUser.nomeCompleto || activeUser.username, validadoDirecao: false, tipo, aplicadoHorario: false };
+    if (tipo === 'tarefa') {
+      if (!novoPedidoData || !novoPedidoHoraInicio || !novoPedidoHoraFim) { novoPedidoErro = 'Indique a Data e o Horário da tarefa.'; rerender(); return; }
+      if (escalaMinutosAbsolutos(novoPedidoHoraFim, true) <= escalaMinutosAbsolutos(novoPedidoHoraInicio, false)) { novoPedidoErro = 'O Fim tem de ser depois do Início.'; rerender(); return; }
+      if (novoPedidoTarefaTipo === 'outro' && !novoPedidoTarefaDescricao.trim()) { novoPedidoErro = 'Descreva a tarefa "Outro".'; rerender(); return; }
+      payload.dataPedido = novoPedidoData;
+      payload.horaInicio = novoPedidoHoraInicio;
+      payload.horaFim = novoPedidoHoraFim;
+      payload.tarefaTipo = novoPedidoTarefaTipo;
+      payload.tarefaDescricao = novoPedidoTarefaDescricao.trim();
+      payload.texto = texto.trim() || resumoPedidoTarefa();
+    } else {
+      if (!texto.trim()) { novoPedidoErro = 'Escreva uma descrição.'; rerender(); return; }
+      payload.texto = texto.trim();
+      if (tipo === 'troca' || tipo === 'banco') payload.dataPedido = novoPedidoData || null;
+    }
     notaEquipaSaving = true; rerender();
-    const payload = { semanaInicio: semanaInicioISO, autorId: activeUser.id, autorNome: activeUser.nomeCompleto || activeUser.username, texto: texto.trim(), validadoDirecao: false };
     const created = await dbInsert('escalaNotasSemana', payload);
     notaEquipaSaving = false;
     if (created) {
       STATE.escalaNotasSemana = [...(STATE.escalaNotasSemana || []), created];
-      notificarDirecaoNotaEquipa(created, 'criou uma nova nota');
+      notificarDirecaoNotaEquipa(created, 'criou um novo registo');
+      novoPedidoTipo = 'nota'; novoPedidoData = todayISO(); novoPedidoHoraInicio = ''; novoPedidoHoraFim = ''; novoPedidoTarefaTipo = 'conferencia'; novoPedidoTarefaDescricao = '';
       if (aoTerminar) aoTerminar();
     }
-    else escalaShowErro('Não foi possível guardar a nota');
+    else escalaShowErro('Não foi possível guardar o registo');
     rerender();
   }
   async function guardarEdicaoNotaEquipa(nota, novoTexto) {
@@ -29517,6 +29646,21 @@ function buildHorariosPage(container, goTo) {
     const patch = novoEstado
       ? { validadoDirecao: true, validadoPor: activeUser.nomeCompleto || activeUser.username, validadoEm: new Date().toISOString() }
       : { validadoDirecao: false, validadoPor: '', validadoEm: null };
+    // Auto-atribuição no horário (só tipo==='tarefa', só ao VALIDAR — nunca
+    // ao desmarcar, e nunca 2ª vez se já tiver conseguido da 1ª): tenta
+    // gravar a tarefa no turno certo antes de marcar como validado, para
+    // nunca ficar "validado" sem se saber se a atribuição resultou.
+    if (novoEstado && nota.tipo === 'tarefa' && !nota.aplicadoHorario) {
+      const resultado = escalaAplicarTarefaPedidoNoHorario(nota);
+      if (resultado.ok) {
+        const semanaUpdated = await dbUpdate('escalaSemanas', resultado.semana.id, { dados: resultado.novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() });
+        if (!semanaUpdated) { escalaShowErro('Não foi possível atribuir a tarefa no horário — validação cancelada'); rerender(); return; }
+        STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semanaUpdated.id ? semanaUpdated : s);
+        patch.aplicadoHorario = true;
+      } else {
+        showToast(`Validado, mas não foi possível atribuir sozinha (${resultado.motivo}) — agende a tarefa manualmente.`, 'error');
+      }
+    }
     const updated = await dbUpdate('escalaNotasSemana', nota.id, patch);
     if (updated) {
       STATE.escalaNotasSemana = STATE.escalaNotasSemana.map(n => n.id === nota.id ? updated : n);
@@ -29533,6 +29677,19 @@ function buildHorariosPage(container, goTo) {
   function buildCartaoNotaEquipa(nota) {
     const souAutor = activeUser && String(nota.autorId) === String(activeUser.id);
     const emEdicao = notaEquipaEditandoId === nota.id;
+    const tipoInfo = escalaPedidoTipoInfo(nota.tipo || 'nota');
+    const badgeTipo = h('span', { class: 'escala-nota-validacao-badge', style: 'background:var(--pharm-050);color:var(--pharm-700);border-color:var(--pharm-200);' }, `${tipoInfo.icon} ${tipoInfo.label}`);
+    // Linha de detalhe estruturado — só para os tipos que têm campos
+    // próprios além do texto livre (tarefa sempre; troca/banco só quando
+    // o autor também indicou uma Data).
+    let detalheEl = null;
+    if (nota.tipo === 'tarefa' && nota.dataPedido) {
+      const tarefaInfo = escalaTarefaInfo(nota.tarefaTipo);
+      const labelTarefa = nota.tarefaTipo === 'outro' ? (nota.tarefaDescricao || 'Outro') : (tarefaInfo ? tarefaInfo.label : nota.tarefaTipo);
+      detalheEl = h('p', { style: 'margin:2px 0 6px;font-size:12px;color:var(--pharm-600);' }, `📅 ${formatDate(nota.dataPedido)} · ${nota.horaInicio}–${nota.horaFim} · ${labelTarefa}${nota.validadoDirecao ? (nota.aplicadoHorario ? ' · ✅ atribuída no horário' : ' · ⚠️ não foi possível atribuir sozinha, agendar manualmente') : ''}`);
+    } else if ((nota.tipo === 'troca' || nota.tipo === 'banco') && nota.dataPedido) {
+      detalheEl = h('p', { style: 'margin:2px 0 6px;font-size:12px;color:var(--pharm-600);' }, `📅 ${formatDate(nota.dataPedido)}`);
+    }
     const corpo = emEdicao
       ? (() => {
           const editInput = h('textarea', { class: 'textarea', rows: '2' });
@@ -29593,9 +29750,13 @@ function buildHorariosPage(container, goTo) {
     }
     return h('div', { class: 'escala-nota-cartao' }, [
       h('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:4px;' }, [
-        h('span', { style: 'font-size:11.5px;font-weight:800;color:var(--pharm-600);' }, nota.autorNome || 'Colaborador'),
-        h('span', { style: 'font-size:10.5px;color:var(--pharm-300);' }, formatCarimboNota(nota.createdAt) + (nota.updatedAt && nota.createdAt && nota.updatedAt !== nota.createdAt ? ` · editado ${formatCarimboNota(nota.updatedAt)}` : '')),
+        h('div', { style: 'display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;' }, [
+          h('span', { style: 'font-size:11.5px;font-weight:800;color:var(--pharm-600);' }, nota.autorNome || 'Colaborador'),
+          badgeTipo,
+        ]),
+        h('span', { style: 'font-size:10.5px;color:var(--pharm-300);white-space:nowrap;' }, formatCarimboNota(nota.createdAt) + (nota.updatedAt && nota.createdAt && nota.updatedAt !== nota.createdAt ? ` · editado ${formatCarimboNota(nota.updatedAt)}` : '')),
       ]),
+      detalheEl,
       corpo,
       h('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-top:8px;' }, [
         validacaoEl || h('span', {}),
@@ -29606,18 +29767,56 @@ function buildHorariosPage(container, goTo) {
   function buildFeedNotasEquipa(semana) {
     const notas = escalaNotasSemanaDaSemana(semana.semanaInicio);
     const kids = [
-      h('h3', { class: 'dash-card-title', style: 'margin:0 0 2px;' }, '💬 Observações Partilhadas da Semana'),
-      h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, 'Visível a toda a equipa e fica pendente de validação da Direção até ser confirmada — use também para pedir que uma tarefa sua (ex: Chefe de Turno, Encomenda) seja agendada num dia específico.'),
+      h('h3', { class: 'dash-card-title', style: 'margin:0 0 2px;' }, '📋 Pedidos e Registos da Semana'),
+      h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, 'Visível a toda a equipa e fica pendente de validação da Direção até ser confirmado. "Atribuição de Tarefa" fica automaticamente no horário assim que validada; os outros tipos ficam só registados (inclusive na versão impressa do horário), sem alterar a grelha sozinhos.'),
     ];
     if (activeUser) {
-      const novoInput = h('textarea', { class: 'textarea', rows: '2', placeholder: 'Escrever uma nota (ex: troca de turno combinada, aviso à equipa, ou pedir à Direção para agendar uma tarefa sua num dia)...' });
+      const tipoInfo = escalaPedidoTipoInfo(novoPedidoTipo);
+      const tipoSelect = h('select', { class: 'select' }, ESCALA_TIPOS_PEDIDO_SEMANA.map(t => h('option', { value: t.key, selected: t.key === novoPedidoTipo ? 'selected' : undefined }, `${t.icon} ${t.label}`)));
+      tipoSelect.addEventListener('change', () => { novoPedidoTipo = tipoSelect.value; novoPedidoErro = ''; rerender(); });
+      const campos = [h('div', { class: 'field span2' }, [buildLabelComAjuda('Tipo de Pedido', tipoInfo.ajuda), tipoSelect])];
+
+      const novoInput = h('textarea', { class: 'textarea', rows: '2', placeholder: novoPedidoTipo === 'tarefa' ? 'Notas adicionais (opcional)...' : novoPedidoTipo === 'troca' ? 'Descreva a troca (quem, que dias/turnos)...' : novoPedidoTipo === 'banco' ? 'Descreva o pedido (ex: sair mais cedo dia X, quantas horas)...' : 'Escrever um aviso à equipa...' });
+
+      if (novoPedidoTipo === 'tarefa') {
+        const dataInput = h('input', { class: 'input', type: 'date' }); dataInput.value = novoPedidoData;
+        dataInput.addEventListener('change', () => { novoPedidoData = dataInput.value; });
+        const horaIniInput = h('input', { class: 'input', type: 'time' }); horaIniInput.value = novoPedidoHoraInicio;
+        horaIniInput.addEventListener('change', () => { novoPedidoHoraInicio = horaIniInput.value; });
+        const horaFimInput = h('input', { class: 'input', type: 'time' }); horaFimInput.value = novoPedidoHoraFim;
+        horaFimInput.addEventListener('change', () => { novoPedidoHoraFim = horaFimInput.value; });
+        const tarefaSelect = h('select', { class: 'select' }, ESCALA_TAREFAS_MANUAIS_PEDIVEIS.map(t => h('option', { value: t.key, selected: t.key === novoPedidoTarefaTipo ? 'selected' : undefined }, `${t.icon} ${t.label}`)));
+        tarefaSelect.addEventListener('change', () => { novoPedidoTarefaTipo = tarefaSelect.value; rerender(); });
+        campos.push(
+          h('div', { class: 'field field-xs' }, [h('label', {}, 'Data'), melhorarInputData(dataInput)]),
+          h('div', { class: 'field field-xs' }, [h('label', {}, 'Hora Início'), horaIniInput]),
+          h('div', { class: 'field field-xs' }, [h('label', {}, 'Hora Fim'), horaFimInput]),
+          h('div', { class: 'field field-sm' }, [h('label', {}, 'Tarefa'), tarefaSelect]),
+        );
+        if (novoPedidoTarefaTipo === 'outro') {
+          const descInput = h('input', { class: 'input', maxlength: '150', placeholder: 'Descreva a tarefa...' }); descInput.value = novoPedidoTarefaDescricao;
+          descInput.addEventListener('input', () => { novoPedidoTarefaDescricao = descInput.value; });
+          campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Descrição da Tarefa'), descInput]));
+        }
+      } else if (novoPedidoTipo === 'troca' || novoPedidoTipo === 'banco') {
+        const dataInput = h('input', { class: 'input', type: 'date' }); dataInput.value = novoPedidoData;
+        dataInput.addEventListener('change', () => { novoPedidoData = dataInput.value; });
+        campos.push(h('div', { class: 'field field-xs' }, [h('label', {}, 'Data (opcional)'), melhorarInputData(dataInput)]));
+      }
+      campos.push(h('div', { class: 'field span2' }, [h('label', {}, novoPedidoTipo === 'tarefa' ? 'Notas' : 'Descrição'), novoInput]));
+
       const enviarBtn = h('button', {
-        class: 'btn btn-secondary', style: 'padding:7px 14px;font-size:12.5px;align-self:flex-start;', disabled: notaEquipaSaving ? 'disabled' : undefined,
+        class: 'btn btn-secondary', style: 'padding:7px 14px;font-size:12.5px;', disabled: notaEquipaSaving ? 'disabled' : undefined,
         onclick: () => requireAuth(() => criarNotaEquipa(semana.semanaInicio, novoInput.value, () => { novoInput.value = ''; })),
-      }, notaEquipaSaving ? 'A guardar…' : 'Adicionar Nota');
-      kids.push(h('div', { style: 'display:flex;gap:8px;align-items:flex-start;margin-bottom:16px;' }, [novoInput, enviarBtn]));
+      }, notaEquipaSaving ? 'A guardar…' : 'Adicionar');
+      const erroEl = novoPedidoErro ? h('p', { class: 'form-error' }, novoPedidoErro) : null;
+      kids.push(h('div', { class: 'card card-pad', style: 'margin-bottom:16px;background:var(--pharm-050);' }, [
+        h('div', { class: 'form-grid' }, campos),
+        erroEl,
+        h('div', { class: 'form-actions', style: 'margin-top:6px;' }, [enviarBtn]),
+      ]));
     }
-    if (!notas.length) kids.push(h('p', { class: 'field-helper-text', style: 'margin:0;' }, 'Ainda não há observações registadas para esta semana.'));
+    if (!notas.length) kids.push(h('p', { class: 'field-helper-text', style: 'margin:0;' }, 'Ainda não há registos para esta semana.'));
     else kids.push(h('div', { style: 'display:flex;flex-direction:column;gap:10px;' }, notas.map(buildCartaoNotaEquipa)));
     return h('div', { class: 'card card-pad', style: 'margin-top:16px;' }, kids);
   }
@@ -37583,7 +37782,31 @@ function buildHorarioSemanaGridPDFDoc(semana) {
     });
   });
   const tabela = h('table', { class: 'doc-horario-grelha-tabela' }, [thead, h('tbody', {}, bodyRows)]);
-  return h('div', { class: 'doc-a4-horizontal' }, [cabecalho, tabela]);
+  // Pedidos e Registos da Semana já VALIDADOS (troca de turno, desconto de
+  // banco de horas, atribuição de tarefa, avisos) — pedido explícito
+  // 2026-08-18: "esses factos e pedidos devem ficar também registados na
+  // versão impressa do horário, para ficar o registo" — TODOS os tipos,
+  // não só as trocas. Pendentes de validação NUNCA aparecem aqui (só o que
+  // já está confirmado pela Direção é registo oficial).
+  const pedidosValidados = escalaNotasSemanaDaSemana(semana.semanaInicio).filter(n => n.validadoDirecao);
+  let blocoPedidos = null;
+  if (pedidosValidados.length) {
+    const linhasPedidos = pedidosValidados.map(n => {
+      const tipoInfo = escalaPedidoTipoInfo(n.tipo || 'nota');
+      let detalhe = '';
+      if (n.tipo === 'tarefa' && n.dataPedido) {
+        const tarefaInfo = escalaTarefaInfo(n.tarefaTipo);
+        const labelTarefa = n.tarefaTipo === 'outro' ? (n.tarefaDescricao || 'Outro') : (tarefaInfo ? tarefaInfo.label : n.tarefaTipo);
+        detalhe = `${formatDate(n.dataPedido)} ${n.horaInicio}–${n.horaFim} · ${labelTarefa} — `;
+      } else if (n.dataPedido) detalhe = `${formatDate(n.dataPedido)} — `;
+      return h('li', { style: 'margin-bottom:2mm;' }, `${tipoInfo.icon} ${tipoInfo.label} (${n.autorNome || 'Colaborador'}): ${detalhe}${n.texto}`);
+    });
+    blocoPedidos = h('div', { style: 'margin-top:4mm;' }, [
+      h('h4', { style: 'margin:0 0 2mm;font-size:11px;color:#000;font-weight:800;' }, 'Pedidos e Registos da Semana (validados)'),
+      h('ul', { style: 'margin:0;padding-left:4mm;font-size:9px;color:#333;' }, linhasPedidos),
+    ]);
+  }
+  return h('div', { class: 'doc-a4-horizontal' }, [cabecalho, tabela, blocoPedidos]);
 }
 
 // ---- Formulário de Entrega imprimível — reaproveita o cabeçalho/rodapé
