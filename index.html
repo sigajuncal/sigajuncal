@@ -1865,21 +1865,27 @@
      (comportamento nativo de grid: a linha cresce para caber a coluna
      mais alta). Em ecrãs estreitos as 3 colunas encolhem mas mantêm-se
      lado a lado — nunca voltam a empilhar-se por cima umas das outras.
-     Colunas 1/2 em LARGURA FIXA, não fr (corrigido 2026-08-17, pedido
-     explícito "tarefas desalinhadas, parece pouco profissional") — cada
-     dia é a sua própria grelha independente (um <div> por linha, não uma
-     tabela partilhada), por isso com frações (fr) a largura da coluna
-     "Dia" variava ligeiramente consoante o comprimento do nome do dia
-     (ex.: "Quarta-Feira, 19 de..." vs "Domingo, 23 de..."), empurrando a
-     coluna de Tarefas para um ponto de partida diferente em cada linha —
-     com largura fixa, a coluna de Tarefas começa sempre exatamente no
-     mesmo x em todas as linhas, ficando as pills (align-items:flex-end)
-     verdadeiramente alinhadas à direita, como uma coluna a direito. */
-  .escala-pessoal-linha{display:grid;grid-template-columns:240px 190px 1fr;
+     Coluna "Dia" encolhida para 92px (pedido explícito 2026-08-18: o
+     rótulo simplificado "17 · Segunda" já não precisa dos 240px antigos
+     de "Quarta-Feira, 19 de Agosto de 2026" — a largura sobrante passa
+     para Horas/Tarefas). Coluna "Horas" em LARGURA FIXA, não fr (mesma
+     razão de sempre: cada dia é a sua própria grelha independente, um
+     <div> por linha; com frações a largura variava consoante o
+     conteúdo e desalinhava a coluna de Tarefas entre linhas). */
+  .escala-pessoal-linha{display:grid;grid-template-columns:92px 190px 1fr;
     align-items:start;column-gap:10px;row-gap:4px;
     padding:8px 0;border-bottom:1px solid var(--pharm-100);font-size:13.5px;}
   .escala-pessoal-linha:last-child{border-bottom:none;}
-  .escala-pessoal-horas{text-align:right;}
+  /* Horas em 2 linhas SEMPRE (nunca só quando o texto não coube) — o
+     horário principal (ou o rótulo do tipo de dia) fica sozinho em cima;
+     Pausa/HE/HE reivindicada ficam juntas numa 2ª linha mais discreta por
+     baixo (pedido explícito 2026-08-18: "garante que a pausa cabe por
+     baixo do horário de trabalho, também em mobile") — flex-direction
+     column garante a quebra em qualquer largura de ecrã, sem depender de
+     o texto caber ou não numa única linha. */
+  .escala-pessoal-horas{display:flex;flex-direction:column;align-items:flex-end;text-align:right;}
+  .escala-pessoal-horas-principal{font-weight:700;color:var(--pharm-800);}
+  .escala-pessoal-horas-detalhe{font-size:11.5px;font-weight:600;color:var(--pharm-500);margin-top:2px;}
   .escala-pessoal-tarefas{display:flex;flex-direction:column;align-items:flex-end;gap:3px;max-width:100%;min-width:0;}
   /* Correção de bug (pedido explícito 2026-08-14): a pill de tarefa herda
      white-space:nowrap de .escala-tarefa-pill (pensado para a grelha
@@ -1902,7 +1908,7 @@
   */
   .escala-pessoal-tarefas .escala-tarefa-pills-wrap{align-items:flex-end;}
   @media (max-width:480px){
-    .escala-pessoal-linha{grid-template-columns:minmax(96px,1fr) minmax(70px,auto) minmax(84px,1fr);
+    .escala-pessoal-linha{grid-template-columns:minmax(58px,auto) minmax(88px,auto) 1fr;
       column-gap:6px;font-size:12.5px;}
   }
   .escala-cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;}
@@ -26010,6 +26016,15 @@ function escalaDiaLabelExtenso(diaKey, diaLabel, semanaInicioISO) {
   const nomeDia = (diaKey === 'sab' || diaKey === 'dom') ? diaLabel : `${diaLabel}-Feira`;
   return `${nomeDia}, ${dataPorExtensoDoc(escalaDataDoDia(semanaInicioISO, diaKey))}`;
 }
+// Versão simplificada (pedido explícito 2026-08-18): só o dia da semana +
+// o dia do mês (ex: "17 · Segunda"), mesmo espírito das colunas "Dia" +
+// dia da semana já usadas na Vista Mensal — o mês/ano fica de fora porque
+// já está sempre visível no seletor de semana logo acima (ex: "Semana de
+// 17 a 23 de Agosto de 2026"), nunca ambíguo.
+function escalaDiaLabelCompacto(diaKey, diaLabel, semanaInicioISO) {
+  const d = new Date(escalaDataDoDia(semanaInicioISO, diaKey) + 'T12:00:00');
+  return `${d.getDate()} · ${diaLabel}`;
+}
 // O Grupo B (Backoffice — TAF/Administrativos que não fazem balcão) nunca
 // conta para a coluna "Total" da Timeline nem para os alertas de
 // cobertura (nº de colaboradores à Abertura/Fecho, mínimo Diurno) — só
@@ -31438,29 +31453,29 @@ function buildHorariosPage(container, goTo) {
         // buildVistaVertical (ver comentários lá).
         const dataDoDia = escalaDataDoDia(semana.semanaInicio, d.key);
         const ausencia = tipoEfetivo === 'normal' ? escalaAusenciaDoDia(activeUser.id, dataDoDia) : null;
-        // Texto das Horas construído em FRAGMENTOS (2026-08-17, pedido
-        // explícito "melhorar a apresentação de pausa... sem truncar") —
-        // antes era uma única string; numa coluna estreita, "(pausa
-        // 14:00-15:00)" podia quebrar a meio ("(pausa 14:00-" / "15:00)")
-        // porque o browser só sabe onde há espaços, não onde o texto
-        // "deve" quebrar. Cada parêntesis — Pausa/HE/HE reivindicada —
-        // é agora o seu próprio <span> com white-space:nowrap: se a
-        // coluna não tiver espaço para tudo numa linha, a quebra só pode
-        // acontecer ENTRE fragmentos (nunca a meio de um deles). Coluna
-        // Horas também alargada (108px→190px, ver .escala-pessoal-linha)
-        // para caber a maioria dos casos numa única linha.
-        const horasFrag = [];
+        // Horas construídas em DUAS linhas dentro da mesma coluna (pedido
+        // explícito 2026-08-18: "garante que a pausa cabe por baixo do
+        // horário de trabalho, também em mobile") — o horário principal
+        // (ou o rótulo do tipo de dia, se não for normal) fica sempre
+        // sozinho na 1ª linha; Pausa/HE/HE reivindicada juntam-se numa 2ª
+        // linha mais discreta por baixo, separadas por " · " quando há
+        // mais do que uma. Como é sempre flex-direction:column (ver CSS
+        // .escala-pessoal-horas), a quebra é garantida em qualquer
+        // largura de ecrã — nunca depende de o texto caber ou não numa
+        // única linha.
+        const horaPrincipal = tipoEfetivo === 'normal'
+          ? `${dia.entrada} – ${dia.saida}`
+          : (ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—');
+        const detalhesFrag = [];
         if (tipoEfetivo === 'normal') {
-          horasFrag.push(`${dia.entrada} – ${dia.saida}`);
-          if (dia.pausaInicio && dia.pausaFim) horasFrag.push(h('span', { style: 'white-space:nowrap;' }, ` (pausa ${dia.pausaInicio}-${dia.pausaFim})`));
-          if (escalaHeHorasEfetivo(dia)) horasFrag.push(h('span', { style: 'white-space:nowrap;' }, ` (+${escalaFormatarHoras(escalaHeHorasEfetivo(dia))} HE)`));
-        } else {
-          horasFrag.push(ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—');
+          if (dia.pausaInicio && dia.pausaFim) detalhesFrag.push(`Pausa ${dia.pausaInicio}-${dia.pausaFim}`);
+          if (escalaHeHorasEfetivo(dia)) detalhesFrag.push(`+${escalaFormatarHoras(escalaHeHorasEfetivo(dia))} HE`);
+        } else if (tipoEfetivo === 'banco' && escalaBancoHorasEfetivo(dia)) {
           // "Banco de Horas (Dia Completo)" mostra também as horas
           // descontadas aqui, mesmo padrão da Timeline (pedido explícito
           // 2026-08-18) — o próprio colaborador vê logo quanto lhe foi
           // descontado do saldo, sem ter de abrir Estatísticas.
-          if (tipoEfetivo === 'banco' && escalaBancoHorasEfetivo(dia)) horasFrag.push(h('span', { style: 'white-space:nowrap;' }, ` (-${escalaFormatarHoras(escalaBancoHorasEfetivo(dia))})`));
+          detalhesFrag.push(`-${escalaFormatarHoras(escalaBancoHorasEfetivo(dia))}`);
         }
         // Horas Extra reivindicadas por mim (ver buildPainelHorasExtra) —
         // antes só apareciam no painel "Horas Extra Disponíveis" lá
@@ -31468,7 +31483,7 @@ function buildHorariosPage(container, goTo) {
         // explícito 2026-08-14).
         const reivindicacoesDoDia = escalaReivindicacoesDoColaboradorNoDia(semana.id, d.key, activeUser.id);
         if (reivindicacoesDoDia.length) {
-          horasFrag.push(h('span', { style: 'white-space:nowrap;' }, ' · ' + reivindicacoesDoDia.map(r => `+HE ${r.intervaloInicio}-${r.intervaloFim}`).join(', ')));
+          detalhesFrag.push(reivindicacoesDoDia.map(r => `+HE ${r.intervaloInicio}-${r.intervaloFim}`).join(', '));
         }
         // agoraMin só passado no dia de HOJE — dá à pill de tarefa o
         // mesmo destaque visual (a decorrer/em breve) do cartão da Home,
@@ -31482,18 +31497,22 @@ function buildHorariosPage(container, goTo) {
         // alinhada ao topo, e a altura da linha ajusta-se sozinha à
         // quantidade de pills listadas nesse dia (ver CSS
         // .escala-pessoal-linha).
-        const horasEl = h('span', { class: 'escala-pessoal-horas' }, horasFrag);
+        const horasEl = h('span', { class: 'escala-pessoal-horas' }, [
+          h('span', { class: 'escala-pessoal-horas-principal' }, horaPrincipal),
+          detalhesFrag.length ? h('span', { class: 'escala-pessoal-horas-detalhe' }, detalhesFrag.join(' · ')) : null,
+        ].filter(Boolean));
         const tarefasEl = h('span', { class: 'escala-pessoal-tarefas' }, [pill, ausenciaBadge].filter(Boolean));
-        // Dia por extenso + data completa (pedido explícito 2026-08-09:
-        // "Segunda-Feira, 10 de Agosto de 2026" em vez de só "Segunda" —
-        // mais seguro, evita ambiguidade entre semanas. Dia de HOJE
-        // identificado visualmente (2026-08-16, pedido explícito) — só
-        // acontece quando esta linha corresponde à data de hoje (nunca
-        // sinalizado nas outras semanas, ver dataDoDia === hojeISO).
+        // Rótulo simplificado (pedido explícito 2026-08-18): só dia da
+        // semana + dia do mês (ex: "17 · Segunda"), à semelhança da Vista
+        // Mensal — o mês/ano fica de fora, já visível no seletor de
+        // semana logo acima. Dia de HOJE identificado visualmente
+        // (2026-08-16, pedido explícito) — só acontece quando esta linha
+        // corresponde à data de hoje (nunca sinalizado nas outras
+        // semanas, ver dataDoDia === hojeISO).
         const ehHoje = dataDoDia === hojeISO;
         return h('div', { class: 'escala-pessoal-linha' + (tipoEfetivo !== 'normal' ? ` escala-cell-${tipoEfetivo}` : '') + (ausencia ? ' escala-cell-ausencia-sobreposta' : '') + (ehHoje ? ' escala-pessoal-linha-hoje' : '') }, [
           h('span', { class: 'escala-pessoal-dia' }, [
-            escalaDiaLabelExtenso(d.key, d.label, semana.semanaInicio),
+            escalaDiaLabelCompacto(d.key, d.label, semana.semanaInicio),
             ehHoje ? h('span', { class: 'escala-pessoal-hoje-badge' }, 'Hoje') : null,
           ]),
           horasEl,
@@ -31677,10 +31696,17 @@ function buildHorariosPage(container, goTo) {
     // abraçar exatamente a largura da tabela lá dentro, sem margem
     // branca a mais, e ajusta-se sozinho a qualquer mudança futura de
     // conteúdo (nunca mais precisa de um número adivinhado).
-    const avisoValidacao = correcaoBancoHeError ? h('p', { class: 'field-helper-text', style: 'color:#b91c1c;margin:0 0 8px;' }, correcaoBancoHeError) : null;
+    // max-width:560px nos parágrafos (pedido explícito 2026-08-18): a
+    // frase sobre as colunas clicáveis é mais larga do que a própria
+    // tabela (~588px) — sem este limite, o texto numa única linha
+    // acabava por ser o elemento mais largo do cartão, e era ELE a
+    // "esticar" o fit-content, sobrando espaço branco à direita da
+    // tabela por baixo. Com o limite, o texto quebra para 2ª linha e o
+    // cartão volta a abraçar exatamente a largura da tabela.
+    const avisoValidacao = correcaoBancoHeError ? h('p', { class: 'field-helper-text', style: 'color:#b91c1c;margin:0 0 8px;max-width:560px;' }, correcaoBancoHeError) : null;
     const listaCard = h('div', { class: 'card card-pad', style: 'width:fit-content;max-width:100%;' }, [
       h('h3', { class: 'dash-card-title', style: 'margin:0 0 10px;' }, escalaMesNomeAno(primeiroDiaMes)),
-      podeValidarBancoHe ? h('p', { class: 'field-helper-text', style: 'margin:0 0 10px;' }, 'Colunas "Banco de Horas" e "Horas Extra" clicáveis para corrigir um valor registado errado — a correção passa a valer para todas as contagens (Estatísticas, Timeline, PDF).') : null,
+      podeValidarBancoHe ? h('p', { class: 'field-helper-text', style: 'margin:0 0 10px;max-width:560px;' }, 'Colunas "Banco de Horas" e "Horas Extra" clicáveis para corrigir um valor registado errado — a correção passa a valer para todas as contagens (Estatísticas, Timeline, PDF).') : null,
       avisoValidacao,
       h('table', { class: 'escala-mes-tabela' }, [
         h('thead', {}, h('tr', {}, [
