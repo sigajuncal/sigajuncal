@@ -1825,7 +1825,7 @@
      lado é que continua a identificá-lo). */
   .escala-cell-ferias, .escala-cell-extra, .escala-cell-aniversario,
   .escala-cell-outras, .escala-cell-folga, .escala-cell-baixa,
-  .escala-cell-falta, .escala-cell-indisponivel {
+  .escala-cell-falta, .escala-cell-indisponivel, .escala-cell-banco {
     color: var(--pharm-400); font-weight: 600; font-style: italic;
   }
   /* Ausência (Férias/Baixa/Falta/...) sobreposta a um turno que já estava
@@ -1948,7 +1948,8 @@
   .escala-pessoal-linha.escala-cell-ferias, .escala-pessoal-linha.escala-cell-extra,
   .escala-pessoal-linha.escala-cell-folga, .escala-pessoal-linha.escala-cell-baixa,
   .escala-pessoal-linha.escala-cell-falta, .escala-pessoal-linha.escala-cell-indisponivel,
-  .escala-pessoal-linha.escala-cell-aniversario, .escala-pessoal-linha.escala-cell-outras {
+  .escala-pessoal-linha.escala-cell-aniversario, .escala-pessoal-linha.escala-cell-outras,
+  .escala-pessoal-linha.escala-cell-banco {
     color: var(--pharm-400); font-style: italic;
   }
   /* Dia de HOJE identificado em "A Minha Semana" (2026-08-16, pedido
@@ -25824,6 +25825,20 @@ const ESCALA_TIPOS_DIA = [
   { key: 'aniversario', label: 'Dia de Aniversário' },
   { key: 'outras', label: 'Outras Ausências/Licenças' },
   { key: 'folga', label: 'Folga' },
+  // Dia inteiro em que o colaborador não vem trabalhar porque descontou a
+  // totalidade das horas desse dia do saldo de Banco de Horas — distinto
+  // da "Folga" normal (sem qualquer efeito no saldo) e do desconto PARCIAL
+  // já existente dentro de um turno 'normal' (ver bancoHorasIntervalos/
+  // bancoHorasDesconto em abrirEditorCelulaEscala). Só Quadro (nunca
+  // Prestadores — ver tiposDisponiveisCelula) e só editável por quem tem
+  // podeGerirBancoHorasEHE (Hugo/Paulo), pedido explícito 2026-08-18: o
+  // Paulo queixou-se de a Sofia aparecer só como "Folga" num dia em que na
+  // verdade tinha descontado 8h do banco, sem ficar registado em lado
+  // nenhum. O valor gravado vai para o MESMO campo bancoHorasDesconto já
+  // lido pela contagem automática de saldo (ver stats, "Banco de Horas
+  // USADO") — nunca um campo novo em paralelo, para nunca haver
+  // discrepância entre os dois mecanismos.
+  { key: 'banco', label: 'Banco de Horas (Dia Completo)' },
   { key: 'baixa', label: 'Baixa Médica' },
   { key: 'falta', label: 'Falta' },
   { key: 'indisponivel', label: 'Indisponibilidade' },
@@ -26997,6 +27012,24 @@ function escalaVagaDoColaboradorNoDia(semana, diaKey, utilizadorId) {
     const idDoDia = dia.colaboradorId || linha.colaboradorId;
     if (String(idDoDia) !== String(utilizadorId)) continue;
     if (dataISO && escalaAusenciaDoDia(utilizadorId, dataISO)) return null;
+    return { codigo, dia };
+  }
+  return null;
+}
+// Variante de escalaVagaDoColaboradorNoDia SEM a exigência de
+// tipo==='normal'+entrada/saída — usada só para encontrar a célula de um
+// colaborador num dia marcado "Banco de Horas (Dia Completo)" (tipo=
+// 'banco', sem horário nenhum, ver abrirEditorCelulaEscala), que a versão
+// normal nunca encontraria. Não substitui a original em mais nenhum sítio
+// (tarefas/HE continuam a exigir um turno normal real).
+function escalaCelulaColaboradorNoDia(semana, diaKey, utilizadorId) {
+  if (!utilizadorId) return null;
+  for (const codigo of Object.keys(semana.dados || {})) {
+    const linha = semana.dados[codigo];
+    const dia = linha && linha.dias && linha.dias[diaKey];
+    if (!dia) continue;
+    const idDoDia = dia.colaboradorId || linha.colaboradorId;
+    if (String(idDoDia) !== String(utilizadorId)) continue;
     return { codigo, dia };
   }
   return null;
@@ -28446,9 +28479,13 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   // fica automaticamente migrado para 'indisponivel'.
   const colaboradorObjCelula = colaboradorIdCelula ? (STATE.usuarios || []).find(u => u.id === colaboradorIdCelula) : null;
   const ehPrestadorCelula = escalaUtilizadorEhPrestador(colaboradorObjCelula);
-  const tiposDisponiveisCelula = ehPrestadorCelula
+  // "Banco de Horas (Dia Completo)" só aparece como opção para quem já
+  // gere Banco de Horas/HE (Hugo/Paulo) — mesma restrição do resto desta
+  // funcionalidade (ver podeBancoHoras mais abaixo); sem isso, ninguém
+  // conseguiria preencher as horas a descontar de qualquer forma.
+  const tiposDisponiveisCelula = (ehPrestadorCelula
     ? ESCALA_TIPOS_DIA.filter(t => t.key === 'normal' || t.key === 'indisponivel')
-    : ESCALA_TIPOS_DIA;
+    : ESCALA_TIPOS_DIA).filter(t => t.key !== 'banco' || podeGerirBancoHorasEHE());
   const tipoInicialCelula = (ehPrestadorCelula && diaAtual.tipo && diaAtual.tipo !== 'normal' && diaAtual.tipo !== 'indisponivel')
     ? 'indisponivel'
     : (diaAtual.tipo || 'normal');
@@ -28537,6 +28574,15 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   const heSecao = criarSecaoBlocos(2, heIntervalosIniciais);
   const bancoIntervalosIniciais = Array.isArray(diaAtual.bancoHorasIntervalos) ? diaAtual.bancoHorasIntervalos : [];
   const bancoSecao = criarSecaoBlocos(2, bancoIntervalosIniciais);
+  // Tipo "Banco de Horas (Dia Completo)" — dia inteiro sem horário (a
+  // pessoa não vem trabalhar), por isso não faz sentido em blocos de
+  // Início/Fim como o desconto parcial acima; só 1 número de horas a
+  // descontar do saldo. Pré-preenchido com o valor já gravado quando se
+  // reabre um dia já marcado assim (nunca um valor "adivinhado" por
+  // omissão — evita descontar de mais/menos por engano).
+  const bancoDiaCompletoInput = h('input', { class: 'input', type: 'number', step: '0.5', min: '0.5', placeholder: 'ex: 8' });
+  bancoDiaCompletoInput.value = diaAtual.tipo === 'banco' && diaAtual.bancoHorasDesconto ? String(diaAtual.bancoHorasDesconto) : '';
+  const bancoDiaCompletoField = h('div', { class: 'field span2' }, [h('label', {}, 'Horas a Descontar do Banco de Horas'), bancoDiaCompletoInput]);
   // ---- Tarefas/Cargos Especiais (Chefe de Turno, Encomenda, Conferência,
   // Reunião, ou "Outro" com texto livre) — ATÉ 3 no mesmo turno, cada uma
   // com o seu próprio intervalo Início/Fim. Opcional, só faz sentido num
@@ -28672,6 +28718,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       heSecao.atualizarVisibilidadeLocal(on);
       bancoSecaoTitulo.style.display = on ? '' : 'none';
       bancoSecao.atualizarVisibilidadeLocal(on);
+      bancoDiaCompletoField.style.display = tipoSelect.value === 'banco' ? '' : 'none';
     }
   }
   tipoSelect.addEventListener('change', atualizarVisibilidade);
@@ -28815,7 +28862,22 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       }
       return validos;
     }
-    if (podeBancoHoras) {
+    if (podeBancoHoras && tipo === 'banco') {
+      // Dia inteiro sem horário — só o valor único de horas a descontar,
+      // nunca os blocos de Início/Fim (esses só fazem sentido dentro de um
+      // turno 'normal'). Gravado no MESMO campo bancoHorasDesconto que a
+      // contagem automática de saldo já lê (ver stats "Banco de Horas
+      // USADO") — garante que este caso entra na mesma soma sem precisar
+      // de nenhuma lógica de contagem nova/paralela.
+      const valorBancoDia = parseFloat(String(bancoDiaCompletoInput.value).replace(',', '.'));
+      if (!valorBancoDia || valorBancoDia <= 0) {
+        errorEl.textContent = 'Indique quantas horas descontar do Banco de Horas para este dia completo.';
+        errorEl.style.display = '';
+        return;
+      }
+      bancoHorasIntervalos = [];
+      bancoHorasDesconto = Math.round(valorBancoDia * 100) / 100;
+    } else if (podeBancoHoras) {
       const bancoValidos = lerBlocosValidos(bancoSecao.blocos, 'Banco de Horas');
       if (bancoValidos === null) return;
       bancoHorasIntervalos = bancoValidos;
@@ -28944,6 +29006,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       ...(podeBancoHoras ? [
         secaoBoxMuda([heSecaoTitulo, ...blocosHoraFields(heSecao.blocos)]),
         secaoBoxMuda([bancoSecaoTitulo, ...blocosHoraFields(bancoSecao.blocos)]),
+        bancoDiaCompletoField,
       ] : []),
       secaoBox([tarefasSecaoTitulo, ...tarefaBlocosFields]),
     ]),
@@ -29551,7 +29614,14 @@ function buildHorariosPage(container, goTo) {
             if (dia.pausaInicio && dia.pausaFim) conteudo += ` · pausa ${dia.pausaInicio}-${dia.pausaFim}`;
             if (dia.heHoras) conteudo += ` +${escalaFormatarHoras(dia.heHoras)}HE`;
           }
-          else { conteudo = ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—'; classe += ` escala-cell-${tipoEfetivo}`; }
+          else {
+            conteudo = ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—';
+            // Mesma informação de horas descontadas mostrada na Timeline
+            // (pedido explícito 2026-08-18) — nunca só "Banco de Horas
+            // (Dia Completo)" sem o valor, também aqui na Vista em Tabela.
+            if (tipoEfetivo === 'banco' && dia.bancoHorasDesconto) conteudo += ` (-${escalaFormatarHoras(dia.bancoHorasDesconto)})`;
+            classe += ` escala-cell-${tipoEfetivo}`;
+          }
           // Horas Extra reivindicadas (bloco "Horas Extra Disponíveis",
           // ver buildPainelHorasExtra) — antes só apareciam na Timeline;
           // agora aparecem também aqui, para qualquer colega ver ao
@@ -31104,6 +31174,11 @@ function buildHorariosPage(container, goTo) {
           if (dia.heHoras) horasFrag.push(h('span', { style: 'white-space:nowrap;' }, ` (+${escalaFormatarHoras(dia.heHoras)} HE)`));
         } else {
           horasFrag.push(ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—');
+          // "Banco de Horas (Dia Completo)" mostra também as horas
+          // descontadas aqui, mesmo padrão da Timeline (pedido explícito
+          // 2026-08-18) — o próprio colaborador vê logo quanto lhe foi
+          // descontado do saldo, sem ter de abrir Estatísticas.
+          if (tipoEfetivo === 'banco' && dia.bancoHorasDesconto) horasFrag.push(h('span', { style: 'white-space:nowrap;' }, ` (-${escalaFormatarHoras(dia.bancoHorasDesconto)})`));
         }
         // Horas Extra reivindicadas por mim (ver buildPainelHorasExtra) —
         // antes só apareciam no painel "Horas Extra Disponíveis" lá
@@ -31889,7 +31964,18 @@ function buildHorariosPage(container, goTo) {
           const dataISO = escalaDataDoDia(semana.semanaInicio, d.key);
           if (!dataISO || !dentroPeriodo(dataISO)) return;
           const alvo = escalaVagaDoColaboradorNoDia(semana, d.key, uid);
-          if (!alvo) return;
+          if (!alvo) {
+            // "Banco de Horas (Dia Completo)" nunca tem turno normal, por
+            // isso escalaVagaDoColaboradorNoDia nunca o encontra — sem
+            // isto, o desconto ficaria de fora da soma automática do
+            // saldo, exatamente a discrepância que se quer evitar.
+            const celulaBanco = escalaCelulaColaboradorNoDia(semana, d.key, uid);
+            if (celulaBanco && celulaBanco.dia.tipo === 'banco' && celulaBanco.dia.bancoHorasDesconto > 0) {
+              s.bancoHorasUsado += celulaBanco.dia.bancoHorasDesconto;
+              escalaEmpurrarDetalheEstatistica(s, 'bancoHorasUsado', dataISO, `-${escalaFormatarHoras(celulaBanco.dia.bancoHorasDesconto)} · Banco de Horas (Dia Completo)`);
+            }
+            return;
+          }
           trabalhouNoDia[d.key] = true;
           const dia = alvo.dia;
           const rotuloTurno = `${dia.entrada}–${dia.saida}`;
@@ -35124,10 +35210,17 @@ function buildHorariosPage(container, goTo) {
         // "não está ao serviço em turno regular", sem precisar de passar
         // o rato.
         const infoTipo = ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivoDia);
+        // "Banco de Horas (Dia Completo)" ganha as horas descontadas
+        // junto à etiqueta (ex: "Banco de Horas (Dia Completo) · -8h") —
+        // pedido explícito 2026-08-18 (Paulo): a informação tem de estar
+        // visível sem ambiguidade, nunca só "Folga"/etiqueta genérica.
+        const labelAusenciaTexto = (tipoEfetivoDia === 'banco' && dia.bancoHorasDesconto)
+          ? `${infoTipo ? infoTipo.label : tipoEfetivoDia} · -${escalaFormatarHoras(dia.bancoHorasDesconto)}`
+          : (infoTipo ? infoTipo.label : tipoEfetivoDia);
         const blocoAusencia = h('div', {
           class: 'escala-vertical-bloco escala-vertical-bloco-tipo-ausencia' + (editavel ? ' escala-vertical-bloco-clicavel' : ''),
           style: 'top:0%;height:100%;',
-        }, h('span', {}, infoTipo ? infoTipo.label : tipoEfetivoDia));
+        }, h('span', {}, labelAusenciaTexto));
         if (editavel) blocoAusencia.addEventListener('dblclick', aoClicarPosicao);
         blocos = [blocoAusencia];
       }
@@ -35159,7 +35252,10 @@ function buildHorariosPage(container, goTo) {
       // por hover, ver pedido 2026-08-08. Sem "— turno mantido" (pedido
       // seguinte, 2026-08-08): é óbvio pelo próprio bloco de turno estar
       // visível e só polui o balão.
-      const situacaoDia = tipoEfetivoDia === 'folga' ? 'Folga' : (tipoEfetivoDia && tipoEfetivoDia !== 'normal' ? (ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivoDia)?.label || tipoEfetivoDia) : (ausenciaSobreposta ? (ESCALA_TIPOS_DIA.find(t => t.key === ausenciaSobreposta.tipo)?.label || 'Ausência') : ''));
+      // "Banco de Horas (Dia Completo)" mostra também as horas
+      // descontadas no tooltip do nome (pedido explícito 2026-08-18) —
+      // mesmo texto usado no rótulo do bloco acima.
+      const situacaoDia = tipoEfetivoDia === 'folga' ? 'Folga' : (tipoEfetivoDia === 'banco' && dia.bancoHorasDesconto ? `Banco de Horas (Dia Completo) · -${escalaFormatarHoras(dia.bancoHorasDesconto)}` : (tipoEfetivoDia && tipoEfetivoDia !== 'normal' ? (ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivoDia)?.label || tipoEfetivoDia) : (ausenciaSobreposta ? (ESCALA_TIPOS_DIA.find(t => t.key === ausenciaSobreposta.tipo)?.label || 'Ausência') : '')));
       const textoTooltipColaborador = colaboradorNome + (situacaoDia ? ` (${situacaoDia})` : '');
       const trilho = h('div', { class: 'escala-vertical-trilho' + (editavel && !blocos.length ? ' escala-vertical-trilho-vazio' : '') }, [...blocos, ...tarefaOverlays, ...horasExtraOverlays].filter(Boolean));
       if (editavel && !blocos.length) trilho.addEventListener('click', aoClicarPosicao);
