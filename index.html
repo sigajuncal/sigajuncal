@@ -1943,6 +1943,7 @@
      o suficiente para o texto mais comprido habitual (horário + pausa
      + HE) numa única linha. */
   .escala-mes-col-horario{width:150px;}
+  .escala-mes-col-corrigivel{width:118px;font-size:12.5px;white-space:nowrap;}
   .escala-mes-domingo{background:var(--pharm-50);}
   .escala-mes-feriado td.escala-mes-col-dia{box-shadow:inset 3px 0 0 var(--orange);}
   .escala-pessoal-linha.escala-cell-ferias, .escala-pessoal-linha.escala-cell-extra,
@@ -6098,7 +6099,19 @@ function calendarioItensDoDia(dateISO, restringirPorPerfil) {
 // Dashboard nem a fluidez de navegação.
 function abrirItemCalendarioDashboard(item, dateISO, goTo) {
   if (item.tipo === 'evento' && item.evento) {
-    document.body.appendChild(buildEventoDiaModal(item.evento.tipoEvento, dateISO, item.evento, () => {}));
+    // "Dias Especiais" usa sempre o seu modal próprio (Título, Data,
+    // Descrição, Responsável, Link, Eliminar) — igual em qualquer sítio
+    // onde se abra um Dia Especial (2026-08-18, pedido explícito: a
+    // capacidade de edição na Página Inicial estava diferente/mais
+    // pobre do que na página "Dias Especiais", por cair sempre no modal
+    // genérico buildEventoDiaModal, pensado para Rastreio/Conselheira
+    // com vagas — que não tem nenhum campo específico para Dias
+    // Especiais além de "Notas").
+    if (item.evento.tipoEvento === 'DiaEspecial') {
+      document.body.appendChild(buildDiaEspecialModal(dateISO, item.evento, () => {}));
+    } else {
+      document.body.appendChild(buildEventoDiaModal(item.evento.tipoEvento, dateISO, item.evento, () => {}));
+    }
   } else if (item.tipo === 'agenda' && item.prestadorKey) {
     document.body.appendChild(buildAgendaDiaModal(item.prestadorKey, dateISO, () => {}));
   }
@@ -14304,7 +14317,7 @@ function buildHomepage(container, goTo) {
         titulo: eventoLabel(ev),
         subtitulo: h('span', {}, [buildBadgeEvento(ev, aDecorrer), vagasSpan]),
         aDecorrer,
-        onClick: () => document.body.appendChild(buildEventoDiaModal(ev.tipoEvento, ev.dataEvento, ev, () => {})),
+        onClick: () => document.body.appendChild(ev.tipoEvento === 'DiaEspecial' ? buildDiaEspecialModal(ev.dataEvento, ev, () => {}) : buildEventoDiaModal(ev.tipoEvento, ev.dataEvento, ev, () => {})),
       };
     }),
   });
@@ -20545,7 +20558,7 @@ function buildDiaEspecialModal(dateISO, evento, onSaved) {
 
   const grid = h('div', { class: 'form-grid' }, [
     h('div', { class: 'field span2' }, [h('label', {}, 'Título da Iniciativa'), tituloInput]),
-    h('div', { class: 'field field-xs' }, [h('label', {}, 'Data'), melhorarInputData(dataInput)]),
+    h('div', { class: 'field field-sm' }, [h('label', {}, 'Data'), melhorarInputData(dataInput)]),
     h('div', { class: 'field span2' }, [h('label', {}, 'Descrição / Informação de Balcão'), descInput]),
     h('div', { class: 'field field-sm' }, [h('label', {}, 'Responsável'), respInput]),
     h('div', { class: 'field span2' }, [h('label', {}, 'Link (opcional — ex: página de inscrições)'), linkRow]),
@@ -20592,7 +20605,7 @@ function buildDiaEspecialModal(dateISO, evento, onSaved) {
     actions.push(delBtn);
   }
 
-  const panel = h('div', { class: 'modal-panel confirm-panel' }, [
+  const panel = h('div', { class: 'modal-panel', style: 'max-width:520px;' }, [
     h('p', { class: 'modal-title', style: 'margin-bottom:12px;' }, evento ? 'Editar Dia Especial' : 'Novo Dia Especial'),
     grid,
     errorEl,
@@ -25907,6 +25920,28 @@ function escalaTipoEfetivoDia(tipo, colaboradorId) {
   const colaborador = colaboradorId ? (STATE.usuarios || []).find(u => u.id === colaboradorId) : null;
   return escalaUtilizadorEhPrestador(colaborador) ? 'indisponivel' : tipo;
 }
+// Correção/Validação de Banco de Horas e Horas Extra (2026-08-18, pedido
+// explícito) — a Vista Mensal ("A Minha Semana"/"Validação de Horários")
+// ganhou colunas próprias para estes 2 valores, editáveis SÓ por quem já
+// gere Banco de Horas/HE (Hugo/Paulo, ver podeGerirBancoHorasEHE), para
+// corrigir um valor registado errado. A correção fica gravada em campos
+// PRÓPRIOS (bancoHorasCorrigido/heHorasCorrigido) — nunca sobrescreve o
+// valor original (bancoHorasDesconto/heHoras, continuam a existir tal
+// como foram registados) — e passa a ser o valor "efetivo" usado em TODAS
+// as contagens futuras destes 2 campos (Estatísticas/Saldo, Timeline,
+// Vista em Tabela, PDF), através destes 2 helpers — nunca lido o valor em
+// bruto diretamente fora daqui, para nunca haver 2 sítios da app a
+// mostrar 2 números diferentes para o mesmo dia. Escopo deliberadamente
+// restrito a estes 2 campos — nenhum outro dado do dia (horário, tipo,
+// tarefas) tem este mecanismo de correção.
+function escalaBancoHorasEfetivo(dia) {
+  if (!dia) return 0;
+  return (dia.bancoHorasCorrigido !== undefined && dia.bancoHorasCorrigido !== null) ? dia.bancoHorasCorrigido : (dia.bancoHorasDesconto || 0);
+}
+function escalaHeHorasEfetivo(dia) {
+  if (!dia) return 0;
+  return (dia.heHorasCorrigido !== undefined && dia.heHorasCorrigido !== null) ? dia.heHorasCorrigido : (dia.heHoras || 0);
+}
 function escalaCalcularHoras(entrada, saida) {
   if (!/^\d{1,2}:\d{2}$/.test(entrada) || !/^\d{1,2}:\d{2}$/.test(saida)) return 0;
   const [eh, em] = entrada.split(':').map(Number);
@@ -28343,7 +28378,7 @@ function escalaTotalHorasLinha(linha) {
   return ESCALA_DIAS.reduce((soma, d) => {
     const dia = linha.dias[d.key];
     if (!dia) return soma;
-    return soma + (dia.tipo === 'normal' ? (dia.horas || 0) : 0) + (dia.heHoras || 0);
+    return soma + (dia.tipo === 'normal' ? (dia.horas || 0) : 0) + escalaHeHorasEfetivo(dia);
   }, 0);
 }
 // Pequeno editor modal de UMA célula da grelha (um dia de uma vaga, numa
@@ -28919,6 +28954,14 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     novoDados[codigoVaga].dias[diaKey] = {
       entrada, saida, pausaInicio, pausaFim, tipo, heHoras, heInicio, heFim, heIntervalos, horas, tarefas,
       bancoHorasIntervalos, bancoHorasDesconto,
+      // Correção/Validação de Banco de Horas e Horas Extra (ver
+      // escalaBancoHorasEfetivo/escalaHeHorasEfetivo) — sempre
+      // preservada ao reeditar o turno neste modal (ex: ajustar a
+      // Entrada/Saída de um dia já corrigido em "Validação de
+      // Horários"); só é alterada pelo próprio ecrã de Validação, nunca
+      // apagada de lado por reabrir e gravar aqui um campo diferente.
+      bancoHorasCorrigido: diaAtual.bancoHorasCorrigido, heHorasCorrigido: diaAtual.heHorasCorrigido,
+      correcaoBancoHePor: diaAtual.correcaoBancoHePor, correcaoBancoHeEm: diaAtual.correcaoBancoHeEm,
       tarefaTipo: primeiraTarefa.tipo, tarefaOutro: primeiraTarefa.outro, tarefaInicio: primeiraTarefa.inicio, tarefaFim: primeiraTarefa.fim,
       // Só persiste o override quando realmente há uma ausência formal a
       // ser contornada E o Tipo ficou "Normal" — nunca marca override
@@ -29108,6 +29151,59 @@ function buildHorariosPage(container, goTo) {
   function definirMesValidacao(novaData) { mesValidacaoData = novaData; horariosContextoMemorizado.mesValidacaoData = novaData; }
   function irMesAnteriorValidacao() { const d = new Date(mesValidacaoAtual() + 'T12:00:00'); d.setDate(1); d.setMonth(d.getMonth() - 1); definirMesValidacao(dateToISO(d)); rerender(); }
   function irMesSeguinteValidacao() { const d = new Date(mesValidacaoAtual() + 'T12:00:00'); d.setDate(1); d.setMonth(d.getMonth() + 1); definirMesValidacao(dateToISO(d)); rerender(); }
+  // Correção/Validação de Banco de Horas e Horas Extra na Vista Mensal
+  // (pedido explícito 2026-08-18) — célula em edição identificada por
+  // dataISO+campo ('banco'|'he'), nunca mais do que uma de cada vez.
+  // Restrita a podeGerirBancoHorasEHE() (Hugo/Paulo) em toda a UI — ver
+  // buildVistaPessoalMensal.
+  let correcaoBancoHeEditando = null; // { dataISO, campo }
+  let correcaoBancoHeDraft = '', correcaoBancoHeError = '', correcaoBancoHeSaving = false;
+  function abrirCorrecaoBancoHe(dataISO, campo, valorAtual) {
+    correcaoBancoHeEditando = { dataISO, campo };
+    correcaoBancoHeDraft = valorAtual ? String(valorAtual) : '';
+    correcaoBancoHeError = '';
+  }
+  function fecharCorrecaoBancoHe() { correcaoBancoHeEditando = null; correcaoBancoHeError = ''; }
+  // Grava a correção diretamente na semana correspondente à data — nunca
+  // bloqueada por escalaSemanaCongelada (ao contrário do resto da grelha):
+  // a validação existe justamente para corrigir semanas já passadas/
+  // publicadas, é o único ponto da app com esta exceção deliberada.
+  async function guardarCorrecaoBancoHe(colaboradorId) {
+    if (!podeGerirBancoHorasEHE() || !correcaoBancoHeEditando) return;
+    const { dataISO, campo } = correcaoBancoHeEditando;
+    const valorLimpo = correcaoBancoHeDraft.trim();
+    let valorNum = null;
+    if (valorLimpo !== '') {
+      valorNum = parseFloat(valorLimpo.replace(',', '.'));
+      if (isNaN(valorNum) || valorNum < 0) {
+        correcaoBancoHeError = 'Indique um número de horas válido (ou deixe em branco para remover a correção).';
+        rerender(); return;
+      }
+      valorNum = Math.round(valorNum * 100) / 100;
+    }
+    const segundaISO = escalaSegundaFeiraDaSemanaDeISO(dataISO);
+    const semana = (STATE.escalaSemanas || []).find(s => s.semanaInicio === segundaISO);
+    if (!semana) { correcaoBancoHeError = 'Não foi encontrada a semana desta data.'; rerender(); return; }
+    const diaKey = ESCALA_DIAS[(new Date(dataISO + 'T12:00:00').getDay() + 6) % 7].key;
+    const codigo = Object.keys(semana.dados || {}).find(cod => semana.dados[cod].colaboradorId === colaboradorId);
+    if (!codigo || !semana.dados[codigo].dias[diaKey]) { correcaoBancoHeError = 'Não foi encontrado turno desta pessoa nesse dia.'; rerender(); return; }
+    correcaoBancoHeSaving = true; rerender();
+    const novoDados = JSON.parse(JSON.stringify(semana.dados));
+    const campoCorrigido = campo === 'banco' ? 'bancoHorasCorrigido' : 'heHorasCorrigido';
+    novoDados[codigo].dias[diaKey][campoCorrigido] = valorNum;
+    novoDados[codigo].dias[diaKey].correcaoBancoHePor = currentUserName();
+    novoDados[codigo].dias[diaKey].correcaoBancoHeEm = new Date().toISOString();
+    const updated = await dbUpdate('escalaSemanas', semana.id, { dados: novoDados });
+    correcaoBancoHeSaving = false;
+    if (updated) {
+      STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
+      fecharCorrecaoBancoHe();
+      rerender();
+    } else {
+      correcaoBancoHeError = `Não foi possível guardar. ${escalaMensagemErroAmigavel(lastDbError)}`;
+      rerender();
+    }
+  }
   let gerando = false;
   // ---- Horas Extra Disponíveis (pedido explícito 2026-08-10) ----
   let mostrarFormHorasExtra = false, horasExtraDraft = {}, horasExtraError = '', horasExtraSaving = false;
@@ -29612,14 +29708,14 @@ function buildHorariosPage(container, goTo) {
           if (tipoEfetivo === 'normal') {
             conteudo = `${dia.entrada}–${dia.saida} (${escalaFormatarHoras(dia.horas)})`;
             if (dia.pausaInicio && dia.pausaFim) conteudo += ` · pausa ${dia.pausaInicio}-${dia.pausaFim}`;
-            if (dia.heHoras) conteudo += ` +${escalaFormatarHoras(dia.heHoras)}HE`;
+            if (escalaHeHorasEfetivo(dia)) conteudo += ` +${escalaFormatarHoras(escalaHeHorasEfetivo(dia))}HE`;
           }
           else {
             conteudo = ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—';
             // Mesma informação de horas descontadas mostrada na Timeline
             // (pedido explícito 2026-08-18) — nunca só "Banco de Horas
             // (Dia Completo)" sem o valor, também aqui na Vista em Tabela.
-            if (tipoEfetivo === 'banco' && dia.bancoHorasDesconto) conteudo += ` (-${escalaFormatarHoras(dia.bancoHorasDesconto)})`;
+            if (tipoEfetivo === 'banco' && escalaBancoHorasEfetivo(dia)) conteudo += ` (-${escalaFormatarHoras(escalaBancoHorasEfetivo(dia))})`;
             classe += ` escala-cell-${tipoEfetivo}`;
           }
           // Horas Extra reivindicadas (bloco "Horas Extra Disponíveis",
@@ -31171,14 +31267,14 @@ function buildHorariosPage(container, goTo) {
         if (tipoEfetivo === 'normal') {
           horasFrag.push(`${dia.entrada} – ${dia.saida}`);
           if (dia.pausaInicio && dia.pausaFim) horasFrag.push(h('span', { style: 'white-space:nowrap;' }, ` (pausa ${dia.pausaInicio}-${dia.pausaFim})`));
-          if (dia.heHoras) horasFrag.push(h('span', { style: 'white-space:nowrap;' }, ` (+${escalaFormatarHoras(dia.heHoras)} HE)`));
+          if (escalaHeHorasEfetivo(dia)) horasFrag.push(h('span', { style: 'white-space:nowrap;' }, ` (+${escalaFormatarHoras(escalaHeHorasEfetivo(dia))} HE)`));
         } else {
           horasFrag.push(ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—');
           // "Banco de Horas (Dia Completo)" mostra também as horas
           // descontadas aqui, mesmo padrão da Timeline (pedido explícito
           // 2026-08-18) — o próprio colaborador vê logo quanto lhe foi
           // descontado do saldo, sem ter de abrir Estatísticas.
-          if (tipoEfetivo === 'banco' && dia.bancoHorasDesconto) horasFrag.push(h('span', { style: 'white-space:nowrap;' }, ` (-${escalaFormatarHoras(dia.bancoHorasDesconto)})`));
+          if (tipoEfetivo === 'banco' && escalaBancoHorasEfetivo(dia)) horasFrag.push(h('span', { style: 'white-space:nowrap;' }, ` (-${escalaFormatarHoras(escalaBancoHorasEfetivo(dia))})`));
         }
         // Horas Extra reivindicadas por mim (ver buildPainelHorasExtra) —
         // antes só apareciam no painel "Horas Extra Disponíveis" lá
@@ -31292,7 +31388,34 @@ function buildHorariosPage(container, goTo) {
       esteMesBtn,
     ]);
 
-    let horasFeriado = 0, horasNoturnas = 0, diasFerias = 0, horasDomingo = 0;
+    let horasFeriado = 0, horasNoturnas = 0, diasFerias = 0, horasDomingo = 0, bancoHorasTotalMes = 0, heHorasTotalMes = 0;
+    const podeValidarBancoHe = podeGerirBancoHorasEHE();
+    // Célula editável de Banco de Horas/HE (só Hugo/Paulo) — clique abre
+    // um mini-formulário inline (input + Guardar/Cancelar), mesmo padrão
+    // do "Ajuste ao Saldo Inicial de Banco de Horas" nas Estatísticas.
+    // Nunca bloqueada por semana congelada — ver guardarCorrecaoBancoHe.
+    function celulaCorrecao(dataISO, campo, valorEfetivo, temOrigem) {
+      const editando = correcaoBancoHeEditando && correcaoBancoHeEditando.dataISO === dataISO && correcaoBancoHeEditando.campo === campo;
+      const foiCorrigido = temOrigem && temOrigem.corrigido;
+      const textoValor = valorEfetivo ? (campo === 'banco' ? `-${escalaFormatarHoras(valorEfetivo)}` : `+${escalaFormatarHoras(valorEfetivo)}`) : '—';
+      if (editando) {
+        const input = h('input', { class: 'input', type: 'number', step: '0.5', min: '0', style: 'max-width:80px;padding:3px 6px;font-size:12.5px;', placeholder: 'horas' });
+        input.value = correcaoBancoHeDraft;
+        input.addEventListener('input', () => { correcaoBancoHeDraft = input.value; });
+        const guardarBtn = h('button', { class: 'btn-fab-sm tone-green', title: 'Guardar', 'aria-label': 'Guardar', disabled: correcaoBancoHeSaving ? 'disabled' : undefined }, Icon('check', { size: 12, strokeWidth: 2.4 }));
+        guardarBtn.addEventListener('click', (e) => { e.stopPropagation(); requireAuth(() => guardarCorrecaoBancoHe(colaboradorId)); });
+        const cancelarBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Cancelar', 'aria-label': 'Cancelar', disabled: correcaoBancoHeSaving ? 'disabled' : undefined }, Icon('x', { size: 12, strokeWidth: 2.4 }));
+        cancelarBtn.addEventListener('click', (e) => { e.stopPropagation(); fecharCorrecaoBancoHe(); rerender(); });
+        return h('td', { class: 'escala-mes-col-corrigivel' }, h('div', { style: 'display:flex;align-items:center;gap:4px;' }, [input, guardarBtn, cancelarBtn]));
+      }
+      const conteudo = [h('span', {}, textoValor)];
+      if (foiCorrigido) conteudo.push(h('span', { title: `Corrigido por ${temOrigem.corrigidoPor || '—'}`, style: 'margin-left:4px;font-size:10.5px;color:var(--pharm-500);' }, '✎'));
+      const td = h('td', { class: 'escala-mes-col-corrigivel' + (podeValidarBancoHe ? ' escala-cell-editavel' : '') }, conteudo);
+      if (podeValidarBancoHe && temOrigem) {
+        td.addEventListener('click', () => requireAuth(() => { abrirCorrecaoBancoHe(dataISO, campo, valorEfetivo); rerender(); }));
+      }
+      return td;
+    }
     const linhasDias = escalaDiasDoMes(primeiroDiaMes).map(dataISO => {
       const dObj = new Date(dataISO + 'T12:00:00');
       const diaKey = ESCALA_DIAS[(dObj.getDay() + 6) % 7].key;
@@ -31314,7 +31437,7 @@ function buildHorariosPage(container, goTo) {
       else if (!semanaVisivel) { texto = 'Por confirmar'; }
       else if (!dia) { texto = '—'; }
       else if (dia.tipo === 'normal' && dia.entrada && dia.saida) {
-        texto = `${dia.entrada} – ${dia.saida}${(dia.pausaInicio && dia.pausaFim) ? ` (pausa ${dia.pausaInicio}-${dia.pausaFim})` : ''}${dia.heHoras ? ` (+${escalaFormatarHoras(dia.heHoras)} HE)` : ''}`;
+        texto = `${dia.entrada} – ${dia.saida}${(dia.pausaInicio && dia.pausaFim) ? ` (pausa ${dia.pausaInicio}-${dia.pausaFim})` : ''}${escalaHeHorasEfetivo(dia) ? ` (+${escalaFormatarHoras(escalaHeHorasEfetivo(dia))} HE)` : ''}`;
         const horasDia = dia.horas || escalaCalcularHorasComPausa(dia.entrada, dia.saida, dia.pausaInicio, dia.pausaFim);
         if (escalaFeriadoInfo(dataISO)) horasFeriado = Math.round((horasFeriado + horasDia) * 100) / 100;
         if (dObj.getDay() === 0) horasDomingo = Math.round((horasDomingo + horasDia) * 100) / 100;
@@ -31325,6 +31448,16 @@ function buildHorariosPage(container, goTo) {
         classeExtra = ` escala-cell-${tipoEfetivo}`;
         if (tipoEfetivo === 'ferias') diasFerias += 1;
       }
+      // Banco de Horas/Horas Extra do dia (pedido explícito 2026-08-18) —
+      // sempre o valor EFETIVO (com correção aplicada, se houver), tanto
+      // na soma do mês como na própria célula da tabela — nunca o valor
+      // em bruto, para nunca haver 2 números diferentes na app para o
+      // mesmo dia.
+      const bancoValorDia = (semanaVisivel && dia) ? escalaBancoHorasEfetivo(dia) : 0;
+      const heValorDia = (semanaVisivel && dia) ? escalaHeHorasEfetivo(dia) : 0;
+      if (bancoValorDia) bancoHorasTotalMes = Math.round((bancoHorasTotalMes + bancoValorDia) * 100) / 100;
+      if (heValorDia) heHorasTotalMes = Math.round((heHorasTotalMes + heValorDia) * 100) / 100;
+      const origemCelula = (semanaVisivel && dia) ? { corrigido: dia.bancoHorasCorrigido !== undefined || dia.heHorasCorrigido !== undefined, corrigidoPor: dia.correcaoBancoHePor } : null;
       // Domingo/feriado com um sinal visual leve na linha — ajuda a
       // localizar rapidamente esses dias numa lista de 28-31, sem
       // precisar de nenhuma cor forte nem legenda à parte (pedido
@@ -31334,6 +31467,8 @@ function buildHorariosPage(container, goTo) {
         h('td', { class: 'escala-mes-col-dia' }, String(dObj.getDate())),
         h('td', { class: 'escala-mes-col-semana' }, ESCALA_DIAS.find(d => d.key === diaKey).label),
         h('td', { class: 'escala-mes-col-horario' }, texto),
+        celulaCorrecao(dataISO, 'banco', bancoValorDia, origemCelula ? { corrigido: dia.bancoHorasCorrigido !== undefined, corrigidoPor: dia.correcaoBancoHePor } : null),
+        celulaCorrecao(dataISO, 'he', heValorDia, origemCelula ? { corrigido: dia.heHorasCorrigido !== undefined, corrigidoPor: dia.correcaoBancoHePor } : null),
       ]);
     });
 
@@ -31344,6 +31479,8 @@ function buildHorariosPage(container, goTo) {
         buildStatCard('clock', 'Período Noturno', escalaFormatarHoras(horasNoturnas), 'purple'),
         buildStatCard('beachUmbrella', 'Dias de Férias', String(diasFerias), 'blue-soft'),
         buildStatCard('calendar', 'Horas de Domingo', escalaFormatarHoras(horasDomingo), 'yellow'),
+        buildStatCard('clock', 'Banco de Horas (Usado)', escalaFormatarHoras(bancoHorasTotalMes), 'blue-soft'),
+        buildStatCard('star', 'Horas Extra', escalaFormatarHoras(heHorasTotalMes), 'orange'),
       ]),
     ]);
     // width:fit-content (2026-08-17, pedido explícito "muito espaço
@@ -31354,10 +31491,16 @@ function buildHorariosPage(container, goTo) {
     // abraçar exatamente a largura da tabela lá dentro, sem margem
     // branca a mais, e ajusta-se sozinho a qualquer mudança futura de
     // conteúdo (nunca mais precisa de um número adivinhado).
+    const avisoValidacao = correcaoBancoHeError ? h('p', { class: 'field-helper-text', style: 'color:#b91c1c;margin:0 0 8px;' }, correcaoBancoHeError) : null;
     const listaCard = h('div', { class: 'card card-pad', style: 'width:fit-content;max-width:100%;' }, [
       h('h3', { class: 'dash-card-title', style: 'margin:0 0 10px;' }, escalaMesNomeAno(primeiroDiaMes)),
+      podeValidarBancoHe ? h('p', { class: 'field-helper-text', style: 'margin:0 0 10px;' }, 'Colunas "Banco de Horas" e "Horas Extra" clicáveis para corrigir um valor registado errado — a correção passa a valer para todas as contagens (Estatísticas, Timeline, PDF).') : null,
+      avisoValidacao,
       h('table', { class: 'escala-mes-tabela' }, [
-        h('thead', {}, h('tr', {}, [h('th', { class: 'escala-mes-col-dia' }, 'Dia'), h('th', { class: 'escala-mes-col-semana' }, ''), h('th', { class: 'escala-mes-col-horario' }, 'Horário')])),
+        h('thead', {}, h('tr', {}, [
+          h('th', { class: 'escala-mes-col-dia' }, 'Dia'), h('th', { class: 'escala-mes-col-semana' }, ''), h('th', { class: 'escala-mes-col-horario' }, 'Horário'),
+          h('th', { class: 'escala-mes-col-corrigivel' }, 'Banco de Horas'), h('th', { class: 'escala-mes-col-corrigivel' }, 'Horas Extra'),
+        ])),
         h('tbody', {}, linhasDias),
       ]),
     ]);
@@ -31970,9 +32113,9 @@ function buildHorariosPage(container, goTo) {
             // isto, o desconto ficaria de fora da soma automática do
             // saldo, exatamente a discrepância que se quer evitar.
             const celulaBanco = escalaCelulaColaboradorNoDia(semana, d.key, uid);
-            if (celulaBanco && celulaBanco.dia.tipo === 'banco' && celulaBanco.dia.bancoHorasDesconto > 0) {
-              s.bancoHorasUsado += celulaBanco.dia.bancoHorasDesconto;
-              escalaEmpurrarDetalheEstatistica(s, 'bancoHorasUsado', dataISO, `-${escalaFormatarHoras(celulaBanco.dia.bancoHorasDesconto)} · Banco de Horas (Dia Completo)`);
+            if (celulaBanco && celulaBanco.dia.tipo === 'banco' && escalaBancoHorasEfetivo(celulaBanco.dia) > 0) {
+              s.bancoHorasUsado += escalaBancoHorasEfetivo(celulaBanco.dia);
+              escalaEmpurrarDetalheEstatistica(s, 'bancoHorasUsado', dataISO, `-${escalaFormatarHoras(escalaBancoHorasEfetivo(celulaBanco.dia))} · Banco de Horas (Dia Completo)`);
             }
             return;
           }
@@ -32005,7 +32148,7 @@ function buildHorariosPage(container, goTo) {
           // abrirEditorCelulaEscala/podeGerirBancoHorasEHE). Distinto do
           // Banco de Horas GANHO automaticamente por feriado trabalhado
           // (calculado à parte, por semana, mais abaixo).
-          if (dia.bancoHorasDesconto > 0) { s.bancoHorasUsado += dia.bancoHorasDesconto; escalaEmpurrarDetalheEstatistica(s, 'bancoHorasUsado', dataISO, `-${escalaFormatarHoras(dia.bancoHorasDesconto)} · turno ${rotuloTurno}`); }
+          if (escalaBancoHorasEfetivo(dia) > 0) { s.bancoHorasUsado += escalaBancoHorasEfetivo(dia); escalaEmpurrarDetalheEstatistica(s, 'bancoHorasUsado', dataISO, `-${escalaFormatarHoras(escalaBancoHorasEfetivo(dia))} · turno ${rotuloTurno}`); }
         });
         // Classificação do fim de semana — só conta quando Sábado E
         // Domingo dessa semana caem os dois dentro do período pedido (uma
@@ -35151,10 +35294,10 @@ function buildHorariosPage(container, goTo) {
             // Item 2 (Banco de Horas): só no PRIMEIRO segmento — evita
             // repetir o mesmo selo duas vezes quando o turno fica dividido
             // em dois blocos pela pausa/almoço.
-            (idxSeg === 0 && dia.bancoHorasDesconto > 0) ? h('div', {
+            (idxSeg === 0 && escalaBancoHorasEfetivo(dia) > 0) ? h('div', {
               class: 'escala-vertical-banco-horas-badge',
-              title: `Banco de Horas descontado: -${escalaFormatarHoras(dia.bancoHorasDesconto)}`,
-            }, `-${escalaFormatarHoras(dia.bancoHorasDesconto)} Banco`) : null,
+              title: `Banco de Horas descontado: -${escalaFormatarHoras(escalaBancoHorasEfetivo(dia))}`,
+            }, `-${escalaFormatarHoras(escalaBancoHorasEfetivo(dia))} Banco`) : null,
           ]);
           if (editavel) segBloco.addEventListener('dblclick', aoClicarPosicao);
           return segBloco;
@@ -35214,8 +35357,8 @@ function buildHorariosPage(container, goTo) {
         // junto à etiqueta (ex: "Banco de Horas (Dia Completo) · -8h") —
         // pedido explícito 2026-08-18 (Paulo): a informação tem de estar
         // visível sem ambiguidade, nunca só "Folga"/etiqueta genérica.
-        const labelAusenciaTexto = (tipoEfetivoDia === 'banco' && dia.bancoHorasDesconto)
-          ? `${infoTipo ? infoTipo.label : tipoEfetivoDia} · -${escalaFormatarHoras(dia.bancoHorasDesconto)}`
+        const labelAusenciaTexto = (tipoEfetivoDia === 'banco' && escalaBancoHorasEfetivo(dia))
+          ? `${infoTipo ? infoTipo.label : tipoEfetivoDia} · -${escalaFormatarHoras(escalaBancoHorasEfetivo(dia))}`
           : (infoTipo ? infoTipo.label : tipoEfetivoDia);
         const blocoAusencia = h('div', {
           class: 'escala-vertical-bloco escala-vertical-bloco-tipo-ausencia' + (editavel ? ' escala-vertical-bloco-clicavel' : ''),
@@ -35255,7 +35398,7 @@ function buildHorariosPage(container, goTo) {
       // "Banco de Horas (Dia Completo)" mostra também as horas
       // descontadas no tooltip do nome (pedido explícito 2026-08-18) —
       // mesmo texto usado no rótulo do bloco acima.
-      const situacaoDia = tipoEfetivoDia === 'folga' ? 'Folga' : (tipoEfetivoDia === 'banco' && dia.bancoHorasDesconto ? `Banco de Horas (Dia Completo) · -${escalaFormatarHoras(dia.bancoHorasDesconto)}` : (tipoEfetivoDia && tipoEfetivoDia !== 'normal' ? (ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivoDia)?.label || tipoEfetivoDia) : (ausenciaSobreposta ? (ESCALA_TIPOS_DIA.find(t => t.key === ausenciaSobreposta.tipo)?.label || 'Ausência') : '')));
+      const situacaoDia = tipoEfetivoDia === 'folga' ? 'Folga' : (tipoEfetivoDia === 'banco' && escalaBancoHorasEfetivo(dia) ? `Banco de Horas (Dia Completo) · -${escalaFormatarHoras(escalaBancoHorasEfetivo(dia))}` : (tipoEfetivoDia && tipoEfetivoDia !== 'normal' ? (ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivoDia)?.label || tipoEfetivoDia) : (ausenciaSobreposta ? (ESCALA_TIPOS_DIA.find(t => t.key === ausenciaSobreposta.tipo)?.label || 'Ausência') : '')));
       const textoTooltipColaborador = colaboradorNome + (situacaoDia ? ` (${situacaoDia})` : '');
       const trilho = h('div', { class: 'escala-vertical-trilho' + (editavel && !blocos.length ? ' escala-vertical-trilho-vazio' : '') }, [...blocos, ...tarefaOverlays, ...horasExtraOverlays].filter(Boolean));
       if (editavel && !blocos.length) trilho.addEventListener('click', aoClicarPosicao);
@@ -38000,7 +38143,7 @@ function buildHorarioSemanaGridPDFDoc(semana) {
     const { dia, colaboradorId } = entry;
     const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, colaboradorId);
     if (tipoEfetivo !== 'normal' || !dia.entrada || !dia.saida) return soma;
-    return soma + escalaCalcularHorasComPausa(dia.entrada, dia.saida, dia.pausaInicio, dia.pausaFim) + (dia.heHoras || 0);
+    return soma + escalaCalcularHorasComPausa(dia.entrada, dia.saida, dia.pausaInicio, dia.pausaFim) + escalaHeHorasEfetivo(dia);
   }, 0);
   ESCALA_GRUPOS.forEach(g => {
     const vagas = escalaVagasGrupoOrdenadas(g.key);
@@ -38038,7 +38181,7 @@ function buildHorarioSemanaGridPDFDoc(semana) {
           if (tipoEfetivo === 'normal' && dia.entrada && dia.saida) {
             conteudo = `${dia.entrada}–${dia.saida}`;
             if (dia.pausaInicio && dia.pausaFim) conteudo += ` (p.${dia.pausaInicio}-${dia.pausaFim})`;
-            if (dia.heHoras) conteudo += ` +${escalaFormatarHoras(dia.heHoras)}HE`;
+            if (escalaHeHorasEfetivo(dia)) conteudo += ` +${escalaFormatarHoras(escalaHeHorasEfetivo(dia))}HE`;
           } else {
             conteudo = ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—';
           }
@@ -38065,7 +38208,7 @@ function buildHorarioSemanaGridPDFDoc(semana) {
         if (tipoEfetivo === 'normal' && dia.entrada && dia.saida) {
           conteudo = `${dia.entrada}–${dia.saida}`;
           if (dia.pausaInicio && dia.pausaFim) conteudo += ` (p.${dia.pausaInicio}-${dia.pausaFim})`;
-          if (dia.heHoras) conteudo += ` +${escalaFormatarHoras(dia.heHoras)}HE`;
+          if (escalaHeHorasEfetivo(dia)) conteudo += ` +${escalaFormatarHoras(escalaHeHorasEfetivo(dia))}HE`;
         } else {
           conteudo = ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—';
         }
