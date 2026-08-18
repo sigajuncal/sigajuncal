@@ -26961,27 +26961,62 @@ function escalaVagaDoColaboradorNoDia(semana, diaKey, utilizadorId) {
   }
   return null;
 }
+// Validação partilhada de um pedido de "Atribuição de Tarefa" contra o
+// turno real da pessoa nesse dia — usada tanto no PRÓPRIO FORMULÁRIO (em
+// tempo real, para o colaborador ver logo se o pedido é possível antes de
+// o enviar) como na validação final pela Direção (escalaAplicarTarefaPedidoNoHorario).
+// Verifica, por esta ordem: a data pertence à semana; a pessoa tem turno
+// normal nesse dia; o horário pedido cabe num segmento do turno (não
+// atravessa a Pausa/Almoço); esse turno ainda não tem as 3 tarefas
+// possíveis; e o horário pedido não se sobrepõe a nenhuma tarefa já
+// atribuída nesse turno (Chefe de Turno/Encomenda/Conferência/etc.).
+function escalaValidarPedidoTarefaContraTurno(semana, dataISO, autorId, horaInicio, horaFim) {
+  if (!semana) return { ok: false, motivo: 'a semana ainda não foi gerada' };
+  const diaInfo = ESCALA_DIAS.find(d => escalaDataDoDia(semana.semanaInicio, d.key) === dataISO);
+  if (!diaInfo) return { ok: false, motivo: 'a data pedida não pertence a esta semana' };
+  const vaga = escalaVagaDoColaboradorNoDia(semana, diaInfo.key, autorId);
+  if (!vaga) return { ok: false, motivo: 'sem turno normal nesse dia', diaInfo };
+  if (!horaInicio || !horaFim) return { ok: false, motivo: 'indique o horário', diaInfo, vaga };
+  const iniMin = escalaMinutosAbsolutos(horaInicio, false);
+  const fimMin = escalaMinutosAbsolutos(horaFim, true);
+  if (!(fimMin > iniMin)) return { ok: false, motivo: 'o Fim tem de ser depois do Início', diaInfo, vaga };
+  const cabe = escalaSegmentosTurnoAbsolutos(vaga.dia).some(s => iniMin >= s.inicioMin && fimMin <= s.fimMin);
+  if (!cabe) return { ok: false, motivo: 'o horário não cabe no turno (ou atravessa a pausa)', diaInfo, vaga };
+  const existentes = escalaTarefasDoDia(vaga.dia);
+  if (existentes.length >= 3) return { ok: false, motivo: 'esse turno já tem as 3 tarefas possíveis', diaInfo, vaga };
+  const sobrepoe = existentes.some(t => {
+    const ti = escalaMinutosAbsolutos(t.inicio, false), tf = escalaMinutosAbsolutos(t.fim, true);
+    return iniMin < tf && fimMin > ti;
+  });
+  if (sobrepoe) return { ok: false, motivo: 'sobrepõe-se a uma tarefa já atribuída nesse turno', diaInfo, vaga, existentes };
+  return { ok: true, diaInfo, vaga, existentes };
+}
 // Auto-atribuição no horário de um pedido de "Atribuição de Tarefa" (ver
 // ESCALA_TIPOS_PEDIDO_SEMANA/buildFeedNotasEquipa) — chamada ao validar o
 // pedido pela Direção. Sempre "melhor esforço", nunca bloqueia a
 // validação em si (ver alternarValidacaoNotaEquipa): se não conseguir
-// atribuir sozinha (semana ainda não gerada, sem turno normal nesse dia,
-// horário não cabe no turno/atravessa a pausa, ou já há 3 tarefas nesse
-// turno), devolve o motivo para a Direção agendar manualmente — pedido
-// fica validado na mesma, só sem `aplicadoHorario`.
+// atribuir sozinha (semana ainda não gerada, congelada, ou reprovada por
+// escalaValidarPedidoTarefaContraTurno), devolve o motivo para a Direção
+// agendar manualmente — pedido fica validado na mesma, só sem
+// `aplicadoHorario`. Na prática isto só deve acontecer se o turno da
+// pessoa mudou ENTRE o pedido ser feito e ser validado, já que o próprio
+// formulário já valida tudo isto em tempo real antes de aceitar o pedido.
 function escalaAplicarTarefaPedidoNoHorario(nota) {
   const semana = (STATE.escalaSemanas || []).find(s => s.semanaInicio === nota.semanaInicio);
   if (!semana) return { ok: false, motivo: 'a semana ainda não foi gerada' };
-  if (escalaSemanaEstaCongelada(semana)) return { ok: false, motivo: 'a semana já está publicada/congelada' };
-  const diaInfo = ESCALA_DIAS.find(d => escalaDataDoDia(semana.semanaInicio, d.key) === nota.dataPedido);
-  if (!diaInfo) return { ok: false, motivo: 'a data pedida não pertence a esta semana' };
-  const vaga = escalaVagaDoColaboradorNoDia(semana, diaInfo.key, nota.autorId);
-  if (!vaga) return { ok: false, motivo: 'sem turno normal nesse dia para atribuir a tarefa' };
-  const iniMin = escalaMinutosAbsolutos(nota.horaInicio, false);
-  const fimMin = escalaMinutosAbsolutos(nota.horaFim, true);
-  const cabe = escalaSegmentosTurnoAbsolutos(vaga.dia).some(s => iniMin >= s.inicioMin && fimMin <= s.fimMin);
-  if (!(fimMin > iniMin) || !cabe) return { ok: false, motivo: 'o horário pedido não cabe no turno (ou atravessa a pausa)' };
-  if (escalaTarefasDoDia(vaga.dia).length >= 3) return { ok: false, motivo: 'esse turno já tem as 3 tarefas possíveis' };
+  // Só semanas REALMENTE já passadas são imutáveis aqui — uma semana já
+  // PUBLICADA mas ainda atual/futura continua a poder receber uma tarefa
+  // validada por este fluxo (pedido explícito 2026-08-18: "mesmo em
+  // horário publicado, a validação de um pedido de tarefa faz o registo
+  // da tarefa no horário"), sem precisar de reabrir a semana toda para
+  // rascunho primeiro — nunca usa escalaSemanaEstaCongelada() aqui de
+  // propósito, essa também bloqueia por 'publicado', o que era demasiado
+  // restritivo só para este caso.
+  const hojeSegundaISO = escalaSegundaFeiraDaSemanaDeISO(todayISO());
+  if (semana.semanaInicio < hojeSegundaISO) return { ok: false, motivo: 'a semana já passou' };
+  const val = escalaValidarPedidoTarefaContraTurno(semana, nota.dataPedido, nota.autorId, nota.horaInicio, nota.horaFim);
+  if (!val.ok) return val;
+  const { diaInfo, vaga } = val;
   const novoDados = JSON.parse(JSON.stringify(semana.dados));
   escalaAdicionarTarefaComumAoDia(novoDados, vaga.codigo, diaInfo.key, nota.tarefaTipo, nota.horaInicio, nota.horaFim);
   // escalaAdicionarTarefaComumAoDia grava sempre `outro:''` — a descrição
@@ -29119,7 +29154,12 @@ function buildHorariosPage(container, goTo) {
   let notaEquipaEditandoTexto = '';
   let notaEquipaSaving = false;
   let novoPedidoTipo = 'nota';
-  let novoPedidoData = todayISO();
+  // Vazio de propósito — o valor predefinido depende da SEMANA em vista
+  // (Segunda-feira dessa semana, ou hoje se a semana em vista for a
+  // corrente), por isso é calculado a cada render em buildFeedNotasEquipa,
+  // nunca fixado aqui de uma vez por todas (ver "clamp" logo no início
+  // dessa função).
+  let novoPedidoData = '';
   let novoPedidoHoraInicio = '';
   let novoPedidoHoraFim = '';
   let novoPedidoTarefaTipo = 'conferencia';
@@ -29578,15 +29618,33 @@ function buildHorariosPage(container, goTo) {
     const label = novoPedidoTarefaTipo === 'outro' ? (novoPedidoTarefaDescricao || 'Outro') : (info ? info.label : '');
     return `Pedido de tarefa: ${label} em ${formatDate(novoPedidoData)} das ${novoPedidoHoraInicio} às ${novoPedidoHoraFim}.`;
   }
-  async function criarNotaEquipa(semanaInicioISO, texto, aoTerminar) {
+  // Traduz o `motivo` (curto, técnico) de escalaValidarPedidoTarefaContraTurno
+  // numa frase legível para o formulário — mensagem única reutilizada em
+  // ambos os pontos que usam essa validação (aqui e o preview em tempo
+  // real, ver buildFeedNotasEquipa).
+  function escalaMensagemErroPedidoTarefa(motivo) {
+    const mapa = {
+      'a semana ainda não foi gerada': 'Esta semana ainda não tem horário gerado.',
+      'a semana já passou': 'Esta semana já passou — o histórico está congelado.',
+      'a data pedida não pertence a esta semana': 'Escolha uma data dentro desta semana.',
+      'sem turno normal nesse dia': 'Não tem nenhum turno normal registado nesse dia — não é possível pedir uma tarefa.',
+      'indique o horário': 'Indique a Hora de Início e de Fim.',
+      'o Fim tem de ser depois do Início': 'O Fim tem de ser depois do Início.',
+      'o horário não cabe no turno (ou atravessa a pausa)': 'Esse horário não cabe no seu turno nesse dia (ou atravessa a Pausa/Almoço).',
+      'esse turno já tem as 3 tarefas possíveis': 'Esse turno já tem o máximo de 3 tarefas atribuídas.',
+      'sobrepõe-se a uma tarefa já atribuída nesse turno': 'Esse horário sobrepõe-se a uma tarefa já atribuída nesse turno.',
+    };
+    return mapa[motivo] || motivo;
+  }
+  async function criarNotaEquipa(semana, texto, aoTerminar) {
     if (!activeUser || notaEquipaSaving) return;
     novoPedidoErro = '';
     const tipo = novoPedidoTipo;
-    const payload = { semanaInicio: semanaInicioISO, autorId: activeUser.id, autorNome: activeUser.nomeCompleto || activeUser.username, validadoDirecao: false, tipo, aplicadoHorario: false };
+    const payload = { semanaInicio: semana.semanaInicio, autorId: activeUser.id, autorNome: activeUser.nomeCompleto || activeUser.username, validadoDirecao: false, tipo, aplicadoHorario: false };
     if (tipo === 'tarefa') {
-      if (!novoPedidoData || !novoPedidoHoraInicio || !novoPedidoHoraFim) { novoPedidoErro = 'Indique a Data e o Horário da tarefa.'; rerender(); return; }
-      if (escalaMinutosAbsolutos(novoPedidoHoraFim, true) <= escalaMinutosAbsolutos(novoPedidoHoraInicio, false)) { novoPedidoErro = 'O Fim tem de ser depois do Início.'; rerender(); return; }
       if (novoPedidoTarefaTipo === 'outro' && !novoPedidoTarefaDescricao.trim()) { novoPedidoErro = 'Descreva a tarefa "Outro".'; rerender(); return; }
+      const val = escalaValidarPedidoTarefaContraTurno(semana, novoPedidoData, activeUser.id, novoPedidoHoraInicio, novoPedidoHoraFim);
+      if (!val.ok) { novoPedidoErro = escalaMensagemErroPedidoTarefa(val.motivo); rerender(); return; }
       payload.dataPedido = novoPedidoData;
       payload.horaInicio = novoPedidoHoraInicio;
       payload.horaFim = novoPedidoHoraFim;
@@ -29604,7 +29662,7 @@ function buildHorariosPage(container, goTo) {
     if (created) {
       STATE.escalaNotasSemana = [...(STATE.escalaNotasSemana || []), created];
       notificarDirecaoNotaEquipa(created, 'criou um novo registo');
-      novoPedidoTipo = 'nota'; novoPedidoData = todayISO(); novoPedidoHoraInicio = ''; novoPedidoHoraFim = ''; novoPedidoTarefaTipo = 'conferencia'; novoPedidoTarefaDescricao = '';
+      novoPedidoTipo = 'nota'; novoPedidoData = ''; novoPedidoHoraInicio = ''; novoPedidoHoraFim = ''; novoPedidoTarefaTipo = 'conferencia'; novoPedidoTarefaDescricao = '';
       if (aoTerminar) aoTerminar();
     }
     else escalaShowErro('Não foi possível guardar o registo');
@@ -29658,7 +29716,7 @@ function buildHorariosPage(container, goTo) {
         STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semanaUpdated.id ? semanaUpdated : s);
         patch.aplicadoHorario = true;
       } else {
-        showToast(`Validado, mas não foi possível atribuir sozinha (${resultado.motivo}) — agende a tarefa manualmente.`, 'error');
+        showToast(`Validado, mas não foi possível atribuir sozinha (${escalaMensagemErroPedidoTarefa(resultado.motivo)}) — agende a tarefa manualmente.`, 'error');
       }
     }
     const updated = await dbUpdate('escalaNotasSemana', nota.id, patch);
@@ -29774,44 +29832,94 @@ function buildHorariosPage(container, goTo) {
       const tipoInfo = escalaPedidoTipoInfo(novoPedidoTipo);
       const tipoSelect = h('select', { class: 'select' }, ESCALA_TIPOS_PEDIDO_SEMANA.map(t => h('option', { value: t.key, selected: t.key === novoPedidoTipo ? 'selected' : undefined }, `${t.icon} ${t.label}`)));
       tipoSelect.addEventListener('change', () => { novoPedidoTipo = tipoSelect.value; novoPedidoErro = ''; rerender(); });
-      const campos = [h('div', { class: 'field', style: 'max-width:280px;' }, [buildLabelComAjuda('Tipo de Pedido', tipoInfo.ajuda), tipoSelect])];
-
+      // Layout em flex (não form-grid) — este cartão ocupa a largura toda
+      // da página, e um grid de 12 colunas espalhava demasiado os campos
+      // curtos (pedido explícito 2026-08-18); aqui cada campo tem a sua
+      // própria largura mínima e fica encostado ao seguinte.
+      const linha1 = [h('div', { class: 'field', style: 'max-width:260px;margin:0;' }, [buildLabelComAjuda('Tipo de Pedido', tipoInfo.ajuda), tipoSelect])];
+      const linha2 = [];
       const novoInput = h('textarea', { class: 'textarea', rows: '2', placeholder: novoPedidoTipo === 'tarefa' ? 'Notas adicionais (opcional)...' : novoPedidoTipo === 'troca' ? 'Descreva a troca (quem, que dias/turnos)...' : novoPedidoTipo === 'banco' ? 'Descreva o pedido (ex: sair mais cedo dia X, quantas horas)...' : 'Escrever um aviso à equipa...' });
 
+      // Datas do pedido são sempre restritas à semana atualmente aberta
+      // (é essa a semana gravada em `semanaInicio` do registo, e é contra
+      // ela que a auto-atribuição de tarefa procura o turno) — min/max no
+      // próprio calendário impede escolher um dia fora daqui.
+      const semanaMinISO = semana.semanaInicio;
+      const semanaMaxISO = escalaDataDoDia(semana.semanaInicio, 'dom');
+      // Predefinição/correção automática da Data (pedido explícito
+      // 2026-08-18): hoje, se a semana em vista for a semana corrente
+      // (hoje cai dentro dela); senão a Segunda-feira dessa semana. Corre
+      // a cada render — assim, se o colaborador mudar de semana a meio do
+      // preenchimento, a data nunca fica "presa" fora dos limites da nova
+      // semana (o próprio min/max do calendário impede o utilizador de a
+      // pôr lá manualmente, mas o valor de partida também tem de se
+      // ajustar sozinho).
+      if (!novoPedidoData || novoPedidoData < semanaMinISO || novoPedidoData > semanaMaxISO) {
+        const hojeISO = todayISO();
+        novoPedidoData = (hojeISO >= semanaMinISO && hojeISO <= semanaMaxISO) ? hojeISO : semanaMinISO;
+      }
+
+      let previewEl = null;
       if (novoPedidoTipo === 'tarefa') {
-        const dataInput = h('input', { class: 'input', type: 'date' }); dataInput.value = novoPedidoData;
-        dataInput.addEventListener('change', () => { novoPedidoData = dataInput.value; });
+        const dataInput = h('input', { class: 'input', type: 'date', min: semanaMinISO, max: semanaMaxISO }); dataInput.value = novoPedidoData;
+        dataInput.addEventListener('change', () => { novoPedidoData = dataInput.value; novoPedidoErro = ''; rerender(); });
         const horaIniInput = h('input', { class: 'input', type: 'time' }); horaIniInput.value = novoPedidoHoraInicio;
-        horaIniInput.addEventListener('change', () => { novoPedidoHoraInicio = horaIniInput.value; });
+        horaIniInput.addEventListener('change', () => { novoPedidoHoraInicio = horaIniInput.value; novoPedidoErro = ''; rerender(); });
         const horaFimInput = h('input', { class: 'input', type: 'time' }); horaFimInput.value = novoPedidoHoraFim;
-        horaFimInput.addEventListener('change', () => { novoPedidoHoraFim = horaFimInput.value; });
+        horaFimInput.addEventListener('change', () => { novoPedidoHoraFim = horaFimInput.value; novoPedidoErro = ''; rerender(); });
         const tarefaSelect = h('select', { class: 'select' }, ESCALA_TAREFAS_MANUAIS_PEDIVEIS.map(t => h('option', { value: t.key, selected: t.key === novoPedidoTarefaTipo ? 'selected' : undefined }, `${t.icon} ${t.label}`)));
         tarefaSelect.addEventListener('change', () => { novoPedidoTarefaTipo = tarefaSelect.value; rerender(); });
-        campos.push(
-          h('div', { class: 'field field-xs' }, [h('label', {}, 'Data'), melhorarInputData(dataInput)]),
-          h('div', { class: 'field field-xs' }, [h('label', {}, 'Hora Início'), horaIniInput]),
-          h('div', { class: 'field field-xs' }, [h('label', {}, 'Hora Fim'), horaFimInput]),
-          h('div', { class: 'field field-sm' }, [h('label', {}, 'Tarefa'), tarefaSelect]),
+        linha1.push(
+          h('div', { class: 'field', style: 'width:150px;margin:0;' }, [h('label', {}, 'Data'), melhorarInputData(dataInput)]),
+          h('div', { class: 'field', style: 'width:110px;margin:0;' }, [h('label', {}, 'Hora Início'), horaIniInput]),
+          h('div', { class: 'field', style: 'width:110px;margin:0;' }, [h('label', {}, 'Hora Fim'), horaFimInput]),
+          h('div', { class: 'field', style: 'width:200px;margin:0;' }, [h('label', {}, 'Tarefa'), tarefaSelect]),
         );
         if (novoPedidoTarefaTipo === 'outro') {
           const descInput = h('input', { class: 'input', maxlength: '150', placeholder: 'Descreva a tarefa...' }); descInput.value = novoPedidoTarefaDescricao;
           descInput.addEventListener('input', () => { novoPedidoTarefaDescricao = descInput.value; });
-          campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Descrição da Tarefa'), descInput]));
+          linha1.push(h('div', { class: 'field', style: 'width:220px;margin:0;' }, [h('label', {}, 'Descrição da Tarefa'), descInput]));
+        }
+        // Pré-visualização em tempo real (pedido explícito 2026-08-18):
+        // mostra logo o turno que a pessoa já tem nesse dia (para saber
+        // dentro de que horas pode pedir a tarefa) e, assim que também
+        // houver Hora Início/Fim, valida já se cabe e não se sobrepõe a
+        // nenhuma tarefa existente — antes de sequer tentar enviar.
+        if (novoPedidoData) {
+          const val = escalaValidarPedidoTarefaContraTurno(semana, novoPedidoData, activeUser.id, novoPedidoHoraInicio, novoPedidoHoraFim);
+          if (!val.vaga) {
+            previewEl = h('p', { class: 'form-error', style: 'margin:8px 0 0;' }, '⚠️ Não tem nenhum turno normal registado nesse dia — não vai ser possível pedir uma tarefa.');
+          } else {
+            const turnoTxt = `${val.vaga.dia.entrada}–${val.vaga.dia.saida}` + (val.vaga.dia.pausaInicio && val.vaga.dia.pausaFim ? ` (pausa ${val.vaga.dia.pausaInicio}-${val.vaga.dia.pausaFim})` : '');
+            const jaAtribuidas = escalaTarefasDoDia(val.vaga.dia);
+            const partes = [`🕐 O seu turno nesse dia: ${turnoTxt}`];
+            if (jaAtribuidas.length) partes.push(`já tem: ${jaAtribuidas.map(t => `${escalaTarefaTextoItem(t)} ${t.inicio}-${t.fim}`).join(', ')}`);
+            let linhaExtra = h('p', { class: 'field-helper-text', style: 'margin:8px 0 0;' }, partes.join(' — '));
+            const linhas = [linhaExtra];
+            if (novoPedidoHoraInicio && novoPedidoHoraFim) {
+              linhas.push(val.ok
+                ? h('p', { style: 'margin:4px 0 0;font-size:12px;color:var(--green);font-weight:700;' }, '✅ Esse horário cabe no seu turno e não se sobrepõe a nenhuma tarefa já atribuída.')
+                : h('p', { class: 'form-error', style: 'margin:4px 0 0;' }, `⚠️ ${escalaMensagemErroPedidoTarefa(val.motivo)}`));
+            }
+            previewEl = h('div', {}, linhas);
+          }
         }
       } else if (novoPedidoTipo === 'troca' || novoPedidoTipo === 'banco') {
-        const dataInput = h('input', { class: 'input', type: 'date' }); dataInput.value = novoPedidoData;
+        const dataInput = h('input', { class: 'input', type: 'date', min: semanaMinISO, max: semanaMaxISO }); dataInput.value = novoPedidoData;
         dataInput.addEventListener('change', () => { novoPedidoData = dataInput.value; });
-        campos.push(h('div', { class: 'field field-xs' }, [h('label', {}, 'Data (opcional)'), melhorarInputData(dataInput)]));
+        linha1.push(h('div', { class: 'field', style: 'width:150px;margin:0;' }, [h('label', {}, 'Data (opcional)'), melhorarInputData(dataInput)]));
       }
-      campos.push(h('div', { class: 'field span2' }, [h('label', {}, novoPedidoTipo === 'tarefa' ? 'Notas' : 'Descrição'), novoInput]));
+      linha2.push(h('div', { class: 'field span2', style: 'margin:0;' }, [h('label', {}, novoPedidoTipo === 'tarefa' ? 'Notas' : 'Descrição'), novoInput]));
 
       const enviarBtn = h('button', {
         class: 'btn btn-secondary', style: 'padding:7px 14px;font-size:12.5px;', disabled: notaEquipaSaving ? 'disabled' : undefined,
-        onclick: () => requireAuth(() => criarNotaEquipa(semana.semanaInicio, novoInput.value, () => { novoInput.value = ''; })),
+        onclick: () => requireAuth(() => criarNotaEquipa(semana, novoInput.value, () => { novoInput.value = ''; })),
       }, notaEquipaSaving ? 'A guardar…' : 'Adicionar');
-      const erroEl = novoPedidoErro ? h('p', { class: 'form-error' }, novoPedidoErro) : null;
+      const erroEl = novoPedidoErro ? h('p', { class: 'form-error', style: 'margin:8px 0 0;' }, novoPedidoErro) : null;
       kids.push(h('div', { class: 'card card-pad', style: 'margin-bottom:16px;background:var(--pharm-050);' }, [
-        h('div', { class: 'form-grid' }, campos),
+        h('div', { style: 'display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end;' }, linha1),
+        previewEl,
+        h('div', { class: 'form-grid', style: 'margin-top:12px;' }, linha2),
         erroEl,
         h('div', { class: 'form-actions', style: 'margin-top:6px;' }, [enviarBtn]),
       ]));
