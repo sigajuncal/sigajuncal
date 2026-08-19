@@ -2272,12 +2272,22 @@
      redimensionável (gerido só pelo painel "Horas Extra Disponíveis").*/
   .escala-vertical-bloco-extra{background:#facc15!important;color:#78350f!important;box-shadow:0 1px 3px rgba(0,0,0,.15);}
   /* Item 2 (Banco de Horas): selo compacto no bloco do turno indicando
-     que foram descontadas horas de banco nesse dia — visível para toda
-     a equipa (só a EDIÇÃO é restrita a Hugo/Paulo, a leitura não). */
+     que foram descontadas (ou ganhas manualmente, ver variante -ganho
+     abaixo) horas de banco nesse dia — visível para toda a equipa (só a
+     EDIÇÃO é restrita a Hugo/Paulo, a leitura não). top/height sempre
+     definidos inline por elemento (pedido explícito 2026-08-19: cada
+     selo fica sobre o troço exato do desconto/ganho, nunca fixo no topo
+     do turno) — o "top:2px" aqui é só um valor de recurso, nunca usado
+     na prática. */
   .escala-vertical-banco-horas-badge{position:absolute;left:2px;right:2px;top:2px;display:flex;
     align-items:center;justify-content:center;gap:2px;padding:1px 4px;border-radius:4px;
     background:rgba(255,255,255,.92);color:#0f766e;font-size:9px;font-weight:800;white-space:nowrap;
     overflow:hidden;text-overflow:ellipsis;pointer-events:none;}
+  /* Variante "ganho" (Horas Extra marcada manualmente como Banco de
+     Horas, ver checkbox em abrirEditorCelulaEscala) — verde em vez de
+     teal, para se distinguir à vista do desconto (mesmo badge, cor
+     diferente). */
+  .escala-vertical-banco-horas-badge-ganho{color:#16a34a;}
   .escala-vertical-coluna-totais{min-width:56px;flex:0 0 56px;}
   .escala-vertical-total-hora{position:absolute;left:0;right:0;display:flex;align-items:center;justify-content:center;
     font-size:11px;font-weight:800;color:var(--pharm-600);border-top:1px dashed var(--pharm-100);}
@@ -9320,6 +9330,17 @@ const STATE = {
   clientesHabituais: [],
   validades: [],
   financeiro: [],
+  // Modo "Com Trocas" vs "Sem Trocas" (pedido explícito de Hugo,
+  // 2026-08-19, indicação de Paulo: os valores a usar/considerar daqui
+  // para a frente são "com trocas") — sempre reinicia a `true` a cada
+  // carregamento da app (nunca gravado/persistido), para nunca esquecer
+  // ligado no modo antigo por engano. Ver financeiroCampoReal/
+  // financeiroValorDoDia/financeiroGuardarDia — todo o resto do módulo
+  // (cartões, gráficos, comparações, Objetivos, "Registar o Último Dia",
+  // "Registo em Tabela") lê/escreve sempre através destas funções, por
+  // isso muda de "campo real" sozinho, sem precisar de mexer em mais
+  // nada.
+  financeiroComTrocas: true,
   objetivosMensais: [],
   escalaVagas: [],
   escalaSemanas: [],
@@ -16489,11 +16510,26 @@ function financeiroRegistoDoDia(dataISO) {
 // valor conhecido para esse dia/campo (dia futuro, dia sem registo, ou
 // campo não preenchido nesse registo — cada campo é independente, podem
 // existir dias só com Faturação e sem Atendimentos, ou vice-versa).
+// Nome do campo REAL a ler/escrever consoante o modo "Com Trocas"/"Sem
+// Trocas" ativo (STATE.financeiroComTrocas) — pedido explícito de Hugo,
+// 2026-08-19 (indicação de Paulo): os valores "sem trocas" já inseridos
+// ficam tal e qual como estão (colunas antigas faturacao/atendimentos,
+// nunca tocadas), e os novos valores "com trocas" vão para 2 colunas
+// novas (faturacaoComTrocas/atendimentosComTrocas — mapeamento
+// snake_case→camelCase automático de rowToRecord), que começam vazias
+// (null) para cada dia/mês já existente, por preencher um a um. Só
+// mapeia 'faturacao'/'atendimentos' — qualquer outro nome de campo passa
+// direto (nunca deve acontecer na prática, mas evita um crash silencioso
+// se algum dia aparecer um campo novo sem passar por aqui).
+function financeiroCampoReal(campo) {
+  if (campo !== 'faturacao' && campo !== 'atendimentos') return campo;
+  return STATE.financeiroComTrocas ? `${campo}ComTrocas` : campo;
+}
 function financeiroValorDoDia(dataISO, campo) {
   campo = campo || 'faturacao';
   const registo = financeiroRegistoDoDia(dataISO);
   if (!registo) return null;
-  const v = registo[campo];
+  const v = registo[financeiroCampoReal(campo)];
   if (v === '' || v === undefined || v === null) return null;
   return campo === 'atendimentos' ? (parseInt(v, 10) || 0) : (parseFloat(v) || 0);
 }
@@ -16510,14 +16546,27 @@ function financeiroAtendimentosDoDia(dataISO) { return financeiroValorDoDia(data
 // (COALESCE) o valor já gravado nesse dia em vez de o apagar. Isto é o
 // que permite "inserir valores de forma isolada" (só a Faturação, só os
 // Atendimentos, ou os dois de uma vez).
+// Modo "Com Trocas"/"Sem Trocas" (2026-08-19): `campos` continua a vir
+// sempre com as chaves genéricas faturacao/atendimentos (quem chama esta
+// função nunca precisa de saber em que modo está) — é aqui, no ÚLTIMO
+// ponto antes do RPC, que se decide para que par de colunas realmente
+// vai (p_faturacao/p_atendimentos OU p_faturacao_com_trocas/
+// p_atendimentos_com_trocas), consoante STATE.financeiroComTrocas. O RPC
+// (script SQL à parte) tem de ter estes 2 novos parâmetros opcionais,
+// com o mesmo COALESCE por coluna que já tem para os 2 antigos.
 async function financeiroGuardarDia(dataISO, campos) {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível (verifique se o CDN do Supabase carregou).'; return null; }
   if (!activeUser || !activeUserPin) { lastDbError = 'Sessão inválida — inicie sessão novamente.'; return null; }
   try {
+    const comTrocas = !!STATE.financeiroComTrocas;
+    const vFaturacao = (campos.faturacao === null || campos.faturacao === undefined) ? null : campos.faturacao;
+    const vAtendimentos = (campos.atendimentos === null || campos.atendimentos === undefined) ? null : campos.atendimentos;
     const { data, error } = await sb.rpc('rpc_financeiro_guardar_dia', {
       p_username: activeUser.username, p_pin: activeUserPin, p_data: dataISO,
-      p_faturacao: (campos.faturacao === null || campos.faturacao === undefined) ? null : campos.faturacao,
-      p_atendimentos: (campos.atendimentos === null || campos.atendimentos === undefined) ? null : campos.atendimentos,
+      p_faturacao: comTrocas ? null : vFaturacao,
+      p_atendimentos: comTrocas ? null : vAtendimentos,
+      p_faturacao_com_trocas: comTrocas ? vFaturacao : null,
+      p_atendimentos_com_trocas: comTrocas ? vAtendimentos : null,
       p_registado_por: currentUserName(),
     });
     if (error) { if (erroDeRede(error)) marcarConexao(false); lastDbError = error.message; console.error('[Supabase] erro ao guardar faturação do dia:', error.message); return null; }
@@ -17281,16 +17330,23 @@ function abrirModalRegistoEmTabela(onGuardado) {
   }
 
   function construirLinha(dataISO, rotulo, existente) {
-    const temDados = !!(existente && ((existente.faturacao !== null && existente.faturacao !== undefined && existente.faturacao !== '') || (existente.atendimentos !== null && existente.atendimentos !== undefined && existente.atendimentos !== '')));
+    // financeiroValorDoDia (não existente.faturacao/atendimentos direto)
+    // — respeita sempre o modo Com/Sem Trocas ativo (STATE.financeiroComTrocas),
+    // ver financeiroCampoReal. Sem isto, "Registo em Tabela" continuava a
+    // mostrar/editar sempre os valores "sem trocas", independentemente do
+    // switch.
+    const atendimentosVal = financeiroValorDoDia(dataISO, 'atendimentos');
+    const faturacaoVal = financeiroValorDoDia(dataISO, 'faturacao');
+    const temDados = atendimentosVal !== null || faturacaoVal !== null;
     const atendimentosInput = h('input', { class: 'input', type: 'text', inputmode: 'numeric', pattern: '[0-9]*', placeholder: '—' });
-    atendimentosInput.value = (existente && existente.atendimentos !== null && existente.atendimentos !== undefined) ? existente.atendimentos : '';
+    atendimentosInput.value = atendimentosVal !== null ? atendimentosVal : '';
     atendimentosInput.addEventListener('input', () => {
       const limpo = atendimentosInput.value.replace(/[^\d]/g, '');
       if (limpo !== atendimentosInput.value) atendimentosInput.value = limpo;
       marcarAlteracao(dataISO, 'atendimentos', atendimentosInput.value === '' ? null : (parseInt(atendimentosInput.value, 10) || 0));
     });
     const faturacaoInput = h('input', { class: 'input', type: 'text', inputmode: 'decimal', placeholder: '—' });
-    faturacaoInput.value = (existente && existente.faturacao !== null && existente.faturacao !== undefined) ? financeiroFormatarValorInputEuro(existente.faturacao) : '';
+    faturacaoInput.value = faturacaoVal !== null ? financeiroFormatarValorInputEuro(faturacaoVal) : '';
     faturacaoInput.addEventListener('input', () => {
       faturacaoInput.value = financeiroMascararInputEuroLivre(faturacaoInput.value);
       const len = faturacaoInput.value.length;
@@ -19098,6 +19154,26 @@ function buildFinanceiroPage(container, goTo) {
   function build() {
     const wrap = h('div', { class: 'animate-in' });
     wrap.appendChild(withBackButton(buildPageHeader('fileDollar', 'Financeiro', 'Faturação (Vendas − Descontos) e Atendimentos diários — registo, pesquisa e comparativos.', undefined), goTo));
+
+    // ---- Switch "Com Trocas" / "Sem Trocas" (pedido explícito de Hugo,
+    // 2026-08-19, indicação de Paulo: os valores a considerar são "com
+    // trocas") — sempre visível no topo, antes de tudo o resto, porque
+    // TODA a página (cartões, gráficos, comparações, Objetivos, "Registo
+    // em Tabela") lê através de financeiroValorDoDia/financeiroCampoReal,
+    // que decide sozinho qual o par de colunas a usar consoante este
+    // switch — nada mais na página precisa de saber em que modo está.
+    // "Sem Trocas" preserva tal e qual os valores já inseridos até aqui;
+    // "Com Trocas" começa vazio ("—" em todo o lado) para preencher de
+    // novo, dia a dia/mês a mês. Predefinido sempre em "Com Trocas" a
+    // cada carregamento da app (nunca gravado).
+    const trocasSwitch = h('div', { class: 'tabs-row', style: 'margin:0 0 14px;' }, [
+      h('button', { class: 'tab-btn tone-gray' + (STATE.financeiroComTrocas ? ' active' : ''), onclick: () => { STATE.financeiroComTrocas = true; rerender(); } }, 'Com Trocas'),
+      h('button', { class: 'tab-btn tone-gray' + (!STATE.financeiroComTrocas ? ' active' : ''), onclick: () => { STATE.financeiroComTrocas = false; rerender(); } }, 'Sem Trocas'),
+    ]);
+    wrap.appendChild(trocasSwitch);
+    wrap.appendChild(h('p', { class: 'field-helper-text', style: 'margin:-10px 0 16px;' }, STATE.financeiroComTrocas
+      ? 'A mostrar valores "Com Trocas" — os valores a considerar, por indicação de Paulo. Ainda por preencher para a maioria dos dias/meses.'
+      : 'A mostrar valores "Sem Trocas" — o histórico já registado, preservado tal e qual (só para consulta).'));
 
     // ---- Botões de topo — o registo/edição de um dia concreto passou a
     // viver só no cartão "Faturação — Consulta e Registo" (ver abaixo),
@@ -24231,6 +24307,14 @@ const CATEGORIAS_PROFISSIONAIS = [
   'Estagiário', 'Estagiária',
 ];
 const PERFIS_NIVEL = ['Master', 'Básico', 'Administrador', 'Estafeta', 'Prestador de Serviço', 'Farmácia Boa Nova', 'Enfermeiro'];
+// Cargos de Diretor Técnico (qualquer variante de género/adjunto) — quem
+// tem efetivamente acesso à área técnica dos Horários (Gerador, Validação,
+// Posições) além do próprio Administrador (Hugo). Pedido explícito
+// 2026-08-19 (Hugo): usar isto (cargo real) em vez de perfilNivel==='Master'
+// sozinho para decidir quem é "Direção" em notificações — perfilNivel
+// 'Master' por si só é só um nível de acesso técnico, não confirma que a
+// pessoa é mesmo Diretor Técnico; ver usuariosDirecao().
+const CATEGORIAS_DIRETOR_TECNICO = ['Diretor Técnico', 'Diretora Técnica', 'Diretor Técnico Adjunto', 'Diretora Técnica Adjunta'];
 // ---- Hierarquia oficial de cargos, usada para ordenar utilizadores em toda
 // a app (seletores, filtros, tabelas, listas de presença): 1º Diretor
 // Técnico, 2º Diretor Técnico Adjunto, 3º Farmacêuticos, 4º Técnicos de
@@ -27580,13 +27664,21 @@ function escalaMotivoPedidoTexto(pedido) {
 function escalaEstadoPedidoInfo(pedido) {
   return ESCALA_ESTADOS_PEDIDO_ESPECIAL.find(e => e.key === pedido.estado) || ESCALA_ESTADOS_PEDIDO_ESPECIAL[0];
 }
-// Gestores (Hugo/Paulo — Master/Administrador) que recebem sempre a
-// notificação de novos Pedidos Especiais na Gaveta — mesmo critério já
-// usado para as notas partilhadas de "Escala da Equipa" (item 7), aqui
+// Gestores (Hugo/Paulo) que recebem sempre a notificação de novos
+// Pedidos Especiais e de "Pedidos e Registos da Semana" na Gaveta —
 // disponível a nível de topo (top-level) porque este módulo é usado por
 // mais do que uma função fora de buildHorariosPage.
+// Restrição por NOME EXATO (pedido explícito de Hugo, 2026-08-19:
+// "garante que apenas Paulo e Hugo recebem notificações de pedidos em
+// Escala da Equipa") — mais estrito ainda do que a versão anterior por
+// cargo/perfil (CATEGORIAS_DIRETOR_TECNICO/Administrador): garante que
+// nunca passa a incluir automaticamente alguém novo que venha a ter o
+// mesmo cargo/perfil, sem decisão explícita — mesmo padrão de
+// ESCALA_FERIAS_NOMES_CONFIGURACAO/podeGerirHorarios (Configurações de
+// Férias, Gerador/Validação/Posições).
+const NOMES_DIRECAO_HORARIOS = ['Hugo Cunha', 'Paulo Freitas'];
 function escalaUsuariosDirecao() {
-  return (STATE.usuarios || []).filter(u => (u.perfilNivel === 'Master' || u.perfilNivel === 'Administrador') && usuarioVisivelParaAtual(u));
+  return (STATE.usuarios || []).filter(u => NOMES_DIRECAO_HORARIOS.includes(String(u.nomeCompleto || '').trim()) && usuarioVisivelParaAtual(u));
 }
 async function notificarDirecaoPedidoEspecial(pedido, acaoTexto) {
   const destinatarios = escalaUsuariosDirecao().filter(u => String(u.id) !== String(pedido.colaboradorId));
@@ -30486,7 +30578,7 @@ function buildHorariosPage(container, goTo) {
             // Mesma informação de horas descontadas mostrada na Timeline
             // (pedido explícito 2026-08-18) — nunca só "Banco de Horas
             // (Dia Completo)" sem o valor, também aqui na Vista em Tabela.
-            if (tipoEfetivo === 'banco' && escalaBancoHorasEfetivo(dia)) conteudo += ` (-${escalaFormatarHoras(escalaBancoHorasEfetivo(dia))})`;
+            if (tipoEfetivo === 'banco' && escalaBancoHorasEfetivo(dia)) conteudo += ` (-${escalaFormatarHorasDecimal(escalaBancoHorasEfetivo(dia))})`;
             classe += ` escala-cell-${tipoEfetivo}`;
           }
           // Horas Extra reivindicadas (bloco "Horas Extra Disponíveis",
@@ -30589,16 +30681,22 @@ function buildHorariosPage(container, goTo) {
   // Utilizadores com perfil de Direção (Hugo/Paulo — Master/Administrador)
   // que recebem sempre um alerta quando qualquer colaborador cria ou edita
   // uma nota partilhada da equipa — nunca inclui o próprio autor, mesmo que
-  // ele seja Master/Administrador (não faz sentido notificar-se a si
-  // próprio de algo que acabou de escrever).
-  function usuariosDirecao() {
-    return (STATE.usuarios || []).filter(u => (u.perfilNivel === 'Master' || u.perfilNivel === 'Administrador') && usuarioVisivelParaAtual(u));
-  }
+  // ele seja Diretor Técnico/Administrador (não faz sentido notificar-se a
+  // si próprio de algo que acabou de escrever).
+  // Mesma função escalaUsuariosDirecao() de topo (pedido explícito
+  // 2026-08-19: baseada no CARGO real, não em perfilNivel==='Master'
+  // sozinho — ver comentário completo lá).
+  function usuariosDirecao() { return escalaUsuariosDirecao(); }
   async function notificarDirecaoNotaEquipa(nota, acaoTexto) {
     if (!activeUser) return;
     const destinatarios = usuariosDirecao().filter(u => String(u.id) !== String(activeUser.id));
     const trecho = nota.texto.length > 140 ? nota.texto.slice(0, 140) + '…' : nota.texto;
-    const mensagem = `${nota.autorNome || 'Um colaborador'} ${acaoTexto} em "Pedidos e Registos da Semana" (semana de ${formatDate(nota.semanaInicio)}): "${trecho}"`;
+    // Dia explícito na mensagem, quando existe (pedido explícito
+    // 2026-08-19, queixa de Paulo: "fica-se sem perceber a que dia se
+    // refere" — a notificação só dizia "semana de X", nunca o dia em si,
+    // mesmo já tendo nota.dataPedido gravado).
+    const notaDiaTexto = nota.dataPedido ? ` — dia ${formatDate(nota.dataPedido)}` : '';
+    const mensagem = `${nota.autorNome || 'Um colaborador'} ${acaoTexto} em "Pedidos e Registos da Semana" (semana de ${formatDate(nota.semanaInicio)}${notaDiaTexto}): "${trecho}"`;
     // BUG CORRIGIDO (2026-08-18): usava dbInsert('gavetaRecados', ...), que
     // falhava sempre — 'gavetaRecados' nunca esteve mapeado em TABLES
     // (ver notificarDirecaoPedidoEspecial) — estas notificações nunca
@@ -30676,7 +30774,15 @@ function buildHorariosPage(container, goTo) {
     } else {
       if (!texto.trim()) { novoPedidoErro = 'Escreve uma descrição.'; rerender(); return; }
       payload.texto = texto.trim();
-      if (tipo === 'troca' || tipo === 'banco') payload.dataPedido = novoPedidoData || null;
+      // Dia sempre gravado (mesmo em tipo 'nota', pedido explícito
+      // 2026-08-19: "Magda Menos 30 min banco" foi criada como 'nota'
+      // simples, sem o dataPedido de troca/banco — nem o autor nem a
+      // Direção conseguiam depois saber a que dia se referia, só a
+      // semana. novoPedidoData já segue sozinho o dia selecionado nos
+      // separadores da Timeline (diaVerticalSelecionado) em qualquer
+      // tipo, ver buildFeedNotasEquipa — só faltava também GRAVAR isso
+      // para 'nota'.
+      payload.dataPedido = novoPedidoData || null;
     }
     notaEquipaSaving = true; rerender();
     const created = await dbInsert('escalaNotasSemana', payload);
@@ -30771,7 +30877,12 @@ function buildHorariosPage(container, goTo) {
       const tarefaInfo = escalaTarefaInfo(nota.tarefaTipo);
       const labelTarefa = nota.tarefaTipo === 'outro' ? (nota.tarefaDescricao || 'Outro') : (tarefaInfo ? tarefaInfo.label : nota.tarefaTipo);
       detalheEl = h('p', { style: 'margin:2px 0 6px;font-size:12px;color:var(--pharm-600);' }, `📅 ${formatDate(nota.dataPedido)} · ${nota.horaInicio}–${nota.horaFim} · ${labelTarefa}${nota.validadoDirecao ? (nota.aplicadoHorario ? ' · ✅ atribuída no horário' : ' · ⚠️ não foi possível atribuir sozinha, agendar manualmente') : ''}`);
-    } else if ((nota.tipo === 'troca' || nota.tipo === 'banco') && nota.dataPedido) {
+    } else if (nota.dataPedido) {
+      // 'nota'/'troca'/'banco' — mesmo tratamento (pedido explícito
+      // 2026-08-19, queixa de Paulo: "fica-se sem perceber a que dia se
+      // refere" — antes só troca/banco mostravam o dia aqui, 'nota'
+      // (Aviso/Nota Geral) ficava sempre sem, mesmo já tendo dataPedido
+      // gravado desde a correção em criarNotaEquipa).
       detalheEl = h('p', { style: 'margin:2px 0 6px;font-size:12px;color:var(--pharm-600);' }, `📅 ${formatDate(nota.dataPedido)}`);
     }
     const corpo = emEdicao
@@ -30936,7 +31047,11 @@ function buildHorariosPage(container, goTo) {
             previewEl = h('div', {}, linhas);
           }
         }
-      } else if (novoPedidoTipo === 'troca' || novoPedidoTipo === 'banco') {
+      } else if (novoPedidoTipo !== 'tarefa') {
+        // Data sempre visível para qualquer tipo que não seja 'tarefa'
+        // (que já tem a sua própria, obrigatória) — antes só aparecia em
+        // troca/banco, deixando 'nota' sem nenhum campo de dia (pedido
+        // explícito 2026-08-19, ver mesmo comentário em criarNotaEquipa).
         const dataInput = h('input', { class: 'input', type: 'date', min: semanaMinISO, max: semanaMaxISO }); dataInput.value = novoPedidoData;
         dataInput.addEventListener('change', () => { novoPedidoData = dataInput.value; novoPedidoDataManual = true; rerender(); });
         linha1.push(h('div', { class: 'field', style: 'width:150px;margin:0;' }, [h('label', {}, 'Data (opcional)'), melhorarInputData(dataInput)]));
@@ -32060,7 +32175,7 @@ function buildHorariosPage(container, goTo) {
           // descontadas aqui, mesmo padrão da Timeline (pedido explícito
           // 2026-08-18) — o próprio colaborador vê logo quanto lhe foi
           // descontado do saldo, sem ter de abrir Estatísticas.
-          detalhesFrag.push(`-${escalaFormatarHoras(escalaBancoHorasEfetivo(dia))}`);
+          detalhesFrag.push(`-${escalaFormatarHorasDecimal(escalaBancoHorasEfetivo(dia))}`);
         }
         // Horas Extra reivindicadas por mim (ver buildPainelHorasExtra) —
         // antes só apareciam no painel "Horas Extra Disponíveis" lá
@@ -32913,7 +33028,7 @@ function buildHorariosPage(container, goTo) {
             const celulaBanco = escalaCelulaColaboradorNoDia(semana, d.key, uid);
             if (celulaBanco && celulaBanco.dia.tipo === 'banco' && escalaBancoHorasEfetivo(celulaBanco.dia) > 0) {
               s.bancoHorasUsado += escalaBancoHorasEfetivo(celulaBanco.dia);
-              escalaEmpurrarDetalheEstatistica(s, 'bancoHorasUsado', dataISO, `-${escalaFormatarHoras(escalaBancoHorasEfetivo(celulaBanco.dia))} · Banco de Horas (Dia Completo)`);
+              escalaEmpurrarDetalheEstatistica(s, 'bancoHorasUsado', dataISO, `-${escalaFormatarHorasDecimal(escalaBancoHorasEfetivo(celulaBanco.dia))} · Banco de Horas (Dia Completo)`);
             }
             return;
           }
@@ -32946,7 +33061,7 @@ function buildHorariosPage(container, goTo) {
           // abrirEditorCelulaEscala/podeGerirBancoHorasEHE). Distinto do
           // Banco de Horas GANHO automaticamente por feriado trabalhado
           // (calculado à parte, por semana, mais abaixo).
-          if (escalaBancoHorasEfetivo(dia) > 0) { s.bancoHorasUsado += escalaBancoHorasEfetivo(dia); escalaEmpurrarDetalheEstatistica(s, 'bancoHorasUsado', dataISO, `-${escalaFormatarHoras(escalaBancoHorasEfetivo(dia))} · turno ${rotuloTurno}`); }
+          if (escalaBancoHorasEfetivo(dia) > 0) { s.bancoHorasUsado += escalaBancoHorasEfetivo(dia); escalaEmpurrarDetalheEstatistica(s, 'bancoHorasUsado', dataISO, `-${escalaFormatarHorasDecimal(escalaBancoHorasEfetivo(dia))} · turno ${rotuloTurno}`); }
           // Banco de Horas GANHO manualmente (pedido explícito de Hugo,
           // 2026-08-19): bloco de "Horas Extra" marcado com o checkbox
           // "Contar como Banco de Horas" pelo Gestor no momento de criar
@@ -32956,7 +33071,7 @@ function buildHorariosPage(container, goTo) {
           // (ver split heHoras/heHorasBanco em abrirEditorCelulaEscala).
           if (dia.heHorasBanco > 0) {
             s.bancoHorasGanho += dia.heHorasBanco;
-            escalaEmpurrarDetalheEstatistica(s, 'bancoHorasGanho', dataISO, `+${escalaFormatarHoras(dia.heHorasBanco)} · turno ${rotuloTurno} (marcado manualmente como Banco de Horas)`);
+            escalaEmpurrarDetalheEstatistica(s, 'bancoHorasGanho', dataISO, `+${escalaFormatarHorasDecimal(dia.heHorasBanco)} · turno ${rotuloTurno} (marcado manualmente como Banco de Horas)`);
           }
         });
         // Classificação do fim de semana — só conta quando Sábado E
@@ -33013,7 +33128,7 @@ function buildHorariosPage(container, goTo) {
           const notaFeriado = feriadosNaSemana ? ` · limiar ${limiarSemana}h (${feriadosNaSemana} feriado${feriadosNaSemana > 1 ? 's' : ''} nesta semana)` : '';
           if (banco > 0) {
             stats[uid].bancoHorasGanho += banco;
-            escalaEmpurrarDetalheEstatistica(stats[uid], 'bancoHorasGanho', semana.semanaInicio, `Semana de ${formatDate(semana.semanaInicio)} — total ${escalaFormatarHoras(totalSemana)}${notaFeriado} (+${escalaFormatarHoras(banco)} Banco, recuperação do feriado trabalhado)`);
+            escalaEmpurrarDetalheEstatistica(stats[uid], 'bancoHorasGanho', semana.semanaInicio, `Semana de ${formatDate(semana.semanaInicio)} — total ${escalaFormatarHoras(totalSemana)}${notaFeriado} (+${escalaFormatarHorasDecimal(banco)} Banco, recuperação do feriado trabalhado)`);
           }
           if (extra > 0) {
             stats[uid].horasExtra += extra;
@@ -36106,16 +36221,47 @@ function buildHorariosPage(container, goTo) {
               h('span', {}, seg.inicio),
               h('span', {}, seg.fim),
             ]),
-            // Item 2 (Banco de Horas): só no PRIMEIRO segmento — evita
-            // repetir o mesmo selo duas vezes quando o turno fica dividido
-            // em dois blocos pela pausa/almoço.
-            (idxSeg === 0 && escalaBancoHorasEfetivo(dia) > 0) ? h('div', {
-              class: 'escala-vertical-banco-horas-badge',
-              title: `Banco de Horas descontado: -${escalaFormatarHoras(escalaBancoHorasEfetivo(dia))}`,
-            }, `-${escalaFormatarHoras(escalaBancoHorasEfetivo(dia))} Banco`) : null,
           ]);
           if (editavel) segBloco.addEventListener('dblclick', aoClicarPosicao);
           return segBloco;
+        });
+        // Item 2 (Banco de Horas) — desconto: 1 selo por bloco de
+        // dia.bancoHorasIntervalos, posicionado sobre o troço EXATO em
+        // que a pessoa deixou de trabalhar (pedido explícito 2026-08-19:
+        // antes ficava sempre fixo no topo do 1º segmento do turno,
+        // independentemente da hora real do desconto — "desconto" deve
+        // ficar por cima do período que a pessoa deixa de fazer). Formato
+        // sempre decimal puro (escalaFormatarHorasDecimal, ex: "-1,5h"),
+        // nunca "Xh30" (lia-se como hora do dia).
+        (dia.bancoHorasIntervalos || []).forEach(iv => {
+          if (!iv.inicio || !iv.fim) return;
+          const horasIv = escalaCalcularHoras(iv.inicio, iv.fim);
+          if (horasIv <= 0) return;
+          const topPctBanco = (minutosNoIntervalo(iv.inicio, false) / (totalHoras * 60)) * 100;
+          const alturaPctBanco = Math.max(1.5, ((minutosNoIntervalo(iv.fim, true) - minutosNoIntervalo(iv.inicio, false)) / (totalHoras * 60)) * 100);
+          tarefaOverlays.push(h('div', {
+            class: 'escala-vertical-banco-horas-badge',
+            style: `top:${topPctBanco}%;height:${alturaPctBanco}%;`,
+            title: `Banco de Horas descontado: -${escalaFormatarHorasDecimal(horasIv)} (${iv.inicio}-${iv.fim})`,
+          }, `-${escalaFormatarHorasDecimal(horasIv)} Banco`));
+        });
+        // Item 2b (Banco de Horas) — ganho manual: 1 selo por bloco de
+        // "Horas Extra" marcado com "Contar como Banco de Horas" (ver
+        // abrirEditorCelulaEscala/heIntervalos[i].banco), posicionado
+        // sobre o próprio troço de horas extra que passou a contar como
+        // banco — o "acrescentar" fica por cima do período que a pessoa
+        // PASSA a fazer, espelhando o desconto acima.
+        (dia.heIntervalos || []).filter(iv => iv.banco).forEach(iv => {
+          if (!iv.inicio || !iv.fim) return;
+          const horasIv = escalaCalcularHoras(iv.inicio, iv.fim);
+          if (horasIv <= 0) return;
+          const topPctBanco = (minutosNoIntervalo(iv.inicio, false) / (totalHoras * 60)) * 100;
+          const alturaPctBanco = Math.max(1.5, ((minutosNoIntervalo(iv.fim, true) - minutosNoIntervalo(iv.inicio, false)) / (totalHoras * 60)) * 100);
+          tarefaOverlays.push(h('div', {
+            class: 'escala-vertical-banco-horas-badge escala-vertical-banco-horas-badge-ganho',
+            style: `top:${topPctBanco}%;height:${alturaPctBanco}%;`,
+            title: `Banco de Horas ganho: +${escalaFormatarHorasDecimal(horasIv)} (${iv.inicio}-${iv.fim})`,
+          }, `+${escalaFormatarHorasDecimal(horasIv)} Banco`));
         });
         // Tarefas/Cargos Especiais (Chefe de Turno, Encomenda, etc.) — até
         // 3 por turno (ver escalaTarefasDoDia), cada uma com o seu próprio
@@ -36173,7 +36319,7 @@ function buildHorariosPage(container, goTo) {
         // pedido explícito 2026-08-18 (Paulo): a informação tem de estar
         // visível sem ambiguidade, nunca só "Folga"/etiqueta genérica.
         const labelAusenciaTexto = (tipoEfetivoDia === 'banco' && escalaBancoHorasEfetivo(dia))
-          ? `${infoTipo ? infoTipo.label : tipoEfetivoDia} · -${escalaFormatarHoras(escalaBancoHorasEfetivo(dia))}`
+          ? `${infoTipo ? infoTipo.label : tipoEfetivoDia} · -${escalaFormatarHorasDecimal(escalaBancoHorasEfetivo(dia))}`
           : (infoTipo ? infoTipo.label : tipoEfetivoDia);
         const blocoAusencia = h('div', {
           class: 'escala-vertical-bloco escala-vertical-bloco-tipo-ausencia' + (editavel ? ' escala-vertical-bloco-clicavel' : ''),
@@ -36213,7 +36359,7 @@ function buildHorariosPage(container, goTo) {
       // "Banco de Horas (Dia Completo)" mostra também as horas
       // descontadas no tooltip do nome (pedido explícito 2026-08-18) —
       // mesmo texto usado no rótulo do bloco acima.
-      const situacaoDia = tipoEfetivoDia === 'folga' ? 'Folga' : (tipoEfetivoDia === 'banco' && escalaBancoHorasEfetivo(dia) ? `Banco de Horas (Dia Completo) · -${escalaFormatarHoras(escalaBancoHorasEfetivo(dia))}` : (tipoEfetivoDia && tipoEfetivoDia !== 'normal' ? (ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivoDia)?.label || tipoEfetivoDia) : (ausenciaSobreposta ? (ESCALA_TIPOS_DIA.find(t => t.key === ausenciaSobreposta.tipo)?.label || 'Ausência') : '')));
+      const situacaoDia = tipoEfetivoDia === 'folga' ? 'Folga' : (tipoEfetivoDia === 'banco' && escalaBancoHorasEfetivo(dia) ? `Banco de Horas (Dia Completo) · -${escalaFormatarHorasDecimal(escalaBancoHorasEfetivo(dia))}` : (tipoEfetivoDia && tipoEfetivoDia !== 'normal' ? (ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivoDia)?.label || tipoEfetivoDia) : (ausenciaSobreposta ? (ESCALA_TIPOS_DIA.find(t => t.key === ausenciaSobreposta.tipo)?.label || 'Ausência') : '')));
       const textoTooltipColaborador = colaboradorNome + (situacaoDia ? ` (${situacaoDia})` : '');
       const trilho = h('div', { class: 'escala-vertical-trilho' + (editavel && !blocos.length ? ' escala-vertical-trilho-vazio' : '') }, [...blocos, ...tarefaOverlays, ...horasExtraOverlays].filter(Boolean));
       if (editavel && !blocos.length) trilho.addEventListener('click', aoClicarPosicao);
