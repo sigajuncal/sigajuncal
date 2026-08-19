@@ -2066,6 +2066,25 @@
      equivalente na Vista Semana, aplicado à linha da tabela do mês. */
   .escala-mes-tabela tr.escala-mes-hoje{background:#eef2ff;}
   .escala-mes-tabela tr.escala-mes-hoje td.escala-mes-col-dia{box-shadow:inset 3px 0 0 #4f46e5;color:#4f46e5;}
+  /* Versões completa/curta (Dia da Semana + cabeçalhos "Banco de
+     Horas"/"Horas Extra") — pedido explícito 2026-08-19: "vista de mês
+     partida no telemóvel", a tabela [Dia|Dia da Semana|Horário|Banco de
+     Horas|Horas Extra] não cabia numa linha só em ecrãs estreitos,
+     obrigando a scroll horizontal. Mesmo padrão já usado nos separadores
+     de dia da Timeline (ver .escala-dia-tab-curto): 2 <span> por célula,
+     um deles escondido consoante a largura do ecrã. */
+  .escala-mes-dia-curto{display:none;}
+  @media (max-width:600px){
+    .escala-mes-dia-completo{display:none;}
+    .escala-mes-dia-curto{display:inline;}
+    .escala-mes-tabela{font-size:11.5px;}
+    .escala-mes-tabela td, .escala-mes-tabela th{padding:6px 4px;}
+    .escala-mes-tabela th{font-size:9px;}
+    .escala-mes-col-dia{width:20px;}
+    .escala-mes-col-semana{width:22px;}
+    .escala-mes-col-horario{width:auto;white-space:normal;}
+    .escala-mes-col-corrigivel{width:52px;font-size:11px;}
+  }
   /* Vista Vertical (Gerador/Vista Vertical, Horários) — timeline por
      horas de um dia, 1 coluna por posição + coluna de totais. Eixo de
      horas à esquerda (posicionamento absoluto, top:% calculado em JS,
@@ -26166,6 +26185,15 @@ const ESCALA_DIAS = [
 // buildVistaVertical) — nunca substitui o nome por extenso no resto da
 // app (Estatísticas, tooltips, etc.).
 const ESCALA_DIAS_ABREV = { seg: '2ª', ter: '3ª', qua: '4ª', qui: '5ª', sex: '6ª', sab: 'Sáb', dom: 'Dom' };
+// Abreviatura ULTRA curta (1-2 carateres) — usada só na coluna "Dia" da
+// Vista Mensal de "A Minha Semana" em ecrãs estreitos (pedido explícito
+// 2026-08-19: "vista de mês partida no telemóvel" — a tabela [Dia|Dia da
+// Semana|Horário|Banco de Horas|Horas Extra] não cabia numa linha só,
+// obrigando a scroll horizontal e cortando a coluna "Horas Extra"). Só
+// Sábado/Domingo precisam de encolher para 1 letra (S/D) — os dias úteis
+// já usam o ordinal (2ª...6ª) de ESCALA_DIAS_ABREV, já suficientemente
+// curto.
+const ESCALA_MES_DIA_CURTO = { seg: '2ª', ter: '3ª', qua: '4ª', qui: '5ª', sex: '6ª', sab: 'S', dom: 'D' };
 const ESCALA_FDS_KEYS = ['sab', 'dom'];
 // Grelha diária vazia/clonada — usada tanto no formulário de Posições Base
 // (buildVagaFormPanel) como no seed inicial. Cada dia é sempre um objeto
@@ -26903,6 +26931,11 @@ const ESCALA_TAREFAS_ESPECIAIS = [
   { key: 'encomenda_tarde', label: 'Encomenda da Tarde', icon: '📦', horaSugerida: { inicio: '18:00', fim: '19:00' }, cor: { bg: '#ffedd5', border: '#fdba74', text: '#9a3412' } },
   { key: 'conferencia', label: 'Conferência', icon: '📋', cor: { bg: '#ede9fe', border: '#c4b5fd', text: '#5b21b6' } },
   { key: 'reuniao', label: 'Reunião', icon: '📅', cor: { bg: '#fce7f3', border: '#f9a8d4', text: '#9d174d' } },
+  // "Formação" (pedido explícito de Paulo, 2026-08-19): única tarefa cujo
+  // Início/Fim pode variar de 15 em 15 minutos (ver GRANULARIDADE_MINUTOS_FORMACAO
+  // e o tarefaSelect em abrirEditorCelulaEscala) — nunca o eixo de horas da
+  // Timeline em si, que continua só a bater a horas certas/e meia.
+  { key: 'formacao', label: 'Formação', icon: '🎓', cor: { bg: '#dbeafe', border: '#93c5fd', text: '#1e3a8a' } },
   { key: 'outro', label: 'Outro', icon: '📌', cor: { bg: '#f1f5f9', border: '#cbd5e1', text: '#334155' } },
   // Chave antiga "Encomenda" (genérica, sem manhã/tarde) — mantida só
   // para continuar a mostrar corretamente turnos já gravados antes desta
@@ -26912,6 +26945,27 @@ const ESCALA_TAREFAS_ESPECIAIS = [
   { key: 'encomenda', label: 'Encomenda (antiga)', icon: '📦', legado: true, cor: { bg: '#f1f5f9', border: '#cbd5e1', text: '#334155' } },
 ];
 function escalaTarefaInfo(tipoKey) { return ESCALA_TAREFAS_ESPECIAIS.find(t => t.key === tipoKey) || null; }
+// Rótulo textual de uma tarefa — texto livre quando é "Outro" (t.outro);
+// Marca/Gama (opcionais) quando é "Formação" (pedido explícito de Paulo,
+// 2026-08-19 — só faz sentido para Formação, nunca para as restantes);
+// etiqueta fixa nos outros casos. Reaproveitado em qualquer sítio que
+// mostre a tarefa (Timeline, Vista em Tabela, PDF, tooltips, etc.) — ver
+// escalaTarefaTextoItem/escalaTarefaPill.
+function escalaTarefaLabel(t, info) {
+  if (t.tipo === 'outro') return t.outro || 'Outro';
+  if (t.tipo === 'formacao') {
+    const detalhe = [t.marca, t.gama].filter(Boolean).join(' — ');
+    return detalhe ? `Formação (${detalhe})` : 'Formação';
+  }
+  return info.label;
+}
+// Granularidade dos minutos no campo de hora da tarefa "Formação" (pedido
+// explícito de Paulo, 2026-08-19: precisa de variar de 15 em 15 minutos,
+// diferente do resto da app que só bate a horas certas/e meia) — usado só
+// nos campos Início/Fim Tarefa de abrirEditorCelulaEscala (ver
+// tarefaBlocos/campoHora); o eixo de horas da Timeline não muda.
+const GRANULARIDADE_MINUTOS_PADRAO = ['00', '30'];
+const GRANULARIDADE_MINUTOS_FORMACAO = ['00', '15', '30', '45'];
 // Tipos de pedido/registo do feed "Pedidos e Registos da Semana" (antigo
 // "Observações Partilhadas", redesenhado 2026-08-18, pedido explícito):
 // só o tipo 'tarefa' tem auto-atribuição no horário ao ser validado pela
@@ -26948,7 +27002,7 @@ function escalaTarefaTextoItem(t) {
   if (!t || !t.tipo) return '';
   const info = escalaTarefaInfo(t.tipo);
   if (!info) return '';
-  const label = t.tipo === 'outro' ? (t.outro || 'Outro') : info.label;
+  const label = escalaTarefaLabel(t, info);
   return `${info.icon} ${label}`.trim();
 }
 // Devolve o texto da 1ª tarefa da lista de um dia, ou '' se não houver
@@ -27012,7 +27066,7 @@ function escalaTarefaPill(dia, agoraMin) {
     if (!t || !t.tipo) return null;
     const info = escalaTarefaInfo(t.tipo);
     if (!info) return null;
-    const label = t.tipo === 'outro' ? (t.outro || 'Outro') : info.label;
+    const label = escalaTarefaLabel(t, info);
     const intervalo = (t.inicio && t.fim) ? ` ${t.inicio}-${t.fim}` : '';
     const estado = (agoraMin != null) ? escalaEstadoTarefaAgora(t, agoraMin) : null;
     const urgente = estado && estado !== 'agendada';
@@ -28954,7 +29008,7 @@ function podeGerirBancoHorasEHE() {
 // campo (Editor de Célula, Disponibilizar Horas Extra, Atribuição
 // Rápida, etc.); só "Reivindicar Horas" passa os limites do próprio
 // bloco disponibilizado, para nunca deixar escolher uma hora fora dele.
-function campoHora(valorInicial, permitirMeiaNoite, onChange, horaMin, horaMax) {
+function campoHora(valorInicial, permitirMeiaNoite, onChange, horaMin, horaMax, minutosOpcoes) {
   const wrap = h('div', { class: 'time-picker-custom' });
   const horaSel = h('select', { class: 'time-picker-select' }, [h('option', { value: '' }, '--')]);
   const min = (typeof horaMin === 'number' && !isNaN(horaMin)) ? horaMin : 8;
@@ -28964,9 +29018,15 @@ function campoHora(valorInicial, permitirMeiaNoite, onChange, horaMin, horaMax) 
     horaSel.appendChild(h('option', { value: hStr }, hStr));
   }
   if (permitirMeiaNoite) horaSel.appendChild(h('option', { value: '00' }, '00 (meia-noite)'));
-  const minSel = h('select', { class: 'time-picker-select' }, [
-    h('option', { value: '' }, '--'), h('option', { value: '00' }, '00'), h('option', { value: '30' }, '30'),
-  ]);
+  const minSel = h('select', { class: 'time-picker-select' });
+  // Opções de minuto reconstruíveis (pedido explícito 2026-08-19: a
+  // tarefa "Formação" precisa de granularidade de 15 em 15 minutos,
+  // diferente do padrão de 30 em 30 usado no resto da app) — ver
+  // wrap.setMinutosOpcoes, chamado sempre que o tipo de tarefa muda.
+  function construirOpcoesMinuto(opcoes) {
+    minSel.replaceChildren(h('option', { value: '' }, '--'), ...(opcoes || GRANULARIDADE_MINUTOS_PADRAO).map(m => h('option', { value: m }, m)));
+  }
+  construirOpcoesMinuto(minutosOpcoes);
   wrap.appendChild(horaSel);
   wrap.appendChild(h('span', { class: 'time-picker-sep' }, ':'));
   wrap.appendChild(minSel);
@@ -28975,17 +29035,35 @@ function campoHora(valorInicial, permitirMeiaNoite, onChange, horaMin, horaMax) 
     const hNum = parseInt(partes[0], 10);
     horaSel.value = (v && !isNaN(hNum)) ? String(hNum).padStart(2, '0') : '';
     const mNum = parseInt(partes[1], 10);
-    minSel.value = (v && !isNaN(mNum)) ? (mNum >= 30 ? '30' : '00') : '';
+    if (v && !isNaN(mNum)) {
+      // Arredonda ao valor de minuto mais próximo disponível nas opções
+      // atuais — nunca perde o minuto exato quando já é uma opção válida
+      // (ex: trocar para granularidade de 30 com um valor gravado em 15
+      // aproxima para 00 ou 30, o mais próximo).
+      const disponiveis = Array.from(minSel.options).map(o => o.value).filter(Boolean).map(Number);
+      const escolhido = disponiveis.length ? disponiveis.reduce((a, b) => Math.abs(b - mNum) < Math.abs(a - mNum) ? b : a) : mNum;
+      minSel.value = String(escolhido).padStart(2, '0');
+    } else {
+      minSel.value = '';
+    }
   }
   aplicarValor(valorInicial);
-  // Ao escolher a hora, se ainda não houver minuto escolhido assume
-  // logo "00" — poupa 1 clique no caso mais comum (à hora certa).
-  horaSel.addEventListener('change', () => { if (horaSel.value && !minSel.value) minSel.value = '00'; });
+  // Ao escolher a hora, se ainda não houver minuto escolhido assume logo
+  // a primeira opção real (poupa 1 clique no caso mais comum).
+  horaSel.addEventListener('change', () => { if (horaSel.value && !minSel.value) minSel.value = (minSel.options[1] && minSel.options[1].value) || '00'; });
   Object.defineProperty(wrap, 'value', {
     get() { return (horaSel.value && minSel.value) ? `${horaSel.value}:${minSel.value}` : ''; },
 
     set(v) { aplicarValor(v); },
   });
+  // Troca a granularidade dos minutos dinamicamente, preservando o valor
+  // atual (aproximado à opção disponível mais próxima) — ver
+  // GRANULARIDADE_MINUTOS_FORMACAO/PADRAO.
+  wrap.setMinutosOpcoes = function(opcoes) {
+    const valorAtual = wrap.value;
+    construirOpcoesMinuto(opcoes);
+    if (valorAtual) aplicarValor(valorAtual); else minSel.value = '';
+  };
   if (onChange) {
     horaSel.addEventListener('change', () => onChange(wrap.value));
     minSel.addEventListener('change', () => onChange(wrap.value));
@@ -29164,7 +29242,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   // logo todas as que já tinham valor (nunca escondidas).
   let tarefasVisiveis = tarefasIniciais.length;
   const tarefaBlocos = [0, 1, 2].map(i => {
-    const inicial = tarefasIniciais[i] || { tipo: '', outro: '', inicio: '', fim: '' };
+    const inicial = tarefasIniciais[i] || { tipo: '', outro: '', inicio: '', fim: '', marca: '', gama: '' };
     // Chaves "legado:true" (ex: "encomenda" antiga) nunca aparecem como
     // opção nova no select — só a chave gravada há de facto aparecer
     // pré-selecionada quando é o caso (para dados antigos continuarem
@@ -29174,8 +29252,20 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     tarefaSelect.value = inicial.tipo || '';
     const tarefaOutroInput = h('input', { class: 'input', placeholder: 'Escreve a tarefa...', maxlength: '60' });
     tarefaOutroInput.value = inicial.outro || '';
-    const tarefaInicioInput = campoHora(inicial.inicio);
-    const tarefaFimInput = campoHora(inicial.fim, true);
+    // Marca/Gama (pedido explícito de Paulo, 2026-08-19) — só fazem
+    // sentido para a tarefa "Formação", opcionais, mesmo padrão do campo
+    // "Qual? (Outro)" acima (mostrados/escondidos consoante o tipo
+    // escolhido, ver atualizarVisibilidadeTarefaBloco).
+    const tarefaMarcaInput = h('input', { class: 'input', placeholder: 'Ex: Bial', maxlength: '60' });
+    tarefaMarcaInput.value = inicial.marca || '';
+    const tarefaGamaInput = h('input', { class: 'input', placeholder: 'Ex: Dermocosmética', maxlength: '60' });
+    tarefaGamaInput.value = inicial.gama || '';
+    // Granularidade dos minutos (pedido explícito de Paulo, 2026-08-19):
+    // "Formação" pode variar de 15 em 15 min, as restantes tarefas mantêm
+    // o padrão de 30 em 30 — ver GRANULARIDADE_MINUTOS_FORMACAO/PADRAO.
+    const granularidadeInicial = inicial.tipo === 'formacao' ? GRANULARIDADE_MINUTOS_FORMACAO : GRANULARIDADE_MINUTOS_PADRAO;
+    const tarefaInicioInput = campoHora(inicial.inicio, false, undefined, undefined, undefined, granularidadeInicial);
+    const tarefaFimInput = campoHora(inicial.fim, true, undefined, undefined, undefined, granularidadeInicial);
     // Atalho de pré-preenchimento: ao ESCOLHER "Encomenda da Manhã/Tarde"
     // (ver horaSugerida em ESCALA_TAREFAS_ESPECIAIS), os campos Início/Fim
     // Tarefa deste bloco são logo definidos com o horário habitual —
@@ -29189,13 +29279,16 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
         tarefaInicioInput.value = info.horaSugerida.inicio;
         tarefaFimInput.value = info.horaSugerida.fim;
       }
+      const granularidade = tarefaSelect.value === 'formacao' ? GRANULARIDADE_MINUTOS_FORMACAO : GRANULARIDADE_MINUTOS_PADRAO;
+      tarefaInicioInput.setMinutosOpcoes(granularidade);
+      tarefaFimInput.setMinutosOpcoes(granularidade);
     });
     // "Remover" (só aparece no ÚLTIMO bloco visível, quando há mais do
     // que 1) — limpa os campos e recolhe de volta a lista, em vez de
     // deixar uma linha "Nenhuma" pendurada a ocupar espaço.
     const removerBtn = h('button', { type: 'button', class: 'btn-link del' }, 'Remover');
     removerBtn.addEventListener('click', () => {
-      tarefaSelect.value = ''; tarefaOutroInput.value = ''; tarefaInicioInput.value = ''; tarefaFimInput.value = '';
+      tarefaSelect.value = ''; tarefaOutroInput.value = ''; tarefaInicioInput.value = ''; tarefaFimInput.value = ''; tarefaMarcaInput.value = ''; tarefaGamaInput.value = '';
       tarefasVisiveis = i;
       atualizarVisibilidade();
     });
@@ -29233,7 +29326,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     atualizarTodoHorarioBtn();
     [entradaInput, saidaInput, pausaInicioInput, pausaFimInput].forEach(inp => inp.addEventListener('change', atualizarTodoHorarioBtn));
     const todoHorarioBtn = todoHorarioWrap;
-    return { tarefaSelect, tarefaOutroInput, tarefaInicioInput, tarefaFimInput, removerBtn, todoHorarioBtn };
+    return { tarefaSelect, tarefaOutroInput, tarefaMarcaInput, tarefaGamaInput, tarefaInicioInput, tarefaFimInput, removerBtn, todoHorarioBtn };
   });
   const addTarefaBtn = h('button', { type: 'button', class: 'btn btn-secondary', style: 'padding:6px 12px;font-size:12.5px;' }, [Icon('plus', { size: 13 }), ' Adicionar Tarefa']);
   addTarefaBtn.addEventListener('click', () => { if (tarefasVisiveis < 3) { tarefasVisiveis++; atualizarVisibilidade(); } });
@@ -29258,6 +29351,8 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     bloco.tarefaSelect.closest('.field').style.display = visivel ? '' : 'none';
     const temTarefa = visivel && !!bloco.tarefaSelect.value;
     bloco.tarefaOutroInput.closest('.field').style.display = (temTarefa && bloco.tarefaSelect.value === 'outro') ? '' : 'none';
+    bloco.tarefaMarcaInput.closest('.field').style.display = (temTarefa && bloco.tarefaSelect.value === 'formacao') ? '' : 'none';
+    bloco.tarefaGamaInput.closest('.field').style.display = (temTarefa && bloco.tarefaSelect.value === 'formacao') ? '' : 'none';
     bloco.tarefaInicioInput.closest('.field').style.display = temTarefa ? '' : 'none';
     bloco.tarefaFimInput.closest('.field').style.display = temTarefa ? '' : 'none';
     bloco.todoHorarioBtn.closest('.field').style.display = temTarefa ? '' : 'none';
@@ -29338,7 +29433,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       if (!ehPrestadorCelula) for (const bloco of tarefaBlocos) {
         const tipoT = bloco.tarefaSelect.value;
         if (!tipoT) continue;
-        let outroT = '';
+        let outroT = '', marcaT = '', gamaT = '';
         if (tipoT === 'outro') {
           outroT = bloco.tarefaOutroInput.value.trim();
           if (!outroT) {
@@ -29346,6 +29441,12 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
             errorEl.style.display = '';
             return;
           }
+        }
+        // Marca/Gama (pedido explícito de Paulo, 2026-08-19) — opcionais,
+        // só gravadas quando a tarefa é "Formação".
+        if (tipoT === 'formacao') {
+          marcaT = bloco.tarefaMarcaInput.value.trim();
+          gamaT = bloco.tarefaGamaInput.value.trim();
         }
         const inicioT = bloco.tarefaInicioInput.value.trim();
         const fimT = bloco.tarefaFimInput.value.trim();
@@ -29394,7 +29495,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
           errorEl.style.display = '';
           return;
         }
-        tarefas.push({ tipo: tipoT, outro: outroT, inicio: inicioT, fim: fimT });
+        tarefas.push({ tipo: tipoT, outro: outroT, inicio: inicioT, fim: fimT, marca: marcaT, gama: gamaT });
       }
     }
     // Item 2 (Banco de Horas) — até 2 blocos, cada um com Início+Fim
@@ -29543,6 +29644,8 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       bloco.tarefaSelect,
     ]),
     h('div', { class: 'field span2' }, [h('label', {}, 'Qual? (Outro)'), bloco.tarefaOutroInput]),
+    h('div', { class: 'field field-sm' }, [h('label', {}, 'Marca'), bloco.tarefaMarcaInput]),
+    h('div', { class: 'field field-sm' }, [h('label', {}, 'Gama'), bloco.tarefaGamaInput]),
     h('div', { class: 'field field-sm' }, [h('label', {}, 'Início'), bloco.tarefaInicioInput]),
     h('div', { class: 'field field-sm' }, [h('label', {}, 'Fim'), bloco.tarefaFimInput]),
     h('div', { class: 'field span2', style: 'margin-top:-6px;' }, [bloco.todoHorarioBtn]),
@@ -32011,7 +32114,10 @@ function buildHorariosPage(container, goTo) {
       const trClasse = classeExtra + (dObj.getDay() === 0 ? ' escala-mes-domingo' : '') + (escalaFeriadoInfo(dataISO) ? ' escala-mes-feriado' : '') + (dataISO === todayISO() ? ' escala-mes-hoje' : '');
       return h('tr', { class: trClasse.trim() || undefined }, [
         h('td', { class: 'escala-mes-col-dia' }, String(dObj.getDate())),
-        h('td', { class: 'escala-mes-col-semana' }, ESCALA_DIAS.find(d => d.key === diaKey).label),
+        h('td', { class: 'escala-mes-col-semana' }, [
+          h('span', { class: 'escala-mes-dia-completo' }, ESCALA_DIAS.find(d => d.key === diaKey).label),
+          h('span', { class: 'escala-mes-dia-curto' }, ESCALA_MES_DIA_CURTO[diaKey]),
+        ]),
         h('td', { class: 'escala-mes-col-horario' }, texto),
         celulaCorrecao(dataISO, 'banco', bancoValorDia, origemCelula ? { corrigido: dia.bancoHorasCorrigido !== undefined, corrigidoPor: dia.correcaoBancoHePor } : null),
         celulaCorrecao(dataISO, 'he', heValorDia, origemCelula ? { corrigido: dia.heHorasCorrigido !== undefined, corrigidoPor: dia.correcaoBancoHePor } : null),
@@ -32052,7 +32158,8 @@ function buildHorariosPage(container, goTo) {
       h('table', { class: 'escala-mes-tabela' }, [
         h('thead', {}, h('tr', {}, [
           h('th', { class: 'escala-mes-col-dia' }, 'Dia'), h('th', { class: 'escala-mes-col-semana' }, ''), h('th', { class: 'escala-mes-col-horario' }, 'Horário'),
-          h('th', { class: 'escala-mes-col-corrigivel' }, 'Banco de Horas'), h('th', { class: 'escala-mes-col-corrigivel' }, 'Horas Extra'),
+          h('th', { class: 'escala-mes-col-corrigivel' }, [h('span', { class: 'escala-mes-dia-completo' }, 'Banco de Horas'), h('span', { class: 'escala-mes-dia-curto' }, 'Banco')]),
+          h('th', { class: 'escala-mes-col-corrigivel' }, [h('span', { class: 'escala-mes-dia-completo' }, 'Horas Extra'), h('span', { class: 'escala-mes-dia-curto' }, 'Extra')]),
         ])),
         h('tbody', {}, linhasDias),
       ]),
@@ -41286,12 +41393,15 @@ function formatMinutosResumo(totalMin) {
   return `${mm}min`;
 }
 // Utilizadores elegíveis para participar em formações: só perfis de balcão
-// (Master, Básico, Administrador) — Estafetas e Prestadores de Serviço
-// ficam de fora. STATE.usuarios já só contém utilizadores ativos (o
-// carregamento filtra sempre eliminado = false).
+// (Master, Básico, Administrador) E só colaboradores do Quadro (pedido
+// explícito 2026-08-19: Prestadores de Serviço apareciam na lista por
+// terem perfilNivel Básico, mesmo não sendo Quadro) — Estafetas,
+// Prestadores de Serviço e quem não está sequer nos Horários ficam de
+// fora. STATE.usuarios já só contém utilizadores ativos (o carregamento
+// filtra sempre eliminado = false).
 const PERFIS_ELEGIVEIS_FORMACAO = ['Master', 'Básico', 'Administrador'];
 function usuariosElegiveisFormacao() {
-  return ordenarUsuariosPorHierarquia((STATE.usuarios || []).filter(u => PERFIS_ELEGIVEIS_FORMACAO.includes(u.perfilNivel) && usuarioVisivelParaAtual(u)));
+  return ordenarUsuariosPorHierarquia((STATE.usuarios || []).filter(u => PERFIS_ELEGIVEIS_FORMACAO.includes(u.perfilNivel) && u.estatutoColaborador === 'quadro' && usuarioVisivelParaAtual(u)));
 }
 // Permissões do módulo Formações: colaboradores do Quadro (perfil Básico)
 // só podem registar as SUAS PRÓPRIAS formações individuais (participante
