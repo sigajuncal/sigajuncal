@@ -27794,6 +27794,32 @@ function escalaTodosBlocosHorasExtraFuturos() {
 function escalaReivindicacoesDoBloco(blocoId) {
   return (STATE.escalaHorasExtraReivindicacoes || []).filter(r => r.ativo && !r.eliminado && String(r.blocoId) === String(blocoId));
 }
+// Estado de disponibilidade de um bloco de Horas Extra (2026-08-19,
+// pedido explícito "deve ser totalmente claro" quando o bloco todo ou
+// só parte dele já foi reivindicado, e por quem) — soma os intervalos
+// já reivindicados (ativos) e devolve quantos minutos ainda restam
+// livres, e se o bloco ficou totalmente indisponível. Assume que as
+// reivindicações ativas nunca se sobrepõem entre si (já bloqueado no
+// submit, ver colisão em guardarReivindicacao/guardarReivindicacaoParaColaborador).
+function escalaDisponibilidadeBloco(bloco, reivindicacoes) {
+  const blocoIni = escalaMinutosAbsolutos(bloco.horaInicio, false), blocoFim = escalaMinutosAbsolutos(bloco.horaFim, true);
+  const totalMin = Math.max(0, blocoFim - blocoIni);
+  const ocupadoMin = reivindicacoes.reduce((soma, r) => {
+    const rIni = Math.max(blocoIni, escalaMinutosAbsolutos(r.intervaloInicio, false));
+    const rFim = Math.min(blocoFim, escalaMinutosAbsolutos(r.intervaloFim, true));
+    return soma + Math.max(0, rFim - rIni);
+  }, 0);
+  const livreMin = Math.max(0, totalMin - ocupadoMin);
+  return { totalMin, ocupadoMin, livreMin, totalmenteReivindicado: reivindicacoes.length > 0 && livreMin <= 0 };
+}
+// "1h30" / "45min" / "2h" — usado só nos avisos de disponibilidade das
+// Horas Extra, para não mostrar sempre minutos crus (ex: "90min").
+function escalaFormatarDuracaoMin(min) {
+  const h = Math.floor(min / 60), m = min % 60;
+  if (h && m) return `${h}h${String(m).padStart(2, '0')}`;
+  if (h) return `${h}h`;
+  return `${m}min`;
+}
 // Reivindicações ATIVAS de um colaborador específico, num dia específico
 // de uma semana — atravessa todos os blocos de Horas Extra Disponíveis
 // desse dia (normalmente só 1, mas suporta mais do que um). Usada para
@@ -31608,22 +31634,14 @@ function buildHorariosPage(container, goTo) {
       STATE.escalaHorasExtraReivindicacoes = [...(STATE.escalaHorasExtraReivindicacoes || []), created];
       reivindicandoParaColaboradorBlocoId = null;
       showToast(`Hora extra reivindicada em nome de ${colaborador.nomeCompleto || colaborador.username}.`, 'success');
-      // Notificação à Direção com texto próprio (nunca via
-      // notificarDirecaoHorasExtra — essa atribuiria a ação ao próprio
-      // colaborador, quando quem a fez de facto foi o utilizador atual):
-      // só ao OUTRO membro da Direção (nunca a quem está a fazer a
-      // ação), deixando claro que foi feito EM NOME de outra pessoa.
-      const destinatarios = escalaUsuariosDirecao().filter(u => String(u.id) !== String(activeUser.id));
-      if (destinatarios.length) {
-        const diaInfoNotif = ESCALA_DIAS.find(d => d.key === bloco.diaKey);
-        const mensagem = `${activeUser.nomeCompleto || activeUser.username} reivindicou ${horaInicio}-${horaFim} das Horas Extra de ${diaInfoNotif ? diaInfoNotif.label : bloco.diaKey} em nome de ${colaborador.nomeCompleto || colaborador.username}.`;
-        Promise.all(destinatarios.map(u => dbInsertRecado({
-          remetenteId: activeUser.id, destinatarioId: u.id, mensagem, tratado: false, tipo: 'tarefa',
-          referenciaTabela: 'escala_horas_extra', referenciaId: bloco.id,
-        }))).then(criados => {
-          criados.forEach(c => { if (c) STATE.gavetaRecados = [c, ...(STATE.gavetaRecados || [])]; });
-        });
-      }
+      // SEM notificação à Direção (pedido explícito 2026-08-19, Paulo):
+      // reivindicar em nome de um colaborador é uma ação direta — o
+      // colaborador fica logo inserido no horário e as horas ficam
+      // indisponíveis nesse período; não há aprovação/aviso pendente a
+      // dar, ao contrário de outros fluxos que passam pela Gaveta de
+      // Recados. Se a reivindicação for depois desfeita (desistir),
+      // as horas voltam a ficar disponíveis automaticamente (a lista
+      // já filtra só reivindicações ativas — ver escalaReivindicacoesDoBloco).
     } else {
       reivindicarParaColaboradorError = `Não foi possível guardar. ${escalaMensagemErroAmigavel(lastDbError)}`;
     }
@@ -32187,6 +32205,7 @@ function buildHorariosPage(container, goTo) {
       const blocoCongelado = escalaHorasExtraBloqueado(blocoSemana);
       const reivindicacoes = escalaReivindicacoesDoBloco(bloco.id);
       const minhaReivindicacao = activeUser ? reivindicacoes.find(r => String(r.utilizadorId) === String(activeUser.id)) : null;
+      const disponibilidade = escalaDisponibilidadeBloco(bloco, reivindicacoes);
       // Identificação sempre pela DATA completa (ex: "Sábado, 30/08/2026"),
       // nunca só o dia da semana — antes disto, dois blocos de "Sábado"
       // de semanas diferentes eram indistinguíveis um do outro na lista.
@@ -32213,7 +32232,12 @@ function buildHorariosPage(container, goTo) {
         // outra pessoa (ex: colaborador pediu por WhatsApp/verbalmente,
         // sem ter de entrar na app) — restrito a Hugo/Paulo
         // (souDirecaoHorarios(), nunca "gestores" em geral).
-        (ehGestor && souDirecaoHorarios() && !blocoCongelado) ? (() => {
+        // Escondido quando o bloco já está totalmente reivindicado
+        // (2026-08-19, pedido explícito "deve ser totalmente claro") —
+        // não faz sentido oferecer "reivindicar para colaborador" quando
+        // não resta nenhum minuto livre; a banda vermelha abaixo já
+        // explica isso, o botão só confundiria.
+        (ehGestor && souDirecaoHorarios() && !blocoCongelado && !disponibilidade.totalmenteReivindicado) ? (() => {
           const btn = h('button', {
             style: 'flex-shrink:0;background:#fff;color:#b45309;font-weight:700;border:1.5px solid #f59e0b;border-radius:8px;padding:7px 13px;font-size:12.5px;cursor:pointer;',
           }, 'Reivindicar Horas para Colaborador');
@@ -32226,8 +32250,9 @@ function buildHorariosPage(container, goTo) {
         // ação principal do cartão, visível já na primeira linha.
         // Rótulo mais neutro ("Reivindicar Horas" em vez de "Quero fazer
         // ESTA hora extra") — a nuance de que é parcial/opcional fica no
-        // texto de apoio acima, não no botão.
-        (!ehGestor && activeUser && !minhaReivindicacao && !blocoCongelado) ? (() => {
+        // texto de apoio acima, não no botão. Escondido também quando já
+        // não resta nada livre (2026-08-19, mesmo motivo do botão acima).
+        (!ehGestor && activeUser && !minhaReivindicacao && !blocoCongelado && !disponibilidade.totalmenteReivindicado) ? (() => {
           const btn = h('button', {
             style: 'flex-shrink:0;background:#f59e0b;color:#fff;font-weight:700;border:none;border-radius:8px;padding:8px 14px;font-size:12.5px;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.12);',
           }, 'Reivindicar Horas');
@@ -32235,16 +32260,38 @@ function buildHorariosPage(container, goTo) {
           return btn;
         })() : null,
       ]);
+      // Banda de disponibilidade (2026-08-19, pedido explícito "deve ser
+      // totalmente claro" se o bloco todo ou só parte já foi
+      // reivindicado): bloco sem nenhuma reivindicação não mostra nada
+      // aqui (o botão "Reivindicar Horas" já deixa claro que está
+      // livre); com reivindicações, mostra sempre um dos dois estados —
+      // totalmente indisponível (vermelho) ou ainda com parte livre
+      // (âmbar, com a duração que resta).
+      const bandaDisponibilidade = reivindicacoes.length
+        ? h('div', {
+            style: 'margin-top:8px;padding:6px 11px;border-radius:8px;font-size:12.5px;font-weight:700;' +
+              (disponibilidade.totalmenteReivindicado ? 'background:#fef2f2;color:#b91c1c;' : 'background:#fff7ed;color:#9a3412;'),
+          }, disponibilidade.totalmenteReivindicado
+            ? `🔒 Sem horas disponíveis — bloco reivindicado na totalidade${reivindicacoes.length === 1 ? ` por ${reivindicacoes[0].utilizadorNome || 'alguém'}` : ''}.`
+            : `⚠️ Restam ${escalaFormatarDuracaoMin(disponibilidade.livreMin)} disponíveis (de ${escalaFormatarDuracaoMin(disponibilidade.totalMin)}) — parte já reivindicada.`)
+        : null;
       const listaReivindicacoes = reivindicacoes.length
-        ? h('div', { style: 'margin-top:8px;display:flex;flex-direction:column;gap:5px;' }, reivindicacoes.map(r => {
+        ? h('div', { style: 'margin-top:6px;display:flex;flex-direction:column;gap:5px;' }, reivindicacoes.map(r => {
             const podeDesistir = !blocoCongelado && (ehGestor ? isMasterUser() : (activeUser && String(r.utilizadorId) === String(activeUser.id)));
             const desistirBtn = podeDesistir ? (() => {
               const btn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Desistir/cancelar', 'aria-label': 'Desistir/cancelar' }, Icon('x', { size: 12, strokeWidth: 2.4 }));
               btn.addEventListener('click', () => requireAuth(() => desistirReivindicacao(r, bloco)));
               return btn;
             })() : null;
+            // Texto explícito por reivindicação (2026-08-19, pedido
+            // explícito): sempre "Indisponível HH:MM-HH:MM — reivindicado
+            // por Nome", nunca só "Nome — HH:MM-HH:MM" (ambíguo sobre o
+            // que aquilo significa para quem está a ver a lista).
             return h('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:8px;background:#fffbeb;border-radius:8px;padding:5px 10px;font-size:12.5px;' }, [
-              h('span', {}, `${r.utilizadorNome || '—'} — ${r.intervaloInicio}-${r.intervaloFim}`),
+              h('span', {}, [
+                h('strong', {}, `Indisponível ${r.intervaloInicio}-${r.intervaloFim}`),
+                ` — reivindicado por ${r.utilizadorNome || '—'}`,
+              ]),
               desistirBtn,
             ]);
           }))
@@ -32376,7 +32423,7 @@ function buildHorariosPage(container, goTo) {
         // explícito 2026-08-14: sem isto, o cartão esticava à largura
         // toda do ecrã, desproporcional ao resto da coluna).
         style: 'margin-bottom:10px;max-width:720px;background:#fffbeb;border:1px solid #fde68a;border-left:4px solid #f59e0b;',
-      }, [linhaTopo, listaReivindicacoes, formReivindicar, formReivindicarParaColaborador]));
+      }, [linhaTopo, bandaDisponibilidade, listaReivindicacoes, formReivindicar, formReivindicarParaColaborador]));
     });
     return h('div', { style: 'margin-top:16px;max-width:720px;' }, [tituloRow, ...corpo]);
   }
