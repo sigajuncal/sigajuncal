@@ -4418,7 +4418,9 @@ function resolveFornecedorOrcamentoState(listKey, draft, fornecedorManual) {
 // sempre que o utilizador o edita diretamente (não bloqueado).
 function buildFornecedorTopField(fieldDef, draft, bloqueado, onManualChange, aDefinir) {
   const listId = 'dl-fornecedor-top-' + (__datalistCounter++);
-  const dl = h('datalist', { id: listId }, (fieldDef.options || []).map(o => h('option', { value: o })));
+  // <option> sempre com texto (nunca só o atributo value) — mesmo bug do
+  // datalist "em branco" corrigido em buildField (ver comentário lá).
+  const dl = h('datalist', { id: listId }, (fieldDef.options || []).map(o => h('option', { value: o }, o)));
   const inp = h('input', { class: 'input', list: listId, placeholder: aDefinir ? 'A definir via Orçamento' : (fieldDef.placeholder || 'Escrever ou escolher...'), disabled: bloqueado ? 'disabled' : undefined });
   inp.value = draft[fieldDef.name] || '';
   repararDatalistAoEditar(inp, listId);
@@ -4467,7 +4469,7 @@ function buildOrcamentosPanel(listKey, draft, rerender, bloqueado) {
       fornInput = h('p', { class: 'orcamento-fornecedor-fixo' }, nomeFixo);
     } else if (presets.length) {
       const listId = 'dl-orc-' + i + '-' + (__datalistCounter++);
-      const dl = h('datalist', { id: listId }, presets.map(p => h('option', { value: p })));
+      const dl = h('datalist', { id: listId }, presets.map(p => h('option', { value: p }, p)));
       const inp = h('input', { class: 'input', list: listId, placeholder: i === 4 ? 'Nome da Farmácia/Fornecedor' : 'Escrever ou escolher...', disabled: bloqueado ? 'disabled' : undefined });
       inp.value = draft[fCampo] || '';
       repararDatalistAoEditar(inp, listId);
@@ -10370,8 +10372,15 @@ function buildField(field, draft) {
     // datalist (ex: "08:00 (fora do horário habitual)") — o valor
     // preenchido no campo ao escolher continua a ser sempre field.options[i],
     // nunca o texto do label. Sem optionLabels, comportamento inalterado.
+    // BUG CORRIGIDO (2026-08-19, "dropdown fica branco" em Consumíveis):
+    // quando comboLabels[i] === o (sem label distinto), o <option> ficava
+    // SEM QUALQUER texto (children: undefined) — só com o atributo
+    // `value`, a contar com o Safari mostrar esse valor por
+    // fallback, que na prática nem sempre acontece na lista nativa do
+    // datalist (mostra em branco/vazio). Agora usa sempre `comboLabels[i]
+    // || o` como texto do <option>, nunca undefined.
     const comboLabels = field.optionLabels || field.options;
-    extra = h('datalist', { id: listId }, field.options.map((o, i) => h('option', { value: o }, comboLabels[i] !== o ? comboLabels[i] : undefined)));
+    extra = h('datalist', { id: listId }, field.options.map((o, i) => h('option', { value: o }, comboLabels[i] || o)));
     control = h('input', { class: 'input', list: listId, placeholder: field.placeholder || 'Escrever ou escolher...' });
     control.value = draft[field.name] || '';
     repararDatalistAoEditar(control, listId);
@@ -29275,19 +29284,28 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   // Bloco"; um dia que já tinha blocos gravados mostra-os logo (nunca
   // escondidos). "Remover" aparece sempre no último bloco visível,
   // mesmo quando é o único — recolhe de volta a 0, não a 1.
-  function criarSecaoBlocos(max, iniciais) {
+  function criarSecaoBlocos(max, iniciais, comCheckboxBanco) {
     let visiveis = iniciais.length;
     const blocos = Array.from({ length: max }, (_, i) => {
       const inicial = iniciais[i] || { inicio: '', fim: '' };
       const inicioInput = campoHora(inicial.inicio);
       const fimInput = campoHora(inicial.fim);
       const removerBtn = h('button', { type: 'button', class: 'btn-link del', style: 'font-size:11.5px;' }, 'Remover');
+      // "Contar como Banco de Horas" (pedido explícito de Hugo, 2026-08-19)
+      // — checkbox opcional por bloco, só na secção "Horas Extra": quando
+      // marcada, este bloco deixa de contar como Hora Extra e passa a
+      // somar diretamente ao Banco de Horas GANHO (mesma soma da
+      // recuperação automática de feriado, ver
+      // escalaCalcularEstatisticasPeriodo), para o Gestor poder
+      // classificar manualmente caso a caso — sem depender só da fórmula
+      // automática de excesso acima de 40h/semana.
+      const bancoCheckbox = comCheckboxBanco ? h('input', { type: 'checkbox', checked: inicial.banco ? 'checked' : undefined }) : null;
       removerBtn.addEventListener('click', () => {
-        inicioInput.value = ''; fimInput.value = '';
+        inicioInput.value = ''; fimInput.value = ''; if (bancoCheckbox) bancoCheckbox.checked = false;
         visiveis = i;
         atualizarVisibilidade();
       });
-      return { inicioInput, fimInput, removerBtn };
+      return { inicioInput, fimInput, removerBtn, bancoCheckbox };
     });
     const addBtn = h('button', { type: 'button', class: 'btn-link edit', style: 'font-size:12px;' }, '+ Adicionar Bloco');
     addBtn.addEventListener('click', () => { if (visiveis < max) { visiveis++; atualizarVisibilidade(); } });
@@ -29298,6 +29316,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
         bloco.inicioInput.closest('.field').style.display = visivel ? '' : 'none';
         bloco.fimInput.closest('.field').style.display = visivel ? '' : 'none';
         bloco.removerBtn.style.display = (visivel && i === visiveis - 1) ? '' : 'none';
+        if (bloco.bancoCheckbox) bloco.bancoCheckbox.closest('.field').style.display = visivel ? '' : 'none';
       });
     }
     return { blocos, addBtn, atualizarVisibilidadeLocal };
@@ -29309,7 +29328,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   // redundante escrever a duração E o intervalo — pedido explícito).
   const heIntervalosIniciais = Array.isArray(diaAtual.heIntervalos) ? diaAtual.heIntervalos
     : (diaAtual.heInicio && diaAtual.heFim ? [{ inicio: diaAtual.heInicio, fim: diaAtual.heFim }] : []);
-  const heSecao = criarSecaoBlocos(2, heIntervalosIniciais);
+  const heSecao = criarSecaoBlocos(2, heIntervalosIniciais, true);
   const bancoIntervalosIniciais = Array.isArray(diaAtual.bancoHorasIntervalos) ? diaAtual.bancoHorasIntervalos : [];
   const bancoSecao = criarSecaoBlocos(2, bancoIntervalosIniciais);
   // Tipo "Banco de Horas (Dia Completo)" — dia inteiro sem horário (a
@@ -29616,7 +29635,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     let bancoHorasIntervalos = diaAtual.bancoHorasIntervalos || [];
     let bancoHorasDesconto = diaAtual.bancoHorasDesconto || 0;
     let heIntervalos = heIntervalosIniciais;
-    let heHoras = diaAtual.heHoras || 0, heInicio = diaAtual.heInicio || '', heFim = diaAtual.heFim || '';
+    let heHoras = diaAtual.heHoras || 0, heHorasBanco = diaAtual.heHorasBanco || 0, heInicio = diaAtual.heInicio || '', heFim = diaAtual.heFim || '';
     // Lê e valida os blocos de uma secção (HE ou Banco) — devolve null e
     // já marca o erro no ecrã se algum bloco tiver só Início ou só Fim.
     function lerBlocosValidos(blocos, rotulo) {
@@ -29629,7 +29648,9 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
           errorEl.style.display = '';
           return null;
         }
-        validos.push({ inicio: ini, fim });
+        const item = { inicio: ini, fim };
+        if (bloco.bancoCheckbox) item.banco = !!bloco.bancoCheckbox.checked;
+        validos.push(item);
       }
       return validos;
     }
@@ -29657,9 +29678,17 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       const heValidos = lerBlocosValidos(heSecao.blocos, 'Horas Extra');
       if (heValidos === null) return;
       heIntervalos = heValidos;
-      heHoras = Math.round(heValidos.reduce((soma, iv) => soma + escalaCalcularHoras(iv.inicio, iv.fim), 0) * 100) / 100;
-      heInicio = heValidos[0] ? heValidos[0].inicio : '';
-      heFim = heValidos[0] ? heValidos[0].fim : '';
+      // Só os blocos NÃO marcados como "Banco de Horas" continuam a
+      // contar como Hora Extra real (heHoras) — os marcados somam à
+      // parte em heHorasBanco, para entrarem no Banco de Horas GANHO nas
+      // Estatísticas (ver escalaCalcularEstatisticasPeriodo), nunca nos
+      // dois campos ao mesmo tempo.
+      const heValidosExtra = heValidos.filter(iv => !iv.banco);
+      const heValidosBanco = heValidos.filter(iv => iv.banco);
+      heHoras = Math.round(heValidosExtra.reduce((soma, iv) => soma + escalaCalcularHoras(iv.inicio, iv.fim), 0) * 100) / 100;
+      heHorasBanco = Math.round(heValidosBanco.reduce((soma, iv) => soma + escalaCalcularHoras(iv.inicio, iv.fim), 0) * 100) / 100;
+      heInicio = heValidosExtra[0] ? heValidosExtra[0].inicio : '';
+      heFim = heValidosExtra[0] ? heValidosExtra[0].fim : '';
     }
     const novoDados = JSON.parse(JSON.stringify(semana.dados));
     if (!novoDados[codigoVaga]) {
@@ -29688,7 +29717,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     // migrado a ler `tarefas` (ver escalaTarefasDoDia).
     const primeiraTarefa = tarefas[0] || { tipo: '', outro: '', inicio: '', fim: '' };
     novoDados[codigoVaga].dias[diaKey] = {
-      entrada, saida, pausaInicio, pausaFim, tipo, heHoras, heInicio, heFim, heIntervalos, horas, tarefas,
+      entrada, saida, pausaInicio, pausaFim, tipo, heHoras, heHorasBanco, heInicio, heFim, heIntervalos, horas, tarefas,
       bancoHorasIntervalos, bancoHorasDesconto,
       // Correção/Validação de Banco de Horas e Horas Extra (ver
       // escalaBancoHorasEfetivo/escalaHeHorasEfetivo) — sempre
@@ -29766,6 +29795,10 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
         h('label', { style: 'display:flex;align-items:center;justify-content:space-between;' }, [`Bloco ${i + 1} — Fim`, bloco.removerBtn]),
         bloco.fimInput,
       ]),
+      bloco.bancoCheckbox ? h('label', { class: 'field span2', style: 'display:flex;align-items:center;gap:8px;flex-direction:row;margin-top:-8px;' }, [
+        bloco.bancoCheckbox,
+        h('span', { style: 'font-size:12.5px;color:var(--pharm-600);' }, 'Contar como Banco de Horas (em vez de Hora Extra)'),
+      ]) : null,
     ]);
   }
   const panel = h('div', { class: 'modal-panel' }, [
@@ -32914,6 +32947,17 @@ function buildHorariosPage(container, goTo) {
           // Banco de Horas GANHO automaticamente por feriado trabalhado
           // (calculado à parte, por semana, mais abaixo).
           if (escalaBancoHorasEfetivo(dia) > 0) { s.bancoHorasUsado += escalaBancoHorasEfetivo(dia); escalaEmpurrarDetalheEstatistica(s, 'bancoHorasUsado', dataISO, `-${escalaFormatarHoras(escalaBancoHorasEfetivo(dia))} · turno ${rotuloTurno}`); }
+          // Banco de Horas GANHO manualmente (pedido explícito de Hugo,
+          // 2026-08-19): bloco de "Horas Extra" marcado com o checkbox
+          // "Contar como Banco de Horas" pelo Gestor no momento de criar
+          // o horário — soma-se diretamente ao Banco GANHO, ao lado da
+          // recuperação automática de feriado (calculada à parte, por
+          // semana, mais abaixo), nunca contando também como Hora Extra
+          // (ver split heHoras/heHorasBanco em abrirEditorCelulaEscala).
+          if (dia.heHorasBanco > 0) {
+            s.bancoHorasGanho += dia.heHorasBanco;
+            escalaEmpurrarDetalheEstatistica(s, 'bancoHorasGanho', dataISO, `+${escalaFormatarHoras(dia.heHorasBanco)} · turno ${rotuloTurno} (marcado manualmente como Banco de Horas)`);
+          }
         });
         // Classificação do fim de semana — só conta quando Sábado E
         // Domingo dessa semana caem os dois dentro do período pedido (uma
@@ -33093,7 +33137,7 @@ function buildHorariosPage(container, goTo) {
       return h('tr', {}, [
         h('td', { class: 'cell-strong' }, s.nome),
         celInicial,
-        h('td', { title: 'Ganho automático acumulado (Banco de Horas por feriado trabalhado, ver coluna "Banco (Feriado)" acima) — histórico completo' }, escalaFormatarHorasDecimalComSinal(s.ganho)),
+        h('td', { title: 'Ganho acumulado: recuperação automática de feriado trabalhado (ver coluna "Banco (Feriado)" acima) + blocos de Horas Extra marcados manualmente como "Contar como Banco de Horas" no editor de turno — histórico completo' }, escalaFormatarHorasDecimalComSinal(s.ganho)),
         h('td', { title: 'Usado manualmente (descontos lançados célula a célula por Hugo/Paulo) — histórico completo' }, s.usado ? `-${escalaFormatarHorasDecimal(s.usado)}` : '0h'),
         h('td', { class: 'cell-strong' }, escalaFormatarHorasDecimalComSinal(s.saldoAtual)),
         celAcoes,
