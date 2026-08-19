@@ -26497,6 +26497,19 @@ function escalaFormatarHorasComSinal(valor) {
   if (!horas) return '0h';
   return (horas < 0 ? '-' : '+') + escalaFormatarHoras(Math.abs(horas));
 }
+// Faixa de horas [min,max] que cabe dentro de um turno Entrada–Saída —
+// usada para restringir o <select> de horas do campoHora nos campos
+// Início/Fim de Tarefa (pedido explícito 2026-08-19: "se entra às 9h e
+// sai às 11h não faz sentido aparecer 8h nem 12h"). Devolve null quando
+// Entrada/Saída ainda não estão preenchidas ou o intervalo é inválido —
+// nesse caso o campoHora mantém o intervalo por omissão (08-23).
+function escalaRangeHoraTurno(entrada, saida) {
+  const hIni = parseInt(String(entrada || '').split(':')[0], 10);
+  let hFim = parseInt(String(saida || '').split(':')[0], 10);
+  if (saida === '00:00') hFim = 24; // "00:00" como saída = meia-noite, fim do dia
+  if (isNaN(hIni) || isNaN(hFim) || hFim <= hIni) return null;
+  return { min: hIni, max: Math.min(hFim, 23) };
+}
 // Formato decimal (ex: "11,5h") — usado exclusivamente no cartão "Banco
 // de Horas — Saldo Atual" das Estatísticas (pedido explícito 2026-08-19:
 // "11h30" lia-se como hora do dia, não como duração; nunca aplicado às
@@ -29010,14 +29023,26 @@ function podeGerirBancoHorasEHE() {
 // bloco disponibilizado, para nunca deixar escolher uma hora fora dele.
 function campoHora(valorInicial, permitirMeiaNoite, onChange, horaMin, horaMax, minutosOpcoes) {
   const wrap = h('div', { class: 'time-picker-custom' });
-  const horaSel = h('select', { class: 'time-picker-select' }, [h('option', { value: '' }, '--')]);
-  const min = (typeof horaMin === 'number' && !isNaN(horaMin)) ? horaMin : 8;
-  const max = (typeof horaMax === 'number' && !isNaN(horaMax)) ? horaMax : 23;
-  for (let hVal = min; hVal <= max; hVal += 1) {
-    const hStr = String(hVal).padStart(2, '0');
-    horaSel.appendChild(h('option', { value: hStr }, hStr));
+  const horaSel = h('select', { class: 'time-picker-select' });
+  const minPadrao = (typeof horaMin === 'number' && !isNaN(horaMin)) ? horaMin : 8;
+  const maxPadrao = (typeof horaMax === 'number' && !isNaN(horaMax)) ? horaMax : 23;
+  // Opções de hora reconstruíveis (pedido explícito 2026-08-19: os campos
+  // Início/Fim de Tarefa deviam corresponder só ao turno Entrada–Saída da
+  // própria célula — "se entra às 9h e sai às 11h não faz sentido
+  // aparecer 8h nem 12h") — ver wrap.setHoraRange, chamado sempre que a
+  // Entrada/Saída do turno muda. "00" some do laço normal quando
+  // permitirMeiaNoite, para nunca duplicar com a opção "00 (meia-noite)"
+  // à parte (turno a terminar à meia-noite).
+  function construirOpcoesHora(minH, maxH) {
+    horaSel.replaceChildren(h('option', { value: '' }, '--'));
+    for (let hVal = minH; hVal <= maxH; hVal += 1) {
+      const hStr = String(hVal).padStart(2, '0');
+      if (permitirMeiaNoite && hStr === '00') continue;
+      horaSel.appendChild(h('option', { value: hStr }, hStr));
+    }
+    if (permitirMeiaNoite) horaSel.appendChild(h('option', { value: '00' }, '00 (meia-noite)'));
   }
-  if (permitirMeiaNoite) horaSel.appendChild(h('option', { value: '00' }, '00 (meia-noite)'));
+  construirOpcoesHora(minPadrao, maxPadrao);
   const minSel = h('select', { class: 'time-picker-select' });
   // Opções de minuto reconstruíveis (pedido explícito 2026-08-19: a
   // tarefa "Formação" precisa de granularidade de 15 em 15 minutos,
@@ -29056,6 +29081,15 @@ function campoHora(valorInicial, permitirMeiaNoite, onChange, horaMin, horaMax, 
 
     set(v) { aplicarValor(v); },
   });
+  // Troca o intervalo de horas mostrado, preservando o valor atual quando
+  // continua válido (senão limpa — nunca deixa um valor fora do novo
+  // intervalo escondido no campo). minH/maxH omissos repõem o intervalo
+  // por omissão (horaMin/horaMax dados na construção, ou 08-23).
+  wrap.setHoraRange = function(minH, maxH) {
+    const valorAtual = wrap.value;
+    construirOpcoesHora(typeof minH === 'number' ? minH : minPadrao, typeof maxH === 'number' ? maxH : maxPadrao);
+    if (valorAtual) aplicarValor(valorAtual); else horaSel.value = '';
+  };
   // Troca a granularidade dos minutos dinamicamente, preservando o valor
   // atual (aproximado à opção disponível mais próxima) — ver
   // GRANULARIDADE_MINUTOS_FORMACAO/PADRAO.
@@ -29256,7 +29290,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     // sentido para a tarefa "Formação", opcionais, mesmo padrão do campo
     // "Qual? (Outro)" acima (mostrados/escondidos consoante o tipo
     // escolhido, ver atualizarVisibilidadeTarefaBloco).
-    const tarefaMarcaInput = h('input', { class: 'input', placeholder: 'Ex: Bial', maxlength: '60' });
+    const tarefaMarcaInput = h('input', { class: 'input', placeholder: 'Ex: Uriage', maxlength: '60' });
     tarefaMarcaInput.value = inicial.marca || '';
     const tarefaGamaInput = h('input', { class: 'input', placeholder: 'Ex: Dermocosmética', maxlength: '60' });
     tarefaGamaInput.value = inicial.gama || '';
@@ -29264,8 +29298,9 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     // "Formação" pode variar de 15 em 15 min, as restantes tarefas mantêm
     // o padrão de 30 em 30 — ver GRANULARIDADE_MINUTOS_FORMACAO/PADRAO.
     const granularidadeInicial = inicial.tipo === 'formacao' ? GRANULARIDADE_MINUTOS_FORMACAO : GRANULARIDADE_MINUTOS_PADRAO;
-    const tarefaInicioInput = campoHora(inicial.inicio, false, undefined, undefined, undefined, granularidadeInicial);
-    const tarefaFimInput = campoHora(inicial.fim, true, undefined, undefined, undefined, granularidadeInicial);
+    const rangeInicial = escalaRangeHoraTurno(entradaInput.value, saidaInput.value);
+    const tarefaInicioInput = campoHora(inicial.inicio, false, undefined, rangeInicial ? rangeInicial.min : undefined, rangeInicial ? rangeInicial.max : undefined, granularidadeInicial);
+    const tarefaFimInput = campoHora(inicial.fim, true, undefined, rangeInicial ? rangeInicial.min : undefined, rangeInicial ? rangeInicial.max : undefined, granularidadeInicial);
     // Atalho de pré-preenchimento: ao ESCOLHER "Encomenda da Manhã/Tarde"
     // (ver horaSugerida em ESCALA_TAREFAS_ESPECIAIS), os campos Início/Fim
     // Tarefa deste bloco são logo definidos com o horário habitual —
@@ -29324,7 +29359,16 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       }
     }
     atualizarTodoHorarioBtn();
-    [entradaInput, saidaInput, pausaInicioInput, pausaFimInput].forEach(inp => inp.addEventListener('change', atualizarTodoHorarioBtn));
+    // Restringe o <select> de horas de Início/Fim Tarefa ao turno atual
+    // (pedido explícito 2026-08-19) — recalculado sempre que Entrada/
+    // Saída mudam, para nunca ficar desatualizado face a uma edição do
+    // turno feita depois de o bloco de tarefa já estar aberto.
+    function atualizarRangeHoraTarefa() {
+      const range = escalaRangeHoraTurno(entradaInput.value, saidaInput.value);
+      tarefaInicioInput.setHoraRange(range ? range.min : undefined, range ? range.max : undefined);
+      tarefaFimInput.setHoraRange(range ? range.min : undefined, range ? range.max : undefined);
+    }
+    [entradaInput, saidaInput, pausaInicioInput, pausaFimInput].forEach(inp => inp.addEventListener('change', () => { atualizarTodoHorarioBtn(); atualizarRangeHoraTarefa(); }));
     const todoHorarioBtn = todoHorarioWrap;
     return { tarefaSelect, tarefaOutroInput, tarefaMarcaInput, tarefaGamaInput, tarefaInicioInput, tarefaFimInput, removerBtn, todoHorarioBtn };
   });
