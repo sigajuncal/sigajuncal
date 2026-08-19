@@ -3922,6 +3922,10 @@ const ICONS = {
   // "Ícone da internet"/link externo (2026-08-18, pedido explícito) —
   // globo + seta de saída, usado no botão "Abrir Link" dos Dias Especiais.
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 4 9 15 15 0 0 1-4 9 15 15 0 0 1-4-9 15 15 0 0 1 4-9Z"/>',
+  // Tabela/grelha — usada no botão só-ícone "Vista em Tabela" dos
+  // Horários (2026-08-19, pedido explícito: os botões Timeline/Vista em
+  // Tabela/Download passaram a só-ícone, junto aos separadores de dia).
+  table: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M12 3v18"/>',
 };
 function Icon(name, opts) {
   opts = opts || {};
@@ -26443,12 +26447,18 @@ function escalaCalcularHorasComPausa(entrada, saida, pausaInicio, pausaFim) {
   const horasPausa = escalaCalcularHoras(pausaInicio, pausaFim);
   return Math.max(0, Math.round((horasTurno - horasPausa) * 100) / 100);
 }
+// Formato geral de horas usado em toda a app (somatórios/totais, turnos,
+// HE, feriados, etc.): hora inteira = "40h"; com minutos = "40,30h"
+// (vírgula antes dos minutos, pedido explícito 2026-08-19, em vez do
+// antigo "40h30" que se lia como hora do dia). Distinto do formato
+// puramente decimal (ex: "11,5h") usado só no cartão "Banco de Horas —
+// Saldo Atual" — ver escalaFormatarHorasDecimal.
 function escalaFormatarHoras(valor) {
   const horas = Number(valor) || 0;
   if (!horas) return '0h';
   const inteiro = Math.floor(horas);
   const mins = Math.round((horas - inteiro) * 60);
-  return mins ? `${inteiro}h${String(mins).padStart(2, '0')}` : `${inteiro}h`;
+  return mins ? `${inteiro},${String(mins).padStart(2, '0')}h` : `${inteiro}h`;
 }
 // Mesma formatação, mas preservando o sinal (Saldo de Banco de Horas pode
 // ficar negativo — colaborador "deve" horas) — usa Math.abs para nunca
@@ -26458,6 +26468,22 @@ function escalaFormatarHorasComSinal(valor) {
   const horas = Number(valor) || 0;
   if (!horas) return '0h';
   return (horas < 0 ? '-' : '+') + escalaFormatarHoras(Math.abs(horas));
+}
+// Formato decimal (ex: "11,5h") — usado exclusivamente no cartão "Banco
+// de Horas — Saldo Atual" das Estatísticas (pedido explícito 2026-08-19:
+// "11h30" lia-se como hora do dia, não como duração; nunca aplicado às
+// restantes horas da app — turnos/HE/Feriado continuam em "Xh30", só
+// este saldo passa a decimal).
+function escalaFormatarHorasDecimal(valor) {
+  const horas = Number(valor) || 0;
+  if (!horas) return '0h';
+  let texto = (Math.round(horas * 100) / 100).toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+  return `${texto.replace('.', ',')}h`;
+}
+function escalaFormatarHorasDecimalComSinal(valor) {
+  const horas = Number(valor) || 0;
+  if (!horas) return '0h';
+  return (horas < 0 ? '-' : '+') + escalaFormatarHorasDecimal(Math.abs(horas));
 }
 // ---- Vista Mensal de "A Minha Semana" (pedido explícito 2026-08-09) ----
 // Converte "HH:MM" em minutos absolutos desde a meia-noite [0,1440] — a
@@ -30905,11 +30931,14 @@ function buildHorariosPage(container, goTo) {
     // "Escala da Equipa" é a vista aberta a todos.
     const baixarPdfEquipaBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Descarregar horário semanal em PDF (para imprimir e afixar)', 'aria-label': 'Descarregar horário semanal em PDF' }, Icon('download', { size: 15, strokeWidth: 2.2 }));
     baixarPdfEquipaBtn.addEventListener('click', () => baixarPdfDocumento(buildHorarioSemanaGridPDFDoc(semana), `horario_semanal_${semana.semanaInicio}.pdf`, { orientacao: 'landscape' }));
-    const botoesViewToggleEquipa = [
-      baixarPdfEquipaBtn,
-      h('button', { class: 'tab-btn tone-blue' + (viewModeEquipa === 'vertical' ? ' active' : ''), onclick: () => { definirViewModeEquipa('vertical'); rerender(); } }, [Icon('clock', { size: 14 }), h('span', {}, 'Timeline')]),
-      h('button', { class: 'tab-btn tone-blue' + (viewModeEquipa === 'tabela' ? ' active' : ''), onclick: () => { definirViewModeEquipa('tabela'); rerender(); } }, 'Vista em Tabela'),
-    ];
+    // Timeline/Vista em Tabela — só ícone (pedido explícito 2026-08-19,
+    // igual ao botão de Download acima), para caberem sempre na mesma
+    // linha dos separadores de dia (à direita de "Dom"), em mobile e
+    // desktop; tone-blue quando ativo, tone-gray quando não (mesmo
+    // padrão de tom já usado no resto da app).
+    const timelineEquipaBtn = h('button', { class: 'btn-fab-sm' + (viewModeEquipa === 'vertical' ? ' tone-blue' : ' tone-gray'), title: 'Vista Timeline', 'aria-label': 'Vista Timeline', onclick: () => { definirViewModeEquipa('vertical'); rerender(); } }, Icon('clock', { size: 15, strokeWidth: 2.2 }));
+    const vistaTabelaEquipaBtn = h('button', { class: 'btn-fab-sm' + (viewModeEquipa === 'tabela' ? ' tone-blue' : ' tone-gray'), title: 'Vista em Tabela', 'aria-label': 'Vista em Tabela', onclick: () => { definirViewModeEquipa('tabela'); rerender(); } }, Icon('table', { size: 15, strokeWidth: 2.2 }));
+    const botoesViewToggleEquipa = [baixarPdfEquipaBtn, timelineEquipaBtn, vistaTabelaEquipaBtn];
     if (viewModeEquipa === 'vertical') {
       wrap.appendChild(buildVistaVertical(semana, false, botoesViewToggleEquipa));
     } else {
@@ -32844,7 +32873,7 @@ function buildHorariosPage(container, goTo) {
         cancelarBtn.addEventListener('click', () => { editingBancoHorasUserId = null; bancoHorasSaldoError = ''; rerender(); });
         celAcoes = h('td', {}, h('div', { style: 'display:flex;gap:4px;' }, [guardarBtn, cancelarBtn]));
       } else {
-        celInicial = h('td', {}, escalaFormatarHorasComSinal(s.saldoInicial));
+        celInicial = h('td', {}, escalaFormatarHorasDecimalComSinal(s.saldoInicial));
         const editBtn = podeEditar ? h('button', { class: 'btn-fab-sm tone-gray', title: 'Ajustar Saldo Inicial', 'aria-label': 'Ajustar Saldo Inicial' }, Icon('pencil', { size: 13, strokeWidth: 2.4 })) : null;
         if (editBtn) editBtn.addEventListener('click', () => { editingBancoHorasUserId = u.id; bancoHorasSaldoDraft = String(s.saldoInicial); bancoHorasSaldoError = ''; rerender(); });
         celAcoes = h('td', {}, editBtn);
@@ -32852,9 +32881,9 @@ function buildHorariosPage(container, goTo) {
       return h('tr', {}, [
         h('td', { class: 'cell-strong' }, s.nome),
         celInicial,
-        h('td', { title: 'Ganho automático acumulado (Banco de Horas por feriado trabalhado, ver coluna "Banco (Feriado)" acima) — histórico completo' }, escalaFormatarHorasComSinal(s.ganho)),
-        h('td', { title: 'Usado manualmente (descontos lançados célula a célula por Hugo/Paulo) — histórico completo' }, s.usado ? `-${escalaFormatarHoras(s.usado)}` : '0h'),
-        h('td', { class: 'cell-strong' }, escalaFormatarHorasComSinal(s.saldoAtual)),
+        h('td', { title: 'Ganho automático acumulado (Banco de Horas por feriado trabalhado, ver coluna "Banco (Feriado)" acima) — histórico completo' }, escalaFormatarHorasDecimalComSinal(s.ganho)),
+        h('td', { title: 'Usado manualmente (descontos lançados célula a célula por Hugo/Paulo) — histórico completo' }, s.usado ? `-${escalaFormatarHorasDecimal(s.usado)}` : '0h'),
+        h('td', { class: 'cell-strong' }, escalaFormatarHorasDecimalComSinal(s.saldoAtual)),
         celAcoes,
       ]);
     }).filter(Boolean);
@@ -35417,8 +35446,11 @@ function buildHorariosPage(container, goTo) {
     // direita (pedido explícito 2026-08-09); Publicar/Editar deixou de
     // viver aqui — ver buildBarraGestaoSemana, logo acima, junto ao
     // Recalcular/Eliminar (uniformizado, pedido explícito).
-    const timelineBtn = h('button', { class: 'tab-btn tone-blue' + (viewModeGerador === 'vertical' ? ' active' : ''), onclick: () => { definirViewModeGerador('vertical'); rerender(); } }, [Icon('clock', { size: 14 }), h('span', {}, 'Timeline')]);
-    const vistaTabelaBtn = h('button', { class: 'tab-btn tone-blue' + (viewModeGerador === 'tabela' ? ' active' : ''), onclick: () => { definirViewModeGerador('tabela'); rerender(); } }, 'Vista em Tabela');
+    // Só ícone (pedido explícito 2026-08-19, mesmo padrão de
+    // "Escala da Equipa" — ver buildVistaEquipa) para caberem sempre na
+    // mesma linha dos separadores de dia, em mobile e desktop.
+    const timelineBtn = h('button', { class: 'btn-fab-sm' + (viewModeGerador === 'vertical' ? ' tone-blue' : ' tone-gray'), title: 'Vista Timeline', 'aria-label': 'Vista Timeline', onclick: () => { definirViewModeGerador('vertical'); rerender(); } }, Icon('clock', { size: 15, strokeWidth: 2.2 }));
+    const vistaTabelaBtn = h('button', { class: 'btn-fab-sm' + (viewModeGerador === 'tabela' ? ' tone-blue' : ' tone-gray'), title: 'Vista em Tabela', 'aria-label': 'Vista em Tabela', onclick: () => { definirViewModeGerador('tabela'); rerender(); } }, Icon('table', { size: 15, strokeWidth: 2.2 }));
     // Descarregar PDF (pedido explícito 2026-08-09, formato revisto
     // 2026-08-16 para caber numa única folha A4 horizontal) — grelha com
     // Posições/Colaboradores nas linhas e os 7 dias da semana em colunas,
