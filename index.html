@@ -1597,6 +1597,17 @@
     .horarios-tabs-principais .tab-btn-compacto-mobile{padding:9px 11px;}
     .horarios-tabs-principais .tab-btn-compacto-mobile span{display:none;}
   }
+  /* Botões de dia da Vista Vertical/Timeline em "Escala da Equipa"
+     (pedido explícito 2026-08-19) — em mobile trocam "Segunda, 17" por
+     "2ª 17", bem mais estreito, para os 7 dias caberem todos numa linha
+     só, lado a lado, sem quebrar (ver ESCALA_DIAS_ABREV/diaTabsBotoes). */
+  .escala-dia-tab-curto{display:none;}
+  @media (max-width:600px){
+    .escala-dia-tab-btn .escala-dia-tab-completo{display:none;}
+    .escala-dia-tab-btn .escala-dia-tab-curto{display:inline;}
+    .escala-dia-tab-btn{padding:8px 6px;font-size:12px;gap:0;}
+    .escala-dia-tabs-row{flex-wrap:nowrap;gap:4px;}
+  }
   /* Estado "ativo" por defeito (pedido explícito 2026-08-11) — sem isto,
      um .tab-btn sem tone-* (Agenda, Stock/Encomendas, Quebras,
      Responsáveis, Calendário/Lista Completa, e outros separadores da app
@@ -26097,6 +26108,14 @@ const ESCALA_DIAS = [
   { key: 'seg', label: 'Segunda' }, { key: 'ter', label: 'Terça' }, { key: 'qua', label: 'Quarta' },
   { key: 'qui', label: 'Quinta' }, { key: 'sex', label: 'Sexta' }, { key: 'sab', label: 'Sábado' }, { key: 'dom', label: 'Domingo' },
 ];
+// Abreviatura curta de cada dia (pedido explícito 2026-08-19: "vista
+// mobile de Escala da Equipa, botões mais pequenos com 2ª 3ª Sáb Dom,
+// para caberem todos a par") — convenção portuguesa habitual (2ª a 6ª
+// feira, Sáb/Dom por extenso por não terem numeral). Usada só nos
+// botões de seleção de dia da Vista Vertical/Timeline (ver
+// buildVistaVertical) — nunca substitui o nome por extenso no resto da
+// app (Estatísticas, tooltips, etc.).
+const ESCALA_DIAS_ABREV = { seg: '2ª', ter: '3ª', qua: '4ª', qui: '5ª', sex: '6ª', sab: 'Sáb', dom: 'Dom' };
 const ESCALA_FDS_KEYS = ['sab', 'dom'];
 // Grelha diária vazia/clonada — usada tanto no formulário de Posições Base
 // (buildVagaFormPanel) como no seed inicial. Cada dia é sempre um objeto
@@ -28855,10 +28874,20 @@ function podeGerirBancoHorasEHE() {
 // estado (draft) a cada escolha, nunca só lido no submit. O Modal de
 // Edição de Dia (abrirEditorCelulaEscala) não precisa disto: vive fora
 // desse ciclo, por isso continua a ler `.value` só no submit.
-function campoHora(valorInicial, permitirMeiaNoite, onChange) {
+// horaMin/horaMax (opcionais, pedido explícito 2026-08-19: "seletor de
+// horas devia corresponder só ao intervalo definido — se o bloco é
+// 17-21, não faz sentido aparecer 16 nem 22") — por omissão continua a
+// mostrar 08-23 (+00 meia-noite, se permitirMeiaNoite), o intervalo
+// completo do dia, tal como sempre foi em todos os outros usos deste
+// campo (Editor de Célula, Disponibilizar Horas Extra, Atribuição
+// Rápida, etc.); só "Reivindicar Horas" passa os limites do próprio
+// bloco disponibilizado, para nunca deixar escolher uma hora fora dele.
+function campoHora(valorInicial, permitirMeiaNoite, onChange, horaMin, horaMax) {
   const wrap = h('div', { class: 'time-picker-custom' });
   const horaSel = h('select', { class: 'time-picker-select' }, [h('option', { value: '' }, '--')]);
-  for (let hVal = 8; hVal < 24; hVal += 1) {
+  const min = (typeof horaMin === 'number' && !isNaN(horaMin)) ? horaMin : 8;
+  const max = (typeof horaMax === 'number' && !isNaN(horaMax)) ? horaMax : 23;
+  for (let hVal = min; hVal <= max; hVal += 1) {
     const hStr = String(hVal).padStart(2, '0');
     horaSel.appendChild(h('option', { value: hStr }, hStr));
   }
@@ -31629,8 +31658,20 @@ function buildHorariosPage(container, goTo) {
         // acima. onChange mantém reivindicarDraft sincronizado a cada
         // escolha, para sobreviver a um rerender() entretanto (mesmo
         // motivo explicado em buildPainelHorasExtra/campoHora).
-        const iniInput = campoHora(reivindicarDraft.horaInicio, false, (v) => { reivindicarDraft.horaInicio = v; });
-        const fimInput = campoHora(reivindicarDraft.horaFim, true, (v) => { reivindicarDraft.horaFim = v; });
+        // Limites de hora (pedido explícito 2026-08-19: "se o bloco é
+        // 17-21, não faz sentido aparecer 16 nem 22") — restringe as duas
+        // listas ao intervalo do próprio bloco disponibilizado
+        // (bloco.horaInicio/horaFim), nunca ao dia inteiro. Meia-noite só
+        // continua a ser opção da Hora Fim quando o bloco realmente
+        // termina à meia-noite (ex: um bloco 22:00-00:00) — nesse caso o
+        // "fim" conceptualmente é a hora 24, por isso o limite máximo do
+        // seletor sobe para 23 e a opção "00 (meia-noite)" à parte cobre
+        // esse último instante, exatamente como sempre funcionou.
+        const blocoHoraIniNum = parseInt(String(bloco.horaInicio || '').split(':')[0], 10);
+        const blocoHoraFimNum = parseInt(String(bloco.horaFim || '').split(':')[0], 10);
+        const blocoFimEhMeiaNoite = blocoHoraFimNum === 0;
+        const iniInput = campoHora(reivindicarDraft.horaInicio, false, (v) => { reivindicarDraft.horaInicio = v; }, blocoHoraIniNum, blocoFimEhMeiaNoite ? 23 : blocoHoraFimNum);
+        const fimInput = campoHora(reivindicarDraft.horaFim, blocoFimEhMeiaNoite, (v) => { reivindicarDraft.horaFim = v; }, blocoHoraIniNum, blocoFimEhMeiaNoite ? 23 : blocoHoraFimNum);
         const guardarBtn = h('button', { class: 'btn btn-primary', style: 'padding:6px 12px;font-size:12.5px;', disabled: reivindicarSaving ? 'disabled' : undefined }, reivindicarSaving ? 'A guardar…' : 'Confirmar');
         guardarBtn.addEventListener('click', () => guardarReivindicacao(bloco, blocoSemana));
         const cancelarBtn = h('button', { class: 'btn btn-secondary', style: 'padding:6px 12px;font-size:12.5px;' }, 'Cancelar');
@@ -35569,7 +35610,10 @@ function buildHorariosPage(container, goTo) {
     // rótulo "Semana de X a Y..." acima, nunca a semana já gerada em si
     // (que pode ainda nem existir — "Gerar Rascunho" por clicar).
     const diasDoMesVertical = escalaDiasDoMesDaSemanaISO(dataSemanaSelecionada());
-    const diaTabsBotoes = ESCALA_DIAS.map(d => h('button', { class: 'tab-btn tone-green' + (diaVerticalSelecionado === d.key ? ' active' : ''), onclick: () => { diaVerticalSelecionado = d.key; rerender(); } }, `${d.label}, ${diasDoMesVertical[d.key]}`));
+    const diaTabsBotoes = ESCALA_DIAS.map(d => h('button', { class: 'tab-btn tone-green escala-dia-tab-btn' + (diaVerticalSelecionado === d.key ? ' active' : ''), onclick: () => { diaVerticalSelecionado = d.key; rerender(); } }, [
+      h('span', { class: 'escala-dia-tab-completo' }, `${d.label}, ${diasDoMesVertical[d.key]}`),
+      h('span', { class: 'escala-dia-tab-curto' }, `${ESCALA_DIAS_ABREV[d.key]} ${diasDoMesVertical[d.key]}`),
+    ]));
     // extraBotoesDireita (opcional — Publicar/Timeline/Vista em Tabela,
     // ver buildVistaGerador/buildVistaEquipa): pedido explícito
     // 2026-08-09 para nunca "empilhar" mais uma linha de botões só para
@@ -35582,10 +35626,10 @@ function buildHorariosPage(container, goTo) {
     // relatado 2026-08-09).
     const diaTabs = (extraBotoesDireita && extraBotoesDireita.length)
       ? h('div', { style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;' }, [
-          h('div', { class: 'tabs-row', style: 'margin:0;' }, diaTabsBotoes),
+          h('div', { class: 'tabs-row escala-dia-tabs-row', style: 'margin:0;' }, diaTabsBotoes),
           h('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto;' }, extraBotoesDireita),
         ])
-      : h('div', { class: 'tabs-row', style: 'margin-bottom:14px;' }, diaTabsBotoes);
+      : h('div', { class: 'tabs-row escala-dia-tabs-row', style: 'margin-bottom:14px;' }, diaTabsBotoes);
     // Banner "Disponibilidade Extra Esta Semana" (pedido explícito
     // 2026-08-14) — SEMPRE visível ao abrir a semana, independente de
     // qual dia está selecionado nos separadores acima (por omissão abre
