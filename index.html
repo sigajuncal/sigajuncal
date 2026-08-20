@@ -2202,6 +2202,13 @@
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .escala-vertical-coluna-titulo-interativa{cursor:pointer;transition:color .12s ease;}
   .escala-vertical-coluna-titulo-interativa:hover{color:var(--pharm-500);}
+  /* Coluna VIRTUAL (pedido explícito de Hugo, 2026-08-20 — bug relatado
+     pelo Paulo: reivindicação de alguém sem turno nesse dia não tinha
+     onde ser desenhada) — título com fundo âmbar clarinho + borda
+     tracejada, para nunca confundir-se visualmente com uma vaga/posição
+     real da equipa. */
+  .escala-vertical-coluna-virtual .escala-vertical-coluna-titulo{background:#fffbeb;border-bottom-color:#fde68a;color:#92400e;gap:4px;}
+  .escala-vertical-coluna-virtual .escala-vertical-trilho{border:1px dashed #fde68a;}
   .escala-vertical-trilho{position:relative;flex:1;background:repeating-linear-gradient(to bottom,
     var(--pharm-100) 0,var(--pharm-100) 1px,transparent 1px,transparent calc(100% / 16));border-radius:8px;}
   .escala-vertical-trilho-vazio{cursor:pointer;}
@@ -36789,6 +36796,22 @@ function buildHorariosPage(container, goTo) {
       const minInicio = HORA_INICIO * 60, minFim = HORA_FIM * 60;
       return Math.max(minInicio, Math.min(minFim, minutos)) - minInicio;
     }
+    // Extraído (2026-08-20, mesmo pedido) do que antes era só o `.map`
+    // inline dentro da construção de cada coluna real — reutilizado
+    // também pelas colunas VIRTUAIS logo abaixo, para desenhar
+    // exatamente os mesmos blocos amarelos de Hora Extra reivindicada,
+    // sem duplicar a lógica.
+    function construirBlocosHEOverlay(lista) {
+      return lista.map(r => {
+        const topPctHE = (minutosNoIntervalo(r.intervaloInicio, false) / (totalHoras * 60)) * 100;
+        const alturaPctHE = Math.max(2, ((minutosNoIntervalo(r.intervaloFim, true) - minutosNoIntervalo(r.intervaloInicio, false)) / (totalHoras * 60)) * 100);
+        return h('div', {
+          class: 'escala-vertical-bloco escala-vertical-bloco-extra',
+          style: `top:${topPctHE}%;height:${alturaPctHE}%;`,
+          title: `Hora Extra reivindicada: ${r.intervaloInicio}-${r.intervaloFim}`,
+        }, h('div', { class: 'escala-vertical-bloco-horas' }, [h('span', {}, r.intervaloInicio), h('span', {}, r.intervaloFim)]));
+      });
+    }
     const legendaEntradas = [];
     const colunas = posicoes.map(v => {
       const linha = semana.dados[v.codigo] || { dias: {} };
@@ -36844,18 +36867,8 @@ function buildHorariosPage(container, goTo) {
       // é sempre organizada por vaga, não há onde a desenhar nesse caso;
       // continua visível no painel de qualquer forma).
       const horasExtraOverlays = colaboradorIdDoDia
-        ? escalaHorasExtraDoDia(semana.id, diaKey).flatMap(bloco =>
-            escalaReivindicacoesDoBloco(bloco.id)
-              .filter(r => String(r.utilizadorId) === String(colaboradorIdDoDia))
-              .map(r => {
-                const topPctHE = (minutosNoIntervalo(r.intervaloInicio, false) / (totalHoras * 60)) * 100;
-                const alturaPctHE = Math.max(2, ((minutosNoIntervalo(r.intervaloFim, true) - minutosNoIntervalo(r.intervaloInicio, false)) / (totalHoras * 60)) * 100);
-                return h('div', {
-                  class: 'escala-vertical-bloco escala-vertical-bloco-extra',
-                  style: `top:${topPctHE}%;height:${alturaPctHE}%;`,
-                  title: `Hora Extra reivindicada: ${r.intervaloInicio}-${r.intervaloFim}`,
-                }, h('div', { class: 'escala-vertical-bloco-horas' }, [h('span', {}, r.intervaloInicio), h('span', {}, r.intervaloFim)]));
-              }))
+        ? construirBlocosHEOverlay(escalaHorasExtraDoDia(semana.id, diaKey).flatMap(bloco =>
+            escalaReivindicacoesDoBloco(bloco.id).filter(r => String(r.utilizadorId) === String(colaboradorIdDoDia))))
         : [];
       // `blocos` substitui o antigo `bloco` único — um turno com pausa/
       // almoço configurada (dia.pausaInicio/dia.pausaFim) desenha DOIS
@@ -37146,6 +37159,39 @@ function buildHorariosPage(container, goTo) {
       }
       return h('div', { class: 'escala-vertical-coluna' }, [titulo, trilho]);
     });
+    // Colunas VIRTUAIS (pedido explícito de Hugo, 2026-08-20 — bug
+    // relatado pelo Paulo: "coloco reivindicar horas para colaborador...
+    // mete-a a amarelo no horário, mas depois desaparece"): a Timeline é
+    // organizada por VAGA, nunca por colaborador — quem reivindica Horas
+    // Extra num dia em que não tem NENHUM turno atribuído não tinha
+    // nenhuma coluna onde o bloco amarelo pudesse ser desenhado, mesmo a
+    // reivindicação continuando válida (visível no painel "Horas Extra
+    // Disponíveis" e nas Estatísticas/Total — ver correções da auditoria
+    // do mesmo dia). Cria-se aqui uma coluna extra, só visual, por
+    // colaborador nessa situação — nunca atribui nem inventa turno
+    // nenhum, só dá onde desenhar o(s) bloco(s) amarelo(s) dessa pessoa.
+    const colaboradoresComVagaHoje = new Set(posicoes.map(v => {
+      const linha = semana.dados[v.codigo] || { dias: {} };
+      const dia = linha.dias[diaKey] || {};
+      return String((dia && dia.colaboradorId) || linha.colaboradorId || '');
+    }).filter(Boolean));
+    const reivindicacoesSemVagaPorColaborador = {};
+    escalaHorasExtraDoDia(semana.id, diaKey).forEach(bloco => {
+      escalaReivindicacoesDoBloco(bloco.id).forEach(r => {
+        const uid = String(r.utilizadorId);
+        if (colaboradoresComVagaHoje.has(uid)) return;
+        if (!reivindicacoesSemVagaPorColaborador[uid]) reivindicacoesSemVagaPorColaborador[uid] = { nome: r.utilizadorNome, itens: [] };
+        reivindicacoesSemVagaPorColaborador[uid].itens.push(r);
+      });
+    });
+    const colunasVirtuaisHE = Object.values(reivindicacoesSemVagaPorColaborador).map(({ nome, itens }) => {
+      const titulo = h('div', {
+        class: 'escala-vertical-coluna-titulo',
+        title: `${nome || 'Colaborador'} — sem turno atribuído hoje, só Hora Extra reivindicada`,
+      }, [h('span', {}, '⚡ '), h('span', {}, nomeCurtoDesambiguado(nome) || 'Hora Extra')]);
+      const trilho = h('div', { class: 'escala-vertical-trilho' }, construirBlocosHEOverlay(itens));
+      return h('div', { class: 'escala-vertical-coluna escala-vertical-coluna-virtual' }, [titulo, trilho]);
+    });
     // Total de colaboradores presentes por hora (usado só na coluna
     // "Total" da grelha — um número por hora, "presença em algum ponto
     // desta hora") — permanece um bucket por hora inteira, propositado:
@@ -37231,7 +37277,7 @@ function buildHorariosPage(container, goTo) {
       buildPainelAlertasCobertura(alertasCobertura, escalaDataOperacionalEspecial(dataDoDiaSelecionado)),
       h('div', { class: 'escala-vertical-wrap' }, [
         eixoHorasEsquerda,
-        h('div', { class: 'escala-vertical-colunas' }, [fundoHorasEl, ...colunas, colunaTotais]),
+        h('div', { class: 'escala-vertical-colunas' }, [fundoHorasEl, ...colunas, ...colunasVirtuaisHE, colunaTotais]),
         eixoHorasDireita,
       ]),
       legendaEl,
