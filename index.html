@@ -28064,11 +28064,23 @@ function escalaTarefaColisao(semana, diaKey, tipo, inicio, fim, codigoVagaAtual,
 // atualizarNotificacoesHorasExtraReivindicacao) — antes apontava para o
 // BLOCO, o que tornava impossível saber a que reivindicação em concreto
 // cada notificação se referia quando havia mais do que uma no mesmo bloco.
+// Texto "Domingo, 30/08/2026" a partir de um bloco de Horas Extra
+// Disponíveis (pedido explícito de Hugo, 2026-08-20: as notificações só
+// diziam "Domingo", sem dizer QUAL domingo — mesmo padrão já usado no
+// painel "Horas Extra Disponíveis", ver buildPainelHorasExtra) — nunca
+// só o nome do dia da semana, sempre com a data por extenso.
+function escalaBlocoHorasExtraDiaTexto(bloco) {
+  if (!bloco) return '';
+  const diaInfo = ESCALA_DIAS.find(d => d.key === bloco.diaKey);
+  const semanaDoBloco = (STATE.escalaSemanas || []).find(s => s.id === bloco.semanaId);
+  const dataISO = semanaDoBloco ? escalaDataDoDia(semanaDoBloco.semanaInicio, bloco.diaKey) : null;
+  const nomeDia = diaInfo ? diaInfo.label : bloco.diaKey;
+  return dataISO ? `${nomeDia}, ${formatDate(dataISO)}` : nomeDia;
+}
 async function notificarDirecaoHorasExtra(reivindicacao, bloco, utilizador, acaoTexto) {
   const destinatarios = escalaUsuariosDirecao().filter(u => String(u.id) !== String(utilizador.id));
   if (!destinatarios.length) return;
-  const diaInfo = ESCALA_DIAS.find(d => d.key === bloco.diaKey);
-  const mensagem = `${utilizador.nomeCompleto || utilizador.username} ${acaoTexto} ${reivindicacao.intervaloInicio}-${reivindicacao.intervaloFim} das Horas Extra de ${diaInfo ? diaInfo.label : bloco.diaKey} (${bloco.horaInicio}-${bloco.horaFim}).`;
+  const mensagem = `${utilizador.nomeCompleto || utilizador.username} ${acaoTexto} ${reivindicacao.intervaloInicio}-${reivindicacao.intervaloFim} das Horas Extra de ${escalaBlocoHorasExtraDiaTexto(bloco)} (${bloco.horaInicio}-${bloco.horaFim}).`;
   // BUG CORRIGIDO (2026-08-18): ver nota em notificarDirecaoPedidoEspecial
   // — mesmo problema, dbInsert('gavetaRecados', ...) falhava sempre.
   const criados = await Promise.all(destinatarios.map(u => dbInsertRecado({
@@ -28124,8 +28136,7 @@ async function decidirHorasExtraReivindicacao(reivindicacao, novoEstado) {
 // isto, uma hora invalidada simplesmente desaparecia do horário do
 // colaborador sem explicação nenhuma.
 async function atualizarNotificacoesHorasExtraReivindicacao(reivindicacao, bloco) {
-  const diaInfo = bloco ? ESCALA_DIAS.find(d => d.key === bloco.diaKey) : null;
-  const diaTexto = diaInfo ? diaInfo.label : (bloco ? bloco.diaKey : '');
+  const diaTexto = escalaBlocoHorasExtraDiaTexto(bloco);
   const acaoTexto = reivindicacao.estado === 'validado' ? 'validou' : 'invalidou';
   const mensagem = `${activeUser.nomeCompleto || activeUser.username} ${acaoTexto} a hora extra de ${reivindicacao.utilizadorNome || 'um colaborador'} em ${diaTexto} (${reivindicacao.intervaloInicio}-${reivindicacao.intervaloFim}).`;
   const existentes = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_horas_extra_reivindicacoes' && String(r.referenciaId) === String(reivindicacao.id));
@@ -33522,6 +33533,37 @@ function buildHorariosPage(container, goTo) {
           const dataISO = escalaDataDoDia(semana.semanaInicio, d.key);
           if (!dataISO || !dentroPeriodo(dataISO)) return;
           const alvo = escalaVagaDoColaboradorNoDia(semana, d.key, uid);
+          // Horas Extra REIVINDICADAS (bloco "Horas Extra Disponíveis" —
+          // mesma auditoria 2026-08-20, CORRIGIDO 2026-08-20 mais tarde:
+          // "confirma a contagem dessas horas... para o contador de
+          // horas extra" — Paulo reportou reivindicar para alguém SEM
+          // turno nesse dia; a 1ª versão desta soma vivia DEPOIS do `if
+          // (!alvo) return` abaixo, por isso nunca chegava a contar
+          // exatamente nesse caso, que é o cenário normal de "Horas
+          // Extra Disponíveis" — cobrir um dia em que a pessoa não
+          // estaria escalada. Movido para AQUI, antes de qualquer
+          // `return`, para contar sempre, exista ou não vaga/turno nesse
+          // dia): reivindicações ativas nunca entravam em nenhuma
+          // Estatística/Saldo, apesar de aparecerem como texto "+HE
+          // 17:00-21:00" na Vista em Tabela/"A Minha Semana" e de já
+          // contarem no "Total" pessoal da semana (ver
+          // escalaTotalHorasLinha, corrigido no mesmo dia). Somam-se
+          // aqui como Hora Extra — nunca como Banco (reivindicar não tem
+          // opção de "marcar como Banco", ao contrário dos blocos
+          // manuais do editor).
+          const reivindicadasDoDia = escalaReivindicacoesDoColaboradorNoDia(semana.id, d.key, uid);
+          if (reivindicadasDoDia.length) {
+            const horasReivindicadas = reivindicadasDoDia.reduce((soma, r) => soma + escalaCalcularHoras(r.intervaloInicio, r.intervaloFim), 0);
+            if (horasReivindicadas > 0) {
+              s.horasExtra += horasReivindicadas;
+              escalaEmpurrarDetalheEstatistica(s, 'horasExtra', dataISO, `+${escalaFormatarHorasDecimal(horasReivindicadas)} · Horas Extra reivindicadas (${reivindicadasDoDia.map(r => `${r.intervaloInicio}-${r.intervaloFim}`).join(', ')})`);
+            }
+            // Conta também como "trabalhou nesse dia" para a
+            // classificação de Fim de Semana Livre/Ocupado mais abaixo —
+            // reivindicar horas extra é trabalho real, mesmo sem vaga
+            // atribuída nesse dia.
+            trabalhouNoDia[d.key] = true;
+          }
           if (!alvo) {
             // "Banco de Horas (Dia Completo)" nunca tem turno normal, por
             // isso escalaVagaDoColaboradorNoDia nunca o encontra — sem
@@ -33585,23 +33627,6 @@ function buildHorariosPage(container, goTo) {
           if (escalaHeHorasEfetivo(dia) > 0) {
             s.horasExtra += escalaHeHorasEfetivo(dia);
             escalaEmpurrarDetalheEstatistica(s, 'horasExtra', dataISO, `+${escalaFormatarHorasDecimal(escalaHeHorasEfetivo(dia))} · turno ${rotuloTurno} (marcado manualmente como Horas Extra)`);
-          }
-          // Horas Extra REIVINDICADAS (bloco "Horas Extra Disponíveis" —
-          // mesma auditoria 2026-08-20): reivindicações ativas nunca
-          // entravam em nenhuma Estatística/Saldo, apesar de aparecerem
-          // como texto "+HE 17:00-21:00" na Vista em Tabela/"A Minha
-          // Semana" e de já contarem no "Total" pessoal da semana (ver
-          // escalaTotalHorasLinha, corrigido no mesmo dia). Somam-se
-          // aqui como Hora Extra — nunca como Banco (reivindicar não tem
-          // opção de "marcar como Banco", ao contrário dos blocos
-          // manuais do editor).
-          const reivindicadasDoDia = escalaReivindicacoesDoColaboradorNoDia(semana.id, d.key, uid);
-          if (reivindicadasDoDia.length) {
-            const horasReivindicadas = reivindicadasDoDia.reduce((soma, r) => soma + escalaCalcularHoras(r.intervaloInicio, r.intervaloFim), 0);
-            if (horasReivindicadas > 0) {
-              s.horasExtra += horasReivindicadas;
-              escalaEmpurrarDetalheEstatistica(s, 'horasExtra', dataISO, `+${escalaFormatarHorasDecimal(horasReivindicadas)} · Horas Extra reivindicadas (${reivindicadasDoDia.map(r => `${r.intervaloInicio}-${r.intervaloFim}`).join(', ')})`);
-            }
           }
           if (dia.heHorasBanco > 0) {
             s.bancoHorasGanho += dia.heHorasBanco;
