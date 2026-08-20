@@ -28250,12 +28250,31 @@ function eliminarPedidoEspecialConfirm(pedido, onDone) {
     else escalaShowErro('Não foi possível eliminar o pedido');
   }, { danger: true, confirmLabel: 'Eliminar' });
 }
-// Decisão (Aprovar/Rejeitar) — só Hugo/Paulo. Nunca dispara nova
-// notificação para a Direção (seriam eles próprios a notificar-se);
-// quem decide é sempre gravado em validado_por/validado_em.
+// Decisão (Aprovar/Rejeitar) — só Hugo/Paulo. Quem decide é sempre
+// gravado em validado_por/validado_em.
+// ATUALIZADO (2026-08-20, pedido explícito de Hugo, mesmo espírito da
+// correção já feita para Horas Extra — "a notificação não fica por
+// responder, fica atualizada com o estado da análise"): antes, decidir
+// um Pedido Especial nunca notificava nem atualizava a notificação do
+// OUTRO membro da Direção (ficava comentado "seriam eles próprios a
+// notificar-se"), o que deixava a notificação original perpetuamente
+// pendente na Gaveta do outro, mesmo já decidido — só dava para limpar
+// à mão com "Confirmar Conclusão", sem nunca mostrar o resultado da
+// decisão. Agora atualiza (nunca cria nova) todas as notificações já
+// ligadas a este pedido — ver atualizarNotificacoesPedidoEspecialDecidido.
+async function atualizarNotificacoesPedidoEspecialDecidido(pedido) {
+  const dataTexto = pedido.dataInicio === pedido.dataFim ? formatDate(pedido.dataInicio) : `${formatDate(pedido.dataInicio)} a ${formatDate(pedido.dataFim)}`;
+  const acaoTexto = pedido.estado === 'aprovado' ? 'aprovou' : 'rejeitou';
+  const mensagem = `${activeUser.nomeCompleto || activeUser.username} ${acaoTexto} o Pedido Especial de ${pedido.colaboradorNome || 'um colaborador'} para ${dataTexto} (${escalaMotivoPedidoTexto(pedido)}).`;
+  const existentes = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_pedidos_especiais' && String(r.referenciaId) === String(pedido.id));
+  const resultados = await Promise.all(existentes.map(r => dbAtualizarRecado(r.id, { mensagem, tratado: true, tratadoEm: new Date().toISOString() })));
+  resultados.forEach(reg => { if (reg) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === reg.id ? reg : x); });
+}
 async function decidirPedidoEspecial(pedido, novoEstado) {
   if (!isMasterUser()) return null;
-  return editarPedidoEspecial(pedido, { estado: novoEstado, validadoPor: activeUser.nomeCompleto || activeUser.username, validadoEm: new Date().toISOString() }, false);
+  const updated = await editarPedidoEspecial(pedido, { estado: novoEstado, validadoPor: activeUser.nomeCompleto || activeUser.username, validadoEm: new Date().toISOString() }, false);
+  if (updated) await atualizarNotificacoesPedidoEspecialDecidido(updated);
+  return updated;
 }
 // Validação rápida (Aprovar/Rejeitar) direto da Gaveta — mesmo espírito
 // de marcarNotaEquipaVistaViaGaveta (item 7), mas para Pedidos Especiais:
@@ -28266,8 +28285,10 @@ async function decidirPedidoEspecialViaGaveta(r, novoEstado, onDone) {
   if (!pedido) { showDbErrorToast('Este pedido já não existe.'); return; }
   const updated = await decidirPedidoEspecial(pedido, novoEstado);
   if (!updated) { showDbErrorToast('Não foi possível decidir o pedido'); return; }
-  const updatedRecado = await dbMarcarRecadoTratado(r.id);
-  if (updatedRecado) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === r.id ? updatedRecado : x);
+  // Nota: decidirPedidoEspecial já atualizou (via
+  // atualizarNotificacoesPedidoEspecialDecidido) TODAS as notificações
+  // ligadas a este pedido, incluindo esta (r) — marcar tratado outra vez
+  // aqui seria redundante.
   showToast(novoEstado === 'aprovado' ? 'Pedido especial aprovado.' : 'Pedido especial rejeitado.', 'success');
   if (onDone) onDone();
 }
@@ -29295,12 +29316,32 @@ async function escalaRecalcularDadosSemana(semana, opts) {
   STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
   return { semana: updated, vagasLibertadas, vagasComCobertura };
 }
-function escalaTotalHorasLinha(linha) {
+// ATUALIZADO (2026-08-20, auditoria pedida por Hugo — "verifica se a
+// contagem de horas extra está consistente, quer tenha sido reivindicada
+// ou colocada manualmente"): esta função só somava dia.horas+HE manual
+// (dia.heHoras/heHorasCorrigido) — as Horas Extra REIVINDICADAS (bloco
+// "Horas Extra Disponíveis", tabela escalaHorasExtraReivindicacoes)
+// nunca entravam aqui, apesar de aparecerem como texto "+HE 17:00-21:00"
+// ao lado do dia na Vista em Tabela/"A Minha Semana" — o "Total" da
+// semana ficava sempre por baixo do valor real sempre que havia horas
+// reivindicadas. Passa a receber semanaId para poder somar também essas
+// reivindicações ativas (ver escalaReivindicacoesDoColaboradorNoDia) —
+// só reivindicações ativas contam (ativo:false = desistida/invalidada,
+// já não deve contar); pendente ou validado contam da mesma forma (a
+// hora já entra no horário assim que reivindicada — ver comentário em
+// escalaHorasExtraDaSemana — só "invalidado" a retira).
+function escalaTotalHorasLinha(linha, semanaId) {
   if (!linha || !linha.dias) return 0;
   return ESCALA_DIAS.reduce((soma, d) => {
     const dia = linha.dias[d.key];
     if (!dia) return soma;
-    return soma + (dia.tipo === 'normal' ? (dia.horas || 0) : 0) + escalaHeHorasEfetivo(dia);
+    let total = soma + (dia.tipo === 'normal' ? (dia.horas || 0) : 0) + escalaHeHorasEfetivo(dia);
+    if (semanaId) {
+      const colaboradorIdDoDia = dia.colaboradorId || linha.colaboradorId;
+      const reivindicadas = escalaReivindicacoesDoColaboradorNoDia(semanaId, d.key, colaboradorIdDoDia);
+      total += reivindicadas.reduce((s, r) => s + escalaCalcularHoras(r.intervaloInicio, r.intervaloFim), 0);
+    }
+    return total;
   }, 0);
 }
 // Pequeno editor modal de UMA célula da grelha (um dia de uma vaga, numa
@@ -30413,6 +30454,16 @@ function buildHorariosPage(container, goTo) {
   let mostrarGerirExcecoes = false;
   let configLimiteDraft = null, configLimiteSaving = false;
   let feriasCalendarioAno = new Date().getFullYear();
+  // Sub-separador ativo dentro de "Férias" — pedido explícito de Hugo,
+  // 2026-08-20: segrega Férias do Quadro / Disponibilidade /
+  // Indisponibilidades de Prestadores em calendários próprios, "Férias
+  // do Quadro" é sempre o predefinido ao entrar (ver buildVistaFerias).
+  let feriasSubVista = 'quadro';
+  // Contexto do calendário que abriu o Modal de Marcação ('quadro' ou
+  // 'indisponivel') — ver abrirModalMarcacaoFerias/abrirModalEdicaoFerias
+  // e buildFormPedidoFerias (filtra o dropdown Colaborador consoante
+  // este valor).
+  let feriasModalContexto = 'quadro';
   // (Detalhe do dia removido — 2026-08-08: passou a hover simples via
   // mostrarTooltipColaborador, mesmo mecanismo da Timeline de Horários,
   // em vez de um cartão fixo por baixo do calendário.)
@@ -30863,7 +30914,7 @@ function buildHorariosPage(container, goTo) {
           h('td', { class: 'cell-strong' }, escalaBadgePosicao(v.codigo, v.grupo)),
           h('td', {}, colaboradorLabel || h('span', { class: 'cell-muted' }, 'Posição por preencher')),
           ...cells,
-          h('td', { class: 'cell-strong' }, escalaFormatarHoras(escalaTotalHorasLinha(linha))),
+          h('td', { class: 'cell-strong' }, escalaFormatarHoras(escalaTotalHorasLinha(linha, semana.id))),
         ]));
       });
     });
@@ -32627,7 +32678,7 @@ function buildHorariosPage(container, goTo) {
             escalaBadgePosicao(codigo, escalaGrupoDoCodigo(codigo)),
             h('h3', { class: 'dash-card-title', style: 'margin:0;' }, 'A Minha Semana'),
           ]),
-          h('span', { class: 'cell-strong' }, `Total: ${escalaFormatarHoras(escalaTotalHorasLinha(linha))}`),
+          h('span', { class: 'cell-strong' }, `Total: ${escalaFormatarHoras(escalaTotalHorasLinha(linha, semana.id))}`),
         ]),
         ...rows,
       ]));
@@ -32739,12 +32790,19 @@ function buildHorariosPage(container, goTo) {
         const codigoMeu = Object.keys(semanaDoDia.dados || {}).find(cod => semanaDoDia.dados[cod].colaboradorId === colaboradorId);
         if (codigoMeu) dia = semanaDoDia.dados[codigoMeu].dias[diaKey] || null;
       }
+      // ATUALIZADO (2026-08-20, auditoria de consistência entre Horas
+      // Extra reivindicadas e colocadas manualmente): calculado já aqui
+      // para poder entrar tanto no texto do horário (badge "+XhHE") como
+      // na coluna/total "Horas Extra" mais abaixo — mesmo padrão já
+      // aplicado a escalaTotalHorasLinha e à Estatística "Horas Extra".
+      const heReivindicadoDia = (semanaVisivel && semanaDoDia) ? escalaReivindicacoesDoColaboradorNoDia(semanaDoDia.id, diaKey, colaboradorId).reduce((soma, r) => soma + escalaCalcularHoras(r.intervaloInicio, r.intervaloFim), 0) : 0;
       let texto, classeExtra = '';
       if (!semanaDoDia) { texto = '—'; }
       else if (!semanaVisivel) { texto = 'Por confirmar'; }
       else if (!dia) { texto = '—'; }
       else if (dia.tipo === 'normal' && dia.entrada && dia.saida) {
-        texto = `${dia.entrada} – ${dia.saida}${(dia.pausaInicio && dia.pausaFim) ? ` (pausa ${dia.pausaInicio}-${dia.pausaFim})` : ''}${escalaHeHorasEfetivo(dia) ? ` (+${escalaFormatarHoras(escalaHeHorasEfetivo(dia))} HE)` : ''}`;
+        const heTotalBadge = Math.round((escalaHeHorasEfetivo(dia) + heReivindicadoDia) * 100) / 100;
+        texto = `${dia.entrada} – ${dia.saida}${(dia.pausaInicio && dia.pausaFim) ? ` (pausa ${dia.pausaInicio}-${dia.pausaFim})` : ''}${heTotalBadge ? ` (+${escalaFormatarHoras(heTotalBadge)} HE)` : ''}`;
         const horasDia = dia.horas || escalaCalcularHorasComPausa(dia.entrada, dia.saida, dia.pausaInicio, dia.pausaFim);
         if (escalaFeriadoInfo(dataISO)) horasFeriado = Math.round((horasFeriado + horasDia) * 100) / 100;
         if (dObj.getDay() === 0) horasDomingo = Math.round((horasDomingo + horasDia) * 100) / 100;
@@ -32761,7 +32819,10 @@ function buildHorariosPage(container, goTo) {
       // em bruto, para nunca haver 2 números diferentes na app para o
       // mesmo dia.
       const bancoValorDia = (semanaVisivel && dia) ? escalaBancoHorasEfetivo(dia) : 0;
-      const heValorDia = (semanaVisivel && dia) ? escalaHeHorasEfetivo(dia) : 0;
+      // Reaproveita heReivindicadoDia já calculado acima (junto ao
+      // texto do horário) — mesmo padrão já aplicado a
+      // escalaTotalHorasLinha e à Estatística "Horas Extra".
+      const heValorDia = Math.round((((semanaVisivel && dia) ? escalaHeHorasEfetivo(dia) : 0) + heReivindicadoDia) * 100) / 100;
       if (bancoValorDia) bancoHorasTotalMes = Math.round((bancoHorasTotalMes + bancoValorDia) * 100) / 100;
       if (heValorDia) heHorasTotalMes = Math.round((heHorasTotalMes + heValorDia) * 100) / 100;
       const origemCelula = (semanaVisivel && dia) ? { corrigido: dia.bancoHorasCorrigido !== undefined || dia.heHorasCorrigido !== undefined, corrigidoPor: dia.correcaoBancoHePor } : null;
@@ -32976,10 +33037,18 @@ function buildHorariosPage(container, goTo) {
   // sempre disponível para aplicar o bloco manualmente a partir de
   // qualquer Início escolhido. Só o Diretor Técnico/Administrador pode
   // abrir este modal.
-  function abrirModalMarcacaoFerias(dataISO) {
+  function abrirModalMarcacaoFerias(dataISO, contexto) {
     if (!isMasterUser() || horariosEhMobile) return; // gestão avançada — nunca em mobile/tablet, mesmo para Hugo/Paulo
     feriasDraft = feriasNovoDraft();
     feriasEditandoId = null;
+    // ATUALIZADO (2026-08-20, pedido explícito de Hugo — "prestadores
+    // devem permanecer apenas em disponibilidades e em indisponibilidades,
+    // nunca nas férias/ausências do quadro"): guarda o contexto de onde o
+    // modal foi aberto (calendário 'quadro' ou 'indisponivel'), para o
+    // dropdown Colaborador (buildFormPedidoFerias) mostrar só quem faz
+    // sentido nesse calendário — nunca os dois grupos misturados no
+    // mesmo dropdown.
+    feriasModalContexto = contexto || 'quadro';
     if (dataISO) {
       const ehSegundaFeira = new Date(dataISO + 'T12:00:00').getDay() === 1;
       if (ehSegundaFeira) feriasAplicarBlocoSemanaUtil(feriasDraft.periodos[0], dataISO);
@@ -32999,6 +33068,10 @@ function buildHorariosPage(container, goTo) {
       return;
     }
     feriasEditandoId = pedido.id;
+    // Contexto derivado do próprio registo (mesmo espírito da correção
+    // acima) — nunca deixa uma edição trocar de grupo Quadro↔Prestador
+    // por engano através do dropdown Colaborador.
+    feriasModalContexto = pedido.tipo === 'indisponivel' ? 'indisponivel' : 'quadro';
     feriasDraft = {
       utilizadorId: pedido.utilizadorId, tipo: pedido.tipo, observacoes: pedido.observacoes || '',
       descontarDiasTransitados: !!pedido.descontarDiasTransitados,
@@ -33013,15 +33086,32 @@ function buildHorariosPage(container, goTo) {
     rerender();
   }
   function buildFormPedidoFerias() {
+    // Salvaguarda (2026-08-20, mesmo pedido): no contexto 'indisponivel'
+    // não há opção "Eu" no dropdown (Hugo/Paulo nunca são Prestadores) —
+    // sem colaborador ainda escolhido, pré-seleciona o 1º Prestador
+    // elegível, para o dropdown nunca mostrar visualmente uma pessoa que
+    // na prática ainda não ficou gravada em feriasDraft.utilizadorId.
+    if (feriasModalContexto === 'indisponivel' && !feriasDraft.utilizadorId) {
+      const primeiroPrestador = usuariosAtivosParaVaga().find(u => escalaUtilizadorEhPrestador(u));
+      if (primeiroPrestador) feriasDraft.utilizadorId = primeiroPrestador.id;
+    }
     const alvoAtual = feriasDraft.utilizadorId ? (STATE.usuarios || []).find(u => String(u.id) === String(feriasDraft.utilizadorId)) : activeUser;
     const prestador = escalaUtilizadorEhPrestador(alvoAtual);
     const opcoesTipo = prestador ? ESCALA_TIPOS_AUSENCIA_PRESTADOR : ESCALA_TIPOS_AUSENCIA_QUADRO;
     if (!opcoesTipo.find(t => t.key === feriasDraft.tipo)) feriasDraft.tipo = opcoesTipo[0].key;
     if (!feriasDraft.periodos || !feriasDraft.periodos.length) feriasDraft.periodos = [{ dataInicio: '', dataFim: '' }];
     const colaboradorSelect = h('select', { class: 'select' }, [
-      h('option', { value: '', selected: !feriasDraft.utilizadorId ? 'selected' : undefined }, activeUser ? `Eu — ${activeUser.nomeCompleto || activeUser.username}` : '—'),
-      ...usuariosAtivosParaVaga().filter(u => !activeUser || u.id !== activeUser.id).map(u => h('option', { value: u.id, selected: String(feriasDraft.utilizadorId) === String(u.id) ? 'selected' : undefined }, `${u.nomeCompleto || u.username}${escalaUtilizadorEhPrestador(u) ? ' (Prestador de Serviço)' : ''}`)),
-    ]);
+      // "Eu" só faz sentido no contexto 'quadro' (Hugo/Paulo, únicos que
+      // podem abrir este modal, nunca são Prestadores) — pedido explícito
+      // 2026-08-20: nunca misturar Quadro e Prestadores no mesmo dropdown.
+      feriasModalContexto !== 'indisponivel'
+        ? h('option', { value: '', selected: !feriasDraft.utilizadorId ? 'selected' : undefined }, activeUser ? `Eu — ${activeUser.nomeCompleto || activeUser.username}` : '—')
+        : null,
+      ...usuariosAtivosParaVaga()
+        .filter(u => !activeUser || u.id !== activeUser.id)
+        .filter(u => feriasModalContexto === 'indisponivel' ? escalaUtilizadorEhPrestador(u) : !escalaUtilizadorEhPrestador(u))
+        .map(u => h('option', { value: u.id, selected: String(feriasDraft.utilizadorId) === String(u.id) ? 'selected' : undefined }, `${u.nomeCompleto || u.username}${escalaUtilizadorEhPrestador(u) ? ' (Prestador de Serviço)' : ''}`)),
+    ].filter(Boolean));
     colaboradorSelect.value = feriasDraft.utilizadorId || '';
     colaboradorSelect.addEventListener('change', () => { feriasDraft.utilizadorId = colaboradorSelect.value; feriasDraft.tipo = ''; feriasConflitosPendentes = null; rerender(); });
     const tipoSelect = h('select', { class: 'select' }, opcoesTipo.map(t => h('option', { value: t.key, selected: feriasDraft.tipo === t.key ? 'selected' : undefined }, t.label)));
@@ -33474,6 +33564,38 @@ function buildHorariosPage(container, goTo) {
           // recuperação automática de feriado (calculada à parte, por
           // semana, mais abaixo), nunca contando também como Hora Extra
           // (ver split heHoras/heHorasBanco em abrirEditorCelulaEscala).
+          // Horas Extra REGISTADAS MANUALMENTE (pedido explícito de Hugo,
+          // 2026-08-20 — auditoria: "verifica se a contagem de horas
+          // extra está consistente, quer tenha sido reivindicada ou
+          // colocada manualmente"): dia.heHoras (bloco "Horas Extra" do
+          // editor de turno, NÃO marcado como Banco) nunca entrava em
+          // s.horasExtra em lado nenhum — só aparecia como badge "+XhHE"
+          // na Timeline/Vista em Tabela/"A Minha Semana", mas ficava
+          // ausente da Estatística "Horas Extra" e do Saldo. Corrigido:
+          // soma-se diretamente aqui (usa escalaHeHorasEfetivo para
+          // respeitar heHorasCorrigido, mesmo padrão de Banco de Horas
+          // Usado acima), tal como heHorasBanco já somava a Banco Ganho.
+          if (escalaHeHorasEfetivo(dia) > 0) {
+            s.horasExtra += escalaHeHorasEfetivo(dia);
+            escalaEmpurrarDetalheEstatistica(s, 'horasExtra', dataISO, `+${escalaFormatarHorasDecimal(escalaHeHorasEfetivo(dia))} · turno ${rotuloTurno} (marcado manualmente como Horas Extra)`);
+          }
+          // Horas Extra REIVINDICADAS (bloco "Horas Extra Disponíveis" —
+          // mesma auditoria 2026-08-20): reivindicações ativas nunca
+          // entravam em nenhuma Estatística/Saldo, apesar de aparecerem
+          // como texto "+HE 17:00-21:00" na Vista em Tabela/"A Minha
+          // Semana" e de já contarem no "Total" pessoal da semana (ver
+          // escalaTotalHorasLinha, corrigido no mesmo dia). Somam-se
+          // aqui como Hora Extra — nunca como Banco (reivindicar não tem
+          // opção de "marcar como Banco", ao contrário dos blocos
+          // manuais do editor).
+          const reivindicadasDoDia = escalaReivindicacoesDoColaboradorNoDia(semana.id, d.key, uid);
+          if (reivindicadasDoDia.length) {
+            const horasReivindicadas = reivindicadasDoDia.reduce((soma, r) => soma + escalaCalcularHoras(r.intervaloInicio, r.intervaloFim), 0);
+            if (horasReivindicadas > 0) {
+              s.horasExtra += horasReivindicadas;
+              escalaEmpurrarDetalheEstatistica(s, 'horasExtra', dataISO, `+${escalaFormatarHorasDecimal(horasReivindicadas)} · Horas Extra reivindicadas (${reivindicadasDoDia.map(r => `${r.intervaloInicio}-${r.intervaloFim}`).join(', ')})`);
+            }
+          }
           if (dia.heHorasBanco > 0) {
             s.bancoHorasGanho += dia.heHorasBanco;
             escalaEmpurrarDetalheEstatistica(s, 'bancoHorasGanho', dataISO, `+${escalaFormatarHorasDecimal(dia.heHorasBanco)} · turno ${rotuloTurno} (marcado manualmente como Banco de Horas)`);
@@ -34246,11 +34368,101 @@ function buildHorariosPage(container, goTo) {
   function escalaResumoEntradasDia(entradas) {
     return entradas.map(f => `${nomeCurtoDesambiguado(f.utilizadorNome)} (${ESCALA_MOTIVO_CURTO[f.tipo] || f.tipo})`).join(', ');
   }
-  function buildCalendarioEquipaAnual() {
+  // ---- Calendário Anual de Disponibilidade (pedido explícito de Hugo,
+  // 2026-08-20 — "ter outro calendário para disponibilidades... com
+  // calendário em vez da forma que está agora"): mesmo layout visual do
+  // Calendário de Férias/Indisponibilidades (buildCalendarioEquipaAnual),
+  // mas sobre escala_disponibilidades (registo de 1 dia, `data`, nunca
+  // um intervalo dataInicio/dataFim) — puramente informativo, nunca
+  // atribui turno sozinho, exatamente como já era antes; o formulário/
+  // lista com editar/eliminar por baixo (buildFormDisponibilidade/
+  // buildCartaoDisponibilidade) mantém-se 100% igual, só passou a viver
+  // como sub-separador de Férias em vez de secção de página inteira à
+  // parte.
+  function buildCalendarioDisponibilidadeAnual() {
     const anoInput = h('input', { class: 'input', type: 'number', style: 'max-width:110px;' });
     anoInput.value = String(feriasCalendarioAno);
     anoInput.addEventListener('change', () => { const v = parseInt(anoInput.value, 10); if (!isNaN(v)) { feriasCalendarioAno = v; rerender(); } });
-    const todas = STATE.escalaFerias || [];
+    const todas = escalaDisponibilidadesAtivas();
+    const cabecalho = h('div', { class: 'escala-cal-cabecalho' }, ESCALA_CAL_CABECALHO_DIAS.map(d => h('span', {}, d)));
+    const meses = ESCALA_NOMES_MESES.map((nomeMes, mIdx) => {
+      const primeiroDia = new Date(feriasCalendarioAno, mIdx, 1);
+      const diasNoMes = new Date(feriasCalendarioAno, mIdx + 1, 0).getDate();
+      const offset = (primeiroDia.getDay() + 6) % 7;
+      const celulas = [];
+      for (let i = 0; i < offset; i++) celulas.push(h('span', { class: 'escala-cal-dia escala-cal-dia-vazio' }, ''));
+      for (let dia = 1; dia <= diasNoMes; dia++) {
+        const dataISO = `${feriasCalendarioAno}-${String(mIdx + 1).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
+        const dow = new Date(dataISO + 'T12:00:00').getDay();
+        const fimDeSemana = dow === 0 || dow === 6;
+        const entradas = todas.filter(d => d.data === dataISO);
+        const cores = [...new Set(entradas.map(d => d.colaboradorId))].map(id => escalaCorColaborador(id));
+        const classes = ['escala-cal-dia'];
+        if (entradas.length) classes.push('escala-cal-dia-ocupado');
+        if (fimDeSemana && !entradas.length) classes.push('escala-cal-dia-fds');
+        if (activeUser) { classes.push('escala-cal-dia-clicavel'); }
+        const celula = h('span', { class: classes.join(' '), style: cores.length ? calendarioCellStyle(cores) + 'color:#fff;' : undefined }, String(dia));
+        if (entradas.length) {
+          const textoHover = entradas.map(d => `${nomeCurtoDesambiguado(d.colaboradorNome)}${d.horaInicio && d.horaFim ? ` (${d.horaInicio}-${d.horaFim})` : ' (dia inteiro)'}`).join(', ');
+          celula.addEventListener('mouseenter', (e) => { mostrarTooltipColaborador(textoHover); moverTooltipColaborador(e); });
+          celula.addEventListener('mousemove', moverTooltipColaborador);
+          celula.addEventListener('mouseleave', esconderTooltipColaborador);
+        }
+        // Clicar em qualquer dia (livre ou já com disponibilidade
+        // registada) abre logo o formulário pré-preenchido com essa
+        // data — mesmo espírito de "clica num dia livre" do Calendário
+        // de Férias, adaptado a esta secção.
+        if (activeUser) celula.addEventListener('click', () => requireAuth(() => abrirSecaoDisponibilidadeInline(dataISO)));
+        celulas.push(celula);
+      }
+      return h('div', { class: 'card card-pad' }, [
+        h('p', { class: 'cell-strong', style: 'margin:0 0 8px;' }, nomeMes),
+        cabecalho.cloneNode(true),
+        h('div', { class: 'escala-cal-grid' }, celulas),
+      ]);
+    });
+    const idsComDisponibilidade = [...new Set(todas.filter(d => d.data.slice(0, 4) === String(feriasCalendarioAno)).map(d => d.colaboradorId))];
+    const legenda = idsComDisponibilidade.length ? h('div', { style: 'display:flex;gap:12px;flex-wrap:wrap;margin:10px 0 16px;' },
+      idsComDisponibilidade.map(id => {
+        const nome = (todas.find(d => d.colaboradorId === id) || {}).colaboradorNome || '—';
+        return h('span', { style: 'display:flex;align-items:center;gap:6px;font-size:12px;color:var(--pharm-700);' }, [
+          h('span', { style: `width:10px;height:10px;border-radius:50%;background:${escalaCorColaborador(id)};display:inline-block;` }),
+          nome,
+        ]);
+      })) : null;
+    return h('div', {}, [
+      h('div', { style: 'display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;' }, [
+        h('label', { style: 'font-weight:700;font-size:13px;color:var(--pharm-700);' }, 'Ano'), anoInput,
+        h('span', { style: 'display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--pharm-400);' }, [h('span', { style: 'width:9px;height:9px;border-radius:2px;background:var(--pharm-100);display:inline-block;' }), 'Fim de Semana']),
+      ]),
+      legenda,
+      h('div', { class: 'calendario-anual-grid' }, meses),
+    ]);
+  }
+  // Abre o formulário de Disponibilidade JÁ dentro do sub-separador
+  // (nunca a secção de página inteira antiga, ver abrirSecaoDisponibilidade
+  // — mantida só por se ainda houver alguma chamada antiga por
+  // atualizar) — pré-preenche a Data com o dia clicado no calendário.
+  function abrirSecaoDisponibilidadeInline(dataPreset) {
+    disponibilidadeColaboradorFiltro = 'todos'; disponibilidadeMostrarHistorico = false; disponibilidadeFormError = '';
+    disponibilidadeDraft = disponibilidadeNovoDraft(dataPreset); disponibilidadeEditandoId = null; disponibilidadeMostrarForm = true;
+    rerender();
+  }
+  function buildCalendarioEquipaAnual(filtroTipo) {
+    // ATUALIZADO (2026-08-20, pedido explícito de Hugo — segregar
+    // calendários: "não faz sentido indisponibilidades de diogo estarem
+    // misturadas com as férias dos colaboradores"): filtroTipo controla
+    // que registos de escala_ferias entram neste calendário —
+    // 'quadro' (omitido/undefined): todos EXCETO tipo='indisponivel'
+    // (Férias/Baixa/Falta/etc. do Quadro, nunca indisponibilidade de
+    // Prestador); 'indisponivel': só tipo='indisponivel' (Prestadores).
+    // Mesma função/mesmo modal de marcação para os dois — só a fatia de
+    // dados exibida muda, funcionalidade (marcar/editar/eliminar)
+    // continua exatamente igual à de antes.
+    const anoInput = h('input', { class: 'input', type: 'number', style: 'max-width:110px;' });
+    anoInput.value = String(feriasCalendarioAno);
+    anoInput.addEventListener('change', () => { const v = parseInt(anoInput.value, 10); if (!isNaN(v)) { feriasCalendarioAno = v; rerender(); } });
+    const todas = (STATE.escalaFerias || []).filter(f => filtroTipo === 'indisponivel' ? f.tipo === 'indisponivel' : f.tipo !== 'indisponivel');
     // Marcação completa (Férias Base/Baixa/Licenças de qualquer
     // colaborador) é gestão avançada — só Master em desktop. Em mobile,
     // clicar num dia livre abre antes o autosserviço "Pedido Especial"
@@ -34318,7 +34530,7 @@ function buildHorariosPage(container, goTo) {
           celula.addEventListener('mousemove', moverTooltipColaborador);
           celula.addEventListener('mouseleave', esconderTooltipColaborador);
         }
-        if (podeClicarParaMarcar) celula.addEventListener('click', () => abrirModalMarcacaoFerias(dataISO));
+        if (podeClicarParaMarcar) celula.addEventListener('click', () => abrirModalMarcacaoFerias(dataISO, filtroTipo === 'indisponivel' ? 'indisponivel' : 'quadro'));
         else if (podeClicarParaPedido) celula.addEventListener('click', () => requireAuth(() => abrirSecaoPedidosEspeciais(dataISO)));
         celulas.push(celula);
       }
@@ -34741,14 +34953,14 @@ function buildHorariosPage(container, goTo) {
     return overlay;
   }
   function buildVistaFerias() {
-    // Secções de página inteira (Pedidos Especiais/Disponibilidade) —
-    // pedido explícito 2026-08-14: substituem TODO o conteúdo de Férias
-    // enquanto ativas, em vez de abrir como modal sobreposto; "← Voltar a
-    // Férias" repõe a vista normal.
+    // Secções de página inteira (só Pedidos Especiais continua neste
+    // padrão — Disponibilidade deixou de ser secção de página inteira,
+    // passou a sub-separador aqui dentro, ver feriasSubVista) — pedido
+    // explícito 2026-08-14: substituem TODO o conteúdo de Férias
+    // enquanto ativas, em vez de abrir como modal sobreposto; "← Voltar
+    // a Férias" repõe a vista normal.
     if (mostrarSecaoPedidosEspeciais) return buildSecaoPedidosEspeciais();
-    if (mostrarSecaoDisponibilidade) return buildSecaoDisponibilidade();
     const wrap = h('div', {});
-    const todas = escalaFeriasOrdenadas();
     const master = isMasterUser();
     // Em mobile/tablet, mesmo o Diretor Técnico/Administrador fica em
     // modo consulta nesta página — marcar/editar/aprovar férias de
@@ -34764,16 +34976,79 @@ function buildHorariosPage(container, goTo) {
         h('h3', { class: 'page-eyebrow', style: 'margin:0;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, 'Calendário da Equipa'),
         h('p', { class: 'field-helper-text', style: 'margin:2px 0 0;' }, masterGestao ? 'Clica num dia livre para marcar férias/ausência.' : 'Consulta — a marcação é feita pelo Diretor Técnico/Administrador.'),
       ]),
-      h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;' }, [buildBotaoPedidosEspeciais(), buildBotaoDisponibilidade(), (podeConfigurarFerias() && !horariosEhMobile) ? buildBotaoConfiguracoes() : null].filter(Boolean)),
+      h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;' }, [buildBotaoPedidosEspeciais(), (podeConfigurarFerias() && !horariosEhMobile) ? buildBotaoConfiguracoes() : null].filter(Boolean)),
     ]));
 
+    // Sub-separadores (pedido explícito de Hugo, 2026-08-20 — "não faz
+    // sentido indisponibilidades de diogo estarem misturadas com as
+    // férias dos colaboradores"): 3 calendários próprios, cada um com o
+    // seu botão, todos dentro deste mesmo separador "Férias" de sempre.
+    // "Férias do Quadro" é sempre o predefinido ao abrir (pedido
+    // explícito). Disponibilidade/Indisponibilidades mantêm exatamente
+    // as mesmas funcionalidades de antes (marcar/editar/eliminar,
+    // avisos no Gerador) — só passam a ter o seu próprio calendário
+    // visual em vez de ficarem misturadas ou em formato de lista.
+    const subTabs = [
+      { key: 'quadro', label: '🌴 Férias do Quadro' },
+      { key: 'disponibilidade', label: '🖐️ Disponibilidade' },
+      { key: 'indisponibilidade', label: '📵 Indisponibilidades — Prestadores' },
+    ];
+    wrap.appendChild(h('div', { class: 'tabs-row', style: 'margin-bottom:16px;flex-wrap:wrap;' }, subTabs.map(t =>
+      h('button', { class: 'tab-btn tone-purple' + (feriasSubVista === t.key ? ' active' : ''), onclick: () => { feriasSubVista = t.key; rerender(); } }, t.label)
+    )));
+
+    if (feriasSubVista === 'disponibilidade') {
+      wrap.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, 'Disponibilidade extra para um dia em que normalmente não estaria escalado (ex: um fim de semana), com hora opcional — informativo, nunca atribui turno sozinho; quem faz o horário decide sempre.'));
+      wrap.appendChild(buildCalendarioDisponibilidadeAnual());
+      const novoBtn = !disponibilidadeMostrarForm ? h('button', { class: 'btn btn-secondary', style: 'margin:14px 0;' }, [Icon('plus', { size: 14 }), ' Nova Disponibilidade']) : null;
+      if (novoBtn) novoBtn.addEventListener('click', () => requireAuth(disponibilidadeAbrirNovo));
+      wrap.appendChild(disponibilidadeMostrarForm ? buildFormDisponibilidade() : novoBtn);
+      const colaboradoresOpts = (STATE.usuarios || []).filter(u => u.incluirHorarios && usuarioVisivelParaAtual(u));
+      const filtroSel = h('select', { class: 'select', style: 'max-width:220px;' }, [
+        h('option', { value: 'todos', selected: disponibilidadeColaboradorFiltro === 'todos' ? 'selected' : undefined }, 'Todos os Colaboradores'),
+        ...colaboradoresOpts.map(u => h('option', { value: u.id, selected: String(disponibilidadeColaboradorFiltro) === String(u.id) ? 'selected' : undefined }, u.nomeCompleto || u.username)),
+      ]);
+      filtroSel.value = String(disponibilidadeColaboradorFiltro);
+      filtroSel.addEventListener('change', () => { disponibilidadeColaboradorFiltro = filtroSel.value; rerender(); });
+      wrap.appendChild(h('div', { style: 'display:flex;align-items:center;gap:8px;margin:14px 0;flex-wrap:wrap;' }, [
+        h('label', { style: 'font-size:12.5px;font-weight:700;color:var(--pharm-600);' }, 'Ver:'), filtroSel,
+      ]));
+      let futuras = escalaDisponibilidadesFuturas();
+      let passadas = escalaDisponibilidadesPassadas();
+      if (disponibilidadeColaboradorFiltro !== 'todos') {
+        futuras = futuras.filter(d => String(d.colaboradorId) === String(disponibilidadeColaboradorFiltro));
+        passadas = passadas.filter(d => String(d.colaboradorId) === String(disponibilidadeColaboradorFiltro));
+      }
+      wrap.appendChild(h('h3', { class: 'page-eyebrow', style: 'margin:16px 0 8px;color:var(--pharm-800);font-size:13px;text-transform:none;letter-spacing:0;' }, 'Próximas'));
+      (futuras.length ? futuras.map(buildCartaoDisponibilidade) : [EmptyState('Sem disponibilidades futuras registadas.')]).forEach(el => wrap.appendChild(el));
+      if (passadas.length) {
+        const historicoToggleBtn = h('button', { class: 'btn btn-secondary', style: 'margin:18px 0 10px;padding:6px 12px;font-size:12px;' }, disponibilidadeMostrarHistorico ? 'Esconder Histórico' : `Ver Histórico (${passadas.length})`);
+        historicoToggleBtn.addEventListener('click', () => { disponibilidadeMostrarHistorico = !disponibilidadeMostrarHistorico; rerender(); });
+        wrap.appendChild(historicoToggleBtn);
+        if (disponibilidadeMostrarHistorico) passadas.map(buildCartaoDisponibilidade).forEach(el => wrap.appendChild(el));
+      }
+      return wrap;
+    }
+
+    if (feriasSubVista === 'indisponibilidade') {
+      wrap.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, 'Indisponibilidades registadas por Prestadores de Serviço — nunca misturadas com Férias/Ausências do Quadro. Bloqueia turnos de facto, mesmo padrão de sempre.'));
+      wrap.appendChild(buildCalendarioEquipaAnual('indisponivel'));
+      const indisponibilidades = escalaFeriasOrdenadas().filter(p => p.tipo === 'indisponivel');
+      wrap.appendChild(h('h3', { class: 'page-eyebrow', style: 'margin:22px 0 10px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, 'Indisponibilidades — Prestadores de Serviço'));
+      wrap.appendChild(indisponibilidades.length ? buildListaFerias(indisponibilidades, { comColaborador: true, comAcoesGestao: masterGestao }) : EmptyState('Sem indisponibilidades registadas.'));
+      if (masterGestao && mostrarModalMarcacaoFerias) wrap.appendChild(buildModalMarcacaoFerias());
+      return wrap;
+    }
+
+    // feriasSubVista === 'quadro' (predefinido) — vista original,
+    // filtrada para nunca incluir indisponibilidades de Prestadores.
     if (masterGestao) {
       const aviso = buildAvisoSobreposicoes();
       if (aviso) wrap.appendChild(aviso);
     }
 
     // 1) Calendário Anual/Mensal Geral da Equipa — vista principal.
-    wrap.appendChild(buildCalendarioEquipaAnual());
+    wrap.appendChild(buildCalendarioEquipaAnual('quadro'));
 
     // Saldos Anuais — gestão da Direção, nunca em mobile (mesmo para
     // Hugo/Paulo): a vista mobile de Férias fica estritamente por
@@ -34786,24 +35061,12 @@ function buildHorariosPage(container, goTo) {
     // 2) Tabela de Resumo de Férias/Ausências por Colaborador — ordenada
     // cronologicamente (escalaFeriasOrdenadas já devolve a mais recente
     // primeiro), logo abaixo do calendário. Ações de eliminar só Master
-    // em desktop — em mobile, mesmo o Master só consulta.
+    // em desktop — em mobile, mesmo o Master só consulta. Nunca inclui
+    // indisponibilidades de Prestador (essas vivem no sub-separador
+    // próprio, ver feriasSubVista==='indisponibilidade').
+    const todasQuadro = escalaFeriasOrdenadas().filter(p => p.tipo !== 'indisponivel');
     wrap.appendChild(h('h3', { class: 'page-eyebrow', style: 'margin:22px 0 10px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, 'Resumo de Férias / Ausências'));
-    wrap.appendChild(buildListaFerias(todas, { comColaborador: true, comAcoesGestao: masterGestao }));
-
-    // Indisponibilidades dos Prestadores — movida para DEBAIXO do Resumo
-    // de Férias/Ausências (pedido explícito 2026-08-14, antes vinha antes
-    // do Resumo); continua gestão da Direção, nunca mobile. Já registada
-    // no Calendário da Equipa acima (tipo='indisponivel' em
-    // escala_ferias) — esta lista é só a mesma informação num formato
-    // fácil de consultar/gerir de uma vez, sem ter de vasculhar o
-    // calendário mês a mês.
-    if (masterGestao) {
-      const indisponibilidades = todas.filter(p => p.tipo === 'indisponivel');
-      if (indisponibilidades.length) {
-        wrap.appendChild(h('h3', { class: 'page-eyebrow', style: 'margin:22px 0 10px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, 'Indisponibilidades — Prestadores de Serviço'));
-        wrap.appendChild(buildListaFerias(indisponibilidades, { comColaborador: true, comAcoesGestao: true }));
-      }
-    }
+    wrap.appendChild(buildListaFerias(todasQuadro, { comColaborador: true, comAcoesGestao: masterGestao }));
 
     // 3) Tabela Final de Rotações — apenas consulta passiva (a gestão da
     // lista base vive só no Modal de Configurações, desktop only).
@@ -39557,13 +39820,20 @@ function buildHorarioSemanaGridPDFDoc(semana) {
   // Minha Semana"/escalaTotalHorasLinha — soma só dias com tipoEfetivo
   // 'normal' e entrada+saída preenchidas (líquido de pausa) + Horas Extra
   // de cada dia; férias/folgas/baixas não entram na soma.
+  // ATUALIZADO (2026-08-20, pedido explícito de Hugo: "o PDF deve
+  // registar o horário total, tudo, as horas que todos os colaboradores
+  // de facto fazem"): passa a somar também as Horas Extra REIVINDICADAS
+  // (bloco "Horas Extra Disponíveis"), que até agora só entravam nas
+  // vistas vivas da app (Estatísticas/Vista em Tabela/Vista Mensal —
+  // ver correção da mesma auditoria) e nunca no PDF impresso.
   const totalHorasDias = (diasPorDataDoDia) => ESCALA_DIAS.reduce((soma, d) => {
     const entry = diasPorDataDoDia(d);
     if (!entry) return soma;
     const { dia, colaboradorId } = entry;
+    const reivindicadas = escalaReivindicacoesDoColaboradorNoDia(semana.id, d.key, colaboradorId).reduce((s, r) => s + escalaCalcularHoras(r.intervaloInicio, r.intervaloFim), 0);
     const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, colaboradorId);
-    if (tipoEfetivo !== 'normal' || !dia.entrada || !dia.saida) return soma;
-    return soma + escalaCalcularHorasComPausa(dia.entrada, dia.saida, dia.pausaInicio, dia.pausaFim) + escalaHeHorasEfetivo(dia);
+    if (tipoEfetivo !== 'normal' || !dia.entrada || !dia.saida) return soma + reivindicadas;
+    return soma + escalaCalcularHorasComPausa(dia.entrada, dia.saida, dia.pausaInicio, dia.pausaFim) + escalaHeHorasEfetivo(dia) + reivindicadas;
   }, 0);
   ESCALA_GRUPOS.forEach(g => {
     const vagas = escalaVagasGrupoOrdenadas(g.key);
@@ -39597,13 +39867,16 @@ function buildHorarioSemanaGridPDFDoc(semana) {
           if (!entry) return h('td', {}, '—');
           const { dia, codigo, colaboradorId } = entry;
           const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, colaboradorId);
+          const heReivindicadoBadge = escalaReivindicacoesDoColaboradorNoDia(semana.id, d.key, colaboradorId).reduce((s, r) => s + escalaCalcularHoras(r.intervaloInicio, r.intervaloFim), 0);
           let conteudo;
           if (tipoEfetivo === 'normal' && dia.entrada && dia.saida) {
             conteudo = `${dia.entrada}–${dia.saida}`;
             if (dia.pausaInicio && dia.pausaFim) conteudo += ` (p.${dia.pausaInicio}-${dia.pausaFim})`;
-            if (escalaHeHorasEfetivo(dia)) conteudo += ` +${escalaFormatarHoras(escalaHeHorasEfetivo(dia))}HE`;
+            const heTotal = Math.round((escalaHeHorasEfetivo(dia) + heReivindicadoBadge) * 100) / 100;
+            if (heTotal) conteudo += ` +${escalaFormatarHoras(heTotal)}HE`;
           } else {
             conteudo = ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—';
+            if (heReivindicadoBadge) conteudo += ` +${escalaFormatarHoras(heReivindicadoBadge)}HE`;
           }
           conteudo += ` (${codigo})`;
           return h('td', {}, conteudo);
@@ -39624,13 +39897,16 @@ function buildHorarioSemanaGridPDFDoc(semana) {
         const dia = linha.dias[d.key] || { tipo: 'folga' };
         const colaboradorIdDoDia = (dia && dia.colaboradorId) || linha.colaboradorId;
         const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, colaboradorIdDoDia);
+        const heReivindicadoBadge = escalaReivindicacoesDoColaboradorNoDia(semana.id, d.key, colaboradorIdDoDia).reduce((s, r) => s + escalaCalcularHoras(r.intervaloInicio, r.intervaloFim), 0);
         let conteudo;
         if (tipoEfetivo === 'normal' && dia.entrada && dia.saida) {
           conteudo = `${dia.entrada}–${dia.saida}`;
           if (dia.pausaInicio && dia.pausaFim) conteudo += ` (p.${dia.pausaInicio}-${dia.pausaFim})`;
-          if (escalaHeHorasEfetivo(dia)) conteudo += ` +${escalaFormatarHoras(escalaHeHorasEfetivo(dia))}HE`;
+          const heTotal = Math.round((escalaHeHorasEfetivo(dia) + heReivindicadoBadge) * 100) / 100;
+          if (heTotal) conteudo += ` +${escalaFormatarHoras(heTotal)}HE`;
         } else {
           conteudo = ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—';
+          if (heReivindicadoBadge) conteudo += ` +${escalaFormatarHoras(heReivindicadoBadge)}HE`;
         }
         return h('td', {}, conteudo);
       });
