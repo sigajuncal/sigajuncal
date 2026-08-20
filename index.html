@@ -28077,14 +28077,26 @@ function escalaBlocoHorasExtraDiaTexto(bloco) {
   const nomeDia = diaInfo ? diaInfo.label : bloco.diaKey;
   return dataISO ? `${nomeDia}, ${formatDate(dataISO)}` : nomeDia;
 }
-async function notificarDirecaoHorasExtra(reivindicacao, bloco, utilizador, acaoTexto) {
+// ATUALIZADO (2026-08-20, pedido explícito de Hugo: "se paulo
+// reivindicou eu não tenho de confirmar nada, apenas informado... ele
+// não precisa de validação porque a reivindicação partiu da direção"):
+// ganhou o parâmetro `jaTratada` — quando true (só usado pelo caso
+// "em nome de colaborador", já auto-validado à nascença, ver
+// guardarReivindicacaoParaColaborador), a notificação nasce
+// tratado:true. Antes nascia sempre tratado:false como qualquer outra
+// "Tarefa/Pedido de Ação" — aparecia em "Pendentes" e pedia "Confirmar
+// Conclusão" mesmo não havendo NADA para o outro membro decidir (a
+// decisão já foi tomada por quem reivindicou). Continua visível na
+// conversa/histórico (fica logo em "Concluídas"), só deixa de inflar a
+// contagem de Pendentes e de pedir uma ação que não existe.
+async function notificarDirecaoHorasExtra(reivindicacao, bloco, utilizador, acaoTexto, jaTratada) {
   const destinatarios = escalaUsuariosDirecao().filter(u => String(u.id) !== String(utilizador.id));
   if (!destinatarios.length) return;
   const mensagem = `${utilizador.nomeCompleto || utilizador.username} ${acaoTexto} ${reivindicacao.intervaloInicio}-${reivindicacao.intervaloFim} das Horas Extra de ${escalaBlocoHorasExtraDiaTexto(bloco)} (${bloco.horaInicio}-${bloco.horaFim}).`;
   // BUG CORRIGIDO (2026-08-18): ver nota em notificarDirecaoPedidoEspecial
   // — mesmo problema, dbInsert('gavetaRecados', ...) falhava sempre.
   const criados = await Promise.all(destinatarios.map(u => dbInsertRecado({
-    remetenteId: utilizador.id, destinatarioId: u.id, mensagem, tratado: false, tipo: 'tarefa',
+    remetenteId: utilizador.id, destinatarioId: u.id, mensagem, tratado: !!jaTratada, tipo: 'tarefa',
     referenciaTabela: 'escala_horas_extra_reivindicacoes', referenciaId: reivindicacao.id,
   })));
   const novos = criados.filter(Boolean);
@@ -31818,7 +31830,7 @@ function buildHorariosPage(container, goTo) {
       // (desistir ou invalidada), as horas voltam a ficar disponíveis
       // automaticamente (a lista já filtra só reivindicações ativas —
       // ver escalaReivindicacoesDoBloco).
-      notificarDirecaoHorasExtra(created, bloco, activeUser, `reivindicou em nome de ${colaborador.nomeCompleto || colaborador.username}`);
+      notificarDirecaoHorasExtra(created, bloco, activeUser, `reivindicou em nome de ${colaborador.nomeCompleto || colaborador.username}`, true);
     } else {
       reivindicarParaColaboradorError = `Não foi possível guardar. ${escalaMensagemErroAmigavel(lastDbError)}`;
     }
