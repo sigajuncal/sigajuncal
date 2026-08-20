@@ -17199,16 +17199,24 @@ function abrirModalDefinirMeta(anoDefault, mesDefault, onGuardado) {
 // ter os dois num só número; ESPAÇO nunca é lido de volta como parte do
 // número (só dígitos e ',' contam), elimina a mesma classe de bug acima
 // por construção, não só neste caso específico.
+// BUG CORRIGIDO 2026-08-20 (mesmo dia, revisão seguinte — "ponto não é
+// registado... ao tentar guardar deu erro"): a revisão anterior tinha
+// deixado de aceitar '.' como separador decimal (só ',' contava), mas o
+// pedido era o oposto — '.' deve ser entendido exatamente como ',' (o
+// utilizador escreve os dois indiferentemente para separar os
+// cêntimos). Como agora os milhares usam ESPAÇO (nunca mais ponto),
+// voltar a aceitar '.' como decimal já não reintroduz o bug antigo — só
+// '.' era ambíguo enquanto os milhares também usavam '.'.
 function financeiroMascararInputEuroLivre(bruto) {
   const s = String(bruto || '');
   let temSeparador = false;
   let limpo = '';
   for (const ch of s) {
     if (ch >= '0' && ch <= '9') limpo += ch;
-    else if (ch === ',' && !temSeparador) { limpo += ','; temSeparador = true; }
+    else if ((ch === ',' || ch === '.') && !temSeparador) { limpo += ','; temSeparador = true; }
     // Espaço (separador de milhares) e qualquer outro caráter são
-    // sempre ignorados aqui — só ',' conta como decimal, os milhares
-    // são sempre reconstruídos do zero a partir dos dígitos.
+    // sempre ignorados aqui — os milhares são sempre reconstruídos do
+    // zero a partir dos dígitos, nunca lidos do texto já formatado.
   }
   if (!limpo) return '';
   const [intRaw, decRaw] = limpo.split(',');
@@ -17260,16 +17268,27 @@ function abrirModalRegistarFaturacao(onGuardado, dataInicial) {
   // forma limpa, sempre pela mesma RPC/UPSERT (rpc_financeiro_guardar_dia).
   const tituloEl = h('p', { class: 'modal-title', style: 'margin:0;' }, '');
   const guardarBtn = h('button', { class: 'btn btn-primary' }, '');
+  // pedido explícito de Paulo 2026-08-20 ("quando faço registar último
+  // dia não aparece se é com ou sem trocas, precisa de estar claro"):
+  // este formulário já gravava e lia respeitando o switch (ver
+  // financeiroGuardarDia/financeiroValorDoDia abaixo — BUG CORRIGIDO no
+  // mesmo pedido: a pré-carga ainda lia sempre o campo "sem trocas" em
+  // bruto, existente.faturacao, nunca o "com trocas"; agora usa
+  // financeiroValorDoDia, que já escolhe a coluna certa), só faltava
+  // mostrar isso — mesmo aviso já usado no "Registo em Tabela".
+  const avisoModoEl = h('p', { class: 'field-helper-text', style: 'margin:4px 0 0;font-weight:700;' },
+    STATE.financeiroComTrocas ? '🔁 A editar valores "Com Trocas"' : '🚫 A editar valores "Sem Trocas"');
 
   // Pré-preenche a partir de um registo já existente para o dia — cada
   // campo em branco fica assim visivelmente "por preencher" (em vez de
   // 0), o que reforça que gravar só um dos dois não apaga o outro.
   function carregarValoresExistentes() {
-    const existente = financeiroRegistoDoDia(dataInput.value);
-    faturacaoInput.value = (existente && existente.faturacao !== null && existente.faturacao !== undefined) ? financeiroFormatarValorInputEuro(existente.faturacao) : '';
-    atendimentosInput.value = (existente && existente.atendimentos !== null && existente.atendimentos !== undefined) ? existente.atendimentos : '';
-    tituloEl.textContent = existente ? 'Editar Registo do Dia' : 'Registar o Último Dia';
-    guardarBtn.textContent = existente ? 'Guardar Alterações' : 'Guardar';
+    const faturacaoExistente = financeiroValorDoDia(dataInput.value, 'faturacao');
+    const atendimentosExistente = financeiroValorDoDia(dataInput.value, 'atendimentos');
+    faturacaoInput.value = faturacaoExistente !== null ? financeiroFormatarValorInputEuro(faturacaoExistente) : '';
+    atendimentosInput.value = atendimentosExistente !== null ? atendimentosExistente : '';
+    tituloEl.textContent = financeiroRegistoDoDia(dataInput.value) ? 'Editar Registo do Dia' : 'Registar o Último Dia';
+    guardarBtn.textContent = financeiroRegistoDoDia(dataInput.value) ? 'Guardar Alterações' : 'Guardar';
   }
   dataInput.addEventListener('change', carregarValoresExistentes);
   carregarValoresExistentes();
@@ -17315,10 +17334,11 @@ function abrirModalRegistarFaturacao(onGuardado, dataInicial) {
   const dataStepper = buildDataComSetas(dataInput, () => carregarValoresExistentes(), todayISO());
 
   const panel = h('div', { class: 'modal-panel', style: 'max-width:380px;' }, [
-    h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;' }, [
+    h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;' }, [
       tituloEl,
       h('button', { class: 'close-btn', onclick: close, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
     ]),
+    h('div', { style: 'margin-bottom:14px;' }, [avisoModoEl]),
     h('div', { class: 'field', style: 'margin-bottom:16px;' }, [buildLabelComAjuda('Data', 'Por defeito, o dia de ontem — use as setas ou o calendário para escolher qualquer outro dia, incluindo mais antigos, para corrigir ou completar um registo.'), dataStepper.el]),
     h('div', { class: 'field', style: 'margin-bottom:16px;' }, [buildLabelComAjuda('Número de Atendimentos', 'Ler no Painel de Bordo do 4Digital. Só aceita números inteiros positivos.'), atendimentosInput]),
     h('div', { class: 'field', style: 'margin-bottom:16px;' }, [buildLabelComAjuda('Faturação — Vendas menos Descontos (€)', 'Ler no Painel de Bordo do 4Digital, cartão "Vendas". Escreve o valor normalmente (ex: 10571 fica 10.571 €) — só escreve "," ou "." se houver cêntimos (ex: 10571,04).'), faturacaoInput]),
