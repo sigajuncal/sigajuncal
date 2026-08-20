@@ -31804,17 +31804,45 @@ function buildHorariosPage(container, goTo) {
     rerender();
   }
   function desistirReivindicacao(reivindicacao, bloco) {
-    confirmDialog('Desistir desta hora extra? Deixa de contar no seu horário — pode voltar a reivindicar mais tarde se mudar de ideias.', async () => {
+    // pedido explícito de Paulo 2026-08-20 (botão "Retirar" no Gerador,
+    // usado pela Direção para remover a reivindicação de OUTRA pessoa):
+    // texto do diálogo/toast e notificações passam a distinguir esse
+    // caso do desistir "normal" (o próprio colaborador a desistir da sua
+    // própria hora) — antes o texto dizia sempre "Desistiu dessa hora
+    // extra"/"desistiu de", o que não fazia sentido quando quem clicou
+    // não era o dono da reivindicação.
+    const souDono = activeUser && String(reivindicacao.utilizadorId) === String(activeUser.id);
+    const mensagemConfirm = souDono
+      ? 'Desistir desta hora extra? Deixa de contar no seu horário — pode voltar a reivindicar mais tarde se mudar de ideias.'
+      : `Retirar a reivindicação de ${reivindicacao.utilizadorNome || 'este colaborador'} (${reivindicacao.intervaloInicio}-${reivindicacao.intervaloFim})? A hora fica disponível para ser reivindicada de novo.`;
+    confirmDialog(mensagemConfirm, async () => {
       const updated = await dbUpdate('escalaHorasExtraReivindicacoes', reivindicacao.id, { ativo: false });
       if (updated) {
         STATE.escalaHorasExtraReivindicacoes = STATE.escalaHorasExtraReivindicacoes.map(r => r.id === updated.id ? updated : r);
-        showToast('Desistiu dessa hora extra.', 'success');
-        if (activeUser) notificarDirecaoHorasExtra(reivindicacao, bloco, activeUser, 'desistiu de');
+        showToast(souDono ? 'Desistiu dessa hora extra.' : `Reivindicação de ${reivindicacao.utilizadorNome || 'colaborador'} retirada.`, 'success');
+        if (activeUser) {
+          notificarDirecaoHorasExtra(reivindicacao, bloco, activeUser,
+            souDono ? 'desistiu de' : `retirou a reivindicação de ${reivindicacao.utilizadorNome || 'um colaborador'} em`, !souDono);
+          // Avisa também o próprio dono da reivindicação, quando não foi
+          // ele quem a retirou (mesmo padrão de aviso já usado em
+          // atualizarNotificacoesHorasExtraReivindicacao para Validar/Invalidar).
+          if (!souDono) {
+            const dono = (STATE.usuarios || []).find(u => String(u.id) === String(reivindicacao.utilizadorId));
+            if (dono) {
+              const criado = await dbInsertRecado({
+                remetenteId: activeUser.id, destinatarioId: dono.id,
+                mensagem: `${activeUser.nomeCompleto || activeUser.username} retirou a sua reivindicação de horas extra de ${escalaBlocoHorasExtraDiaTexto(bloco)} (${reivindicacao.intervaloInicio}-${reivindicacao.intervaloFim}).`,
+                tratado: true, tipo: 'tarefa', referenciaTabela: 'escala_horas_extra_reivindicacoes', referenciaId: reivindicacao.id,
+              });
+              if (criado) STATE.gavetaRecados = [criado, ...(STATE.gavetaRecados || [])];
+            }
+          }
+        }
       } else {
         escalaShowErro('Não foi possível guardar');
       }
       rerender();
-    }, { danger: true, confirmLabel: 'Sim, desistir' });
+    }, { danger: true, confirmLabel: souDono ? 'Sim, desistir' : 'Sim, retirar' });
   }
   // ---- Reivindicar Horas Extra EM NOME de outro colaborador (só Hugo/
   // Paulo, pedido explícito de Paulo 2026-08-19) ----
@@ -32530,8 +32558,18 @@ function buildHorariosPage(container, goTo) {
       const listaReivindicacoes = reivindicacoes.length
         ? h('div', { style: 'margin-top:6px;display:flex;flex-direction:column;gap:5px;' }, reivindicacoes.map(r => {
             const podeDesistir = !blocoCongelado && (ehGestor ? isMasterUser() : (activeUser && String(r.utilizadorId) === String(activeUser.id)));
+            // pedido explícito de Paulo 2026-08-20 ("botão simples para
+            // retirar pessoa ou pessoas que reivindicaram horas... mais
+            // liberdade"): no Gerador (ehGestor), o botão passa a ter
+            // texto ("🗑️ Retirar") em vez de só o ícone "x" — mais óbvio
+            // do que "Desistir/cancelar" (pensado para o próprio
+            // colaborador desistir da SUA reivindicação), já que aqui é a
+            // Direção a retirar a de OUTRA pessoa; continua a mesma ação
+            // (desistirReivindicacao, ativo:false), só muda a rotulagem.
             const desistirBtn = podeDesistir ? (() => {
-              const btn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Desistir/cancelar', 'aria-label': 'Desistir/cancelar' }, Icon('x', { size: 12, strokeWidth: 2.4 }));
+              const btn = ehGestor
+                ? h('button', { class: 'btn btn-secondary', style: 'font-size:11.5px;padding:5px 10px;flex-shrink:0;' }, '🗑️ Retirar')
+                : h('button', { class: 'btn-fab-sm tone-gray', title: 'Desistir/cancelar', 'aria-label': 'Desistir/cancelar' }, Icon('x', { size: 12, strokeWidth: 2.4 }));
               btn.addEventListener('click', () => requireAuth(() => desistirReivindicacao(r, bloco)));
               return btn;
             })() : null;
@@ -41737,7 +41775,6 @@ function buildEntregasPage(container, goTo) {
             morada: draft.morada || '', localidade: draft.localidade || '', contacto: draft.contacto || '',
           });
           if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
-          else showToast('A entrega foi gravada, mas não foi possível guardar a ficha do cliente. Podes tentar novamente mais tarde.', 'error');
           finalizarSubmissaoEntrega();
         })();
       } else {
@@ -41770,7 +41807,6 @@ function buildEntregasPage(container, goTo) {
           (async () => {
             const gravado = await dbUpsertClienteHabitual(payload);
             if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
-            else showToast('A entrega foi gravada, mas não foi possível atualizar a ficha do cliente. Podes tentar novamente mais tarde.', 'error');
             finalizarSubmissaoEntrega();
           })();
         }
