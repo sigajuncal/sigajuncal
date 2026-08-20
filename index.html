@@ -17097,7 +17097,7 @@ function abrirModalDefinirMeta(anoDefault, mesDefault, onGuardado) {
         const len = objetivoInput.value.length;
         objetivoInput.setSelectionRange(len, len);
         if (objetivoInput.value === '') { delete alteracoes[mes]; atualizarContagem(); return; }
-        const valor = parseFloat(objetivoInput.value.replace(/\./g, '').replace(',', '.')) || 0;
+        const valor = parseFloat(objetivoInput.value.replace(/\s/g, '').replace(',', '.')) || 0;
         if (valor > 0) marcarAlteracao(mes, valor);
       });
       const linha = h('tr', { class: existente ? 'tem-dados' : undefined }, [
@@ -17193,6 +17193,12 @@ function abrirModalDefinirMeta(anoDefault, mesDefault, onGuardado) {
 // como separador decimal (formato PT nunca usa "." para decimais); "."
 // é sempre reconstruído do zero a partir dos dígitos (ver intFormatado
 // abaixo), nunca lido do texto já formatado.
+// pedido explícito de Paulo 2026-08-20 (mesmo dia, revisão seguinte):
+// separador de milhares passou de "." para " " (espaço) — "ponto e
+// vírgula têm o mesmo significado" para o utilizador, achava confuso
+// ter os dois num só número; ESPAÇO nunca é lido de volta como parte do
+// número (só dígitos e ',' contam), elimina a mesma classe de bug acima
+// por construção, não só neste caso específico.
 function financeiroMascararInputEuroLivre(bruto) {
   const s = String(bruto || '');
   let temSeparador = false;
@@ -17200,25 +17206,27 @@ function financeiroMascararInputEuroLivre(bruto) {
   for (const ch of s) {
     if (ch >= '0' && ch <= '9') limpo += ch;
     else if (ch === ',' && !temSeparador) { limpo += ','; temSeparador = true; }
-    // '.' nunca é tratado como separador decimal — é sempre o separador
-    // de milhares que esta função já reconstrói sozinha a seguir; lê-lo
-    // aqui é a causa exata do bug acima.
+    // Espaço (separador de milhares) e qualquer outro caráter são
+    // sempre ignorados aqui — só ',' conta como decimal, os milhares
+    // são sempre reconstruídos do zero a partir dos dígitos.
   }
   if (!limpo) return '';
   const [intRaw, decRaw] = limpo.split(',');
   const intDigits = (intRaw || '').replace(/^0+(?=\d)/, '') || '0';
-  const intFormatado = intDigits.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  const intFormatado = intDigits.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
   if (!temSeparador) return intFormatado;
   return `${intFormatado},${(decRaw || '').slice(0, 2)}`;
 }
 // Formata um valor numérico já gravado (ex: 12774.74) para o mesmo
-// formato do input (ex: "12.774,74") — usado ao pré-preencher o
-// formulário a partir de um registo existente.
+// formato do input (ex: "12 774,74" — espaço nos milhares, vírgula nos
+// cêntimos) — usado ao pré-preencher o formulário a partir de um
+// registo existente. toLocaleString('pt-PT') usa "." nos milhares por
+// omissão, por isso troca-se sempre por espaço a seguir.
 function financeiroFormatarValorInputEuro(v) {
   if (v === null || v === undefined || v === '') return '';
   const num = Number(v);
   if (isNaN(num)) return '';
-  return num.toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return num.toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).replace(/\./g, ' ');
 }
 function abrirModalRegistarFaturacao(onGuardado, dataInicial) {
   if (!podeEditarFinanceiro()) { showToast('Sem permissão para alterar dados financeiros.', 'error'); return; }
@@ -17279,7 +17287,7 @@ function abrirModalRegistarFaturacao(onGuardado, dataInicial) {
     const textoOriginalBtn = guardarBtn.textContent;
     guardarBtn.disabled = true; guardarBtn.textContent = 'A guardar…';
     const campos = {
-      faturacao: faturacaoInput.value === '' ? null : (parseFloat(faturacaoInput.value.replace(/\./g, '').replace(',', '.')) || 0),
+      faturacao: faturacaoInput.value === '' ? null : (parseFloat(faturacaoInput.value.replace(/\s/g, '').replace(',', '.')) || 0),
       atendimentos: atendimentosInput.value === '' ? null : (parseInt(atendimentosInput.value, 10) || 0),
     };
     const resultado = await financeiroGuardarDia(dataInput.value, campos);
@@ -17416,7 +17424,7 @@ function abrirModalRegistoEmTabela(onGuardado) {
       faturacaoInput.value = financeiroMascararInputEuroLivre(faturacaoInput.value);
       const len = faturacaoInput.value.length;
       faturacaoInput.setSelectionRange(len, len);
-      marcarAlteracao(dataISO, 'faturacao', faturacaoInput.value === '' ? null : (parseFloat(faturacaoInput.value.replace(/\./g, '').replace(',', '.')) || 0));
+      marcarAlteracao(dataISO, 'faturacao', faturacaoInput.value === '' ? null : (parseFloat(faturacaoInput.value.replace(/\s/g, '').replace(',', '.')) || 0));
     });
     return h('tr', { class: temDados ? 'tem-dados' : undefined }, [
       h('td', { class: 'fin-tabela-massa-dia' }, rotulo),
@@ -36965,17 +36973,19 @@ function buildHorariosPage(container, goTo) {
       return lista.map(r => {
         const topPctHE = (minutosNoIntervalo(r.intervaloInicio, false) / (totalHoras * 60)) * 100;
         const alturaPctHE = Math.max(2, ((minutosNoIntervalo(r.intervaloFim, true) - minutosNoIntervalo(r.intervaloInicio, false)) / (totalHoras * 60)) * 100);
-        return h('div', {
+        // pedido explícito de Paulo 2026-08-20: "title" nativo do browser
+        // demora ~1s a aparecer ao passar o rato — trocado pelo mesmo
+        // tooltip flutuante instantâneo já usado nas caixas de Banco de
+        // Horas/Hora Extra (instalarTooltipContaHoras/mostrarTooltipFlutuante),
+        // o mesmo mecanismo que já mostra "J. Coelho" de imediato ao
+        // passar o rato sobre o bloco de turno normal ao lado.
+        const bloco = h('div', {
           class: 'escala-vertical-bloco escala-vertical-bloco-extra',
           style: `top:${topPctHE}%;height:${alturaPctHE}%;`,
-          // pedido explícito de Paulo 2026-08-20: o nome de quem
-          // reivindicou passou a aparecer sempre no tooltip — antes só
-          // dizia "Hora Extra reivindicada: 17:00-21:00", sem indicar de
-          // quem (mesmo quando reivindicada em nome de outro colaborador
-          // por Hugo/Paulo, o tooltip deve mostrar sempre o DONO da
-          // reivindicação, nunca quem fez a ação em nome dele).
-          title: `Hora Extra reivindicada por ${r.utilizadorNome || 'colaborador'}: ${r.intervaloInicio}-${r.intervaloFim}`,
+          tabIndex: '0',
         }, h('div', { class: 'escala-vertical-bloco-horas' }, [h('span', {}, r.intervaloInicio), h('span', {}, r.intervaloFim)]));
+        instalarTooltipContaHoras(bloco, `Hora Extra reivindicada por ${r.utilizadorNome || 'colaborador'}: ${r.intervaloInicio}-${r.intervaloFim}`);
+        return bloco;
       });
     }
     const legendaEntradas = [];
@@ -37215,13 +37225,22 @@ function buildHorariosPage(container, goTo) {
         // pedido explícito era só para Banco de Horas.
         const ehBancoDiaCompleto = tipoEfetivoDia === 'banco' && escalaBancoHorasEfetivo(dia) > 0;
         const blocoAusencia = ehBancoDiaCompleto
-          ? h('div', {
-              class: 'escala-vertical-bloco escala-vertical-bloco-banco-dia-completo' + (editavel ? ' escala-vertical-bloco-clicavel' : ''),
-              style: 'top:0%;height:100%;',
-            }, [
-              h('div', { class: 'escala-vertical-banco-dia-completo-label' }, 'Banco de Horas'),
-              h('div', { class: 'escala-vertical-banco-dia-completo-valor' }, `-${escalaFormatarHorasDecimal(escalaBancoHorasEfetivo(dia))}`),
-            ])
+          ? (() => {
+              const bloco = h('div', {
+                class: 'escala-vertical-bloco escala-vertical-bloco-banco-dia-completo' + (editavel ? ' escala-vertical-bloco-clicavel' : ''),
+                style: 'top:0%;height:100%;',
+              }, [
+                h('div', { class: 'escala-vertical-banco-dia-completo-label' }, 'Banco de Horas'),
+                h('div', { class: 'escala-vertical-banco-dia-completo-valor' }, `-${escalaFormatarHorasDecimal(escalaBancoHorasEfetivo(dia))}`),
+              ]);
+              // pedido explícito de Paulo 2026-08-20 (coerência entre
+              // TODAS as formas de Horas Extra/Banco de Horas na
+              // Timeline): mesmo tooltip flutuante instantâneo já usado
+              // nos overlays de desconto/ganho parcial e Hora Extra
+              // manual — este bloco (dia inteiro) ainda não tinha nenhum.
+              instalarTooltipContaHoras(bloco, `Banco de Horas\n-${escalaFormatarHorasDecimal(escalaBancoHorasEfetivo(dia))} (dia completo)`);
+              return bloco;
+            })()
           : h('div', {
               class: 'escala-vertical-bloco escala-vertical-bloco-tipo-ausencia' + (editavel ? ' escala-vertical-bloco-clicavel' : ''),
               style: 'top:0%;height:100%;',
