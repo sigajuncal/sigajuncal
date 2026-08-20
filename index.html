@@ -17182,13 +17182,27 @@ function abrirModalDefinirMeta(anoDefault, mesDefault, onGuardado) {
 // fica sem decimais no campo — ao gravar é interpretado como ",00" na
 // mesma (parseFloat não precisa de decimais explícitos), só deixa de
 // OBRIGAR a escrevê-los.
+// BUG CORRIGIDO 2026-08-20 (pedido de Hugo — valores de 4+ dígitos
+// ficavam "esquisitos" ao escrever a vírgula, ex: escrever "1114,00"
+// dava "1,11"): esta função reparte o texto ATUAL do campo a cada tecla,
+// mas esse texto já inclui o PONTO de milhares que a própria função
+// inseriu na passagem anterior (ex: "1.114"); ao ler de novo, o "." era
+// interpretado como se fosse o separador DECIMAL (o código aceitava "," 
+// OU "." como decimal), cortando o valor logo ali — "1.114" + "," typed
+// virava "1,114" e depois truncava para "1,11". Corrigido: só ',' conta
+// como separador decimal (formato PT nunca usa "." para decimais); "."
+// é sempre reconstruído do zero a partir dos dígitos (ver intFormatado
+// abaixo), nunca lido do texto já formatado.
 function financeiroMascararInputEuroLivre(bruto) {
   const s = String(bruto || '');
   let temSeparador = false;
   let limpo = '';
   for (const ch of s) {
     if (ch >= '0' && ch <= '9') limpo += ch;
-    else if ((ch === ',' || ch === '.') && !temSeparador) { limpo += ','; temSeparador = true; }
+    else if (ch === ',' && !temSeparador) { limpo += ','; temSeparador = true; }
+    // '.' nunca é tratado como separador decimal — é sempre o separador
+    // de milhares que esta função já reconstrói sozinha a seguir; lê-lo
+    // aqui é a causa exata do bug acima.
   }
   if (!limpo) return '';
   const [intRaw, decRaw] = limpo.split(',');
@@ -17484,7 +17498,15 @@ function abrirModalRegistoEmTabela(onGuardado) {
       h('p', { class: 'modal-title', style: 'margin:0;' }, 'Registo em Tabela'),
       h('button', { class: 'close-btn', onclick: close, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
     ]),
-    h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, 'Útil para pôr em dia dados de anos anteriores — preencha o que tiver e passe ao mês seguinte. Linhas já preenchidas ficam destacadas a verde.'),
+    h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, 'Útil para pôr em dia dados de anos anteriores — preencha o que tiver e passe ao mês seguinte. Linhas já preenchidas ficam destacadas a verde.'),
+    // pedido explícito de Paulo 2026-08-20 ("deixar sempre claro em que
+    // switch estamos a preencher"): dentro do modal (que tapa o switch
+    // Com/Sem Trocas da página de fundo) passa a mostrar sempre um badge
+    // com o modo ativo (STATE.financeiroComTrocas) — os valores lidos/
+    // gravados aqui já seguiam esse switch (financeiroValorDoDia), só
+    // faltava deixá-lo visível enquanto o modal está aberto.
+    h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;font-weight:700;' },
+      STATE.financeiroComTrocas ? '🔁 A editar valores "Com Trocas"' : '🚫 A editar valores "Sem Trocas"'),
     avisoMensalEl,
     h('div', { style: 'display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;' }, [
       h('div', { class: 'field', style: 'margin-bottom:0;' }, [h('label', {}, 'Ano'), anoSelect]),
@@ -36946,7 +36968,13 @@ function buildHorariosPage(container, goTo) {
         return h('div', {
           class: 'escala-vertical-bloco escala-vertical-bloco-extra',
           style: `top:${topPctHE}%;height:${alturaPctHE}%;`,
-          title: `Hora Extra reivindicada: ${r.intervaloInicio}-${r.intervaloFim}`,
+          // pedido explícito de Paulo 2026-08-20: o nome de quem
+          // reivindicou passou a aparecer sempre no tooltip — antes só
+          // dizia "Hora Extra reivindicada: 17:00-21:00", sem indicar de
+          // quem (mesmo quando reivindicada em nome de outro colaborador
+          // por Hugo/Paulo, o tooltip deve mostrar sempre o DONO da
+          // reivindicação, nunca quem fez a ação em nome dele).
+          title: `Hora Extra reivindicada por ${r.utilizadorNome || 'colaborador'}: ${r.intervaloInicio}-${r.intervaloFim}`,
         }, h('div', { class: 'escala-vertical-bloco-horas' }, [h('span', {}, r.intervaloInicio), h('span', {}, r.intervaloFim)]));
       });
     }
