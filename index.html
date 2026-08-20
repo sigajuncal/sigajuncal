@@ -14429,6 +14429,21 @@ function abrirModalGaveta(abrirThreadInicial) {
               acoes.push(aprovarBtn, rejeitarBtn);
             }
           }
+          // Reivindicações de Horas Extra: validar/invalidar rápido direto
+          // da Gaveta (pedido explícito de Hugo, 2026-08-20) — mesmo
+          // espírito dos botões acima, mas restrito a Hugo/Paulo por NOME
+          // (souDirecaoHorariosGlobal), nunca a qualquer Master, e só
+          // enquanto a reivindicação continuar 'pendente'.
+          if (r.referenciaTabela === 'escala_horas_extra_reivindicacoes' && !souEuRemetente && !concluida && souDirecaoHorariosGlobal()) {
+            const reivRef = (STATE.escalaHorasExtraReivindicacoes || []).find(rv => String(rv.id) === String(r.referenciaId));
+            if (reivRef && (reivRef.estado || 'pendente') === 'pendente') {
+              const validarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;margin-top:8px;' }, '✅ Validar');
+              validarBtn.addEventListener('click', () => requireAuth(() => decidirHorasExtraReivindicacaoViaGaveta(r, 'validado', render)));
+              const invalidarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;margin-top:8px;' }, '❌ Invalidar');
+              invalidarBtn.addEventListener('click', () => requireAuth(() => decidirHorasExtraReivindicacaoViaGaveta(r, 'invalidado', render)));
+              acoes.push(validarBtn, invalidarBtn);
+            }
+          }
           return h('div', { class: 'gaveta-bolha-linha' + (souEuRemetente ? ' gaveta-bolha-minha' : '') }, [
             h('div', { class: 'gaveta-tarefa-card' + (concluida ? ' concluida' : '') }, [
               h('div', { class: 'gaveta-tarefa-card-topo' }, [
@@ -19201,7 +19216,7 @@ function buildFinanceiroPage(container, goTo) {
     ]);
     wrap.appendChild(trocasSwitch);
     wrap.appendChild(h('p', { class: 'field-helper-text', style: 'margin:-10px 0 16px;' }, STATE.financeiroComTrocas
-      ? 'A mostrar valores "Com Trocas" — os valores a considerar, por indicação de Paulo. Ainda por preencher para a maioria dos dias/meses.'
+      ? 'A mostrar valores "Com Trocas" — os valores a considerar. Ainda por preencher para a maioria dos dias/meses.'
       : 'A mostrar valores "Sem Trocas" — o histórico já registado, preservado tal e qual (só para consulta).'));
 
     // ---- Botões de topo — o registo/edição de um dia concreto passou a
@@ -28034,19 +28049,103 @@ function escalaTarefaColisao(semana, diaKey, tipo, inicio, fim, codigoVagaAtual,
   }
   return null;
 }
-async function notificarDirecaoHorasExtra(bloco, utilizador, intervaloTexto, acaoTexto) {
+// ATUALIZADO (2026-08-20, pedido explícito de Hugo): passou a receber a
+// PRÓPRIA reivindicação (não só o bloco) — a notificação fica ligada a
+// referenciaTabela='escala_horas_extra_reivindicacoes'/referenciaId=
+// reivindicacao.id, para depois poder ser encontrada e atualizada quando
+// a Direção validar/invalidar (ver decidirHorasExtraReivindicacao/
+// atualizarNotificacoesHorasExtraReivindicacao) — antes apontava para o
+// BLOCO, o que tornava impossível saber a que reivindicação em concreto
+// cada notificação se referia quando havia mais do que uma no mesmo bloco.
+async function notificarDirecaoHorasExtra(reivindicacao, bloco, utilizador, acaoTexto) {
   const destinatarios = escalaUsuariosDirecao().filter(u => String(u.id) !== String(utilizador.id));
   if (!destinatarios.length) return;
   const diaInfo = ESCALA_DIAS.find(d => d.key === bloco.diaKey);
-  const mensagem = `${utilizador.nomeCompleto || utilizador.username} ${acaoTexto} ${intervaloTexto} das Horas Extra de ${diaInfo ? diaInfo.label : bloco.diaKey} (${bloco.horaInicio}-${bloco.horaFim}).`;
+  const mensagem = `${utilizador.nomeCompleto || utilizador.username} ${acaoTexto} ${reivindicacao.intervaloInicio}-${reivindicacao.intervaloFim} das Horas Extra de ${diaInfo ? diaInfo.label : bloco.diaKey} (${bloco.horaInicio}-${bloco.horaFim}).`;
   // BUG CORRIGIDO (2026-08-18): ver nota em notificarDirecaoPedidoEspecial
   // — mesmo problema, dbInsert('gavetaRecados', ...) falhava sempre.
   const criados = await Promise.all(destinatarios.map(u => dbInsertRecado({
     remetenteId: utilizador.id, destinatarioId: u.id, mensagem, tratado: false, tipo: 'tarefa',
-    referenciaTabela: 'escala_horas_extra', referenciaId: bloco.id,
+    referenciaTabela: 'escala_horas_extra_reivindicacoes', referenciaId: reivindicacao.id,
   })));
   const novos = criados.filter(Boolean);
   if (novos.length) STATE.gavetaRecados = [...novos, ...(STATE.gavetaRecados || [])];
+}
+// ---- Validar/Invalidar reivindicação de Horas Extra (pedido explícito
+// de Hugo, 2026-08-20) ----
+// Uma reivindicação FEITA PELO PRÓPRIO colaborador (guardarReivindicacao)
+// nasce 'pendente' — precisa de Hugo ou Paulo validarem/invalidarem.
+// Uma reivindicação feita EM NOME de um colaborador por Hugo/Paulo
+// (guardarReivindicacaoParaColaborador) nasce já 'validado' — quem faz a
+// ação é a própria Direção a decidir diretamente, por isso não pede
+// aprovação extra ao outro membro, só o informa (revisão pedida
+// 2026-08-20: "não preciso de validar ou invalidar nada, só sou
+// informado da situação"). Qualquer um de Hugo/Paulo pode validar ou
+// invalidar (nunca outro perfil, mesmo Master — mesma whitelist
+// NOMES_DIRECAO_HORARIOS de sempre, ver escalaUsuariosDirecao).
+// "Invalidar" tem o MESMO efeito de "desistir" (ativo:false, liberta a
+// hora automaticamente para outra pessoa reivindicar — ver
+// escalaDisponibilidadeBloco), só que feito pela Direção em vez de pelo
+// próprio; "Validar" não muda ativo (a hora já entrava no horário assim
+// que reivindicada — ver comentário em cima de escalaHorasExtraDaSemana),
+// só regista a decisão. Em ambos os casos, grava quem decidiu/quando
+// (validadoPor/validadoEm, mesmo padrão de decidirPedidoEspecial).
+function souDirecaoHorariosGlobal() { return !!activeUser && NOMES_DIRECAO_HORARIOS.includes(String(activeUser.nomeCompleto || '').trim()); }
+async function decidirHorasExtraReivindicacao(reivindicacao, novoEstado) {
+  if (!souDirecaoHorariosGlobal()) return null;
+  const patch = { estado: novoEstado, validadoPor: activeUser.nomeCompleto || activeUser.username, validadoEm: new Date().toISOString() };
+  if (novoEstado === 'invalidado') patch.ativo = false;
+  const updated = await dbUpdate('escalaHorasExtraReivindicacoes', reivindicacao.id, patch);
+  if (updated) {
+    STATE.escalaHorasExtraReivindicacoes = STATE.escalaHorasExtraReivindicacoes.map(r => r.id === updated.id ? updated : r);
+    const bloco = (STATE.escalaHorasExtra || []).find(b => String(b.id) === String(updated.blocoId));
+    await atualizarNotificacoesHorasExtraReivindicacao(updated, bloco);
+  }
+  return updated;
+}
+// Em vez de criar uma notificação nova (mesmo espírito de
+// notificarDirecaoNotaEquipa ao editar), ATUALIZA todas as notificações
+// já ligadas a esta reivindicação — a cópia de quem decidiu fica marcada
+// como tratada (a ação já foi feita por ele), a cópia do OUTRO membro da
+// Direção passa a mostrar o estado da decisão em vez de ficar por
+// responder para sempre (pedido explícito: "a notificação para o outro
+// não fica por responder, fica actualizada com o estado correspondente
+// à análise que o outro fez") — e também fica marcada como tratada,
+// porque a decisão já está tomada, não há mais nada pendente para agir.
+// Avisa também o colaborador dono da reivindicação (se não foi ele quem
+// decidiu) de que a Direção validou/invalidou a sua hora extra — sem
+// isto, uma hora invalidada simplesmente desaparecia do horário do
+// colaborador sem explicação nenhuma.
+async function atualizarNotificacoesHorasExtraReivindicacao(reivindicacao, bloco) {
+  const diaInfo = bloco ? ESCALA_DIAS.find(d => d.key === bloco.diaKey) : null;
+  const diaTexto = diaInfo ? diaInfo.label : (bloco ? bloco.diaKey : '');
+  const acaoTexto = reivindicacao.estado === 'validado' ? 'validou' : 'invalidou';
+  const mensagem = `${activeUser.nomeCompleto || activeUser.username} ${acaoTexto} a hora extra de ${reivindicacao.utilizadorNome || 'um colaborador'} em ${diaTexto} (${reivindicacao.intervaloInicio}-${reivindicacao.intervaloFim}).`;
+  const existentes = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_horas_extra_reivindicacoes' && String(r.referenciaId) === String(reivindicacao.id));
+  const resultados = await Promise.all(existentes.map(r => dbAtualizarRecado(r.id, { mensagem, tratado: true, tratadoEm: new Date().toISOString() })));
+  resultados.forEach(reg => { if (reg) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === reg.id ? reg : x); });
+  if (reivindicacao.utilizadorId && String(reivindicacao.utilizadorId) !== String(activeUser.id)) {
+    const mensagemColaborador = reivindicacao.estado === 'validado'
+      ? `A Direção validou a sua hora extra de ${diaTexto} (${reivindicacao.intervaloInicio}-${reivindicacao.intervaloFim}).`
+      : `A Direção invalidou a sua hora extra de ${diaTexto} (${reivindicacao.intervaloInicio}-${reivindicacao.intervaloFim}) — deixou de contar no seu horário.`;
+    const criado = await dbInsertRecado({
+      remetenteId: activeUser.id, destinatarioId: reivindicacao.utilizadorId, mensagem: mensagemColaborador,
+      tratado: false, tipo: 'tarefa', referenciaTabela: 'escala_horas_extra_reivindicacoes', referenciaId: reivindicacao.id,
+    });
+    if (criado) STATE.gavetaRecados = [criado, ...(STATE.gavetaRecados || [])];
+  }
+}
+// Validação rápida (Validar/Invalidar) direto da Gaveta — mesmo espírito
+// de decidirPedidoEspecialViaGaveta, mas para reivindicações de Horas
+// Extra: decide a reivindicação E marca o recado como tratado.
+async function decidirHorasExtraReivindicacaoViaGaveta(r, novoEstado, onDone) {
+  if (!souDirecaoHorariosGlobal() || !r.referenciaId) return;
+  const reivindicacao = (STATE.escalaHorasExtraReivindicacoes || []).find(rv => String(rv.id) === String(r.referenciaId));
+  if (!reivindicacao) { showDbErrorToast('Esta reivindicação já não existe.'); return; }
+  const updated = await decidirHorasExtraReivindicacao(reivindicacao, novoEstado);
+  if (!updated) { showDbErrorToast('Não foi possível decidir a reivindicação'); return; }
+  showToast(novoEstado === 'validado' ? 'Hora extra validada.' : 'Hora extra invalidada.', 'success');
+  if (onDone) onDone();
 }
 // Notifica o AUTOR de uma nota de "Escala da Equipa" assim que a Direção
 // a valida — usada tanto pela validação rápida via Gaveta
@@ -31549,14 +31648,14 @@ function buildHorariosPage(container, goTo) {
     reivindicarSaving = true; rerender();
     const created = await dbInsert('escalaHorasExtraReivindicacoes', {
       blocoId: bloco.id, utilizadorId: activeUser.id, utilizadorNome: activeUser.nomeCompleto || activeUser.username,
-      intervaloInicio: horaInicio, intervaloFim: horaFim, ativo: true,
+      intervaloInicio: horaInicio, intervaloFim: horaFim, ativo: true, estado: 'pendente',
     });
     reivindicarSaving = false;
     if (created) {
       STATE.escalaHorasExtraReivindicacoes = [...(STATE.escalaHorasExtraReivindicacoes || []), created];
       reivindicandoBlocoId = null;
       showToast('Hora extra reivindicada — já entra no seu horário.', 'success');
-      notificarDirecaoHorasExtra(bloco, activeUser, `${horaInicio}-${horaFim}`, 'reivindicou');
+      notificarDirecaoHorasExtra(created, bloco, activeUser, 'reivindicou');
     } else {
       reivindicarError = `Não foi possível guardar. ${escalaMensagemErroAmigavel(lastDbError)}`;
     }
@@ -31568,7 +31667,7 @@ function buildHorariosPage(container, goTo) {
       if (updated) {
         STATE.escalaHorasExtraReivindicacoes = STATE.escalaHorasExtraReivindicacoes.map(r => r.id === updated.id ? updated : r);
         showToast('Desistiu dessa hora extra.', 'success');
-        if (activeUser) notificarDirecaoHorasExtra(bloco, activeUser, `${reivindicacao.intervaloInicio}-${reivindicacao.intervaloFim}`, 'desistiu de');
+        if (activeUser) notificarDirecaoHorasExtra(reivindicacao, bloco, activeUser, 'desistiu de');
       } else {
         escalaShowErro('Não foi possível guardar');
       }
@@ -31628,20 +31727,29 @@ function buildHorariosPage(container, goTo) {
     const created = await dbInsert('escalaHorasExtraReivindicacoes', {
       blocoId: bloco.id, utilizadorId: colaborador.id, utilizadorNome: colaborador.nomeCompleto || colaborador.username,
       intervaloInicio: horaInicio, intervaloFim: horaFim, ativo: true,
+      // ATUALIZADO (2026-08-20, pedido explícito de Hugo — revisão do
+      // fluxo de validação): reivindicar em nome de um colaborador nasce
+      // já 'validado' (não 'pendente') — é o próprio Hugo/Paulo quem
+      // decide diretamente, não faz sentido pedir depois ao OUTRO membro
+      // da Direção para "aprovar" uma decisão que já foi tomada. Por
+      // isso não aparecem botões Validar/Invalidar na Gaveta para este
+      // caso (ver condição `estado==='pendente'` em buildThreadView) — o
+      // outro membro só fica informado, sem nenhuma ação pendente.
+      estado: 'validado', validadoPor: activeUser.nomeCompleto || activeUser.username, validadoEm: new Date().toISOString(),
     });
     reivindicarParaColaboradorSaving = false;
     if (created) {
       STATE.escalaHorasExtraReivindicacoes = [...(STATE.escalaHorasExtraReivindicacoes || []), created];
       reivindicandoParaColaboradorBlocoId = null;
       showToast(`Hora extra reivindicada em nome de ${colaborador.nomeCompleto || colaborador.username}.`, 'success');
-      // SEM notificação à Direção (pedido explícito 2026-08-19, Paulo):
-      // reivindicar em nome de um colaborador é uma ação direta — o
-      // colaborador fica logo inserido no horário e as horas ficam
-      // indisponíveis nesse período; não há aprovação/aviso pendente a
-      // dar, ao contrário de outros fluxos que passam pela Gaveta de
-      // Recados. Se a reivindicação for depois desfeita (desistir),
-      // as horas voltam a ficar disponíveis automaticamente (a lista
-      // já filtra só reivindicações ativas — ver escalaReivindicacoesDoBloco).
+      // Notifica o OUTRO membro da Direção, só para informação — nunca
+      // pede ação (pedido 2026-08-19: "antes não notificava nada",
+      // corrigido; pedido 2026-08-20: "não preciso de validar nada, só
+      // sou informado"). Se a reivindicação for depois desfeita
+      // (desistir ou invalidada), as horas voltam a ficar disponíveis
+      // automaticamente (a lista já filtra só reivindicações ativas —
+      // ver escalaReivindicacoesDoBloco).
+      notificarDirecaoHorasExtra(created, bloco, activeUser, `reivindicou em nome de ${colaborador.nomeCompleto || colaborador.username}`);
     } else {
       reivindicarParaColaboradorError = `Não foi possível guardar. ${escalaMensagemErroAmigavel(lastDbError)}`;
     }
