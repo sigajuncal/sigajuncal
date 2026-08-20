@@ -29510,6 +29510,62 @@ function campoHora(valorInicial, permitirMeiaNoite, onChange, horaMin, horaMax, 
   }
   return wrap;
 }
+// Sincronização Gerador de Horário → Calendário de Férias (pedido de
+// Paulo, 2026-08-20): até aqui, marcar manualmente um Tipo de
+// ausência (Férias/FE/Aniversário/Outras/Falta/Baixa para o Quadro,
+// Indisponibilidade para Prestadores) numa célula do Gerador só ficava
+// gravado dentro de escala_dias (semana.dados[vaga].dias[dia].tipo) —
+// nunca criava/atualizava o registo correspondente em escala_ferias,
+// que é a fonte real do calendário ("Férias do Quadro"/"Indisponi-
+// bilidades — Prestadores"), dos saldos anuais e da deteção de
+// sobreposição. Esta função é chamada em melhor esforço a seguir a
+// guardar() ter sucesso — nunca bloqueia nem reverte a gravação do
+// horário em si, mesmo que a sincronização falhe.
+// Regras (propositadamente conservadoras — nunca mexe em períodos
+// multi-dia geridos pelo calendário):
+//  - Tipo passou a ser uma ausência formal (Quadro) ou Indisponibi-
+//    lidade (Prestador): se já existe um registo de escala_ferias de
+//    exatamente 1 dia (dataInicio===dataFim===este dia) para este
+//    colaborador, só atualiza o tipo se for diferente; se o dia já
+//    está coberto por um período multi-dia existente (marcado no
+//    calendário), não faz nada — o calendário já manda; caso
+//    contrário, cria um novo registo de 1 dia.
+//  - Tipo voltou a Normal/Folga/Banco/Horas Extra: se existir um
+//    registo de escala_ferias de exatamente 1 dia para este
+//    colaborador+data, remove-o (nunca toca em períodos multi-dia).
+async function escalaSincronizarAusenciaComGerador(colaboradorId, colaboradorNome, ehPrestador, dataISO, tipoCelula) {
+  if (!colaboradorId || !dataISO) return;
+  const tiposValidos = ehPrestador ? ['indisponivel'] : ESCALA_TIPOS_AUSENCIA_QUADRO.map(t => t.key);
+  const tipoAlvo = tiposValidos.includes(tipoCelula) ? tipoCelula : null;
+  const registoDiaUnico = (STATE.escalaFerias || []).find(f =>
+    String(f.utilizadorId) === String(colaboradorId) && f.dataInicio === dataISO && f.dataFim === dataISO);
+  try {
+    if (tipoAlvo) {
+      if (registoDiaUnico) {
+        if (registoDiaUnico.tipo !== tipoAlvo) {
+          const updated = await dbUpdate('escalaFerias', registoDiaUnico.id, { tipo: tipoAlvo });
+          if (updated) STATE.escalaFerias = STATE.escalaFerias.map(f => f.id === updated.id ? updated : f);
+        }
+        return;
+      }
+      const jaCobertoPorPeriodo = (STATE.escalaFerias || []).some(f =>
+        String(f.utilizadorId) === String(colaboradorId) && f.dataInicio <= dataISO && dataISO <= f.dataFim);
+      if (jaCobertoPorPeriodo) return;
+      const created = await dbInsert('escalaFerias', {
+        utilizadorId: colaboradorId, utilizadorNome: colaboradorNome || '', tipo: tipoAlvo,
+        dataInicio: dataISO, dataFim: dataISO, estado: 'aprovado',
+        observacoes: 'Registado automaticamente a partir do Gerador de Horário.',
+        decididoPor: currentUserName(),
+      });
+      if (created) STATE.escalaFerias = [...(STATE.escalaFerias || []), created];
+    } else if (registoDiaUnico) {
+      const ok = await dbDelete('escalaFerias', registoDiaUnico.id);
+      if (ok) STATE.escalaFerias = STATE.escalaFerias.filter(f => f.id !== registoDiaUnico.id);
+    }
+  } catch (e) {
+    console.error('[Sincronização Férias] falha ao sincronizar dia do Gerador com o calendário:', formatarErroSeguro(e));
+  }
+}
 function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   const overlay = h('div', { class: 'modal-overlay' });
   let saving = false;
@@ -30125,6 +30181,9 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     saving = false;
     if (updated) {
       STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
+      // Melhor esforço — nunca bloqueia nem atrasa o fecho do modal,
+      // mesmo que a sincronização com o calendário de Férias falhe.
+      if (colaboradorIdCelula) escalaSincronizarAusenciaComGerador(colaboradorIdCelula, linha.colaboradorNome, ehPrestadorCelula, dataISOCelula, tipo);
       fechar();
       onSaved();
     } else {
