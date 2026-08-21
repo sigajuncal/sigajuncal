@@ -26596,6 +26596,17 @@ function escalaDiaLabelCompacto(diaKey, diaLabel, semanaInicioISO) {
 // a aparecer normalmente na grelha/Timeline, só ficam de fora destas duas
 // contagens específicas.
 function escalaContaParaCoberturaTotal(vaga) { return !!vaga && vaga.grupo !== 'B'; }
+// Farmacêutico/Diretor Técnico(a)/Diretor(a) Técnico(a) Adjunto(a)/
+// Técnico de Farmácia/Técnico Auxiliar de Farmácia — únicas categorias
+// que fazem atendimentos e por isso contam para o contador "Total" de
+// colaboradores presentes por hora quando estão em Hora Extra (ver
+// totaisPorHora, mais abaixo). O turno NORMAL não filtra por categoria
+// (confia-se que quem ocupa uma vaga A/F/P faz atendimentos, é para
+// isso que a vaga existe) — mas a Hora Extra pode ser reivindicada por
+// alguém sem vaga nenhuma nesse dia, por isso precisa desta lista
+// própria. Perfis de backoffice (Administrativo, etc.) nunca contam,
+// mesmo em HE.
+const CATEGORIAS_ATENDIMENTO_TOTAL = ['Farmacêutico', 'Farmacêutica', 'Diretor Técnico', 'Diretora Técnica', 'Diretor Técnico Adjunto', 'Diretora Técnica Adjunta', 'Técnico de Farmácia', 'Técnica de Farmácia', 'Técnico Auxiliar de Farmácia', 'Técnica Auxiliar de Farmácia'];
 const ESCALA_TIPOS_DIA = [
   { key: 'normal', label: 'Normal' },
   { key: 'ferias', label: 'Férias' },
@@ -37409,30 +37420,55 @@ function buildHorariosPage(container, goTo) {
     // validarCoberturaHorario acima, que segmenta ao minuto em vez de
     // amostrar por hora, para nunca deixar passar violações a meio da
     // hora, ex: alguém a entrar às 08:30).
+    // pedido explícito de Paulo 2026-08-21: o contador "Total" não tinha
+    // em conta ninguém em Hora Extra (nem reivindicada, nem manual) — só
+    // gente com turno normal. Passa a somar também Farmacêuticos/
+    // Técnicos de Farmácia (Quadro OU Prestador) em Hora Extra nessa
+    // hora — nunca perfis de backoffice, que não fazem atendimentos.
+    const colaboradorElegivelParaTotal = (utilizadorId) => {
+      const u = (STATE.usuarios || []).find(x => String(x.id) === String(utilizadorId));
+      return !!u && CATEGORIAS_ATENDIMENTO_TOTAL.includes(u.categoriaProfissional);
+    };
     const totaisPorHora = [];
     for (let hr = HORA_INICIO; hr < HORA_FIM; hr += 1) {
-      let n = 0;
+      const presentesNestaHora = new Set();
       posicoes.filter(escalaContaParaCoberturaTotal).forEach(v => {
         const linha = semana.dados[v.codigo] || { dias: {} };
         const dia = linha.dias[diaKey] || { tipo: 'folga' };
-        if (dia.tipo !== 'normal' || !dia.entrada || !dia.saida) return;
-        // Mesma exclusão de ausências sobrepostas usada nos alertas (ver
-        // validarCoberturaHorario) — o Total nunca deve contar alguém que
-        // está de férias/baixa como presente, mesmo que a célula ainda
-        // diga "normal".
         const colaboradorIdDoDia = (dia && dia.colaboradorId) || linha.colaboradorId;
-        if (escalaAusenciaDoDia(colaboradorIdDoDia, dataDoDiaSelecionado)) return;
-        // Presente nesta hora se QUALQUER segmento do turno (excluindo a
-        // pausa/almoço, ver escalaSegmentosTurno) a intersetar — nunca
-        // soma 1 por segmento, só conta a pessoa uma vez por hora.
-        const presenteNestaHora = escalaSegmentosTurno(dia, minutosNoIntervalo).some(seg => {
-          const inicioMin = seg.inicioMin + HORA_INICIO * 60;
-          const fimMin = seg.fimMin + HORA_INICIO * 60;
-          return inicioMin < (hr + 1) * 60 && fimMin > hr * 60;
+        if (dia.tipo === 'normal' && dia.entrada && dia.saida
+          && !escalaAusenciaDoDia(colaboradorIdDoDia, dataDoDiaSelecionado)) {
+          // Presente nesta hora se QUALQUER segmento do turno (excluindo a
+          // pausa/almoço, ver escalaSegmentosTurno) a intersetar — nunca
+          // soma 1 por segmento, só conta a pessoa uma vez por hora.
+          const presenteNestaHora = escalaSegmentosTurno(dia, minutosNoIntervalo).some(seg => {
+            const inicioMin = seg.inicioMin + HORA_INICIO * 60;
+            const fimMin = seg.fimMin + HORA_INICIO * 60;
+            return inicioMin < (hr + 1) * 60 && fimMin > hr * 60;
+          });
+          if (presenteNestaHora) presentesNestaHora.add(String(colaboradorIdDoDia));
+        }
+        // Hora Extra MANUAL (dia.heIntervalos) do próprio turno — soma
+        // quem está a fazer HE fora do horário normal, se elegível.
+        (dia.heIntervalos || []).forEach(iv => {
+          if (!iv.inicio || !iv.fim || !colaboradorIdDoDia || !colaboradorElegivelParaTotal(colaboradorIdDoDia)) return;
+          const inicioMin = minutosNoIntervalo(iv.inicio, false);
+          const fimMin = minutosNoIntervalo(iv.fim, true);
+          if (inicioMin < (hr + 1) * 60 && fimMin > hr * 60) presentesNestaHora.add(String(colaboradorIdDoDia));
         });
-        if (presenteNestaHora) n += 1;
       });
-      totaisPorHora.push(n);
+      // Hora Extra REIVINDICADA — pode ser de alguém sem vaga nenhuma
+      // nesse dia (ver colunas virtuais acima), por isso corre à parte
+      // dos "posicoes", sempre por utilizadorId da reivindicação.
+      escalaHorasExtraDoDia(semana.id, diaKey).forEach(bloco => {
+        escalaReivindicacoesDoBloco(bloco.id).forEach(r => {
+          if (!colaboradorElegivelParaTotal(r.utilizadorId)) return;
+          const inicioMin = minutosNoIntervalo(r.intervaloInicio, false);
+          const fimMin = minutosNoIntervalo(r.intervaloFim, true);
+          if (inicioMin < (hr + 1) * 60 && fimMin > hr * 60) presentesNestaHora.add(String(r.utilizadorId));
+        });
+      });
+      totaisPorHora.push(presentesNestaHora.size);
     }
     const colunaTotais = h('div', { class: 'escala-vertical-coluna escala-vertical-coluna-totais' }, [
       h('div', { class: 'escala-vertical-coluna-titulo' }, 'Total'),
