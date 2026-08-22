@@ -41550,7 +41550,24 @@ function buildEmpresasParceirasPage(container, goTo, farmaciaAtiva) {
 // para a sessão seguinte — eventualmente doutro colega, no mesmo
 // dispositivo — não herdar o contexto (nem o formulário) de quem saiu.
 let entregasContextoMemorizado = { farmaciaAtiva: null, activeTab: 'pendentes', searchQuery: '', showForm: false, editingId: null, draft: null };
-function buildEntregasPage(container, goTo) {
+function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
+  // BUG CORRIGIDO 2026-08-22 (pedido explícito: "fui para trás, guardou
+  // dados em rascunho"): o formulário aberto (showForm/editingId/draft)
+  // era propositadamente preservado em entregasContextoMemorizado — ver
+  // comentário longo acima — mas isso servia só para sobreviver a um
+  // REDESENHO EM SEGUNDO PLANO (Realtime/poll ~20s) a meio do
+  // preenchimento, nunca para o utilizador voltar a encontrar o mesmo
+  // rascunho depois de ter saído do módulo (sidebar) e voltado a entrar.
+  // Distinção agora feita com o mesmo `ehTransicaoDePagina` que o router
+  // já calcula (renderInterno) — só nas transições REAIS de página
+  // (utilizador navegou mesmo para fora e para dentro) é que o formulário
+  // é limpo; um redesenho de fundo enquanto se permanece no módulo
+  // continua a preservar tudo, exatamente como antes.
+  if (ehTransicaoDePagina) {
+    entregasContextoMemorizado.showForm = false;
+    entregasContextoMemorizado.editingId = null;
+    entregasContextoMemorizado.draft = null;
+  }
   // Só Estafeta e Administrador escolhem entre as duas farmácias — todos os
   // restantes colaboradores entram direta e automaticamente na Juncal.
   // Só Estafeta e Administrador escolhem entre as duas farmácias — o perfil
@@ -42189,19 +42206,23 @@ function buildEntregasPage(container, goTo) {
     normalizeNameFields(draft);
     if (draft.docReserva) draft.docReserva = String(draft.docReserva).toUpperCase();
     saving = true; rerender();
+    console.log('[Entregas] submit(): a gravar registo…');
     let registoGuardado = null;
     if (editingId) {
       const updated = await dbUpdate('entregas', editingId, draft);
+      console.log('[Entregas] submit(): dbUpdate concluído.', !!updated);
       if (updated) { STATE.entregas = STATE.entregas.map(r => r.id === editingId ? updated : r); registoGuardado = updated; }
       else formError = `Não foi possível guardar as alterações. ${lastDbError || 'Verifica a ligação e tenta novamente.'}`;
     } else {
       const created = await dbInsert('entregas', Object.assign({ farmacia: farmaciaAtiva, estadoEntrega: 'Pendente' }, draft));
+      console.log('[Entregas] submit(): dbInsert concluído.', !!created);
       if (created) { STATE.entregas = [created, ...STATE.entregas]; registoGuardado = created; }
       else formError = `Não foi possível criar o registo. ${lastDbError || 'Verifica a ligação e tenta novamente.'}`;
     }
     saving = false;
     if (!formError) {
       function finalizarSubmissaoEntrega() {
+        console.log('[Entregas] finalizarSubmissaoEntrega(): a fechar o formulário.');
         // Só limpa o rascunho local numa criação bem-sucedida — nunca a meio
         // de erros de rede, para nunca se perder o que já estava escrito.
         if (eraNovo) limparRascunhoLocal(rascunhoChaveEntregaNova());
@@ -42214,10 +42235,12 @@ function buildEntregasPage(container, goTo) {
         entregasContextoMemorizado.activeTab = activeTab;
         perguntarImprimirFormularioEntrega(registoGuardado);
         rerender();
+        console.log('[Entregas] finalizarSubmissaoEntrega(): concluído, formulário fechado.');
       }
       const numeroDigitado = String(draft.numeroFicha || '').trim();
       const nomeAtual = String(draft.nomeCliente || '').trim();
       if (!numeroDigitado || !nomeAtual) {
+        console.log('[Entregas] submit(): sem Nº de Ficha/Nome — a finalizar diretamente, sem tocar na ficha do cliente.');
         finalizarSubmissaoEntrega();
       } else if (!clienteFichaCarregada) {
         // Nº de Ficha digitado mas não encontrado em nenhuma das camadas
@@ -42238,12 +42261,14 @@ function buildEntregasPage(container, goTo) {
         // desativado, embora a entrega já estivesse mesmo gravada. Try/
         // catch garante que o formulário fecha SEMPRE a seguir, mesmo
         // que a ficha do cliente não tenha sido possível atualizar.
+        console.log('[Entregas] submit(): ficha nova — a chamar dbUpsertClienteHabitual…');
         (async () => {
           try {
             const gravado = await dbUpsertClienteHabitual({
               farmaciaId: farmaciaIdDe(), numeroFicha: numeroDigitado, nome: nomeAtual,
               morada: draft.morada || '', localidade: draft.localidade || '', contacto: draft.contacto || '',
             });
+            console.log('[Entregas] submit(): dbUpsertClienteHabitual (ficha nova) concluído.', !!gravado);
             if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
           } catch (e) {
             console.warn('[Entregas] não foi possível atualizar a ficha do cliente (a entrega já ficou gravada):', formatarErroSeguro(e));
@@ -42261,6 +42286,7 @@ function buildEntregasPage(container, goTo) {
           || String(draft.localidade || '').trim() !== String(clienteFichaCarregada.localidade || '').trim()
           || String(draft.contacto || '').trim() !== String(clienteFichaCarregada.contacto || '').trim();
         if (!alterou) {
+          console.log('[Entregas] submit(): ficha já carregada, sem alterações — a finalizar diretamente.');
           finalizarSubmissaoEntrega();
         } else {
           // Quando já se conhece o id da linha em clientes_habituais (ficha
@@ -42280,9 +42306,11 @@ function buildEntregasPage(container, goTo) {
           // Mesmo try/catch de segurança do ramo acima — a entrega já está
           // gravada nesta altura, uma falha aqui não pode voltar a deixar
           // o formulário preso em "A guardar...".
+          console.log('[Entregas] submit(): ficha alterada — a chamar dbUpsertClienteHabitual…');
           (async () => {
             try {
               const gravado = await dbUpsertClienteHabitual(payload);
+              console.log('[Entregas] submit(): dbUpsertClienteHabitual (ficha alterada) concluído.', !!gravado);
               if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
             } catch (e) {
               console.warn('[Entregas] não foi possível atualizar a ficha do cliente (a entrega já ficou gravada):', formatarErroSeguro(e));
@@ -44391,7 +44419,7 @@ function renderInterno(ehTransicaoDePagina) {
       case 'mapa48h': buildMapa48hPage(pageContainer, goTo); break;
       case 'vacinacao': buildVacinacaoPage(pageContainer, goTo); break;
       case 'mapa-tarefas': buildMapaTarefasPage(pageContainer, goTo); break;
-      case 'entregas': buildEntregasPage(pageContainer, goTo); break;
+      case 'entregas': buildEntregasPage(pageContainer, goTo, ehTransicaoDePagina); break;
       case 'horarios': buildHorariosPage(pageContainer, goTo); break;
       case 'gestao-empresas-parceiras': buildEmpresasParceirasPage(pageContainer, goTo, entregasContextoMemorizado.farmaciaAtiva || (STATE.consultaPreset && STATE.consultaPreset.farmacia) || 'Juncal'); STATE.consultaPreset = null; break;
       case 'recolhas': buildRecolhasPage(pageContainer, goTo); break;
