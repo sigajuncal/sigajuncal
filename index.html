@@ -7052,10 +7052,14 @@ async function dbUpsertClienteHabitual(payload) {
     const row = recordToRow(Object.assign({}, payload, { farmaciaId, numeroFicha }));
     const nifPayload = String(payload.nif || '').trim();
     const onConflict = nifPayload ? 'farmacia_id,nif' : 'farmacia_id,numero_ficha,nome';
-    const { data, error } = await sb.from('clientes_habituais')
+    // comTimeoutSupabase (2026-08-22) — mesma proteção do dbInsert/dbUpdate
+    // genéricos: sem isto, um pedido de rede pendurado ficava à espera
+    // para sempre, sem nunca lançar exceção nenhuma para o try/catch
+    // apanhar (ver comentário completo em comAutoLimpezaDeColunas).
+    const { data, error } = await comTimeoutSupabase(sb.from('clientes_habituais')
       .upsert(row, { onConflict })
       .select('id, farmacia_id, numero_ficha, nome, morada, localidade, contacto, nif, genero, data_nascimento')
-      .maybeSingle();
+      .maybeSingle(), 25000);
     if (error) { console.error('[Supabase] erro ao upsert clientes_habituais:', error.message); return null; }
     return data ? rowToRecord(data) : null;
   } catch (e) { console.error('[Supabase] erro de rede ao upsert clientes_habituais:', formatarErroSeguro(e)); return null; }
@@ -8401,6 +8405,31 @@ function removerColunasAprendidas(listKey, row) {
   set.forEach(col => { delete out[col]; });
   return out;
 }
+// BUG CORRIGIDO 2026-08-22 (pedido explícito, causa raiz real do "A
+// guardar..." preso no Posto de Apoio — o try/catch anterior no upsert da
+// ficha do cliente não chegava a ser a causa: confirmado pelo utilizador
+// que continuava igual mesmo depois desse fix): nenhuma chamada ao
+// Supabase em toda a app tinha um limite de tempo — se o pedido de rede
+// ficasse pendurado (Wi-Fi instável/degradado, sem chegar a devolver erro
+// NEM resposta), o `await` correspondente ficava suspenso PARA SEMPRE,
+// nunca lançava exceção nenhuma para o try/catch apanhar, e a função que
+// fecha o formulário nunca era sequer alcançada — o "saving"/"A guardar…"
+// ficava preso indefinidamente, por muito robusto que o resto do código
+// à volta fosse. comTimeoutSupabase() força qualquer pedido a resolver-se
+// SEMPRE dentro de `ms`, mesmo que o pedido de rede em si nunca volte —
+// devolve um erro (mesmo formato {data,error} que o resto do código já
+// espera) em vez de ficar pendurado, o que deixa toda a cadeia de
+// tratamento de erro já existente (formError/lastDbError/showToast)
+// disparar normalmente e o formulário voltar a ficar utilizável.
+function comTimeoutSupabase(promise, ms) {
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((resolve) => setTimeout(() => resolve({
+      data: null,
+      error: { message: 'Sem resposta do servidor (tempo esgotado) — verifica a ligação à internet e tenta novamente.' },
+    }), ms || 25000)),
+  ]);
+}
 // Executa fn() (uma chamada Supabase que devolve {data,error}) e, sempre
 // que o erro for "coluna em falta", aprende essa coluna, remove-a do row e
 // tenta outra vez — até um máximo de tentativas generoso (cobre vários
@@ -8417,7 +8446,7 @@ async function comAutoLimpezaDeColunas(listKey, row, fn) {
     return { data: null, error: { message: `Nenhum dos campos enviados corresponde a uma coluna existente em "${TABLES[listKey] || listKey}".` } };
   }
   while (true) {
-    const resultado = await fn(rowAtual);
+    const resultado = await comTimeoutSupabase(fn(rowAtual), 25000);
     const coluna = resultado.error ? extrairColunaEmFalta(resultado.error.message) : null;
     if (!coluna || tentativas >= 8) return resultado;
     const set = CAMPOS_APRENDIDOS_EM_FALTA[listKey] || (CAMPOS_APRENDIDOS_EM_FALTA[listKey] = new Set());
