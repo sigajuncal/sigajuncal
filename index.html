@@ -31312,11 +31312,13 @@ function buildHorariosPage(container, goTo) {
   }
   async function guardarEdicaoNotaEquipa(nota, novoTexto) {
     if (!novoTexto.trim()) return;
-    // Reforço da regra (não só escondido na UI): só o autor edita, e só
-    // antes de a nota ser validada pela Direção — uma vez validada,
-    // fica bloqueada para sempre (pedido explícito 2026-08-14).
+    // Reforço da regra (não só escondido na UI): o autor só edita antes de
+    // validada pela Direção; a Direção (Hugo/Paulo) passa a poder editar
+    // SEMPRE, mesmo já validada — pedido explícito 2026-08-22, mesmo
+    // padrão já usado em Pedidos Especiais (podeEditarPedidoEspecial).
     const souAutor = activeUser && String(nota.autorId) === String(activeUser.id);
-    if (!souAutor || nota.validadoDirecao) { showToast('Já não é possível editar esta nota.', 'error'); rerender(); return; }
+    const podeEditar = isMasterUser() || (souAutor && !nota.validadoDirecao);
+    if (!podeEditar) { showToast('Já não é possível editar esta nota.', 'error'); rerender(); return; }
     const updated = await dbUpdate('escalaNotasSemana', nota.id, { texto: novoTexto.trim(), updatedAt: new Date().toISOString() });
     if (updated) {
       STATE.escalaNotasSemana = STATE.escalaNotasSemana.map(n => n.id === nota.id ? updated : n);
@@ -31327,11 +31329,11 @@ function buildHorariosPage(container, goTo) {
     rerender();
   }
   function eliminarNotaEquipa(nota) {
-    // Reforço da regra (não só escondido na UI): antes de validada, só o
-    // autor elimina; depois de validada, só a Direção (pedido explícito
-    // 2026-08-14).
+    // Reforço da regra (não só escondido na UI): o autor só elimina antes
+    // de validada; a Direção pode eliminar SEMPRE, validada ou não —
+    // pedido explícito 2026-08-22 (mesmo padrão de Pedidos Especiais).
     const souAutor = activeUser && String(nota.autorId) === String(activeUser.id);
-    const podeEliminar = nota.validadoDirecao ? isMasterUser() : souAutor;
+    const podeEliminar = isMasterUser() || (souAutor && !nota.validadoDirecao);
     if (!podeEliminar) { showToast('Não tem permissão para eliminar esta nota.', 'error'); rerender(); return; }
     confirmDialog('Eliminar esta nota? Esta ação não pode ser desfeita.', async () => {
       const ok = await dbDelete('escalaNotasSemana', nota.id);
@@ -31414,26 +31416,23 @@ function buildHorariosPage(container, goTo) {
         })()
       : h('p', { style: 'margin:0;font-size:13.5px;line-height:1.5;color:var(--pharm-800);white-space:pre-wrap;' }, nota.texto);
     const acoesDiscretas = [];
-    // Antes de validada: só o autor edita/elimina a própria nota (pedido
-    // explícito 2026-08-14). Depois de validada pela Direção, a nota
-    // fica bloqueada para o autor — deixa de poder editar OU eliminar
-    // (é um registo já confirmado, não se mexe mais) — só a própria
-    // Direção (isMasterUser()) consegue eliminá-la a partir daí, nunca
-    // editá-la (edição continua reservada ao autor, só antes da
-    // validação; depois de validada, ninguém edita — só se elimina e
-    // volta a escrever-se de novo, se for caso disso).
-    if (!emEdicao && souAutor && !nota.validadoDirecao) {
+    // Autor edita/elimina só antes de validada; a Direção (isMasterUser())
+    // pode editar E eliminar SEMPRE, validada ou não — pedido explícito
+    // 2026-08-22, mesmo padrão já usado em Pedidos Especiais (onde Hugo/
+    // Paulo sempre puderam editar/eliminar qualquer pedido, decidido ou
+    // não). Reforço real da regra vive em guardarEdicaoNotaEquipa/
+    // eliminarNotaEquipa — isto é só a UI.
+    const podeEditarEstaNota = isMasterUser() || (souAutor && !nota.validadoDirecao);
+    const podeEliminarEstaNota = isMasterUser() || (souAutor && !nota.validadoDirecao);
+    if (!emEdicao && podeEditarEstaNota) {
       acoesDiscretas.push(h('button', {
         class: 'escala-nota-acao-discreta', title: 'Editar',
         onclick: () => requireAuth(() => { notaEquipaEditandoId = nota.id; notaEquipaEditandoTexto = nota.texto; rerender(); }),
       }, Icon('pencil', { size: 12, strokeWidth: 2.2 })));
+    }
+    if (!emEdicao && podeEliminarEstaNota) {
       acoesDiscretas.push(h('button', {
         class: 'escala-nota-acao-discreta', title: 'Eliminar',
-        onclick: () => requireAuth(() => eliminarNotaEquipa(nota)),
-      }, Icon('trash', { size: 12, strokeWidth: 2.2 })));
-    } else if (!emEdicao && isMasterUser() && nota.validadoDirecao) {
-      acoesDiscretas.push(h('button', {
-        class: 'escala-nota-acao-discreta', title: 'Eliminar (só Direção, nota já validada)',
         onclick: () => requireAuth(() => eliminarNotaEquipa(nota)),
       }, Icon('trash', { size: 12, strokeWidth: 2.2 })));
     }
@@ -31618,7 +31617,15 @@ function buildHorariosPage(container, goTo) {
   // referem (dataPedido/dataInicio); cai para createdAt só como rede de
   // segurança para registos antigos sem essa data.
   function pedidoEspecialJaPassou(pedido) {
-    return !!pedido.dataFim && pedido.dataFim < todayISO();
+    // Baseado na SEMANA a que a data de fim pertence (mesmo critério de
+    // "semana passada" usado em todo o resto do módulo, ver
+    // pedidoSemanaJaPassou/escalaSemanaNoPassado) — não só a data crua.
+    // Pedido explícito 2026-08-22: um Pedido Especial que termina a meio
+    // desta semana (ainda a decorrer) deve continuar em Ativos até essa
+    // semana também ter terminado por completo, para nunca "desaparecer"
+    // de Ativos ainda a meio da própria semana em curso.
+    if (!pedido.dataFim) return false;
+    return escalaSegundaFeiraDaSemanaDeISO(pedido.dataFim) < escalaSegundaFeiraHoje();
   }
   function pedidosUnificadosTodosPorOrdem() {
     const semanas = (STATE.escalaNotasSemana || []).map(n => ({
@@ -33143,6 +33150,11 @@ function buildHorariosPage(container, goTo) {
     const painelHE = buildPainelHorasExtra(semana, false);
     painelHE.style.marginTop = '0';
     const ehPrestador = escalaUtilizadorEhPrestador(activeUser);
+    // Bloco estritamente pessoal — nunca partilhado com mais ninguém (ver
+    // buildNotasPessoaisSemana). Substitui o antigo bloco único de
+    // "Observações" (esse ficou exclusivo de "Escala da Equipa", agora
+    // como feed partilhado — ver buildFeedNotasEquipa).
+    const notasPessoaisEl = buildNotasPessoaisSemana(semana);
     if (ehPrestador) {
       // Prestadores de Serviço: "Horas Extra Disponíveis" fica por CIMA
       // de "A Minha Semana" — tanto em mobile como em desktop, sempre a
@@ -33152,18 +33164,26 @@ function buildHorariosPage(container, goTo) {
       // margin-bottom manual aqui.
       wrap.appendChild(painelHE);
       wrap.appendChild(semanaCardsWrap);
+      wrap.appendChild(notasPessoaisEl);
     } else {
       // Colaboradores do Quadro: em desktop (≥1150px) "Horas Extra
       // Disponíveis" fica ao lado de "A Minha Semana" (2 colunas, ver
       // .escala-semana-he-grid); em mobile continua empilhado por baixo,
-      // como sempre foi.
+      // como sempre foi. BUG CORRIGIDO 2026-08-22 (espaçamento
+      // "despropositado" reportado mesmo depois do fix de gap anterior):
+      // a causa real não era margem a dobrar, era "Notas Pessoais" viver
+      // FORA do grid, por baixo das DUAS colunas — como a coluna da
+      // direita (Horas Extra Disponíveis) costuma ser bem mais alta do
+      // que "A Minha Semana", ficava sempre um vazio grande por baixo de
+      // "A Minha Semana" até "Notas Pessoais" aparecer (só depois de a
+      // coluna mais alta terminar). Corrigido metendo "Notas Pessoais"
+      // DENTRO da própria coluna esquerda (semanaCardsWrap), logo a
+      // seguir a "A Minha Semana" — passa a aparecer imediatamente
+      // abaixo, com o mesmo gap:16px do resto da coluna, independente da
+      // altura da coluna da direita.
+      semanaCardsWrap.appendChild(notasPessoaisEl);
       wrap.appendChild(h('div', { class: 'escala-semana-he-grid' }, [semanaCardsWrap, painelHE]));
     }
-    // Bloco estritamente pessoal — nunca partilhado com mais ninguém (ver
-    // buildNotasPessoaisSemana). Substitui o antigo bloco único de
-    // "Observações" (esse ficou exclusivo de "Escala da Equipa", agora
-    // como feed partilhado — ver buildFeedNotasEquipa).
-    wrap.appendChild(buildNotasPessoaisSemana(semana));
     return wrap;
   }
 
@@ -35131,9 +35151,14 @@ function buildHorariosPage(container, goTo) {
     const dataTexto = pedido.dataInicio === pedido.dataFim ? formatDate(pedido.dataInicio) : `${formatDate(pedido.dataInicio)} — ${formatDate(pedido.dataFim)}`;
     const acoes = [];
     if (podeEditarPedidoEspecial(pedido)) {
-      const editarBtn = h('button', { class: 'btn-fab-sm tone-blue', title: 'Editar' }, Icon('pencil', { size: 13, strokeWidth: 2.2 }));
+      // Mesma classe discreta já usada nos botões de editar/eliminar de
+      // "Pedidos e Registos da Semana" (.escala-nota-acao-discreta) —
+      // pedido explícito 2026-08-22: "torna os botões mais subtis", para
+      // os dois tipos ficarem visualmente coerentes na lista agregada de
+      // "Pedidos".
+      const editarBtn = h('button', { class: 'escala-nota-acao-discreta', title: 'Editar' }, Icon('pencil', { size: 12, strokeWidth: 2.2 }));
       editarBtn.addEventListener('click', () => requireAuth(() => pedidoEspecialAbrirEdicao(pedido)));
-      const eliminarBtn = h('button', { class: 'btn-fab-sm', title: 'Eliminar' }, Icon('trash', { size: 13, strokeWidth: 2.2 }));
+      const eliminarBtn = h('button', { class: 'escala-nota-acao-discreta', title: 'Eliminar' }, Icon('trash', { size: 12, strokeWidth: 2.2 }));
       eliminarBtn.addEventListener('click', () => requireAuth(() => eliminarPedidoEspecialConfirm(pedido, rerender)));
       acoes.push(editarBtn, eliminarBtn);
     }
