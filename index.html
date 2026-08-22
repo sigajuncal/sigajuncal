@@ -11897,29 +11897,40 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
     const numeroDigitado = String(draft.numCliente || '').trim();
     const nomeAtual = String(draft.nome || '').trim();
     if (!numeroDigitado || !nomeAtual) { seguir(); return; }
-    if (!clienteFichaCarregada) {
-      const gravado = await dbUpsertClienteHabitual({ farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, contacto: draft.contacto || '' });
-      if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
-      seguir();
-    } else {
-      const alterou = nomeAtual !== String(clienteFichaCarregada.nome || '').trim()
-        || String(draft.contacto || '').trim() !== String(clienteFichaCarregada.contacto || '').trim();
-      if (!alterou) { seguir(); return; }
-      // Só Nome/Contacto vão no payload — Manipulados não tem campos de
-      // Morada/Localidade, por isso nunca os inclui aqui (evita apagar
-      // por engano dados que só o formulário de Entregas conhece). Quando
-      // já se conhece o id da linha em clientes_habituais (ficha carregada
-      // dessa fonte, nunca da referência clientes_juncal só de leitura),
-      // inclui-se sempre no payload — dbUpsertClienteHabitual faz então
-      // UPDATE direto por id, em vez de arriscar um upsert por chave
-      // composta a apanhar a pessoa errada quando a mesma Ficha tem mais
-      // do que um utente associado (família a partilhar a ficha).
-      const payload = { farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, contacto: draft.contacto || '' };
-      if (clienteFichaCarregada.fonte === 'clientes_habituais' && clienteFichaCarregada.id) payload.id = clienteFichaCarregada.id;
-      const gravado = await dbUpsertClienteHabitual(payload);
-      if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
-      seguir();
+    // try/catch (2026-08-22, verificação de segurança pedida depois do bug
+    // do "A guardar..." preso em Entregas): aqui finalizarSubmit() já fecha
+    // o formulário (showForm=false + rerender()) ANTES de chamar esta
+    // função, e chama-a sem await — uma exceção nunca deixaria o
+    // formulário preso. Mesmo assim, sem try/catch ficava uma rejeição de
+    // Promise por apanhar; acrescentado só por precaução/consistência, não
+    // por haver aqui o mesmo bug.
+    try {
+      if (!clienteFichaCarregada) {
+        const gravado = await dbUpsertClienteHabitual({ farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, contacto: draft.contacto || '' });
+        if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
+      } else {
+        const alterou = nomeAtual !== String(clienteFichaCarregada.nome || '').trim()
+          || String(draft.contacto || '').trim() !== String(clienteFichaCarregada.contacto || '').trim();
+        if (alterou) {
+          // Só Nome/Contacto vão no payload — Manipulados não tem campos de
+          // Morada/Localidade, por isso nunca os inclui aqui (evita apagar
+          // por engano dados que só o formulário de Entregas conhece). Quando
+          // já se conhece o id da linha em clientes_habituais (ficha carregada
+          // dessa fonte, nunca da referência clientes_juncal só de leitura),
+          // inclui-se sempre no payload — dbUpsertClienteHabitual faz então
+          // UPDATE direto por id, em vez de arriscar um upsert por chave
+          // composta a apanhar a pessoa errada quando a mesma Ficha tem mais
+          // do que um utente associado (família a partilhar a ficha).
+          const payload = { farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, contacto: draft.contacto || '' };
+          if (clienteFichaCarregada.fonte === 'clientes_habituais' && clienteFichaCarregada.id) payload.id = clienteFichaCarregada.id;
+          const gravado = await dbUpsertClienteHabitual(payload);
+          if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
+        }
+      }
+    } catch (e) {
+      console.warn('[Manipulados] não foi possível atualizar a ficha do cliente (o pedido já ficou gravado):', formatarErroSeguro(e));
     }
+    seguir();
   }
   async function finalizarSubmit() {
     // Se o Estado passa de "Pedido" para "Satisfeito" num registo com Rota
@@ -22984,43 +22995,55 @@ function criarPerguntaSobreFichaCliente(draft, getClienteFichaCarregada) {
     const nomeAtual = String(draft.nomeUtente || '').trim();
     if (!numeroDigitado || !nomeAtual) return;
     const clienteFichaCarregada = getClienteFichaCarregada();
-    if (!clienteFichaCarregada) {
-      // Ficha nova — grava-se automaticamente, em silêncio, sem popup (mesma
-      // regra de Entregas/Manipulados — a submissão nunca é interrompida).
-      const gravado = await dbUpsertClienteHabitual({ farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, nif: draft.nifUtente || '', genero: draft.genero || '', dataNascimento: draft.dataNascimento || '' });
-      if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
-    } else {
-      // Comparação estrita apenas aos dados da FICHA do cliente — Nome,
-      // NIF, Género e Data de Nascimento. Campos exclusivos do documento
-      // em si (Valor Total, Discriminado, itens, Observações, etc.) NUNCA
-      // entram aqui — não fazem parte da ficha do cliente, só da
-      // declaração atual.
-      // Género só conta como alteração se tiver sido escolhido À MÃO
-      // (draft.generoEscolhidoManualmente) — uma sugestão automática por
-      // dedução do nome (deduzirGeneroPorNome, ver
-      // buildFichaClienteDeclaracaoFields) nunca é, por si só, motivo para
-      // atualizar a ficha.
-      // Data de Nascimento compara sempre normalizada para AAAA-MM-DD
-      // (normalizarDataParaComparacao), para nunca dar falso positivo por
-      // causa de uma diferença de formato entre o valor vindo da ficha e o
-      // do <input type="date">.
-      const generoConta = !!draft.generoEscolhidoManualmente;
-      const alterou = nomeAtual !== String(clienteFichaCarregada.nome || '').trim()
-        || String(draft.nifUtente || '').trim() !== String(clienteFichaCarregada.nif || '').trim()
-        || (generoConta && String(draft.genero || '').trim() !== String(clienteFichaCarregada.genero || '').trim())
-        || normalizarDataParaComparacao(draft.dataNascimento) !== normalizarDataParaComparacao(clienteFichaCarregada.dataNascimento);
-      if (!alterou) return;
-      // Dados alterados — atualiza-se automaticamente, em silêncio. Quando
-      // já se conhece o id da linha em clientes_habituais (ficha carregada
-      // dessa fonte, nunca da referência clientes_juncal só de leitura),
-      // inclui-se sempre no payload — dbUpsertClienteHabitual faz então
-      // UPDATE direto por id, em vez de arriscar um upsert por chave
-      // composta a apanhar a pessoa errada quando a mesma Ficha tem mais
-      // do que um utente associado (família a partilhar a ficha).
-      const payload = { farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, nif: draft.nifUtente || '', genero: draft.genero || '', dataNascimento: draft.dataNascimento || '' };
-      if (clienteFichaCarregada.fonte === 'clientes_habituais' && clienteFichaCarregada.id) payload.id = clienteFichaCarregada.id;
-      const gravado = await dbUpsertClienteHabitual(payload);
-      if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
+    // try/catch (2026-08-22, verificação de segurança pedida depois do bug
+    // do "A guardar..." preso em Entregas): aqui esta função já é chamada
+    // SEM await pelos 3 formulários de Declarações (o PDF/print/navegação
+    // seguem-se logo a seguir, nunca esperam por isto) — uma exceção nunca
+    // travaria o formulário. Mesmo assim, sem try/catch ficava uma
+    // rejeição de Promise por apanhar (nunca aparecia ao utilizador, mas
+    // suja a consola); acrescentado só por precaução/consistência, não
+    // por haver aqui o mesmo bug.
+    try {
+      if (!clienteFichaCarregada) {
+        // Ficha nova — grava-se automaticamente, em silêncio, sem popup (mesma
+        // regra de Entregas/Manipulados — a submissão nunca é interrompida).
+        const gravado = await dbUpsertClienteHabitual({ farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, nif: draft.nifUtente || '', genero: draft.genero || '', dataNascimento: draft.dataNascimento || '' });
+        if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
+      } else {
+        // Comparação estrita apenas aos dados da FICHA do cliente — Nome,
+        // NIF, Género e Data de Nascimento. Campos exclusivos do documento
+        // em si (Valor Total, Discriminado, itens, Observações, etc.) NUNCA
+        // entram aqui — não fazem parte da ficha do cliente, só da
+        // declaração atual.
+        // Género só conta como alteração se tiver sido escolhido À MÃO
+        // (draft.generoEscolhidoManualmente) — uma sugestão automática por
+        // dedução do nome (deduzirGeneroPorNome, ver
+        // buildFichaClienteDeclaracaoFields) nunca é, por si só, motivo para
+        // atualizar a ficha.
+        // Data de Nascimento compara sempre normalizada para AAAA-MM-DD
+        // (normalizarDataParaComparacao), para nunca dar falso positivo por
+        // causa de uma diferença de formato entre o valor vindo da ficha e o
+        // do <input type="date">.
+        const generoConta = !!draft.generoEscolhidoManualmente;
+        const alterou = nomeAtual !== String(clienteFichaCarregada.nome || '').trim()
+          || String(draft.nifUtente || '').trim() !== String(clienteFichaCarregada.nif || '').trim()
+          || (generoConta && String(draft.genero || '').trim() !== String(clienteFichaCarregada.genero || '').trim())
+          || normalizarDataParaComparacao(draft.dataNascimento) !== normalizarDataParaComparacao(clienteFichaCarregada.dataNascimento);
+        if (!alterou) return;
+        // Dados alterados — atualiza-se automaticamente, em silêncio. Quando
+        // já se conhece o id da linha em clientes_habituais (ficha carregada
+        // dessa fonte, nunca da referência clientes_juncal só de leitura),
+        // inclui-se sempre no payload — dbUpsertClienteHabitual faz então
+        // UPDATE direto por id, em vez de arriscar um upsert por chave
+        // composta a apanhar a pessoa errada quando a mesma Ficha tem mais
+        // do que um utente associado (família a partilhar a ficha).
+        const payload = { farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, nif: draft.nifUtente || '', genero: draft.genero || '', dataNascimento: draft.dataNascimento || '' };
+        if (clienteFichaCarregada.fonte === 'clientes_habituais' && clienteFichaCarregada.id) payload.id = clienteFichaCarregada.id;
+        const gravado = await dbUpsertClienteHabitual(payload);
+        if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
+      }
+    } catch (e) {
+      console.warn('[Declarações] não foi possível atualizar a ficha do cliente (o documento já ficou gravado):', formatarErroSeguro(e));
     }
   };
 }
