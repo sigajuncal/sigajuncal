@@ -16726,7 +16726,87 @@ function financeiroTotalAno(ano, campo) {
   for (let mes = 1; mes <= 12; mes++) total += financeiroTotalMes(ano, mes, campo);
   return total;
 }
-// Projeção/Total Anual de QUALQUER ano — parametrizada, para o bloco
+// ---- Sazonalidade histórica real (2026-08-22, pedido explícito, depois
+// de confirmado que Jan/2021-Dez/2025 têm valores mensais REAIS gravados
+// — não previsões — no dia 1 de cada mês em faturacao_diaria, via "Registo
+// em Tabela"; ver modoMensal() em abrirModalRegistoEmTabela) — substitui o
+// método anterior (Objetivo Mensal × desempenho) como fonte principal.
+// CORRIGIDO ainda no mesmo dia (comparação feita com uma 2ª opinião
+// externa, ChatGPT, que apontou uma distorção real no 1º rascunho): a
+// primeira versão usava a média pesada dos valores brutos (€) de cada mês
+// como "baseline", e comparava 2026 diretamente contra esse baseline para
+// medir o crescimento — mas esse baseline pesado corresponde, na prática,
+// a um "ano efetivo" algures entre 2023-2024 (não 2025), por a farmácia
+// estar em crescimento forte todos os anos; comparar 2026 contra um ponto
+// ~2 anos mais atrás inflacionava artificialmente o fator de crescimento
+// (dava +75%, quando o crescimento homólogo real 2026 vs 2025 é +34%).
+// Método correto agora em 2 peças SEPARADAS, para nunca misturar "forma"
+// com "nível":
+// 1) FORMA sazonal = fração de cada mês no total do seu próprio ano
+//    (não o valor em €) — média pesada (mais peso aos anos recentes) dessa
+//    fração ao longo de 2021-2025. Ao normalizar por ano antes de fazer a
+//    média, a forma fica imune ao crescimento entre anos — descreve só
+//    "que fatia do ano é tipicamente cada mês", suavizada por 5 anos em
+//    vez de depender de 1 ano só (2025) que podia ter uma anomalia
+//    pontual nalgum mês.
+// 2) CRESCIMENTO homólogo = 2026 (meses já fechados) ÷ os MESMOS meses de
+//    2025 (só o ano imediatamente anterior, não uma média de vários anos)
+//    — a comparação mais direta e menos distorcida do ritmo atual.
+// Projeção de cada mês futuro = forma sazonal desse mês × (Total real de
+// 2025 × crescimento homólogo).
+// Anos histórico completos disponíveis para a forma sazonal — do mais
+// antigo (2021) até ao ano ANTERIOR ao corrente (o ano em curso nunca
+// entra aqui, mesmo com meses já fechados — só entram anos 100%
+// fechados). Um ano só conta se tiver mesmo faturação gravada (>0).
+function financeiroAnosHistoricosDisponiveis(anoAtual) {
+  const ANO_MAIS_ANTIGO = 2021;
+  const anos = [];
+  for (let a = anoAtual - 1; a >= ANO_MAIS_ANTIGO; a--) {
+    if (financeiroTotalAno(a, 'faturacao') > 0) anos.push(a);
+  }
+  return anos.sort((a, b) => a - b); // crescente — do mais antigo para o mais recente
+}
+// Pesos lineares crescentes (1,2,...,N), normalizados para somar 1 — o ano
+// mais recente pesa N vezes mais do que o mais antigo dos N usados,
+// decrescendo linearmente para trás. Pedido explícito: "para que 2021 não
+// tenha o mesmo peso que 2025 se o negócio mudou estruturalmente".
+function financeiroPesosRecentes(n) {
+  const soma = n * (n + 1) / 2;
+  return Array.from({ length: n }, (_, i) => (i + 1) / soma); // índice 0 = ano mais antigo
+}
+// Forma sazonal de um mês — fração pesada (0 a 1) que esse mês representa
+// do total do seu próprio ano, em média ao longo dos anos históricos
+// disponíveis. A soma da forma sazonal dos 12 meses é sempre ~1. null se
+// não houver nenhum ano histórico.
+function financeiroFormaSazonalMes(mesAlvo, campo) {
+  campo = campo || 'faturacao';
+  const anoAtualReal = new Date().getFullYear();
+  const anos = financeiroAnosHistoricosDisponiveis(anoAtualReal);
+  if (!anos.length) return null;
+  const pesos = financeiroPesosRecentes(anos.length);
+  let soma = 0;
+  anos.forEach((ano, i) => {
+    const totalAno = financeiroTotalAno(ano, campo);
+    if (totalAno > 0) soma += (financeiroTotalMes(ano, mesAlvo, campo) / totalAno) * pesos[i];
+  });
+  return soma;
+}
+// Crescimento homólogo — o que o ano corrente já fez nos meses fechados,
+// dividido pelo que os MESMOS meses fizeram no ano imediatamente
+// anterior (só 1 ano de comparação, de propósito — é o sinal mais direto
+// e menos distorcido do ritmo atual). null se não houver meses fechados
+// ou não houver ano anterior com dados.
+function financeiroCrescimentoHomologo(ano, campo) {
+  campo = campo || 'faturacao';
+  const mesAtualReal = new Date().getMonth() + 1;
+  let real = 0, realAnoAnterior = 0;
+  for (let m = 1; m < mesAtualReal; m++) {
+    real += financeiroTotalMes(ano, m, campo);
+    realAnoAnterior += financeiroTotalMes(ano - 1, m, campo);
+  }
+  if (realAnoAnterior <= 0 || real <= 0) return null;
+  return real / realAnoAnterior;
+}
 // "Projeção Anual" acompanhar o Ano selecionado no navegador de Mês/Ano
 // dos cartões (não fica preso ao ano real de hoje). Três casos:
 // - Ano passado (já todo fechado): devolve o total real, sem "projetar"
@@ -16734,26 +16814,14 @@ function financeiroTotalAno(ano, campo) {
 // - Ano futuro (ainda sem nenhum dia): devolve 0, sem dados válidos.
 // - Ano corrente (o de hoje, seja qual for): soma dos meses já fechados
 //   (reais) + Projeção de Fecho do mês em curso (ritmo diário desse
-//   próprio mês) + os meses ainda por começar — projetados com o padrão
-//   SAZONAL da farmácia (pedido explícito 2026-08-16), não com uma média
-//   diária plana:
-//   1) Calcula-se o "desempenho" do ano até agora: desempenho real (meses
-//      fechados reais + projeção de fecho do mês em curso) ÷ soma dos
-//      Objetivos Mensais desses MESMOS meses (só entram meses que têm
-//      Objetivo definido). Isto diz "este ano está a X% do que foi
-//      planeado", sem qualquer suposição de sazonalidade própria — só
-//      aritmética entre o real e o que já foi definido.
-//   2) Cada mês FUTURO com Objetivo Mensal definido entra na projeção
-//      como Objetivo desse mês × esse desempenho — ou seja, usa a forma
-//      sazonal que o próprio utilizador já codificou ao definir
-//      Objetivos diferentes por mês (ex: Dezembro mais alto que
-//      Fevereiro), escalada pelo ritmo real do ano.
-//   3) Um mês futuro SEM Objetivo Mensal definido (ou, se não houver
-//      Objetivo em NENHUM mês já decorrido, para não haver desempenho
-//      calculável) cai no método antigo só para esse mês: Média Diária
-//      do Ano até ontem × dias desse mês — a melhor aproximação possível
-//      sem qualquer padrão sazonal conhecido. Escalável para
-//      2027/2028/... sem qualquer alteração de código.
+//   próprio mês) + os meses ainda por começar — projetados com a forma
+//   sazonal real (financeiroFormaSazonalMes) × [Total real do ano
+//   anterior × crescimento homólogo (financeiroCrescimentoHomologo)],
+//   ver o comentário completo acima destas duas funções. Sem histórico
+//   disponível nalgum mês/campo específico (nunca deve acontecer com os
+//   dados atuais, mas mantido como rede de segurança), cai para o método
+//   antigo: Objetivo Mensal × desempenho vs. Objetivo, ou Média Diária
+//   do Ano se também não houver Objetivo definido.
 function financeiroProjecaoAnual(ano, campo) {
   campo = campo || 'faturacao';
   const anoAtualReal = new Date().getFullYear();
@@ -16766,9 +16834,16 @@ function financeiroProjecaoAnual(ano, campo) {
   const mediaMesAtual = financeiroMediaDiariaMes(ano, mesAtualReal, campo);
   const projecaoFecho = mediaMesAtual * financeiroDiasDoMes(ano, mesAtualReal);
   const mediaDiariaAno = financeiroMediaDiariaAno(ano, ontemReal, campo);
+  const crescimentoHomologo = financeiroCrescimentoHomologo(ano, campo);
+  const totalAnoAnterior = financeiroTotalAno(ano - 1, campo);
+  // Nível de referência para 2026 = total real de 2025 × crescimento
+  // homólogo — depois distribuído pelos meses futuros conforme a FORMA
+  // sazonal (fração do ano) de cada um, nunca a forma em € bruto (ver
+  // comentário acima: misturar os dois foi o erro do primeiro rascunho).
+  const nivelAnoEstimado = (totalAnoAnterior > 0 && crescimentoHomologo) ? totalAnoAnterior * crescimentoHomologo : null;
 
-  // Desempenho vs. Objetivo Mensal até agora (só faz sentido em €, e só
-  // com pelo menos 1 mês decorrido com Objetivo definido).
+  // Rede de segurança: só entra em ação se faltar histórico para algum
+  // mês específico — desempenho vs. Objetivo Mensal (método antigo).
   let desempenho = null;
   if (campo === 'faturacao') {
     let somaObjetivo = 0, somaReal = 0;
@@ -16783,6 +16858,11 @@ function financeiroProjecaoAnual(ano, campo) {
 
   let projecaoMesesFuturos = 0;
   for (let m = mesAtualReal + 1; m <= 12; m++) {
+    const formaMes = financeiroFormaSazonalMes(m, campo);
+    if (formaMes && nivelAnoEstimado) {
+      projecaoMesesFuturos += formaMes * nivelAnoEstimado;
+      continue;
+    }
     const objMes = campo === 'faturacao' ? financeiroMetaDoMes(ano, m) : null;
     if (desempenho !== null && objMes) projecaoMesesFuturos += objMes * desempenho;
     else projecaoMesesFuturos += mediaDiariaAno * financeiroDiasDoMes(ano, m);
@@ -19494,7 +19574,7 @@ function buildFinanceiroPage(container, goTo) {
         h('div', { class: 'fin-metric-header' }, [
           h('span', { class: 'fin-metric-icon tone-money' }, Icon('target', { size: 14, strokeWidth: 2 })),
           h('p', { class: 'fin-kpi-label' }, `Projeção Anual ${anoSel}`),
-          construirIconeAjuda('Meses já fechados: valor real. Mês em curso: ritmo diário desse mês. Meses ainda por começar: usam o Objetivo Mensal já definido para cada um (a forma sazonal que já conheces da farmácia), ajustado pelo desempenho real do ano até agora face ao que estava planeado. Sem Objetivo Mensal definido para algum mês futuro, esse mês usa a média diária do ano.'),
+          construirIconeAjuda('Meses já fechados: valor real. Mês em curso: ritmo diário desse mês. Meses ainda por começar: forma sazonal real de cada mês (fração do ano, média pesada de 2021-2025, mais peso aos anos recentes) aplicada ao Total do ano anterior × crescimento homólogo (este ano vs. o ano anterior, nos meses já fechados). Sem histórico suficiente nalgum mês (não deve acontecer), cai para Objetivo Mensal × desempenho, ou média diária do ano.'),
         ]),
         editarMetaAnualBtn,
       ]),
