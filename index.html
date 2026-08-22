@@ -1926,7 +1926,7 @@
   /* Feed de Observações Partilhadas ("Escala da Equipa") — um cartão por
      nota, ações discretas (baixo contraste, só aparecem coloridas no
      hover) para nunca competir visualmente com o texto da própria nota. */
-  .escala-nota-cartao{background:var(--pharm-50);border:1px solid var(--pharm-100);border-radius:10px;padding:10px 12px;}
+  .escala-nota-cartao{background:#fff;border:1px solid var(--pharm-200);border-radius:10px;padding:10px 12px;}
   .escala-nota-acao-discreta{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;
     border-radius:6px;border:none;background:transparent;color:var(--pharm-300);cursor:pointer;transition:color .12s ease,background-color .12s ease;}
   .escala-nota-acao-discreta:hover{color:var(--pharm-600);background:var(--pharm-100);}
@@ -27821,6 +27821,50 @@ async function notificarDirecaoPedidoEspecial(pedido, acaoTexto) {
   const novos = criados.filter(Boolean);
   if (novos.length) STATE.gavetaRecados = [...novos, ...(STATE.gavetaRecados || [])];
 }
+// Notifica todos os colaboradores com acesso a Horários (exceto quem
+// publicou) sempre que Paulo ou Hugo publicam/republicam o horário
+// oficial de uma semana — pedido explícito 2026-08-22. Distingue
+// "publicou" (1ª vez) de "republicou" (semana já tinha sido publicada
+// antes — ver escalaSemanas.primeiraPublicacaoEm, gravado uma única vez e
+// nunca apagado por reabrirSemana, ao contrário de publicadoEm) no
+// próprio texto da notificação. Reaproveita exatamente o mesmo mecanismo
+// já usado para Pedidos Especiais/"Pedidos e Registos da Semana": 1
+// recado por destinatário, e a MESMA "Última Notificação" da Home, que já
+// marca notif_vista_recebida no Supabase ao clicar na cruz — o dismiss é
+// por-registo no servidor, por isso nunca reaparece, mesmo com sessão
+// iniciada noutro dispositivo (ver ultimaNotifFoiDescartada/
+// descartarUltimaNotificacao). tipo:'mensagem' (não 'tarefa') de propósito
+// — fica "lida" sozinha ao abrir a conversa, sem exigir uma confirmação
+// manual como as tarefas, mais adequado a um aviso passivo deste género.
+// Ao republicar a MESMA semana, em vez de acumular notificações antigas
+// ao lado da nova, atualiza a já existente de cada destinatário — e
+// reset a notif_vista_recebida, para reaparecer mesmo que a pessoa já
+// tivesse descartado a notificação da publicação anterior (é informação
+// nova, uma republicação pode trazer alterações).
+function usuariosNotificaveisPublicacaoHorario() {
+  return (STATE.usuarios || []).filter(u => !usuarioOculto(u) && u.ativo !== false && u.incluirHorarios && usuarioVisivelParaAtual(u));
+}
+async function notificarColaboradoresPublicacaoSemana(semana, foiRepublicacao) {
+  if (!activeUser) return;
+  const destinatarios = usuariosNotificaveisPublicacaoHorario().filter(u => String(u.id) !== String(activeUser.id));
+  if (!destinatarios.length) return;
+  const publicador = activeUser.nomeCompleto || activeUser.username;
+  const intervalo = escalaIntervaloSemanaTexto(semana.semanaInicio);
+  const mensagem = foiRepublicacao
+    ? `${publicador} republicou o horário da semana de ${intervalo} — pode haver alterações.`
+    : `${publicador} publicou o horário oficial da semana de ${intervalo}.`;
+  const existentes = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_semanas' && String(r.referenciaId) === String(semana.id));
+  const resultados = await Promise.all(destinatarios.map(async u => {
+    const existente = existentes.find(r => String(r.destinatarioId) === String(u.id));
+    if (existente) return dbAtualizarRecado(existente.id, { mensagem, tratado: false, tratadoEm: null, notifVistaRecebida: false });
+    return dbInsertRecado({ remetenteId: activeUser.id, destinatarioId: u.id, mensagem, tratado: false, tipo: 'mensagem', referenciaTabela: 'escala_semanas', referenciaId: semana.id });
+  }));
+  const validos = resultados.filter(Boolean);
+  if (validos.length) {
+    const idsAtualizados = new Set(validos.map(r => r.id));
+    STATE.gavetaRecados = [...validos, ...(STATE.gavetaRecados || []).filter(r => !idsAtualizados.has(r.id))];
+  }
+}
 // ---- Horas Extra Disponíveis (pedido explícito 2026-08-10) ----
 // O Diretor Técnico/Administrador disponibiliza um bloco de horas (com
 // Pausa opcional) para um dia de uma semana já gerada; qualquer
@@ -30688,6 +30732,11 @@ function buildHorariosPage(container, goTo) {
   let novoPedidoTarefaTipo = 'conferencia';
   let novoPedidoTarefaDescricao = '';
   let novoPedidoErro = '';
+  // ---- "Pedidos da Semana" (2026-08-22) — vista consolidada de TODOS os
+  // registos de "Pedidos e Registos da Semana", de qualquer semana, sem
+  // ter de navegar semana a semana; ver buildVistaPedidosSemana.
+  let pedidosSemanaSearch = '';
+  let pedidosSemanaFiltroColaborador = 'todos';
   // Bloco Pessoal ("A Minha Semana") — mesma lógica/UX do Bloco de Notas
   // Pessoal (buildBlocoNotasWidget): entrada no topo + checkbox Pendente/
   // Tratada em vez de editar o texto, só sem barra de pesquisa.
@@ -30820,8 +30869,20 @@ function buildHorariosPage(container, goTo) {
   // mantém confirmDialog por ser irreversível).
   async function publicarSemana(semana) {
     if (escalaSemanaNoPassado(semana)) { showToast('Esta semana já passou — o histórico está congelado.', 'error'); return; }
-    const updated = await dbUpdate('escalaSemanas', semana.id, { estado: 'publicado', publicadoEm: new Date().toISOString(), publicadoPor: currentUserName() });
-    if (updated) { STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s); showToast('Horário oficial publicado.', 'success'); }
+    // primeiraPublicacaoEm distingue "publicou pela 1ª vez" de "republicou"
+    // (ver notificarColaboradoresPublicacaoSemana) — ao contrário de
+    // publicadoEm, nunca é apagado por reabrirSemana, por isso sobrevive a
+    // ciclos Publicar→Reabrir→Editar→Publicar de novo.
+    const foiRepublicacao = !!semana.primeiraPublicacaoEm;
+    const updated = await dbUpdate('escalaSemanas', semana.id, {
+      estado: 'publicado', publicadoEm: new Date().toISOString(), publicadoPor: currentUserName(),
+      primeiraPublicacaoEm: semana.primeiraPublicacaoEm || new Date().toISOString(),
+    });
+    if (updated) {
+      STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
+      showToast('Horário oficial publicado.', 'success');
+      notificarColaboradoresPublicacaoSemana(updated, foiRepublicacao);
+    }
     else escalaShowErro('Não foi possível publicar o horário');
     rerender();
   }
@@ -31201,16 +31262,16 @@ function buildHorariosPage(container, goTo) {
       payload.texto = texto.trim() || resumoPedidoTarefa();
     } else {
       if (!texto.trim()) { novoPedidoErro = 'Escreve uma descrição.'; rerender(); return; }
+      // Data passou a obrigatória (2026-08-22, antes só recomendada) —
+      // necessária para o separador "Pedidos da Semana" conseguir listar
+      // por ordem cronológica e mover para Histórico com fiabilidade
+      // assim que a semana a que se refere já tiver passado. Na prática
+      // já vinha quase sempre preenchida sozinha (segue o dia
+      // selecionado na Timeline, ver buildFeedNotasEquipa) — este erro só
+      // dispara se o campo ficar mesmo vazio.
+      if (!novoPedidoData) { novoPedidoErro = 'Escolhe a data a que este registo se refere.'; rerender(); return; }
       payload.texto = texto.trim();
-      // Dia sempre gravado (mesmo em tipo 'nota', pedido explícito
-      // 2026-08-19: "Magda Menos 30 min banco" foi criada como 'nota'
-      // simples, sem o dataPedido de troca/banco — nem o autor nem a
-      // Direção conseguiam depois saber a que dia se referia, só a
-      // semana. novoPedidoData já segue sozinho o dia selecionado nos
-      // separadores da Timeline (diaVerticalSelecionado) em qualquer
-      // tipo, ver buildFeedNotasEquipa — só faltava também GRAVAR isso
-      // para 'nota'.
-      payload.dataPedido = novoPedidoData || null;
+      payload.dataPedido = novoPedidoData;
     }
     notaEquipaSaving = true; rerender();
     const created = await dbInsert('escalaNotasSemana', payload);
@@ -31382,8 +31443,8 @@ function buildHorariosPage(container, goTo) {
       detalheEl,
       corpo,
       h('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-top:8px;' }, [
-        validacaoEl || h('span', {}),
         h('div', { style: 'display:flex;gap:4px;' }, acoesDiscretas),
+        validacaoEl || h('span', {}),
       ]),
     ]);
   }
@@ -31401,7 +31462,12 @@ function buildHorariosPage(container, goTo) {
       // da página, e um grid de 12 colunas espalhava demasiado os campos
       // curtos (pedido explícito 2026-08-18); aqui cada campo tem a sua
       // própria largura mínima e fica encostado ao seguinte.
-      const linha1 = [h('div', { class: 'field', style: 'max-width:260px;margin:0;' }, [buildLabelComAjuda('Tipo de Pedido', tipoInfo.ajuda), tipoSelect])];
+      // Largura fixa (não max-width, pedido explícito 2026-08-22:
+      // "menos larga, desperdício de espaço") — antes o campo esticava
+      // até 260px mesmo com um texto curto tipo "💬 Aviso / Nota Geral",
+      // deixando um vão grande até ao campo seguinte (Data) na mesma
+      // linha.
+      const linha1 = [h('div', { class: 'field', style: 'width:210px;margin:0;' }, [buildLabelComAjuda('Tipo de Pedido', tipoInfo.ajuda), tipoSelect])];
       const linha2 = [];
       const novoInput = h('textarea', { class: 'textarea', rows: '2', placeholder: novoPedidoTipo === 'tarefa' ? 'Notas adicionais (opcional)...' : novoPedidoTipo === 'troca' ? 'Descreva a troca (quem, que dias/turnos)...' : novoPedidoTipo === 'banco' ? 'Descreva o pedido (ex: sair mais cedo dia X, quantas horas)...' : 'Escrever um aviso à equipa...' });
 
@@ -31481,8 +31547,14 @@ function buildHorariosPage(container, goTo) {
         // troca/banco, deixando 'nota' sem nenhum campo de dia (pedido
         // explícito 2026-08-19, ver mesmo comentário em criarNotaEquipa).
         const dataInput = h('input', { class: 'input', type: 'date', min: semanaMinISO, max: semanaMaxISO }); dataInput.value = novoPedidoData;
-        dataInput.addEventListener('change', () => { novoPedidoData = dataInput.value; novoPedidoDataManual = true; rerender(); });
-        linha1.push(h('div', { class: 'field', style: 'width:150px;margin:0;' }, [h('label', {}, 'Data (opcional)'), melhorarInputData(dataInput)]));
+        dataInput.addEventListener('change', () => { novoPedidoData = dataInput.value; novoPedidoDataManual = true; novoPedidoErro = ''; rerender(); });
+        // Passou a obrigatória (2026-08-22, antes "Data (opcional)") —
+        // necessário para "Pedidos da Semana" conseguir listar/ordenar
+        // cronologicamente e mover para Histórico com fiabilidade; sem
+        // data em todos os registos, a ordenação/transição para
+        // Histórico ficava incompleta para quem submetia sem a
+        // preencher (raro, mas acontecia em 'nota'/'troca'/'banco').
+        linha1.push(h('div', { class: 'field', style: 'width:150px;margin:0;' }, [h('label', {}, 'Data'), melhorarInputData(dataInput)]));
       }
       linha2.push(h('div', { class: 'field span2', style: 'margin:0;' }, [h('label', {}, novoPedidoTipo === 'tarefa' ? 'Notas' : 'Descrição'), novoInput]));
 
@@ -31502,6 +31574,97 @@ function buildHorariosPage(container, goTo) {
     if (!notas.length) kids.push(h('p', { class: 'field-helper-text', style: 'margin:0;' }, 'Ainda não há registos para esta semana.'));
     else kids.push(h('div', { style: 'display:flex;flex-direction:column;gap:10px;' }, notas.map(buildCartaoNotaEquipa)));
     return h('div', { class: 'card card-pad', style: 'margin-top:16px;' }, kids);
+  }
+
+  // ---- "Pedidos da Semana" (2026-08-22, separador próprio antes de
+  // "Gerir Posições") — vista consolidada de TODOS os registos de
+  // "Pedidos e Registos da Semana" (escala_notas_semana), de qualquer
+  // semana, sem ter de navegar semana a semana para os encontrar. ----
+  // Todos os registos, mais recente PRIMEIRO por data a que se referem
+  // (dataPedido — agora obrigatória, ver criarNotaEquipa); cai para
+  // createdAt só como rede de segurança para registos antigos gravados
+  // antes de a Data passar a obrigatória, que podem não ter dataPedido.
+  function pedidosSemanaTodosPorOrdem() {
+    return (STATE.escalaNotasSemana || []).slice().sort((a, b) => {
+      const chaveA = a.dataPedido || a.createdAt || '';
+      const chaveB = b.dataPedido || b.createdAt || '';
+      return chaveA < chaveB ? 1 : chaveA > chaveB ? -1 : 0;
+    });
+  }
+  // "Semana já passada" — mesmo critério usado em todo o resto do módulo
+  // (ver escalaSemanaNoPassado), aplicado diretamente a nota.semanaInicio
+  // sem precisar de carregar a escala_semanas inteira: um pedido só passa
+  // para o Histórico depois de a SEMANA A QUE SE REFERE (não só a data do
+  // próprio registo) já ter terminado por completo.
+  function pedidoSemanaJaPassou(nota) {
+    return !!nota.semanaInicio && nota.semanaInicio < escalaSegundaFeiraHoje();
+  }
+  // Mesmo cartão do feed semanal (buildCartaoNotaEquipa), com uma etiqueta
+  // extra por cima a identificar a semana a que pertence — necessária só
+  // aqui, porque esta vista mistura registos de várias semanas ao mesmo
+  // tempo (na vista semanal normal isso já é óbvio pelo contexto da
+  // página, por isso o cartão em si nunca mostra a semana).
+  function buildCartaoPedidoSemanaComSemana(nota) {
+    const cartao = buildCartaoNotaEquipa(nota);
+    const semanaLabel = h('p', { style: 'margin:0 0 4px;font-size:10.5px;font-weight:800;color:var(--pharm-400);text-transform:uppercase;letter-spacing:.3px;' }, escalaIntervaloSemanaTexto(nota.semanaInicio));
+    cartao.insertBefore(semanaLabel, cartao.firstChild);
+    return cartao;
+  }
+  function buildVistaPedidosSemana() {
+    const todos = pedidosSemanaTodosPorOrdem();
+    const ativos = todos.filter(n => !pedidoSemanaJaPassou(n));
+    const historicoTodos = todos.filter(pedidoSemanaJaPassou);
+
+    // Lista de colaboradores para o filtro — só os que têm efetivamente
+    // registos no Histórico (nunca a lista inteira de colaboradores da
+    // farmácia, a maioria dos quais nunca teria nenhum resultado).
+    const colaboradoresHistorico = Array.from(new Set(historicoTodos.map(n => n.autorNome).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'pt'));
+    const filtroSelect = h('select', { class: 'select' }, [
+      h('option', { value: 'todos' }, 'Todos os Colaboradores'),
+      ...colaboradoresHistorico.map(nome => h('option', { value: nome, selected: pedidosSemanaFiltroColaborador === nome ? 'selected' : undefined }, nome)),
+    ]);
+    filtroSelect.value = pedidosSemanaFiltroColaborador;
+
+    const searchInput = h('input', { class: 'search-input', type: 'text', placeholder: 'Pesquisar no histórico por texto ou colaborador...' });
+    searchInput.value = pedidosSemanaSearch;
+
+    const historicoResultsEl = h('div', {});
+    const historicoCountEl = h('p', { class: 'results-count' }, '');
+    function renderHistorico() {
+      clear(historicoResultsEl);
+      let lista = historicoTodos;
+      if (pedidosSemanaFiltroColaborador !== 'todos') lista = lista.filter(n => n.autorNome === pedidosSemanaFiltroColaborador);
+      const q = normalizarTexto(pedidosSemanaSearch.trim());
+      if (q) lista = lista.filter(n => normalizarTexto(`${n.texto || ''} ${n.autorNome || ''}`).includes(q));
+      historicoCountEl.textContent = `${lista.length} resultado${lista.length === 1 ? '' : 's'} encontrado${lista.length === 1 ? '' : 's'}`;
+      historicoResultsEl.appendChild(lista.length
+        ? h('div', { style: 'display:flex;flex-direction:column;gap:10px;max-width:780px;' }, lista.map(buildCartaoPedidoSemanaComSemana))
+        : h('p', { class: 'field-helper-text', style: 'margin:0;' }, 'Nenhum registo encontrado.'));
+    }
+    const debouncedRenderHistorico = debounce(renderHistorico, 180);
+    searchInput.addEventListener('input', () => { pedidosSemanaSearch = searchInput.value; debouncedRenderHistorico(); });
+    filtroSelect.addEventListener('change', () => { pedidosSemanaFiltroColaborador = filtroSelect.value; renderHistorico(); });
+
+    const wrap = h('div', {});
+    wrap.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:0 0 2px;' }, '📋 Pedidos da Semana'));
+    wrap.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 18px;' }, 'Todos os registos de "Pedidos e Registos da Semana" (Escala da Equipa), de todas as semanas, sem ter de navegar semana a semana. Por ordem cronológica, mais recentes primeiro.'));
+
+    wrap.appendChild(h('h4', { class: 'page-eyebrow', style: 'margin:0 0 10px;color:var(--pharm-800);font-size:13.5px;text-transform:none;letter-spacing:0;' }, `Ativos (${ativos.length})`));
+    wrap.appendChild(ativos.length
+      ? h('div', { style: 'display:flex;flex-direction:column;gap:10px;margin-bottom:28px;max-width:780px;' }, ativos.map(buildCartaoPedidoSemanaComSemana))
+      : h('p', { class: 'field-helper-text', style: 'margin:0 0 28px;' }, 'Sem registos ativos — todos os registos existentes já são de semanas passadas (ver Histórico abaixo).'));
+
+    wrap.appendChild(h('h4', { class: 'page-eyebrow', style: 'margin:0 0 10px;color:var(--pharm-800);font-size:13.5px;text-transform:none;letter-spacing:0;' }, `Histórico (${historicoTodos.length})`));
+    wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:16px;max-width:780px;' }, [
+      h('div', { style: 'display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;' }, [
+        h('div', { class: 'search-input-wrap', style: 'flex:1 1 260px;margin:0;' }, [h('span', { class: 'icon' }, Icon('search', { size: 15 })), searchInput]),
+        h('div', { class: 'field', style: 'width:230px;margin:0;' }, [h('label', {}, 'Colaborador Responsável'), filtroSelect]),
+      ]),
+      historicoCountEl,
+    ]));
+    wrap.appendChild(historicoResultsEl);
+    renderHistorico();
+    return wrap;
   }
 
   // ---- Bloco Pessoal ("A Minha Semana") ----
@@ -31641,7 +31804,11 @@ function buildHorariosPage(container, goTo) {
     }
     addBtn.addEventListener('click', tentarAdicionar);
     inputNovo.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); tentarAdicionar(); } });
-    return h('div', { class: 'card card-pad', style: 'margin-top:16px;max-width:720px;' }, [
+    // margin-top removido (2026-08-22) — o espaçamento face ao que vem
+    // antes (cartão "A Minha Semana"/grid com o painel HE) é agora dado
+    // pelo gap do `wrap` em buildVistaPessoal, nunca por uma margem fixa
+    // aqui, para não voltar a somar-se e criar o vazio duplo reportado.
+    return h('div', { class: 'card card-pad', style: 'max-width:720px;' }, [
       h('div', { class: 'nota-rapida-header' }, [h('span', {}, '🔒 Notas Pessoais (só tu vês)')]),
       h('div', { class: 'notas-pessoal-add-row', style: 'margin-bottom:12px;' }, [inputNovo, addBtn]),
       listaEl,
@@ -32484,7 +32651,7 @@ function buildHorariosPage(container, goTo) {
     // dentro de abrirReivindicar/guardarReivindicacao).
     const entradas = escalaTodosBlocosHorasExtraFuturos();
     const congelada = escalaHorasExtraBloqueado(semana);
-    const tituloRow = h('div', { style: 'display:flex;align-items:center;justify-content:flex-start;gap:10px;margin-bottom:10px;' }, [
+    const tituloRow = h('div', { style: 'display:flex;align-items:center;justify-content:flex-start;gap:10px;' }, [
       h('h3', { class: 'page-eyebrow', style: 'margin:0;color:var(--pharm-800);font-size:14px;text-transform:none;letter-spacing:0;display:flex;align-items:center;gap:7px;' }, [
         Icon('zap', { size: 15, strokeWidth: 2.3 }),
         h('span', {}, 'Horas Extra Disponíveis'),
@@ -32765,11 +32932,19 @@ function buildHorariosPage(container, goTo) {
         // ver .escala-vertical-bloco-extra) — nunca uma cor nova.
         // max-width igual ao cartão "A Minha Semana" logo acima (pedido
         // explícito 2026-08-14: sem isto, o cartão esticava à largura
-        // toda do ecrã, desproporcional ao resto da coluna).
-        style: 'margin-bottom:10px;max-width:720px;background:#fffbeb;border:1px solid #fde68a;border-left:4px solid #f59e0b;',
+        // toda do ecrã, desproporcional ao resto da coluna). Sem
+        // margin-bottom próprio (2026-08-22) — o espaçamento entre
+        // blocos vem do gap do wrapper flex logo abaixo, nunca de uma
+        // margem fixa por cartão (evita voltar a somar-se com o gap do
+        // `wrap` de buildVistaPessoal).
+        style: 'max-width:720px;background:#fffbeb;border:1px solid #fde68a;border-left:4px solid #f59e0b;',
       }, [linhaTopo, bandaDisponibilidade, listaReivindicacoes, formReivindicar, formReivindicarParaColaborador]));
     });
-    return h('div', { style: 'margin-top:16px;max-width:720px;' }, [tituloRow, ...corpo]);
+    // flex+gap (2026-08-22) em vez de margin-bottom por cartão — mesmo
+    // motivo do ajuste em buildVistaPessoal: margens fixas por elemento
+    // tendem a somar-se com o gap do contentor pai e produzir um vazio
+    // maior do que o previsto.
+    return h('div', { style: 'margin-top:16px;max-width:720px;display:flex;flex-direction:column;gap:10px;' }, [tituloRow, ...corpo]);
   }
 
   function buildVistaPessoal(semana) {
@@ -32777,13 +32952,26 @@ function buildHorariosPage(container, goTo) {
     if (!semana) return EmptyState('Ainda não existe nenhum horário gerado para esta semana.');
     const codigosMeus = Object.keys(semana.dados || {}).filter(cod => semana.dados[cod].colaboradorId === activeUser.id);
     if (!codigosMeus.length) return EmptyState('Não está atribuído a nenhuma posição nesta semana.');
-    const wrap = h('div', {});
+    // display:flex + gap (não margens fixas por bloco) — pedido explícito
+    // 2026-08-22: "eliminar o espaço entre Notas Pessoais e A Minha
+    // Semana, deve ajustar dinamicamente". Antes, o cartão de "A Minha
+    // Semana"/painel HE tinha margin-bottom próprio E "Notas Pessoais"
+    // tinha margin-top próprio — os dois somavam-se (double margin),
+    // dando um vazio maior do que o previsto sempre que a coluna de "A
+    // Minha Semana" era a mais alta do grid de 2 colunas (ver
+    // .escala-semana-he-grid). Com gap no próprio `wrap`, o espaçamento
+    // entre blocos passa a ser sempre exatamente 1 unidade, calculado
+    // pelo browser a cada redesenho — nunca depende de qual bloco é mais
+    // alto nem duplica margens.
+    const wrap = h('div', { style: 'display:flex;flex-direction:column;gap:16px;' });
     const hojeISO = dateToISO(new Date());
     // "A Minha Semana" passou a viver num sub-wrap próprio (2026-08-17,
     // pedido explícito) para poder ser reposicionado face ao painel
     // "Horas Extra Disponíveis" consoante o estatuto do colaborador —
-    // ver decisão de layout mais abaixo (ehPrestador).
-    const semanaCardsWrap = h('div', {});
+    // ver decisão de layout mais abaixo (ehPrestador). Também em
+    // flex+gap (2026-08-22) — cobre o caso de mais do que 1 posição
+    // (vários cartões "A Minha Semana" empilhados) sem margens fixas.
+    const semanaCardsWrap = h('div', { style: 'display:flex;flex-direction:column;gap:16px;' });
     codigosMeus.forEach(codigo => {
       const linha = semana.dados[codigo];
       const rows = ESCALA_DIAS.map(d => {
@@ -32857,7 +33045,7 @@ function buildHorariosPage(container, goTo) {
           tarefasEl,
         ]);
       });
-      semanaCardsWrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:16px;max-width:780px;' }, [
+      semanaCardsWrap.appendChild(h('div', { class: 'card card-pad', style: 'max-width:780px;' }, [
         h('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px;' }, [
           h('div', { style: 'display:flex;align-items:center;gap:8px;' }, [
             escalaBadgePosicao(codigo, escalaGrupoDoCodigo(codigo)),
@@ -32880,8 +33068,9 @@ function buildHorariosPage(container, goTo) {
       // Prestadores de Serviço: "Horas Extra Disponíveis" fica por CIMA
       // de "A Minha Semana" — tanto em mobile como em desktop, sempre a
       // mesma ordem, nunca lado a lado (só os colaboradores do Quadro
-      // ganham o layout em 2 colunas, ver ramo else).
-      painelHE.style.marginBottom = '16px';
+      // ganham o layout em 2 colunas, ver ramo else). Espaçamento entre
+      // os dois já vem do gap do próprio `wrap` (2026-08-22) — sem
+      // margin-bottom manual aqui.
       wrap.appendChild(painelHE);
       wrap.appendChild(semanaCardsWrap);
     } else {
@@ -37627,6 +37816,7 @@ function buildHorariosPage(container, goTo) {
       tabsRow.appendChild(h('span', { class: 'tabs-row-divider' }));
       tabsRow.appendChild(h('button', { class: 'tab-btn tone-orange' + (activeTab === 'gerador' ? ' active' : ''), onclick: () => { definirActiveTab('gerador'); rerender(); } }, [Icon('zap', { size: 14 }), h('span', {}, 'Gerador de Horário')]));
       tabsRow.appendChild(h('button', { class: 'tab-btn tone-orange' + (activeTab === 'validacao' ? ' active' : ''), onclick: () => { definirActiveTab('validacao'); rerender(); } }, [Icon('checkcircle', { size: 14 }), h('span', {}, 'Validação de Horários')]));
+      tabsRow.appendChild(h('button', { class: 'tab-btn tone-orange' + (activeTab === 'pedidosSemana' ? ' active' : ''), onclick: () => { definirActiveTab('pedidosSemana'); rerender(); } }, [Icon('clipboard', { size: 14 }), h('span', {}, 'Pedidos da Semana')]));
       tabsRow.appendChild(h('button', { class: 'tab-btn tone-orange' + (activeTab === 'vagas' ? ' active' : ''), onclick: () => { showVagaForm = false; definirActiveTab('vagas'); rerender(); } }, [Icon('settings', { size: 14 }), h('span', {}, 'Gerir Posições')]));
     }
     wrap.appendChild(tabsRow);
@@ -37647,6 +37837,11 @@ function buildHorariosPage(container, goTo) {
     if (activeTab === 'estatisticas') { wrap.appendChild(buildVistaEstatisticas()); return wrap; }
     if (activeTab === 'validacao' && podeGerirHorarios()) {
       wrap.appendChild(buildVistaValidacaoHorarios());
+      return wrap;
+    }
+    if (activeTab === 'pedidosSemana' && podeGerirHorarios()) {
+      if (ehMobile) { wrap.appendChild(buildAvisoGestaoSoDesktop()); return wrap; }
+      wrap.appendChild(buildVistaPedidosSemana());
       return wrap;
     }
     if ((activeTab === 'vagas' || activeTab === 'gerador') && podeGerirHorarios()) {
