@@ -42175,12 +42175,27 @@ function buildEntregasPage(container, goTo) {
         // UPSERT por (farmacia_id, numero_ficha) — a Ficha Nº 100 da Juncal
         // e a Ficha Nº 100 da Boa Nova nunca se confundem (chave composta
         // inclui sempre a farmácia ativa, via farmaciaIdDe()).
+        // BUG CORRIGIDO 2026-08-22 (pedido explícito, com foto do "A
+        // guardar..." preso no Posto de Apoio): a ENTREGA em si já estava
+        // gravada nesta altura (dbInsert/dbUpdate já concluído acima) —
+        // isto é só um passo extra em segundo plano para manter a ficha do
+        // cliente atualizada. Se dbUpsertClienteHabitual falhasse (rede,
+        // permissões, etc.), a exceção nunca apanhada impedia
+        // finalizarSubmissaoEntrega() de sequer ser chamada — o
+        // formulário ficava para sempre com o botão "A guardar..."
+        // desativado, embora a entrega já estivesse mesmo gravada. Try/
+        // catch garante que o formulário fecha SEMPRE a seguir, mesmo
+        // que a ficha do cliente não tenha sido possível atualizar.
         (async () => {
-          const gravado = await dbUpsertClienteHabitual({
-            farmaciaId: farmaciaIdDe(), numeroFicha: numeroDigitado, nome: nomeAtual,
-            morada: draft.morada || '', localidade: draft.localidade || '', contacto: draft.contacto || '',
-          });
-          if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
+          try {
+            const gravado = await dbUpsertClienteHabitual({
+              farmaciaId: farmaciaIdDe(), numeroFicha: numeroDigitado, nome: nomeAtual,
+              morada: draft.morada || '', localidade: draft.localidade || '', contacto: draft.contacto || '',
+            });
+            if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
+          } catch (e) {
+            console.warn('[Entregas] não foi possível atualizar a ficha do cliente (a entrega já ficou gravada):', formatarErroSeguro(e));
+          }
           finalizarSubmissaoEntrega();
         })();
       } else {
@@ -42210,9 +42225,16 @@ function buildEntregasPage(container, goTo) {
             morada: draft.morada || '', localidade: draft.localidade || '', contacto: draft.contacto || '',
           };
           if (clienteFichaCarregada.fonte === 'clientes_habituais' && clienteFichaCarregada.id) payload.id = clienteFichaCarregada.id;
+          // Mesmo try/catch de segurança do ramo acima — a entrega já está
+          // gravada nesta altura, uma falha aqui não pode voltar a deixar
+          // o formulário preso em "A guardar...".
           (async () => {
-            const gravado = await dbUpsertClienteHabitual(payload);
-            if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
+            try {
+              const gravado = await dbUpsertClienteHabitual(payload);
+              if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
+            } catch (e) {
+              console.warn('[Entregas] não foi possível atualizar a ficha do cliente (a entrega já ficou gravada):', formatarErroSeguro(e));
+            }
             finalizarSubmissaoEntrega();
           })();
         }
