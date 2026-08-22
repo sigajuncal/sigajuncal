@@ -7049,8 +7049,21 @@ async function dbUpsertClienteHabitual(payload) {
     return await dbUpdate('clientesHabituais', payload.id, patch);
   }
   try {
-    const row = recordToRow(Object.assign({}, payload, { farmaciaId, numeroFicha }));
+    // NIF vazio guardado sempre como NULL, nunca '' (2026-08-22, causa raiz
+    // do erro Supabase "no unique or exclusion constraint matching the ON
+    // CONFLICT specification" visto na consola): o índice único que
+    // suporta o onConflict 'farmacia_id,nif' abaixo só pode ser uma
+    // constraint normal (não parcial/condicional) — o onConflict do
+    // supabase-js não permite especificar um WHERE, por isso um índice
+    // único parcial nunca seria reconhecido pelo Postgres para esta
+    // inferência. Com NIF sempre NULL quando vazio, múltiplos clientes
+    // sem NIF na mesma farmácia nunca colidem entre si (NULL nunca é
+    // igual a NULL numa UNIQUE constraint normal) — e só entram nesta
+    // ramo do onConflict quando nifPayload é mesmo verdadeiro (ver
+    // abaixo), por isso nunca tentam usar este índice de qualquer forma.
     const nifPayload = String(payload.nif || '').trim();
+    const payloadNormalizado = Object.assign({}, payload, { nif: nifPayload || null });
+    const row = recordToRow(Object.assign({}, payloadNormalizado, { farmaciaId, numeroFicha }));
     const onConflict = nifPayload ? 'farmacia_id,nif' : 'farmacia_id,numero_ficha,nome';
     // comTimeoutSupabase (2026-08-22) — mesma proteção do dbInsert/dbUpdate
     // genéricos: sem isto, um pedido de rede pendurado ficava à espera
@@ -42165,6 +42178,20 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
     // registos duplicados da mesma entrega (pedido explícito 2026-08-11,
     // após reportar exatamente este sintoma).
     if (saving) return;
+    // BUG CORRIGIDO 2026-08-22 — CAUSA RAIZ REAL do "A guardar..." preso
+    // (confirmada finalmente pela consola do browser, Posto Direita):
+    // `eraNovo` era usado dentro de finalizarSubmissaoEntrega() mas nunca
+    // tinha sido declarado em lado nenhum — um ReferenceError a direito,
+    // não um problema de rede/timeout. Isto disparava sempre que
+    // finalizarSubmissaoEntrega() era chamada a partir do ramo assíncrono
+    // (depois de tentar sincronizar a ficha do cliente, sucesso ou falha):
+    // a função rebentava logo na primeira linha, ANTES de sequer chegar a
+    // "showForm = false" — por isso o formulário ficava para sempre
+    // preso a mostrar "A guardar...", com ou sem rede, com ou sem
+    // timeout. As correções anteriores (try/catch, comTimeoutSupabase)
+    // não estavam erradas — cobriam falhas de rede reais — mas nenhuma
+    // delas podia ajudar aqui, porque o erro nem vinha da rede.
+    const eraNovo = !editingId;
     if (!String(draft.docReserva || '').trim()) {
       formError = 'Por favor, introduza o número do documento ou código de reserva.';
       rerender();
