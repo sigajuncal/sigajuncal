@@ -28398,10 +28398,34 @@ async function atualizarNotificacoesPedidoEspecialDecidido(pedido) {
   const resultados = await Promise.all(existentes.map(r => dbAtualizarRecado(r.id, { mensagem, tratado: true, tratadoEm: new Date().toISOString() })));
   resultados.forEach(reg => { if (reg) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === reg.id ? reg : x); });
 }
+// BUG CORRIGIDO 2026-08-22 (pedido explícito, ao confirmar comunicação
+// entre "Pedidos" e Pedidos Especiais): decidir um Pedido Especial só
+// atualizava a notificação já enviada à OUTRA pessoa da Direção — nunca
+// avisava o próprio AUTOR (quem submeteu o pedido) de que tinha sido
+// aprovado/rejeitado; ficava sem saber, a não ser que fosse espreitar
+// manualmente. Mesmo padrão já usado em notificarAutorNotaValidada
+// (Pedidos e Registos da Semana) — 1 recado novo dirigido ao autor,
+// nunca ao próprio decisor (se por acaso for o mesmo, ex: Hugo decide um
+// pedido seu, não se autonotifica).
+async function notificarAutorPedidoEspecialDecidido(pedido) {
+  if (!pedido || !pedido.colaboradorId || String(pedido.colaboradorId) === String(activeUser.id)) return;
+  const dataTexto = pedido.dataInicio === pedido.dataFim ? formatDate(pedido.dataInicio) : `${formatDate(pedido.dataInicio)} a ${formatDate(pedido.dataFim)}`;
+  const mensagem = pedido.estado === 'aprovado'
+    ? `O seu Pedido Especial para ${dataTexto} (${escalaMotivoPedidoTexto(pedido)}) foi aprovado pela Direção.`
+    : `O seu Pedido Especial para ${dataTexto} (${escalaMotivoPedidoTexto(pedido)}) foi rejeitado pela Direção.`;
+  const criado = await dbInsertRecado({
+    remetenteId: activeUser.id, destinatarioId: pedido.colaboradorId,
+    mensagem, tratado: false, tipo: 'tarefa', referenciaTabela: 'escala_pedidos_especiais', referenciaId: pedido.id,
+  });
+  if (criado) STATE.gavetaRecados = [criado, ...(STATE.gavetaRecados || [])];
+}
 async function decidirPedidoEspecial(pedido, novoEstado) {
   if (!isMasterUser()) return null;
   const updated = await editarPedidoEspecial(pedido, { estado: novoEstado, validadoPor: activeUser.nomeCompleto || activeUser.username, validadoEm: new Date().toISOString() }, false);
-  if (updated) await atualizarNotificacoesPedidoEspecialDecidido(updated);
+  if (updated) {
+    await atualizarNotificacoesPedidoEspecialDecidido(updated);
+    await notificarAutorPedidoEspecialDecidido(updated);
+  }
   return updated;
 }
 // Validação rápida (Aprovar/Rejeitar) direto da Gaveta — mesmo espírito
@@ -30737,6 +30761,7 @@ function buildHorariosPage(container, goTo) {
   // ter de navegar semana a semana; ver buildVistaPedidosSemana.
   let pedidosSemanaSearch = '';
   let pedidosSemanaFiltroColaborador = 'todos';
+  let pedidosSemanaSubTab = 'ativos'; // 'ativos' | 'historico'
   // Bloco Pessoal ("A Minha Semana") — mesma lógica/UX do Bloco de Notas
   // Pessoal (buildBlocoNotasWidget): entrada no topo + checkbox Pendente/
   // Tratada em vez de editar o texto, só sem barra de pesquisa.
@@ -31576,20 +31601,47 @@ function buildHorariosPage(container, goTo) {
     return h('div', { class: 'card card-pad', style: 'margin-top:16px;' }, kids);
   }
 
-  // ---- "Pedidos da Semana" (2026-08-22, separador próprio antes de
-  // "Gerir Posições") — vista consolidada de TODOS os registos de
-  // "Pedidos e Registos da Semana" (escala_notas_semana), de qualquer
-  // semana, sem ter de navegar semana a semana para os encontrar. ----
-  // Todos os registos, mais recente PRIMEIRO por data a que se referem
-  // (dataPedido — agora obrigatória, ver criarNotaEquipa); cai para
-  // createdAt só como rede de segurança para registos antigos gravados
-  // antes de a Data passar a obrigatória, que podem não ter dataPedido.
-  function pedidosSemanaTodosPorOrdem() {
-    return (STATE.escalaNotasSemana || []).slice().sort((a, b) => {
-      const chaveA = a.dataPedido || a.createdAt || '';
-      const chaveB = b.dataPedido || b.createdAt || '';
-      return chaveA < chaveB ? 1 : chaveA > chaveB ? -1 : 0;
-    });
+  // ---- "Pedidos" (2026-08-22, separador próprio antes de "Gerir
+  // Posições", só Hugo/Paulo) — vista consolidada de dois tipos de pedido
+  // de colaboradores, agregados na mesma lista Ativos/Histórico para
+  // facilitar a gestão, mas sempre claramente distinguidos por uma
+  // etiqueta própria em cada cartão (ver buildCartaoPedidoSemanaComSemana/
+  // buildCartaoPedidoEspecialParaLista): "Pedidos e Registos da Semana"
+  // (escala_notas_semana — nota/tarefa/troca/banco, validação por
+  // checkbox) e "Pedidos Especiais" (escala_pedidos_especiais —
+  // indisponibilidade/preferência tipo Casamento/Batizado, decisão
+  // Aprovar/Rejeitar). Pedido explícito: os colaboradores continuam a
+  // submeter Pedidos Especiais no sítio de sempre (Férias >
+  // buildSecaoPedidosEspeciais, intocado) — esta vista é só de consulta e
+  // decisão consolidada para a Direção, nunca um formulário novo de
+  // criação. Todos os registos, mais recente PRIMEIRO por data a que se
+  // referem (dataPedido/dataInicio); cai para createdAt só como rede de
+  // segurança para registos antigos sem essa data.
+  function pedidoEspecialJaPassou(pedido) {
+    return !!pedido.dataFim && pedido.dataFim < todayISO();
+  }
+  function pedidosUnificadosTodosPorOrdem() {
+    const semanas = (STATE.escalaNotasSemana || []).map(n => ({
+      tipo: 'semana', ref: n,
+      dataChave: n.dataPedido || n.createdAt || '',
+      jaPassou: pedidoSemanaJaPassou(n),
+      nomeResponsavel: n.autorNome || '',
+    }));
+    const especiais = (STATE.escalaPedidosEspeciais || []).map(p => ({
+      tipo: 'especial', ref: p,
+      dataChave: p.dataInicio || p.createdAt || '',
+      jaPassou: pedidoEspecialJaPassou(p),
+      nomeResponsavel: p.colaboradorNome || '',
+    }));
+    return [...semanas, ...especiais].sort((a, b) => (a.dataChave < b.dataChave ? 1 : a.dataChave > b.dataChave ? -1 : 0));
+  }
+  function pedidoUnificadoTextoPesquisavel(entrada) {
+    if (entrada.tipo === 'especial') {
+      const p = entrada.ref;
+      return `${p.observacoes || ''} ${escalaMotivoPedidoTexto(p)} ${p.colaboradorNome || ''}`;
+    }
+    const n = entrada.ref;
+    return `${n.texto || ''} ${n.autorNome || ''}`;
   }
   // "Semana já passada" — mesmo critério usado em todo o resto do módulo
   // (ver escalaSemanaNoPassado), aplicado diretamente a nota.semanaInicio
@@ -31600,25 +31652,41 @@ function buildHorariosPage(container, goTo) {
     return !!nota.semanaInicio && nota.semanaInicio < escalaSegundaFeiraHoje();
   }
   // Mesmo cartão do feed semanal (buildCartaoNotaEquipa), com uma etiqueta
-  // extra por cima a identificar a semana a que pertence — necessária só
-  // aqui, porque esta vista mistura registos de várias semanas ao mesmo
-  // tempo (na vista semanal normal isso já é óbvio pelo contexto da
-  // página, por isso o cartão em si nunca mostra a semana).
+  // extra por cima a identificar o tipo + a semana a que pertence —
+  // necessária só aqui, porque esta vista mistura registos de várias
+  // semanas E dos dois tipos de pedido ao mesmo tempo (na vista semanal
+  // normal isso já é óbvio pelo contexto da página).
   function buildCartaoPedidoSemanaComSemana(nota) {
     const cartao = buildCartaoNotaEquipa(nota);
-    const semanaLabel = h('p', { style: 'margin:0 0 4px;font-size:10.5px;font-weight:800;color:var(--pharm-400);text-transform:uppercase;letter-spacing:.3px;' }, escalaIntervaloSemanaTexto(nota.semanaInicio));
+    const semanaLabel = h('p', { style: 'margin:0 0 4px;font-size:10.5px;font-weight:800;color:var(--pharm-400);text-transform:uppercase;letter-spacing:.3px;' }, `📋 Pedido da Semana · ${escalaIntervaloSemanaTexto(nota.semanaInicio)}`);
     cartao.insertBefore(semanaLabel, cartao.firstChild);
     return cartao;
   }
+  // Reaproveita o cartão já usado em Férias > Pedidos Especiais
+  // (buildCartaoPedido, com os botões Aprovar/Rejeitar) — só troca a
+  // margin-bottom própria (aqui o espaçamento vem do gap do contentor
+  // pai) e acrescenta a mesma etiqueta de distinção, em cor diferente da
+  // dos Pedidos da Semana, para nunca se confundirem visualmente mesmo
+  // misturados na mesma lista.
+  function buildCartaoPedidoEspecialParaLista(pedido) {
+    const cartao = buildCartaoPedido(pedido);
+    cartao.style.marginBottom = '0';
+    const label = h('p', { style: 'margin:0 0 4px;font-size:10.5px;font-weight:800;color:#9b6dd6;text-transform:uppercase;letter-spacing:.3px;' }, '📌 Pedido Especial');
+    cartao.insertBefore(label, cartao.firstChild);
+    return cartao;
+  }
+  function buildCartaoPedidoUnificado(entrada) {
+    return entrada.tipo === 'especial' ? buildCartaoPedidoEspecialParaLista(entrada.ref) : buildCartaoPedidoSemanaComSemana(entrada.ref);
+  }
   function buildVistaPedidosSemana() {
-    const todos = pedidosSemanaTodosPorOrdem();
-    const ativos = todos.filter(n => !pedidoSemanaJaPassou(n));
-    const historicoTodos = todos.filter(pedidoSemanaJaPassou);
+    const todos = pedidosUnificadosTodosPorOrdem();
+    const ativos = todos.filter(e => !e.jaPassou);
+    const historicoTodos = todos.filter(e => e.jaPassou);
 
     // Lista de colaboradores para o filtro — só os que têm efetivamente
     // registos no Histórico (nunca a lista inteira de colaboradores da
     // farmácia, a maioria dos quais nunca teria nenhum resultado).
-    const colaboradoresHistorico = Array.from(new Set(historicoTodos.map(n => n.autorNome).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'pt'));
+    const colaboradoresHistorico = Array.from(new Set(historicoTodos.map(e => e.nomeResponsavel).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'pt'));
     const filtroSelect = h('select', { class: 'select' }, [
       h('option', { value: 'todos' }, 'Todos os Colaboradores'),
       ...colaboradoresHistorico.map(nome => h('option', { value: nome, selected: pedidosSemanaFiltroColaborador === nome ? 'selected' : undefined }, nome)),
@@ -31633,12 +31701,12 @@ function buildHorariosPage(container, goTo) {
     function renderHistorico() {
       clear(historicoResultsEl);
       let lista = historicoTodos;
-      if (pedidosSemanaFiltroColaborador !== 'todos') lista = lista.filter(n => n.autorNome === pedidosSemanaFiltroColaborador);
+      if (pedidosSemanaFiltroColaborador !== 'todos') lista = lista.filter(e => e.nomeResponsavel === pedidosSemanaFiltroColaborador);
       const q = normalizarTexto(pedidosSemanaSearch.trim());
-      if (q) lista = lista.filter(n => normalizarTexto(`${n.texto || ''} ${n.autorNome || ''}`).includes(q));
+      if (q) lista = lista.filter(e => normalizarTexto(pedidoUnificadoTextoPesquisavel(e)).includes(q));
       historicoCountEl.textContent = `${lista.length} resultado${lista.length === 1 ? '' : 's'} encontrado${lista.length === 1 ? '' : 's'}`;
       historicoResultsEl.appendChild(lista.length
-        ? h('div', { style: 'display:flex;flex-direction:column;gap:10px;max-width:780px;' }, lista.map(buildCartaoPedidoSemanaComSemana))
+        ? h('div', { style: 'display:flex;flex-direction:column;gap:10px;max-width:780px;' }, lista.map(buildCartaoPedidoUnificado))
         : h('p', { class: 'field-helper-text', style: 'margin:0;' }, 'Nenhum registo encontrado.'));
     }
     const debouncedRenderHistorico = debounce(renderHistorico, 180);
@@ -31646,24 +31714,35 @@ function buildHorariosPage(container, goTo) {
     filtroSelect.addEventListener('change', () => { pedidosSemanaFiltroColaborador = filtroSelect.value; renderHistorico(); });
 
     const wrap = h('div', {});
-    wrap.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:0 0 2px;' }, '📋 Pedidos da Semana'));
-    wrap.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 18px;' }, 'Todos os registos de "Pedidos e Registos da Semana" (Escala da Equipa), de todas as semanas, sem ter de navegar semana a semana. Por ordem cronológica, mais recentes primeiro.'));
+    wrap.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:0 0 2px;' }, '📋 Pedidos'));
+    wrap.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 16px;' }, 'Junta "Pedidos e Registos da Semana" (Escala da Equipa) e "Pedidos Especiais" (Férias) de todas as semanas, sem ter de navegar semana a semana — cada cartão mostra sempre a sua etiqueta própria (📋/📌), para nunca confundir os dois tipos. Por ordem cronológica, mais recentes primeiro. Os colaboradores continuam a submeter Pedidos Especiais em Férias, como sempre.'));
 
-    wrap.appendChild(h('h4', { class: 'page-eyebrow', style: 'margin:0 0 10px;color:var(--pharm-800);font-size:13.5px;text-transform:none;letter-spacing:0;' }, `Ativos (${ativos.length})`));
-    wrap.appendChild(ativos.length
-      ? h('div', { style: 'display:flex;flex-direction:column;gap:10px;margin-bottom:28px;max-width:780px;' }, ativos.map(buildCartaoPedidoSemanaComSemana))
-      : h('p', { class: 'field-helper-text', style: 'margin:0 0 28px;' }, 'Sem registos ativos — todos os registos existentes já são de semanas passadas (ver Histórico abaixo).'));
+    // Separador Ativos/Histórico (pedido explícito 2026-08-22, antes as
+    // duas listas apareciam sempre juntas, uma por baixo da outra) —
+    // mesmo padrão tab-btn usado em todo o resto da app; a pesquisa/
+    // filtro só faz sentido dentro de Histórico (Ativos é sempre uma
+    // lista curta e corrente), por isso só aparece nesse separador.
+    const subTabsRow = h('div', { class: 'tabs-row', style: 'margin-bottom:16px;' }, [
+      h('button', { class: 'tab-btn tone-orange' + (pedidosSemanaSubTab === 'ativos' ? ' active' : ''), onclick: () => { pedidosSemanaSubTab = 'ativos'; rerender(); } }, `Ativos (${ativos.length})`),
+      h('button', { class: 'tab-btn tone-orange' + (pedidosSemanaSubTab === 'historico' ? ' active' : ''), onclick: () => { pedidosSemanaSubTab = 'historico'; rerender(); } }, `Histórico (${historicoTodos.length})`),
+    ]);
+    wrap.appendChild(subTabsRow);
 
-    wrap.appendChild(h('h4', { class: 'page-eyebrow', style: 'margin:0 0 10px;color:var(--pharm-800);font-size:13.5px;text-transform:none;letter-spacing:0;' }, `Histórico (${historicoTodos.length})`));
-    wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:16px;max-width:780px;' }, [
-      h('div', { style: 'display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;' }, [
-        h('div', { class: 'search-input-wrap', style: 'flex:1 1 260px;margin:0;' }, [h('span', { class: 'icon' }, Icon('search', { size: 15 })), searchInput]),
-        h('div', { class: 'field', style: 'width:230px;margin:0;' }, [h('label', {}, 'Colaborador Responsável'), filtroSelect]),
-      ]),
-      historicoCountEl,
-    ]));
-    wrap.appendChild(historicoResultsEl);
-    renderHistorico();
+    if (pedidosSemanaSubTab === 'historico') {
+      wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:16px;max-width:780px;' }, [
+        h('div', { style: 'display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;' }, [
+          h('div', { class: 'search-input-wrap', style: 'flex:1 1 260px;margin:0;' }, [h('span', { class: 'icon' }, Icon('search', { size: 15 })), searchInput]),
+          h('div', { class: 'field', style: 'width:230px;margin:0;' }, [h('label', {}, 'Colaborador Responsável'), filtroSelect]),
+        ]),
+        historicoCountEl,
+      ]));
+      wrap.appendChild(historicoResultsEl);
+      renderHistorico();
+    } else {
+      wrap.appendChild(ativos.length
+        ? h('div', { style: 'display:flex;flex-direction:column;gap:10px;max-width:780px;' }, ativos.map(buildCartaoPedidoUnificado))
+        : h('p', { class: 'field-helper-text', style: 'margin:0;' }, 'Sem registos ativos — todos os registos existentes já passaram (ver Histórico).'));
+    }
     return wrap;
   }
 
@@ -37816,7 +37895,7 @@ function buildHorariosPage(container, goTo) {
       tabsRow.appendChild(h('span', { class: 'tabs-row-divider' }));
       tabsRow.appendChild(h('button', { class: 'tab-btn tone-orange' + (activeTab === 'gerador' ? ' active' : ''), onclick: () => { definirActiveTab('gerador'); rerender(); } }, [Icon('zap', { size: 14 }), h('span', {}, 'Gerador de Horário')]));
       tabsRow.appendChild(h('button', { class: 'tab-btn tone-orange' + (activeTab === 'validacao' ? ' active' : ''), onclick: () => { definirActiveTab('validacao'); rerender(); } }, [Icon('checkcircle', { size: 14 }), h('span', {}, 'Validação de Horários')]));
-      tabsRow.appendChild(h('button', { class: 'tab-btn tone-orange' + (activeTab === 'pedidosSemana' ? ' active' : ''), onclick: () => { definirActiveTab('pedidosSemana'); rerender(); } }, [Icon('clipboard', { size: 14 }), h('span', {}, 'Pedidos da Semana')]));
+      tabsRow.appendChild(h('button', { class: 'tab-btn tone-orange' + (activeTab === 'pedidosSemana' ? ' active' : ''), onclick: () => { definirActiveTab('pedidosSemana'); rerender(); } }, [Icon('clipboard', { size: 14 }), h('span', {}, 'Pedidos')]));
       tabsRow.appendChild(h('button', { class: 'tab-btn tone-orange' + (activeTab === 'vagas' ? ' active' : ''), onclick: () => { showVagaForm = false; definirActiveTab('vagas'); rerender(); } }, [Icon('settings', { size: 14 }), h('span', {}, 'Gerir Posições')]));
     }
     wrap.appendChild(tabsRow);
