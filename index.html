@@ -26775,7 +26775,7 @@ function escalaResumoHorariosDias(horariosDias) {
 const ESCALA_GRUPOS = [
   { key: 'A', label: 'Grupo A — Rotativo' },
   { key: 'F', label: 'Grupo F — Fixo' },
-  { key: 'P', label: 'Part-Time' },
+  { key: 'P', label: 'Prestadores' },
   { key: 'B', label: 'Backoffice — Rotativo' },
 ];
 // Cor única por grupo (A/F/P/B) — mesma paleta usada na Timeline (ver
@@ -27557,15 +27557,26 @@ function escalaTarefaTexto(dia) {
 // seguinte fora). `title` nativo sozinho não chega: não responde a
 // toque em mobile/tablet, e ficava de todo inacessível com o
 // pointer-events:none que a caixa tinha antes desta correção.
+// Tooltip do Banco de Horas/Horas Extra na Timeline — pedido explícito
+// 2026-08-23: "não gosto, mas nas restantes colunas é dinâmico e
+// acompanha o cursor" — antes usava mostrarTooltipFlutuante (posição
+// fixa, calculada uma única vez no mouseenter a partir do elemento-alvo,
+// nunca atualizada ao mover o rato). Passa a usar o MESMO mecanismo
+// dinâmico já usado no resto da Vista Vertical (mostrarTooltipColaborador/
+// moverTooltipColaborador — segue o cursor a cada mousemove, sempre por
+// cima do ponteiro), para os dois tipos de tooltip na Timeline se
+// comportarem sempre da mesma forma.
 function instalarTooltipContaHoras(el, texto) {
-  el.addEventListener('mouseenter', () => mostrarTooltipFlutuante(el, texto));
-  el.addEventListener('mouseleave', esconderTooltipFlutuante);
-  el.addEventListener('focus', () => mostrarTooltipFlutuante(el, texto));
-  el.addEventListener('blur', esconderTooltipFlutuante);
+  el.addEventListener('mouseenter', (e) => { mostrarTooltipColaborador(texto); moverTooltipColaborador(e); });
+  el.addEventListener('mousemove', moverTooltipColaborador);
+  el.addEventListener('mouseleave', esconderTooltipColaborador);
+  el.addEventListener('focus', () => mostrarTooltipColaborador(texto));
+  el.addEventListener('blur', esconderTooltipColaborador);
   el.addEventListener('click', (e) => {
     e.stopPropagation();
-    mostrarTooltipFlutuante(el, texto);
-    setTimeout(() => document.addEventListener('click', esconderTooltipFlutuante, { once: true }), 0);
+    mostrarTooltipColaborador(texto);
+    moverTooltipColaborador(e);
+    setTimeout(() => document.addEventListener('click', esconderTooltipColaborador, { once: true }), 0);
   });
 }
 function escalaTarefaIconesCompactos(dia) {
@@ -32238,7 +32249,14 @@ function buildHorariosPage(container, goTo) {
     // fica disponível a QUALQUER colaborador, não só à Direção, já que
     // "Escala da Equipa" é a vista aberta a todos.
     const baixarPdfEquipaBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Descarregar horário semanal em PDF (para imprimir e afixar)', 'aria-label': 'Descarregar horário semanal em PDF' }, Icon('download', { size: 15, strokeWidth: 2.2 }));
-    baixarPdfEquipaBtn.addEventListener('click', () => baixarPdfDocumento(buildHorarioSemanaGridPDFDoc(semana), `horario_semanal_${semana.semanaInicio}.pdf`, { orientacao: 'landscape' }));
+    baixarPdfEquipaBtn.addEventListener('click', () => {
+      try {
+        baixarPdfDocumento(buildHorarioSemanaGridPDFDoc(semana), `horario_semanal_${semana.semanaInicio}.pdf`, { orientacao: 'landscape' });
+      } catch (e) {
+        console.error('[Horário Semanal PDF] erro ao construir o documento:', formatarErroSeguro(e));
+        showToast('Não foi possível gerar o PDF do horário semanal. Tenta de novo ou avisa o suporte.', 'error');
+      }
+    });
     // Timeline/Vista em Tabela — só ícone (pedido explícito 2026-08-19,
     // igual ao botão de Download acima), para caberem sempre na mesma
     // linha dos separadores de dia (à direita de "Dom"), em mobile e
@@ -37304,7 +37322,20 @@ function buildHorariosPage(container, goTo) {
     // escolhida neste momento. Ver buildHorarioSemanaGridPDFDoc. Só ícone
     // (pedido explícito 2026-08-09: "reduz ruído") — o title já explica.
     const baixarPdfBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Descarregar horário semanal em PDF', 'aria-label': 'Descarregar horário semanal em PDF' }, Icon('download', { size: 15, strokeWidth: 2.2 }));
-    baixarPdfBtn.addEventListener('click', () => baixarPdfDocumento(buildHorarioSemanaGridPDFDoc(semana), `horario_semanal_${semana.semanaInicio}.pdf`, { orientacao: 'landscape' }));
+    // try/catch (2026-08-23, pedido explícito depois de o botão ficar
+    // mudo em silêncio — "clico e não acontece nada"): se a construção do
+    // documento (buildHorarioSemanaGridPDFDoc) rebentar por qualquer
+    // razão, mostra sempre um erro visível em vez de morrer calada — a
+    // pessoa fica a saber que algo correu mal, em vez de pensar que o
+    // botão está partido sem explicação nenhuma.
+    baixarPdfBtn.addEventListener('click', () => {
+      try {
+        baixarPdfDocumento(buildHorarioSemanaGridPDFDoc(semana), `horario_semanal_${semana.semanaInicio}.pdf`, { orientacao: 'landscape' });
+      } catch (e) {
+        console.error('[Horário Semanal PDF] erro ao construir o documento:', formatarErroSeguro(e));
+        showToast('Não foi possível gerar o PDF do horário semanal. Tenta de novo ou avisa o suporte.', 'error');
+      }
+    });
     // ⚡ Atribuir Tarefas Comuns (pedido explícito 2026-08-17) — à
     // esquerda do botão de download, mesmo espírito só-ícone. NUNCA corre
     // sozinha (ver escalaAtribuirTarefasComunsSemana) — só quando este
@@ -40755,6 +40786,43 @@ function buildHorarioSemanaGridPDFDoc(semana) {
     if (tipoEfetivo !== 'normal' || !dia.entrada || !dia.saida) return soma + reivindicadas;
     return soma + escalaCalcularHorasComPausa(dia.entrada, dia.saida, dia.pausaInicio, dia.pausaFim) + escalaHeHorasEfetivo(dia) + reivindicadas;
   }, 0);
+  // Conteúdo da célula do dia — pedido explícito 2026-08-23: "basta o
+  // horário que a pessoa está a fazer (incluir Horas Extra e Banco, não é
+  // necessário discriminar), incluindo pausas". Antes mostrava
+  // "15:00–23:00 (p.19:00-19:30) +1hHE" — a partir de agora mostra logo o
+  // horário efetivo já alargado, "15:00–00:00 (p.19:00-19:30)", sem
+  // nenhuma etiqueta "+XhHE" à parte. Junta 2 fontes possíveis de
+  // presença: o turno normal (entrada/saída, já alargado por
+  // dia.heIntervalos via escalaEntradaEfetivaDia/escalaSaidaEfetivaDia —
+  // ver essas funções), e Hora Extra REIVINDICADA (bloco "Horas Extra
+  // Disponíveis", intervalo próprio, pode existir mesmo sem turno normal
+  // nesse dia). A pausa só é mostrada quando há turno normal.
+  const conteudoHorarioDia = (dia, tipoEfetivo, reivindicacoes) => {
+    const inicios = [], fins = [];
+    if (tipoEfetivo === 'normal' && dia.entrada && dia.saida) {
+      inicios.push(escalaEntradaEfetivaDia(dia));
+      fins.push(escalaSaidaEfetivaDia(dia));
+    }
+    // BUG CORRIGIDO 2026-08-23 (causa real do "clico e não acontece
+    // nada" no botão de download — confirmado pelo utilizador que o
+    // botão ficou mudo depois desta função ter passado a juntar Horas
+    // Extra reivindicada aqui): só empurra o intervalo se AMBOS
+    // intervaloInicio E intervaloFim estiverem preenchidos, nunca um sem
+    // o outro — antes, uma reivindicação com só um dos dois preenchido
+    // podia deixar "inicios" com 1+ item mas "fins" vazio (ou vice-versa),
+    // e fins.reduce()/inicios.reduce() SEM valor inicial rebenta com um
+    // array vazio (TypeError síncrono, apanhado nem pelo try/catch de
+    // baixarPdfDocumento — a exceção acontecia antes disso sequer ser
+    // chamado, ao construir o documento). O clique inteiro morria em
+    // silêncio, sem toast nenhum.
+    reivindicacoes.forEach(r => { if (r.intervaloInicio && r.intervaloFim) { inicios.push(r.intervaloInicio); fins.push(r.intervaloFim); } });
+    if (!inicios.length || !fins.length) return ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—';
+    const inicioFinal = inicios.reduce((a, b) => (b < a ? b : a));
+    const fimFinal = fins.includes('00:00') ? '00:00' : fins.reduce((a, b) => (b > a ? b : a));
+    let conteudo = `${inicioFinal}–${fimFinal}`;
+    if (tipoEfetivo === 'normal' && dia.pausaInicio && dia.pausaFim) conteudo += ` (p.${dia.pausaInicio}-${dia.pausaFim})`;
+    return conteudo;
+  };
   ESCALA_GRUPOS.forEach(g => {
     const vagas = escalaVagasGrupoOrdenadas(g.key);
     if (!vagas.length) return;
@@ -40787,17 +40855,8 @@ function buildHorarioSemanaGridPDFDoc(semana) {
           if (!entry) return h('td', {}, '—');
           const { dia, codigo, colaboradorId } = entry;
           const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, colaboradorId);
-          const heReivindicadoBadge = escalaReivindicacoesDoColaboradorNoDia(semana.id, d.key, colaboradorId).reduce((s, r) => s + escalaCalcularHoras(r.intervaloInicio, r.intervaloFim), 0);
-          let conteudo;
-          if (tipoEfetivo === 'normal' && dia.entrada && dia.saida) {
-            conteudo = `${dia.entrada}–${dia.saida}`;
-            if (dia.pausaInicio && dia.pausaFim) conteudo += ` (p.${dia.pausaInicio}-${dia.pausaFim})`;
-            const heTotal = Math.round((escalaHeHorasEfetivo(dia) + heReivindicadoBadge) * 100) / 100;
-            if (heTotal) conteudo += ` +${escalaFormatarHoras(heTotal)}HE`;
-          } else {
-            conteudo = ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—';
-            if (heReivindicadoBadge) conteudo += ` +${escalaFormatarHoras(heReivindicadoBadge)}HE`;
-          }
+          const reivindicacoes = escalaReivindicacoesDoColaboradorNoDia(semana.id, d.key, colaboradorId);
+          let conteudo = conteudoHorarioDia(dia, tipoEfetivo, reivindicacoes);
           conteudo += ` (${codigo})`;
           return h('td', {}, conteudo);
         });
@@ -40817,17 +40876,8 @@ function buildHorarioSemanaGridPDFDoc(semana) {
         const dia = linha.dias[d.key] || { tipo: 'folga' };
         const colaboradorIdDoDia = (dia && dia.colaboradorId) || linha.colaboradorId;
         const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, colaboradorIdDoDia);
-        const heReivindicadoBadge = escalaReivindicacoesDoColaboradorNoDia(semana.id, d.key, colaboradorIdDoDia).reduce((s, r) => s + escalaCalcularHoras(r.intervaloInicio, r.intervaloFim), 0);
-        let conteudo;
-        if (tipoEfetivo === 'normal' && dia.entrada && dia.saida) {
-          conteudo = `${dia.entrada}–${dia.saida}`;
-          if (dia.pausaInicio && dia.pausaFim) conteudo += ` (p.${dia.pausaInicio}-${dia.pausaFim})`;
-          const heTotal = Math.round((escalaHeHorasEfetivo(dia) + heReivindicadoBadge) * 100) / 100;
-          if (heTotal) conteudo += ` +${escalaFormatarHoras(heTotal)}HE`;
-        } else {
-          conteudo = ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—';
-          if (heReivindicadoBadge) conteudo += ` +${escalaFormatarHoras(heReivindicadoBadge)}HE`;
-        }
+        const reivindicacoes = escalaReivindicacoesDoColaboradorNoDia(semana.id, d.key, colaboradorIdDoDia);
+        const conteudo = conteudoHorarioDia(dia, tipoEfetivo, reivindicacoes);
         return h('td', {}, conteudo);
       });
       const total = totalHorasDias(d => ({ dia: linha.dias[d.key] || { tipo: 'folga' }, colaboradorId: (linha.dias[d.key] && linha.dias[d.key].colaboradorId) || linha.colaboradorId }));
@@ -40846,7 +40896,18 @@ function buildHorarioSemanaGridPDFDoc(semana) {
   // versão impressa do horário, para ficar o registo" — TODOS os tipos,
   // não só as trocas. Pendentes de validação NUNCA aparecem aqui (só o que
   // já está confirmado pela Direção é registo oficial).
-  const pedidosValidados = escalaNotasSemanaDaSemana(semana.semanaInicio).filter(n => n.validadoDirecao);
+  // BUG CORRIGIDO 2026-08-23 (causa raiz REAL do botão de download mudo,
+  // confirmada pela consola: "ReferenceError: escalaNotasSemanaDaSemana
+  // is not defined"): esta função já existia há muito, mas está definida
+  // DENTRO do closure de buildHorariosPage — buildHorarioSemanaGridPDFDoc
+  // é uma função TOP-LEVEL, fora desse closure, nunca lhe teve acesso.
+  // Isto não é um bug de hoje — o botão nunca funcionou, mesmo antes desta
+  // conversa. Corrigido reimplementando a mesma lógica (filtrar por
+  // semana + ordenar validados primeiro) diretamente aqui, em vez de
+  // chamar a função inacessível.
+  const pedidosValidados = (STATE.escalaNotasSemana || [])
+    .filter(n => n.semanaInicio === semana.semanaInicio && n.validadoDirecao)
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
   let blocoPedidos = null;
   if (pedidosValidados.length) {
     const linhasPedidos = pedidosValidados.map(n => {
