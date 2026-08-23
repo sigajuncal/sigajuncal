@@ -33455,13 +33455,13 @@ function buildHorariosPage(container, goTo) {
       esteMesBtn,
     ]);
 
-    let horasFeriado = 0, horasNoturnas = 0, diasFerias = 0, horasDomingo = 0, bancoHorasTotalMes = 0, heHorasTotalMes = 0;
+    let horasFeriado = 0, horasNoturnas = 0, diasFerias = 0, horasDomingo = 0, bancoHorasTotalMes = 0, heHorasTotalMes = 0, bancoHorasGanhoTotalMes = 0;
     const podeValidarBancoHe = podeGerirBancoHorasEHE();
     // Célula editável de Banco de Horas/HE (só Hugo/Paulo) — clique abre
     // um mini-formulário inline (input + Guardar/Cancelar), mesmo padrão
     // do "Ajuste ao Saldo Inicial de Banco de Horas" nas Estatísticas.
     // Nunca bloqueada por semana congelada — ver guardarCorrecaoBancoHe.
-    function celulaCorrecao(dataISO, campo, valorEfetivo, temOrigem) {
+    function celulaCorrecao(dataISO, campo, valorEfetivo, temOrigem, ganhoExtra) {
       const editando = correcaoBancoHeEditando && correcaoBancoHeEditando.dataISO === dataISO && correcaoBancoHeEditando.campo === campo;
       const foiCorrigido = temOrigem && temOrigem.corrigido;
       const textoValor = valorEfetivo ? (campo === 'banco' ? `-${escalaFormatarHoras(valorEfetivo)}` : `+${escalaFormatarHoras(valorEfetivo)}`) : '—';
@@ -33476,6 +33476,15 @@ function buildHorariosPage(container, goTo) {
         return h('td', { class: 'escala-mes-col-corrigivel' }, h('div', { style: 'display:flex;align-items:center;justify-content:center;gap:4px;' }, [input, guardarBtn, cancelarBtn]));
       }
       const conteudo = [h('span', {}, textoValor)];
+      // BUG CORRIGIDO 2026-08-23 (pedido explícito): esta coluna "Banco de
+      // Horas" só mostrava o USADO (escalaBancoHorasEfetivo, desconto) —
+      // um bloco de "Horas Extra" marcado "Contar como Banco de Horas"
+      // (dia.heHorasBanco, GANHO manual) nunca aparecia aqui, embora já
+      // aparecesse corretamente na Timeline e devesse entrar nas
+      // Estatísticas (ver escalaCalcularEstatisticasPeriodo). Mostrado à
+      // parte (nunca fundido no valor corrigível acima, que é só o
+      // Usado/desconto) para não interferir com a correção manual.
+      if (ganhoExtra) conteudo.push(h('span', { style: 'display:block;color:#15803d;font-size:11px;font-weight:700;' }, `+${escalaFormatarHoras(ganhoExtra)}`));
       if (foiCorrigido) conteudo.push(h('span', { title: `Corrigido por ${temOrigem.corrigidoPor || '—'}`, style: 'margin-left:4px;font-size:10.5px;color:var(--pharm-500);' }, '✎'));
       const td = h('td', { class: 'escala-mes-col-corrigivel' + (podeValidarBancoHe ? ' escala-cell-editavel' : '') }, conteudo);
       if (podeValidarBancoHe && temOrigem) {
@@ -33528,11 +33537,15 @@ function buildHorariosPage(container, goTo) {
       // em bruto, para nunca haver 2 números diferentes na app para o
       // mesmo dia.
       const bancoValorDia = (semanaVisivel && dia) ? escalaBancoHorasEfetivo(dia) : 0;
+      // Ganho manual (dia.heHorasBanco) — ver comentário completo em
+      // celulaCorrecao acima; contado à parte do Usado, nunca fundido.
+      const bancoGanhoDia = (semanaVisivel && dia) ? (dia.heHorasBanco || 0) : 0;
       // Reaproveita heReivindicadoDia já calculado acima (junto ao
       // texto do horário) — mesmo padrão já aplicado a
       // escalaTotalHorasLinha e à Estatística "Horas Extra".
       const heValorDia = Math.round((((semanaVisivel && dia) ? escalaHeHorasEfetivo(dia) : 0) + heReivindicadoDia) * 100) / 100;
       if (bancoValorDia) bancoHorasTotalMes = Math.round((bancoHorasTotalMes + bancoValorDia) * 100) / 100;
+      if (bancoGanhoDia) bancoHorasGanhoTotalMes = Math.round((bancoHorasGanhoTotalMes + bancoGanhoDia) * 100) / 100;
       if (heValorDia) heHorasTotalMes = Math.round((heHorasTotalMes + heValorDia) * 100) / 100;
       const origemCelula = (semanaVisivel && dia) ? { corrigido: dia.bancoHorasCorrigido !== undefined || dia.heHorasCorrigido !== undefined, corrigidoPor: dia.correcaoBancoHePor } : null;
       // Domingo/feriado com um sinal visual leve na linha — ajuda a
@@ -33547,7 +33560,7 @@ function buildHorariosPage(container, goTo) {
           h('span', { class: 'escala-mes-dia-curto' }, ESCALA_MES_DIA_CURTO[diaKey]),
         ]),
         h('td', { class: 'escala-mes-col-horario' }, texto),
-        celulaCorrecao(dataISO, 'banco', bancoValorDia, origemCelula ? { corrigido: dia.bancoHorasCorrigido !== undefined, corrigidoPor: dia.correcaoBancoHePor } : null),
+        celulaCorrecao(dataISO, 'banco', bancoValorDia, origemCelula ? { corrigido: dia.bancoHorasCorrigido !== undefined, corrigidoPor: dia.correcaoBancoHePor } : null, bancoGanhoDia),
         celulaCorrecao(dataISO, 'he', heValorDia, origemCelula ? { corrigido: dia.heHorasCorrigido !== undefined, corrigidoPor: dia.correcaoBancoHePor } : null),
       ]);
     });
@@ -33560,6 +33573,7 @@ function buildHorariosPage(container, goTo) {
         buildStatCard('beachUmbrella', 'Dias de Férias', String(diasFerias), 'blue-soft'),
         buildStatCard('calendar', 'Horas de Domingo', escalaFormatarHoras(horasDomingo), 'yellow'),
         buildStatCard('clock', 'Banco de Horas (Usado)', escalaFormatarHoras(bancoHorasTotalMes), 'blue-soft'),
+        buildStatCard('clock', 'Banco de Horas (Ganho)', escalaFormatarHoras(bancoHorasGanhoTotalMes), 'green'),
         buildStatCard('star', 'Horas Extra', escalaFormatarHoras(heHorasTotalMes), 'orange'),
       ]),
     ]);
@@ -37373,18 +37387,32 @@ function buildHorariosPage(container, goTo) {
       turnosDia.push(dia);
     });
     const alertas = validarAniversariosNoDia({ semana, diaKey, dataISO, posicoes });
-    // Abertura — igualdade estrita ao texto "08:00" (nunca <=, nunca
-    // sobreposição de hora inteira).
-    const contagemAbertura = turnosDia.filter(d => d.entrada === '08:00').length;
+    // BUG CORRIGIDO 2026-08-23 (pedido explícito, com print da Sofia a
+    // fazer 23:00-00:00 de Banco de Horas e o Fecho continuar a acusar
+    // só 1 pessoa): Abertura/Fecho/Cobertura Diurna só olhavam para
+    // dia.entrada/dia.saida — o turno NORMAL — e nunca para
+    // dia.heIntervalos (blocos de "Horas Extra / Horas Banco"
+    // adicionados a seguir ao turno normal, banco ou não). Uma pessoa
+    // cuja presença só se estende até à meia-noite por causa de um bloco
+    // de HE/Banco (não por sair às 00:00 no turno normal) nunca era
+    // contada nem na Abertura/Fecho nem na Cobertura Diurna — apesar de
+    // estar mesmo lá fisicamente, e de a Timeline já mostrar o bloco
+    // corretamente. Corrigido tratando cada bloco de heIntervalos como
+    // uma janela de presença adicional, exatamente como o turno normal.
+    const contagemAbertura = turnosDia.filter(d => d.entrada === '08:00' || (d.heIntervalos || []).some(iv => iv.inicio === '08:00')).length;
     if (contagemAbertura !== 2) alertas.push({ nivel: 'aviso', texto: `⚠️ Abertura (08:00) com ${contagemAbertura} pessoa${contagemAbertura === 1 ? '' : 's'} (ideal: 2)` });
     // Diurno — segmentação ao minuto dentro da janela 09:00-22:00. Cada
     // turno contribui com um ou dois intervalos (ver escalaSegmentosTurno)
     // — a pausa/almoço fica de fora, para um colaborador em intervalo
-    // nunca contar como presente na cobertura.
+    // nunca contar como presente na cobertura — e cada bloco de
+    // heIntervalos (Horas Extra/Banco) soma mais uma janela própria.
     const turnosMin = turnosDia.flatMap(dia => escalaSegmentosTurno(dia, minutosNoIntervalo).map(seg => ({
       inicioMin: seg.inicioMin + HORA_INICIO * 60,
       fimMin: seg.fimMin + HORA_INICIO * 60,
-    }))).filter(t => t.fimMin > t.inicioMin);
+    })).concat((dia.heIntervalos || []).map(iv => ({
+      inicioMin: minutosNoIntervalo(iv.inicio, false) + HORA_INICIO * 60,
+      fimMin: minutosNoIntervalo(iv.fim, true) + HORA_INICIO * 60,
+    })))).filter(t => t.fimMin > t.inicioMin);
     const pontos = new Set([9 * 60, 22 * 60]);
     turnosMin.forEach(t => {
       if (t.inicioMin > 9 * 60 && t.inicioMin < 22 * 60) pontos.add(t.inicioMin);
@@ -37416,8 +37444,9 @@ function buildHorariosPage(container, goTo) {
       const contagemTxt = a.min === a.max ? `${a.min} colaborador${a.min === 1 ? '' : 'es'}` : `entre ${a.min} e ${a.max} colaboradores`;
       alertas.push({ nivel: 'critico', texto: `🚨 Cobertura insuficiente entre ${intervaloTxt} (apenas ${contagemTxt}, mínimo: 3)` });
     });
-    // Fecho — igualdade estrita: saída marcada como "00:00" (24:00).
-    const contagemFecho = turnosDia.filter(d => d.saida === '00:00').length;
+    // Fecho — igualdade estrita: saída marcada como "00:00" (24:00) no
+    // turno normal, OU um bloco de heIntervalos a terminar às 00:00.
+    const contagemFecho = turnosDia.filter(d => d.saida === '00:00' || (d.heIntervalos || []).some(iv => iv.fim === '00:00')).length;
     if (contagemFecho !== 2) alertas.push({ nivel: 'aviso', texto: `⚠️ Fecho (24:00) com ${contagemFecho} pessoa${contagemFecho === 1 ? '' : 's'} (ideal: 2)` });
     return alertas;
   }
