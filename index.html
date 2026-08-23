@@ -26944,6 +26944,29 @@ function escalaCalcularHoras(entrada, saida) {
   if (mins < 0) mins += 24 * 60; // turno que atravessa a meia-noite
   return Math.round((mins / 60) * 100) / 100;
 }
+// Entrada/Saída EFETIVA de um dia — o turno normal (dia.entrada/dia.saida)
+// alargado por qualquer bloco de "Horas Extra/Horas Banco" (dia.heIntervalos,
+// banco ou não) que comece antes ou termine depois do turno normal. Usadas
+// em qualquer sítio que precise de saber quando a pessoa REALMENTE chegou/
+// saiu (Estatísticas de abertura/fecho, Cobertura da Timeline/Validação —
+// ver validarCoberturaHorario) — nunca só o turno normal isolado, que
+// ignora presença via HE/Banco adicionados a seguir. "00:00" representa
+// sempre meia-noite no FIM do dia (a mais tardia possível), nunca o
+// início — por isso testado primeiro à parte, antes da comparação
+// alfabética normal de "HH:MM" (que já funciona para o resto, já que
+// strings de hora com 2 dígitos comparam corretamente por ordem
+// cronológica dentro do mesmo dia).
+function escalaEntradaEfetivaDia(dia) {
+  const candidatos = [dia.entrada, ...((dia.heIntervalos || []).map(iv => iv.inicio))].filter(Boolean);
+  if (!candidatos.length) return dia.entrada || '';
+  return candidatos.reduce((a, b) => (b < a ? b : a));
+}
+function escalaSaidaEfetivaDia(dia) {
+  const candidatos = [dia.saida, ...((dia.heIntervalos || []).map(iv => iv.fim))].filter(Boolean);
+  if (!candidatos.length) return dia.saida || '';
+  if (candidatos.includes('00:00')) return '00:00';
+  return candidatos.reduce((a, b) => (b > a ? b : a));
+}
 // Horas líquidas de um turno: duração total (entrada→saída) menos a
 // duração da pausa/almoço (pausaInicio→pausaFim), quando ambas estão
 // preenchidas — para o total de horas diárias trabalhadas por vaga ficar
@@ -29716,7 +29739,19 @@ function escalaTotalHorasLinha(linha, semanaId) {
   return ESCALA_DIAS.reduce((soma, d) => {
     const dia = linha.dias[d.key];
     if (!dia) return soma;
-    let total = soma + (dia.tipo === 'normal' ? (dia.horas || 0) : 0) + escalaHeHorasEfetivo(dia);
+    // BUG CORRIGIDO 2026-08-23 (mesma família dos bugs de Cobertura/Fecho
+    // e Estatísticas de abertura/fecho, pedido explícito "confirma se há
+    // mais bugs do género"): faltava dia.heHorasBanco (Banco de Horas
+    // GANHO manualmente, ver checkbox "Contar como Banco de Horas") —
+    // horas em que a pessoa esteve mesmo a trabalhar, só que a somar ao
+    // saldo de Banco em vez de a Hora Extra, por isso deviam contar para
+    // o "Total" da semana tal como já contam dia.horas e a Hora Extra
+    // normal (escalaHeHorasEfetivo). Sem correção própria para este
+    // campo (só heHoras/bancoHorasDesconto têm heHorasCorrigido/
+    // bancoHorasCorrigido, ver escalaHeHorasEfetivo/escalaBancoHorasEfetivo
+    // acima) — lido diretamente, mesmo padrão já usado em
+    // escalaCalcularEstatisticasPeriodo.
+    let total = soma + (dia.tipo === 'normal' ? (dia.horas || 0) : 0) + escalaHeHorasEfetivo(dia) + (dia.heHorasBanco || 0);
     if (semanaId) {
       const colaboradorIdDoDia = dia.colaboradorId || linha.colaboradorId;
       const reivindicadas = escalaReivindicacoesDoColaboradorNoDia(semanaId, d.key, colaboradorIdDoDia);
@@ -33475,7 +33510,17 @@ function buildHorariosPage(container, goTo) {
         cancelarBtn.addEventListener('click', (e) => { e.stopPropagation(); fecharCorrecaoBancoHe(); rerender(); });
         return h('td', { class: 'escala-mes-col-corrigivel' }, h('div', { style: 'display:flex;align-items:center;justify-content:center;gap:4px;' }, [input, guardarBtn, cancelarBtn]));
       }
-      const conteudo = [h('span', {}, textoValor)];
+      const conteudo = ganhoExtra
+        // Wrapper flex em coluna, com gap real entre as duas linhas — em
+        // vez de "display:block" simples, que deixava as duas linhas
+        // demasiado coladas dentro da célula (a borda da linha da tabela
+        // ficava a cair mesmo em cima do "+1h", parecendo um risco por
+        // cima do texto — pedido explícito 2026-08-23).
+        ? [h('div', { style: 'display:flex;flex-direction:column;align-items:center;gap:2px;' }, [
+            h('span', {}, textoValor),
+            h('span', { style: 'color:#15803d;font-size:11px;font-weight:700;' }, `+${escalaFormatarHoras(ganhoExtra)}`),
+          ])]
+        : [h('span', {}, textoValor)];
       // BUG CORRIGIDO 2026-08-23 (pedido explícito): esta coluna "Banco de
       // Horas" só mostrava o USADO (escalaBancoHorasEfetivo, desconto) —
       // um bloco de "Horas Extra" marcado "Contar como Banco de Horas"
@@ -33484,7 +33529,6 @@ function buildHorariosPage(container, goTo) {
       // Estatísticas (ver escalaCalcularEstatisticasPeriodo). Mostrado à
       // parte (nunca fundido no valor corrigível acima, que é só o
       // Usado/desconto) para não interferir com a correção manual.
-      if (ganhoExtra) conteudo.push(h('span', { style: 'display:block;color:#15803d;font-size:11px;font-weight:700;' }, `+${escalaFormatarHoras(ganhoExtra)}`));
       if (foiCorrigido) conteudo.push(h('span', { title: `Corrigido por ${temOrigem.corrigidoPor || '—'}`, style: 'margin-left:4px;font-size:10.5px;color:var(--pharm-500);' }, '✎'));
       const td = h('td', { class: 'escala-mes-col-corrigivel' + (podeValidarBancoHe ? ' escala-cell-editavel' : '') }, conteudo);
       if (podeValidarBancoHe && temOrigem) {
@@ -34289,10 +34333,23 @@ function buildHorariosPage(container, goTo) {
             s.horasFeriado += horasDia;
             escalaEmpurrarDetalheEstatistica(s, 'horasFeriado', dataISO, `${escalaFormatarHoras(horasDia)} · turno ${rotuloTurno}`);
           }
-          if (dia.entrada === '08:00') { s.aberturas += 1; escalaEmpurrarDetalheEstatistica(s, 'aberturas', dataISO, `Entrada 08:00 · turno ${rotuloTurno}`); }
-          if (dia.saida === '00:00') { s.fechos += 1; escalaEmpurrarDetalheEstatistica(s, 'fechos', dataISO, `Saída 00:00 · turno ${rotuloTurno}`); }
-          if (dia.saida === '22:00') { s.saidas22 += 1; escalaEmpurrarDetalheEstatistica(s, 'saidas22', dataISO, `Saída 22:00 · turno ${rotuloTurno}`); }
-          if (dia.saida === '23:00') { s.saidas23 += 1; escalaEmpurrarDetalheEstatistica(s, 'saidas23', dataISO, `Saída 23:00 · turno ${rotuloTurno}`); }
+          // BUG CORRIGIDO 2026-08-23 (mesma causa do bug de Cobertura/
+          // Fecho corrigido em validarCoberturaHorario — pedido explícito
+          // "confirma se há mais bugs do género"): "aberturas"/"fechos"/
+          // "saidas22"/"saidas23" só olhavam para dia.entrada/dia.saida —
+          // o turno NORMAL — nunca para dia.heIntervalos. Uma pessoa cujo
+          // turno normal termina às 23:00 mas que fica até à meia-noite
+          // por causa de um bloco de Horas Extra/Banco contava
+          // incorretamente como "saída 23:00", nunca como "fecho" — apesar
+          // de estar mesmo lá até fechar. Corrigido usando a entrada/saída
+          // EFETIVA (turno normal + heIntervalos), via
+          // escalaEntradaEfetivaDia/escalaSaidaEfetivaDia.
+          const entradaEfetivaDia = escalaEntradaEfetivaDia(dia);
+          const saidaEfetivaDia = escalaSaidaEfetivaDia(dia);
+          if (entradaEfetivaDia === '08:00') { s.aberturas += 1; escalaEmpurrarDetalheEstatistica(s, 'aberturas', dataISO, `Entrada 08:00 · turno ${rotuloTurno}`); }
+          if (saidaEfetivaDia === '00:00') { s.fechos += 1; escalaEmpurrarDetalheEstatistica(s, 'fechos', dataISO, `Saída 00:00 · turno ${rotuloTurno}`); }
+          if (saidaEfetivaDia === '22:00') { s.saidas22 += 1; escalaEmpurrarDetalheEstatistica(s, 'saidas22', dataISO, `Saída 22:00 · turno ${rotuloTurno}`); }
+          if (saidaEfetivaDia === '23:00') { s.saidas23 += 1; escalaEmpurrarDetalheEstatistica(s, 'saidas23', dataISO, `Saída 23:00 · turno ${rotuloTurno}`); }
           // "Contabilizar apenas as ocorrências" (pedido explícito
           // 2026-08-14): conta quantos DIAS tiveram uma Pausa/Almoço
           // registada, nunca a soma de horas de pausa — o interesse aqui
