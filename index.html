@@ -1471,6 +1471,12 @@
      Anual" — separado do bloco de Faturação por uma linha ténue, mantendo
      a mesma tipografia compacta. */
   .fin-subbloco-atendimentos{margin-top:14px;padding-top:12px;border-top:1px dashed var(--pharm-200);}
+  /* Total Faturado do Ano (real, até agora) — pedido explícito 2026-08-23,
+     "com o devido destaque": ao contrário do subbloco de Atendimentos
+     acima (só uma linha discreta), este ganha fundo colorido próprio, para
+     nunca se confundir com a Projeção (estimativa) logo por cima — aqui é
+     sempre um valor 100% real, já faturado. */
+  .fin-subbloco-total-real{margin-top:14px;padding:12px 14px;border-radius:10px;background:var(--pharm-50);border:1px solid var(--pharm-150,var(--pharm-200));}
   /* Grelha de 2 colunas (Pesquisa de Data Específica + Evolução Mensal
      Homóloga) — 1 coluna em ecrãs pequenos, lado a lado a partir de
      900px, como o resto da app. */
@@ -16726,6 +16732,17 @@ function financeiroTotalAno(ano, campo) {
   for (let mes = 1; mes <= 12; mes++) total += financeiroTotalMes(ano, mes, campo);
   return total;
 }
+// Total real de um ano SÓ ATÉ a uma data (inclusive) — para comparar
+// "o que já faturámos este ano até hoje" com "o que tínhamos faturado no
+// ano anterior até ao mesmo dia" (2026-08-23, pedido explícito: mostrar o
+// Total Faturado do Ano real, com destaque, a par da Projeção Anual).
+function financeiroTotalAnoAteData(ano, ateDataISO, campo) {
+  let total = 0;
+  for (let mes = 1; mes <= 12; mes++) {
+    financeiroRegistosDoMes(ano, mes, campo).forEach(r => { if (r.data <= ateDataISO) total += r.valor; });
+  }
+  return total;
+}
 // ---- Sazonalidade histórica real (2026-08-22, pedido explícito, depois
 // de confirmado que Jan/2021-Dez/2025 têm valores mensais REAIS gravados
 // — não previsões — no dia 1 de cada mês em faturacao_diaria, via "Registo
@@ -19567,6 +19584,21 @@ function buildFinanceiroPage(container, goTo) {
     const editarMetaAnualBtn = podeEditar ? h('button', { class: 'btn-fab-sm tone-blue', title: 'Definir/Editar Objetivos Mensais', 'aria-label': 'Definir/Editar Objetivos Mensais' }, Icon('pencil', { size: 12, strokeWidth: 2.2 })) : null;
     if (editarMetaAnualBtn) editarMetaAnualBtn.addEventListener('click', () => requireAuth(() => abrirModalDefinirMeta(anoSel, mesAtualReal, rerender)));
 
+    // ---- Total Faturado do Ano — REAL, até ontem (não uma estimativa
+    // como a Projeção acima) — pedido explícito 2026-08-23, com destaque
+    // próprio para nunca se confundir com a Projeção. Só faz sentido para
+    // o ANO CORRENTE (para um ano já fechado, seria sempre igual à
+    // Projeção desse ano — ver financeiroProjecaoAnual, que já devolve o
+    // total real quando ano < anoAtualReal).
+    const anoAtualRealAqui = new Date().getFullYear();
+    const ehAnoCorrenteSel = anoSel === anoAtualRealAqui;
+    const ateOntemISO = ontemISO();
+    const totalRealAteAgora = ehAnoCorrenteSel ? financeiroTotalAnoAteData(anoSel, ateOntemISO, 'faturacao') : null;
+    const mesmaDataAnoAnteriorISO = `${anoSel - 1}${ateOntemISO.slice(4)}`; // mesmo mês-dia, ano anterior
+    const totalRealAteAgoraAnoAnterior = ehAnoCorrenteSel ? financeiroTotalAnoAteData(anoSel - 1, mesmaDataAnoAnteriorISO, 'faturacao') : null;
+    const pctTotalRealVsAnoAnterior = (totalRealAteAgoraAnoAnterior && totalRealAteAgoraAnoAnterior > 0)
+      ? ((totalRealAteAgora - totalRealAteAgoraAnoAnterior) / totalRealAteAgoraAnoAnterior) * 100 : null;
+
     // ---- Total do Ano em Atendimentos (soma simples dos dias registados
     // — sem Objetivo/Projeção, esse conceito fica só para a Faturação). ----
     const totalAnoSelAt = financeiroTotalAno(anoSel, 'atendimentos');
@@ -19592,6 +19624,14 @@ function buildFinanceiroPage(container, goTo) {
             buildLinhaComparativaValor('vs. Objetivo Anual', 'Projeção', projecaoAnualValida ? projecaoAnual : null, pctProjecaoVsMetaAnual),
           ])
         : h('p', { class: 'fin-comp-linha' }, [h('span', { class: 'fin-comp-rotulo' }, 'Objetivo Anual: '), h('span', { class: 'fin-comp-ref' }, 'Sem Objetivos Mensais definidos — clique no lápis para definir.')]),
+      ehAnoCorrenteSel ? h('div', { class: 'fin-subbloco-total-real' }, [
+        h('div', { class: 'fin-metric-header' }, [
+          h('span', { class: 'fin-metric-icon tone-money' }, Icon('banknote', { size: 14, strokeWidth: 2 })),
+          h('p', { class: 'fin-kpi-label' }, `Total Faturado do Ano ${anoSel} (até ${formatDate(ateOntemISO)})`),
+        ]),
+        h('p', { class: 'fin-kpi-valor' }, financeiroFormatarEuro(totalRealAteAgora, 2)),
+        buildLinhaComparativa(`vs. ${anoSel - 1} até ao mesmo dia`, totalRealAteAgoraAnoAnterior || null, pctTotalRealVsAnoAnterior),
+      ]) : null,
       h('div', { class: 'fin-subbloco-atendimentos' }, [
         h('div', { class: 'fin-metric-header' }, [
           h('span', { class: 'fin-metric-icon tone-atendimentos' }, Icon('users', { size: 14, strokeWidth: 2 })),
