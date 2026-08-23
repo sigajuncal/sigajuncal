@@ -31359,9 +31359,22 @@ function buildHorariosPage(container, goTo) {
       bodyRows.push(h('tr', {}, [h('td', { colspan: String(3 + ESCALA_DIAS.length), class: 'escala-grupo-header' }, g.label)]));
       vagas.forEach(v => {
         const linha = semana.dados[v.codigo] || { colaboradorNome: '', dias: {} };
+        // BUG CORRIGIDO 2026-08-23 (pedido explícito: "olha ali o Simão...
+        // não é do quadro, não tem folgas, tem indisponibilidade"): mesma
+        // causa raiz do bug do F5 corrigido ontem, mas a afetar o TIPO do
+        // dia em vez do nome — escalaTipoEfetivoDia() só troca 'folga' por
+        // 'indisponivel' quando consegue identificar que o colaborador é
+        // Prestador, e só consegue isso com um colaboradorId válido; numa
+        // semana sem NENHUM dia preenchido para essa posição (ex: Simão,
+        // Prestador, sem nenhum turno essa semana), tanto dia.colaboradorId
+        // como linha.colaboradorId ficam vazios — a função nunca sabia que
+        // era Prestador, e mostrava "Folga" (rótulo genérico) em vez de
+        // "Indisponibilidade". Calculado UMA VEZ por posição (não por dia),
+        // reaproveitado tanto nas células como na coluna "Colaborador".
+        const fixoDaVagaLiveLinha = !linha.colaboradorNome ? escalaColaboradorFixoDaVaga(v.codigo) : null;
         const cells = ESCALA_DIAS.map(d => {
           const dia = linha.dias[d.key] || { tipo: 'folga' };
-          const colaboradorIdDoDia = (dia && dia.colaboradorId) || linha.colaboradorId;
+          const colaboradorIdDoDia = (dia && dia.colaboradorId) || linha.colaboradorId || (fixoDaVagaLiveLinha && fixoDaVagaLiveLinha.colaboradorId) || null;
           const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, colaboradorIdDoDia);
           let conteudo, classe = 'escala-cell';
           if (tipoEfetivo === 'normal') {
@@ -31428,7 +31441,7 @@ function buildHorariosPage(container, goTo) {
         // mesmo "salva-vidas" (ver fixoDaVagaLive, buildVistaVertical) —
         // esta vista (Escala da Equipa) nunca o tinha, por isso mostrava
         // "Posição por preencher" mesmo com alguém já atribuído.
-        const fixoDaVagaLiveLinha = !linha.colaboradorNome ? escalaColaboradorFixoDaVaga(v.codigo) : null;
+        // (fixoDaVagaLiveLinha já calculado acima, antes de "cells" — reaproveitado aqui.)
         const colaboradorLabel = nomesDistintosB.length
           ? nomesDistintosB.map(nomeCurtoDesambiguado).join(' / ')
           : nomeCurtoDesambiguado(linha.colaboradorNome || (fixoDaVagaLiveLinha && fixoDaVagaLiveLinha.colaboradorNome) || '');
@@ -40883,18 +40896,24 @@ function buildHorarioSemanaGridPDFDoc(semana) {
     }
     vagas.forEach(v => {
       const linha = semana.dados[v.codigo] || { colaboradorNome: '', dias: {} };
+      // BUG CORRIGIDO 2026-08-23 (pedido explícito: "olha ali o Simão...
+      // não é do quadro, não tem folgas, tem indisponibilidade") — mesma
+      // causa do bug do nome "Posição por preencher" corrigido ontem,
+      // mas aqui a afetar o TIPO do dia: escalaTipoEfetivoDia() só troca
+      // 'folga' por 'indisponivel' quando consegue identificar que o
+      // colaborador é Prestador, e só consegue isso com um colaboradorId
+      // válido — numa semana sem NENHUM dia preenchido para essa posição,
+      // tanto dia.colaboradorId como linha.colaboradorId ficam vazios.
+      const fixoDaVagaLivePdf = !linha.colaboradorNome ? escalaColaboradorFixoDaVaga(v.codigo) : null;
       const cells = ESCALA_DIAS.map(d => {
         const dia = linha.dias[d.key] || { tipo: 'folga' };
-        const colaboradorIdDoDia = (dia && dia.colaboradorId) || linha.colaboradorId;
+        const colaboradorIdDoDia = (dia && dia.colaboradorId) || linha.colaboradorId || (fixoDaVagaLivePdf && fixoDaVagaLivePdf.colaboradorId) || null;
         const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, colaboradorIdDoDia);
         const reivindicacoes = escalaReivindicacoesDoColaboradorNoDia(semana.id, d.key, colaboradorIdDoDia);
         const conteudo = conteudoHorarioDia(dia, tipoEfetivo, reivindicacoes);
         return h('td', {}, conteudo);
       });
-      const total = totalHorasDias(d => ({ dia: linha.dias[d.key] || { tipo: 'folga' }, colaboradorId: (linha.dias[d.key] && linha.dias[d.key].colaboradorId) || linha.colaboradorId }));
-      // Mesmo "salva-vidas" corrigido acima na Escala da Equipa (ver
-      // fixoDaVagaLiveLinha) — o PDF tinha exatamente o mesmo problema.
-      const fixoDaVagaLivePdf = !linha.colaboradorNome ? escalaColaboradorFixoDaVaga(v.codigo) : null;
+      const total = totalHorasDias(d => ({ dia: linha.dias[d.key] || { tipo: 'folga' }, colaboradorId: (linha.dias[d.key] && linha.dias[d.key].colaboradorId) || linha.colaboradorId || (fixoDaVagaLivePdf && fixoDaVagaLivePdf.colaboradorId) || null }));
       bodyRows.push(h('tr', {}, [
         h('td', { class: 'cell-strong' }, v.codigo),
         h('td', {}, linha.colaboradorNome || (fixoDaVagaLivePdf && fixoDaVagaLivePdf.colaboradorNome) || '—'),
