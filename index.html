@@ -16709,6 +16709,56 @@ function financeiroMediaDiariaMes(ano, mes, campo) {
   const registos = financeiroRegistosDoMes(ano, mes, campo);
   return registos.length ? financeiroTotalMes(ano, mes, campo) / registos.length : 0;
 }
+// ---- Projeção de Fecho do mês em curso (2026-08-24, pedido explícito
+// depois de uma comparação com vários modelos preditivos padrão sobre os
+// dados reais 2021-2026) — usa o PERFIL INTRA-MÊS real da farmácia em vez
+// de uma simples regra de três. ----
+// O método antigo (média diária dos dias já registados × dias do mês)
+// assume implicitamente que todos os dias do mês valem o mesmo. Não valem:
+// medido sobre os meses de 2026 já fechados (os únicos com dados diários),
+// ao dia 22 estava concluído ~73% do mês, não os ~71% que a regra de três
+// pressupõe — o fim do mês é sistematicamente mais fraco (menos dias
+// úteis proporcionalmente, fins de semana, etc.). Isto inflacionava a
+// projeção em ~12 600 € num mês típico.
+// Agora: fração média do mês já concluída até ao dia N, medida nos meses
+// FECHADOS do próprio ano em curso (perfil recente e específico desta
+// farmácia, nunca uma constante fixa), e a projeção é
+// acumulado ÷ essa fração. Sem meses fechados suficientes com dados
+// diários (ex: Janeiro, ou anos anteriores a FINANCEIRO_ANO_MINIMO_DIARIO,
+// que só têm o total mensal), cai para a regra de três antiga.
+function financeiroFracaoMesConcluidaAteDia(ano, diaN, campo) {
+  campo = campo || 'faturacao';
+  if (ano < FINANCEIRO_ANO_MINIMO_DIARIO) return null;
+  const mesAtual = new Date().getMonth() + 1;
+  const anoAtual = new Date().getFullYear();
+  const ultimoMesFechado = (ano < anoAtual) ? 12 : mesAtual - 1;
+  const fracoes = [];
+  for (let m = 1; m <= ultimoMesFechado; m++) {
+    const registos = financeiroRegistosDoMes(ano, m, campo);
+    // Só meses com o mês praticamente todo registado servem de referência
+    // — um mês com buracos daria uma fração enviesada.
+    if (registos.length < financeiroDiasDoMes(ano, m) - 2) continue;
+    const total = registos.reduce((s, r) => s + r.valor, 0);
+    if (total <= 0) continue;
+    const ateDia = registos.filter(r => parseInt(r.data.slice(8, 10), 10) <= diaN).reduce((s, r) => s + r.valor, 0);
+    if (ateDia > 0) fracoes.push(ateDia / total);
+  }
+  if (fracoes.length < 3) return null; // poucos meses de referência — não arrisca
+  return fracoes.reduce((s, f) => s + f, 0) / fracoes.length;
+}
+// Projeção de fecho de um mês AINDA EM CURSO (nunca usar num mês já
+// fechado — aí o valor certo é sempre o total real, ver mesSelJaFechado).
+function financeiroProjecaoFechoMesEmCurso(ano, mes, campo) {
+  campo = campo || 'faturacao';
+  const registos = financeiroRegistosDoMes(ano, mes, campo);
+  if (!registos.length) return 0;
+  const acumulado = registos.reduce((s, r) => s + r.valor, 0);
+  const ultimoDiaRegistado = Math.max(...registos.map(r => parseInt(r.data.slice(8, 10), 10)));
+  const fracao = financeiroFracaoMesConcluidaAteDia(ano, ultimoDiaRegistado, campo);
+  if (fracao && fracao > 0.05) return acumulado / fracao;
+  // Rede de segurança: regra de três antiga (média diária × dias do mês).
+  return financeiroMediaDiariaMes(ano, mes, campo) * financeiroDiasDoMes(ano, mes);
+}
 // Média diária de um ANO inteiro — se ateDataISO for indicado, só conta
 // dias até essa data (inclusive); usada para a Média do Ano em curso,
 // para não deixar um ano incompleto puxar a média para baixo com meses
@@ -16849,7 +16899,9 @@ function financeiroProjecaoAnual(ano, campo) {
   let totalMesesFechados = 0;
   for (let m = 1; m < mesAtualReal; m++) totalMesesFechados += financeiroTotalMes(ano, m, campo);
   const mediaMesAtual = financeiroMediaDiariaMes(ano, mesAtualReal, campo);
-  const projecaoFecho = mediaMesAtual * financeiroDiasDoMes(ano, mesAtualReal);
+  // Perfil intra-mês real (2026-08-24) em vez de média×dias — ver
+  // financeiroProjecaoFechoMesEmCurso.
+  const projecaoFecho = financeiroProjecaoFechoMesEmCurso(ano, mesAtualReal, campo);
   const mediaDiariaAno = financeiroMediaDiariaAno(ano, ontemReal, campo);
   const crescimentoHomologo = financeiroCrescimentoHomologo(ano, campo);
   const totalAnoAnterior = financeiroTotalAno(ano - 1, campo);
@@ -19474,7 +19526,7 @@ function buildFinanceiroPage(container, goTo) {
     // ainda em curso (dias por vir) precisa mesmo de projeção estimada.
     const mesSelJaFechado = (anoSel < anoAtualReal) || (anoSel === anoAtualReal && mesSel < mesAtualReal)
       || (anoSel === anoAtualReal && mesSel === mesAtualReal && hojeReal.getDate() >= diasNoMesSel);
-    const projecaoFechoMesSel = mesSelJaFechado ? totalMesSel : (mediaMesSel * diasNoMesSel);
+    const projecaoFechoMesSel = mesSelJaFechado ? totalMesSel : financeiroProjecaoFechoMesEmCurso(anoSel, mesSel);
     const totalMesAntSel = financeiroTotalMes(mesAntSel.ano, mesAntSel.mes);
     const pctVsMesAntSel = totalMesAntSel > 0 ? ((totalMesSel - totalMesAntSel) / totalMesAntSel) * 100 : null;
     const totalHomologoMesSel = financeiroTotalMes(anoSel - 1, mesSel);
