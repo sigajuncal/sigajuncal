@@ -14131,12 +14131,34 @@ function abrirModalGaveta(abrirThreadInicial) {
   // Mensagens normais: a notificação "não lida" resolve-se sozinha ao ABRIR
   // a conversa — nunca as Tarefas (essas só com confirmação manual).
   async function marcarMensagensLidas(outroId) {
-    const porLer = (STATE.gavetaRecados || []).filter(r =>
-      String(r.destinatarioId) === String(activeUser.id) && String(r.remetenteId) === String(outroId)
-      && !r.tratado && (r.tipo || 'mensagem') !== 'tarefa');
-    if (!porLer.length) return;
-    const resultados = await Promise.all(porLer.map(r => dbMarcarRecadoTratado(r.id)));
-    resultados.forEach((updated, i) => { if (updated) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === porLer[i].id ? updated : x); });
+    // BUG CORRIGIDO 2026-08-24 (pedido explícito: "visto deve ser
+    // automático assim que se abre mensagem, confirmar é que só deve ser
+    // feito por mim ou Paulo"): antes o filtro excluía TODAS as tarefas
+    // (tipo!=='tarefa'), por isso uma tarefa recebida ficava eternamente
+    // por ler até alguém carregar num botão — mesmo já a tendo lido. Duas
+    // coisas diferentes estavam a ser tratadas como uma só:
+    //   - "VISTO" (li isto) → automático ao abrir a conversa, qualquer
+    //     pessoa, incluindo em tarefas. É o que esta função faz agora.
+    //   - "CONFIRMAR CONCLUSÃO" (isto está tratado/validado) → continua a
+    //     exigir clique explícito, e nos pedidos de horário só Hugo/Paulo
+    //     (ver souDirecaoHorariosGlobal nos botões da thread).
+    // Marcar visto NUNCA valida nem conclui nada: dbMarcarRecadoVisto
+    // grava só notif_vista_recebida (o mesmo campo que a cruz da Home já
+    // usava), nunca tratado/tratadoEm — que continuam a ser exclusivos da
+    // confirmação manual.
+    const daConversa = (STATE.gavetaRecados || []).filter(r =>
+      String(r.destinatarioId) === String(activeUser.id) && String(r.remetenteId) === String(outroId));
+    const mensagensPorLer = daConversa.filter(r => !r.tratado && (r.tipo || 'mensagem') !== 'tarefa');
+    const tarefasPorVer = daConversa.filter(r => (r.tipo || 'mensagem') === 'tarefa' && !r.notifVistaRecebida);
+    if (!mensagensPorLer.length && !tarefasPorVer.length) return;
+    // Mensagens normais: continuam a ficar "tratadas" ao abrir (para elas,
+    // ler É tratar — não há nada a confirmar depois).
+    const resultados = await Promise.all(mensagensPorLer.map(r => dbMarcarRecadoTratado(r.id)));
+    resultados.forEach((updated, i) => { if (updated) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === mensagensPorLer[i].id ? updated : x); });
+    // Tarefas: só marcam VISTO — deixam de contar como notificação nova na
+    // Home, mas continuam pendentes de confirmação explícita.
+    const vistos = await Promise.all(tarefasPorVer.map(r => dbMarcarNotifHomeVista(r.id, 'notifVistaRecebida')));
+    vistos.forEach((updated, i) => { if (updated) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === tarefasPorVer[i].id ? updated : x); });
     render();
   }
   async function marcarTarefaConcluida(r) {
@@ -14155,7 +14177,9 @@ function abrirModalGaveta(abrirThreadInicial) {
   // de Tarefa" por aqui deixava sempre a tarefa por agendar, mesmo quando
   // a validação em Horários teria conseguido atribuí-la sozinha.
   async function marcarNotaEquipaVistaViaGaveta(r) {
-    if (!isMasterUser() || !r.referenciaId) return;
+    // souDirecaoHorariosGlobal (2026-08-24) em vez de isMasterUser() —
+    // reforço no lado da gravação da mesma regra já aplicada ao botão.
+    if (!souDirecaoHorariosGlobal() || !r.referenciaId) return;
     const notaAtual = (STATE.escalaNotasSemana || []).find(n => n.id === r.referenciaId);
     const patch = { validadoDirecao: true, validadoPor: activeUser.nomeCompleto || activeUser.username, validadoEm: new Date().toISOString() };
     if (notaAtual && notaAtual.tipo === 'tarefa' && !notaAtual.aplicadoHorario) {
@@ -14492,8 +14516,15 @@ function abrirModalGaveta(abrirThreadInicial) {
           }
           // Item 7: recados originados por uma nota de "Escala da Equipa"
           // ganham este botão extra — validação direta sem sair da Gaveta.
-          if (r.referenciaTabela === 'escala_notas_semana' && !souEuRemetente && !concluida && isMasterUser()) {
-            const validarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;margin-top:8px;' }, '☑️ Marcar como Visto');
+          // Restrito a Hugo/Paulo por NOME (souDirecaoHorariosGlobal) —
+          // pedido explícito 2026-08-24: "pedidos só são validados por mim
+          // administrador ou paulo diretor técnico". Antes usava
+          // isMasterUser(), que autoriza QUALQUER perfil Master (Lúcia,
+          // Joana, Ana também o são) — daí ter aparecido "Validado por
+          // Lúcia Rodrigues" nos Pedidos da Semana. Mesma restrição que as
+          // reivindicações de Horas Extra abaixo já usavam.
+          if (r.referenciaTabela === 'escala_notas_semana' && !souEuRemetente && !concluida && souDirecaoHorariosGlobal()) {
+            const validarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;margin-top:8px;' }, '☑️ Validar Pedido');
             validarBtn.addEventListener('click', () => requireAuth(() => marcarNotaEquipaVistaViaGaveta(r)));
             acoes.push(validarBtn);
           }
@@ -14501,7 +14532,9 @@ function abrirModalGaveta(abrirThreadInicial) {
           // da Gaveta — mesmo espírito do botão acima, mas para
           // escala_pedidos_especiais (só enquanto o pedido continuar
           // 'pendente'; decisões já tomadas não mostram mais botões aqui).
-          if (r.referenciaTabela === 'escala_pedidos_especiais' && !souEuRemetente && !concluida && isMasterUser()) {
+          // Também restrito a Hugo/Paulo por NOME (2026-08-24, mesmo
+          // pedido) — antes qualquer Master podia aprovar/rejeitar.
+          if (r.referenciaTabela === 'escala_pedidos_especiais' && !souEuRemetente && !concluida && souDirecaoHorariosGlobal()) {
             const pedidoRef = (STATE.escalaPedidosEspeciais || []).find(p => p.id === r.referenciaId);
             if (pedidoRef && pedidoRef.estado === 'pendente') {
               const aprovarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;margin-top:8px;' }, '✅ Aprovar');
@@ -28772,7 +28805,9 @@ async function notificarAutorPedidoEspecialDecidido(pedido) {
   if (criado) STATE.gavetaRecados = [criado, ...(STATE.gavetaRecados || [])];
 }
 async function decidirPedidoEspecial(pedido, novoEstado) {
-  if (!isMasterUser()) return null;
+  // souDirecaoHorariosGlobal (2026-08-24) em vez de isMasterUser() — só
+  // Hugo/Paulo por NOME decidem Pedidos Especiais.
+  if (!souDirecaoHorariosGlobal()) return null;
   const updated = await editarPedidoEspecial(pedido, { estado: novoEstado, validadoPor: activeUser.nomeCompleto || activeUser.username, validadoEm: new Date().toISOString() }, false);
   if (updated) {
     await atualizarNotificacoesPedidoEspecialDecidido(updated);
@@ -28784,7 +28819,8 @@ async function decidirPedidoEspecial(pedido, novoEstado) {
 // de marcarNotaEquipaVistaViaGaveta (item 7), mas para Pedidos Especiais:
 // decide o pedido E marca o recado como tratado, sem sair da Gaveta.
 async function decidirPedidoEspecialViaGaveta(r, novoEstado, onDone) {
-  if (!isMasterUser() || !r.referenciaId) return;
+  // souDirecaoHorariosGlobal (2026-08-24) em vez de isMasterUser().
+  if (!souDirecaoHorariosGlobal() || !r.referenciaId) return;
   const pedido = escalaPedidosEspeciaisAtivos().find(p => p.id === r.referenciaId);
   if (!pedido) { showDbErrorToast('Este pedido já não existe.'); return; }
   const updated = await decidirPedidoEspecial(pedido, novoEstado);
@@ -31742,7 +31778,9 @@ function buildHorariosPage(container, goTo) {
     }, { danger: true, confirmLabel: 'Eliminar' });
   }
   async function alternarValidacaoNotaEquipa(nota) {
-    if (!isMasterUser()) return;
+    // Reforço no lado da gravação (não só na UI) — 2026-08-24: só Hugo/
+    // Paulo por NOME validam Pedidos da Semana, nunca qualquer Master.
+    if (!souDirecaoHorariosGlobal()) { showToast('Só a Direção (Hugo Cunha / Paulo Freitas) pode validar pedidos.', 'error'); return; }
     const novoEstado = !nota.validadoDirecao;
     const patch = novoEstado
       ? { validadoDirecao: true, validadoPor: activeUser.nomeCompleto || activeUser.username, validadoEm: new Date().toISOString() }
@@ -31838,7 +31876,13 @@ function buildHorariosPage(container, goTo) {
     // foi (pedido explícito 2026-08-14: antes não dizia nada enquanto
     // pendente, e o badge de validada não dizia quem nem quando).
     let validacaoEl;
-    if (isMasterUser()) {
+    // souDirecaoHorariosGlobal() em vez de isMasterUser() (2026-08-24,
+    // pedido explícito: "pedidos só são validados por mim administrador ou
+    // paulo diretor técnico") — isMasterUser() autoriza QUALQUER perfil
+    // Master (Lúcia, Joana, Ana também o são), daí ter aparecido "Validado
+    // por Lúcia Rodrigues". Mesma restrição por NOME já usada no Gerador
+    // de Horário, Validação de Horários e Gerir Posições.
+    if (souDirecaoHorariosGlobal()) {
       const cb = h('input', { type: 'checkbox' });
       cb.checked = !!nota.validadoDirecao;
       cb.addEventListener('change', () => requireAuth(() => alternarValidacaoNotaEquipa(nota)));
@@ -35608,7 +35652,10 @@ function buildHorariosPage(container, goTo) {
       eliminarBtn.addEventListener('click', () => requireAuth(() => eliminarPedidoEspecialConfirm(pedido, rerender)));
       acoes.push(editarBtn, eliminarBtn);
     }
-    if (isMasterUser() && pedido.estado === 'pendente') {
+    // souDirecaoHorariosGlobal (2026-08-24) em vez de isMasterUser() —
+    // botões Aprovar/Rejeitar de Pedidos Especiais em Férias, alinhados
+    // com a mesma regra dos restantes pontos de decisão.
+    if (souDirecaoHorariosGlobal() && pedido.estado === 'pendente') {
       const aprovarBtn = h('button', { class: 'btn btn-primary', style: 'padding:5px 10px;font-size:12px;' }, '✅ Aprovar');
       aprovarBtn.addEventListener('click', () => requireAuth(async () => { const ok = await decidirPedidoEspecial(pedido, 'aprovado'); if (ok) rerender(); else escalaShowErro('Não foi possível aprovar'); }));
       const rejeitarBtn = h('button', { class: 'btn btn-secondary', style: 'padding:5px 10px;font-size:12px;' }, '❌ Rejeitar');
