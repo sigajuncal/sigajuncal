@@ -2932,6 +2932,14 @@
   .pedidos-hub-2plano .pedido-categoria-card{width:160px;padding:18px 14px;}
   .pedidos-hub-2plano .pedido-categoria-card span.label{font-size:12.5px;}
   .pedidos-hub-3plano .pedido-categoria-card{width:170px;padding:16px 14px;}
+  /* Calculadoras PVP (2026-08-24) — cor distinta dos cartões de setor:
+     é uma FERRAMENTA de apoio, não um setor de pedidos, e não deve
+     parecer que é. Azul da paleta já usada no resto da app (--blue),
+     nunca uma cor nova. */
+  .pedido-categoria-card-ferramenta{border-color:var(--blue-bd,#bfdbfe);background:var(--blue-bg,#eff6ff);}
+  .pedido-categoria-card-ferramenta .icon-wrap{color:var(--blue,#2563eb);}
+  .pedido-categoria-card-ferramenta span.label{color:var(--blue,#2563eb);}
+  .pedido-categoria-card-ferramenta:hover{border-color:var(--blue,#2563eb);}
   /* Mobile: as larguras fixas de desktop acima (200/230/160/170px), que
      dão hierarquia visual entre planos, tornam-se inconsistentes quando os
      cartões empilham numa coluna só — todos passam a 100% da largura do
@@ -4149,6 +4157,11 @@ const NAV_SECTIONS = [
     { key: 'ervanaria', label: 'Ervanária', icon: 'leaf' },
     { key: 'veterinaria', label: 'Veterinária', icon: 'paw' },
     { key: 'outros', label: 'Outros Fornecedores', icon: 'package' },
+    // Movida de Stocks para Pedidos (pedido explícito 2026-08-24) — fica
+    // ao lado de "Outros Fornecedores"; tone:'blue' dá-lhe cor distinta
+    // dos restantes cartões de setor, para se perceber logo que é uma
+    // ferramenta e não mais um setor de pedidos.
+    { key: 'calculadoras', label: 'Calculadoras PVP', icon: 'calculator', tone: 'blue' },
   ] },
   { title: 'Agendas', items: PRESTADORES_AGENDA.map(p => ({ key: `agenda-${p.key}`, label: p.nome, icon: p.icon })) },
   { title: 'Entregas', items: [
@@ -4157,7 +4170,6 @@ const NAV_SECTIONS = [
   { title: 'Stocks', items: [
     { key: 'erros', label: 'Erros de Stock', icon: 'alert' },
     { key: 'recolhas', label: 'Recolhas', icon: 'returnBox' },
-    { key: 'calculadoras', label: 'Calculadoras PVP', icon: 'calculator' },
     { key: 'validades', label: 'Validades', icon: 'hourglass' },
   ] },
   { title: 'Financeiro', items: [
@@ -11476,10 +11488,14 @@ const PAGINA_PAI = {
   // Pedidos
   manipulados: 'hub-pedidos', ortopedia: 'hub-pedidos', ervanaria: 'hub-pedidos',
   veterinaria: 'hub-pedidos', outros: 'hub-pedidos', 'hub-pedidos': 'home',
+  // Calculadoras PVP movida de Stocks para Pedidos (2026-08-24) — o
+  // "voltar atrás" tem de a devolver ao hub certo, senão levava a pessoa
+  // para Stocks, onde já não existe.
+  calculadoras: 'hub-pedidos',
   orcamentos: 'manipulados', // "Orçamentos Conhecidos" abre-se a partir de Manipulados
 
   // Stocks
-  erros: 'hub-stocks', recolhas: 'hub-stocks', calculadoras: 'hub-stocks',
+  erros: 'hub-stocks', recolhas: 'hub-stocks',
   validades: 'hub-stocks', 'hub-stocks': 'home',
 
   // Gestão
@@ -16731,17 +16747,29 @@ function financeiroFracaoMesConcluidaAteDia(ano, diaN, campo) {
   if (ano < FINANCEIRO_ANO_MINIMO_DIARIO) return null;
   const mesAtual = new Date().getMonth() + 1;
   const anoAtual = new Date().getFullYear();
-  const ultimoMesFechado = (ano < anoAtual) ? 12 : mesAtual - 1;
+  // Recolhe meses de referência do ano em curso primeiro (mais recentes,
+  // logo mais representativos da farmácia hoje) e, se não chegarem,
+  // continua a recuar para os anos anteriores — pedido explícito
+  // 2026-08-24: "janeiro, fevereiro de 2027 podem usar meses anteriores
+  // como referência". Sem isto, Janeiro/Fevereiro de cada ano novo caíam
+  // sempre na regra de três antiga, apesar de haver anos inteiros de
+  // dados diários mesmo ali atrás. Máximo de 12 meses de referência —
+  // ~1 ano de histórico chega para uma média estável, e evita diluir o
+  // perfil recente com anos antigos.
+  const MAX_MESES_REFERENCIA = 12;
   const fracoes = [];
-  for (let m = 1; m <= ultimoMesFechado; m++) {
-    const registos = financeiroRegistosDoMes(ano, m, campo);
-    // Só meses com o mês praticamente todo registado servem de referência
-    // — um mês com buracos daria uma fração enviesada.
-    if (registos.length < financeiroDiasDoMes(ano, m) - 2) continue;
-    const total = registos.reduce((s, r) => s + r.valor, 0);
-    if (total <= 0) continue;
-    const ateDia = registos.filter(r => parseInt(r.data.slice(8, 10), 10) <= diaN).reduce((s, r) => s + r.valor, 0);
-    if (ateDia > 0) fracoes.push(ateDia / total);
+  for (let a = ano; a >= FINANCEIRO_ANO_MINIMO_DIARIO && fracoes.length < MAX_MESES_REFERENCIA; a--) {
+    const ultimoMesFechado = (a < anoAtual) ? 12 : mesAtual - 1;
+    for (let m = ultimoMesFechado; m >= 1 && fracoes.length < MAX_MESES_REFERENCIA; m--) {
+      const registos = financeiroRegistosDoMes(a, m, campo);
+      // Só meses com o mês praticamente todo registado servem de referência
+      // — um mês com buracos daria uma fração enviesada.
+      if (registos.length < financeiroDiasDoMes(a, m) - 2) continue;
+      const total = registos.reduce((s, r) => s + r.valor, 0);
+      if (total <= 0) continue;
+      const ateDia = registos.filter(r => parseInt(r.data.slice(8, 10), 10) <= diaN).reduce((s, r) => s + r.valor, 0);
+      if (ateDia > 0) fracoes.push(ateDia / total);
+    }
   }
   if (fracoes.length < 3) return null; // poucos meses de referência — não arrisca
   return fracoes.reduce((s, f) => s + f, 0) / fracoes.length;
@@ -19796,6 +19824,15 @@ function buildPedidosHubPage(container, preset, goTo) {
   ]));
   wrap.appendChild(h('div', { class: 'quick-grid pedidos-hub-cats pedidos-hub-3plano' }, [
     buildSetorBtn(SETORES_INFO.outros, false),
+    // Calculadoras PVP — movida de Stocks para aqui (pedido explícito
+    // 2026-08-24), ao lado de "Outros Fornecedores". Classe própria
+    // (.pedido-categoria-card-ferramenta) para ganhar cor distinta dos
+    // cartões de setor — é uma FERRAMENTA de apoio, não mais um setor de
+    // pedidos, e não deve parecer que é.
+    h('button', { class: 'pedido-categoria-card pedido-categoria-card-ferramenta', onclick: () => goTo('calculadoras') }, [
+      h('span', { class: 'icon-wrap' }, Icon('calculator', { size: 34, strokeWidth: 1.6 })),
+      h('span', { class: 'label' }, 'Calculadoras PVP'),
+    ]),
   ]));
 
   // ---- Dashboard Resumo — situação global, mas SEGREGADA por setor (sem
@@ -44073,8 +44110,9 @@ const SECTOR_HUBS = [
 // de volta a uma grelha única (ver buildSectorHubPage).
 const SECTOR_HUB_TIERS = {
   'Stocks': [
+    // "Calculadoras PVP" saiu daqui para o hub de Pedidos (2026-08-24) —
+    // sem tier "Ferramentas", que ficaria vazio.
     { label: 'Principal', keys: ['erros', 'recolhas', 'validades'] },
-    { label: 'Ferramentas', keys: ['calculadoras'] },
   ],
   'Gestão': [
     { label: 'Alertas', keys: ['reclamacoes'] },
