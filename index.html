@@ -1936,7 +1936,7 @@
   .escala-nota-acao-discreta{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;
     border-radius:6px;border:none;background:transparent;color:var(--pharm-300);cursor:pointer;transition:color .12s ease,background-color .12s ease;}
   .escala-nota-acao-discreta:hover{color:var(--pharm-600);background:var(--pharm-100);}
-  .escala-nota-validacao-toggle{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:var(--pharm-500);cursor:pointer;}
+  .escala-nota-validacao-toggle{display:inline-flex;align-items:center;gap:8px;font-size:11px;font-weight:700;color:var(--pharm-500);flex-wrap:wrap;}
   .escala-nota-validacao-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:#166534;}
   .escala-nota-pendente-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:#b45309;}
   /* "A Minha Semana" — Dia | Horas | Tarefas, em 3 colunas de grelha
@@ -28695,9 +28695,16 @@ async function notificarAutorNotaValidada(nota, validada) {
     : `A validação do seu pedido em "Pedidos e Registos da Semana" foi anulada pela Direção: "${resumo}"`;
   // BUG CORRIGIDO (2026-08-18): ver nota em notificarDirecaoPedidoEspecial
   // — mesmo problema, dbInsert('gavetaRecados', ...) falhava sempre.
+  // ALTERADO (2026-08-25, pedido explícito): tipo passou de 'tarefa' para
+  // 'mensagem' — o colaborador não decide nada aqui, só é informado do
+  // resultado (a decisão já foi tomada pela Direção); com tipo:'tarefa'
+  // aparecia-lhe um botão "Confirmar Conclusão" sem sentido nenhum para
+  // uma simples notificação passiva. Mesmo espírito já usado em
+  // notificarColaboradoresPublicacaoSemana. Fica "lida" sozinha ao abrir a
+  // conversa, tal como qualquer mensagem normal.
   const criado = await dbInsertRecado({
     remetenteId: activeUser.id, destinatarioId: nota.autorId,
-    mensagem, tratado: false, tipo: 'tarefa', referenciaTabela: 'escala_notas_semana', referenciaId: nota.id,
+    mensagem, tratado: false, tipo: 'mensagem', referenciaTabela: 'escala_notas_semana', referenciaId: nota.id,
   });
   if (criado) STATE.gavetaRecados = [criado, ...(STATE.gavetaRecados || [])];
 }
@@ -28811,9 +28818,13 @@ async function notificarAutorPedidoEspecialDecidido(pedido) {
   const mensagem = pedido.estado === 'aprovado'
     ? `O seu Pedido Especial para ${dataTexto} (${escalaMotivoPedidoTexto(pedido)}) foi aprovado pela Direção.`
     : `O seu Pedido Especial para ${dataTexto} (${escalaMotivoPedidoTexto(pedido)}) foi rejeitado pela Direção.`;
+  // ALTERADO (2026-08-25, pedido explícito): tipo passou de 'tarefa' para
+  // 'mensagem' — mesmo motivo de notificarAutorNotaValidada acima: o
+  // colaborador só é avisado do resultado (aprovado/rejeitado), a decisão
+  // já foi tomada pela Direção, não há nada para ele "concluir".
   const criado = await dbInsertRecado({
     remetenteId: activeUser.id, destinatarioId: pedido.colaboradorId,
-    mensagem, tratado: false, tipo: 'tarefa', referenciaTabela: 'escala_pedidos_especiais', referenciaId: pedido.id,
+    mensagem, tratado: false, tipo: 'mensagem', referenciaTabela: 'escala_pedidos_especiais', referenciaId: pedido.id,
   });
   if (criado) STATE.gavetaRecados = [criado, ...(STATE.gavetaRecados || [])];
 }
@@ -31790,11 +31801,17 @@ function buildHorariosPage(container, goTo) {
       rerender();
     }, { danger: true, confirmLabel: 'Eliminar' });
   }
-  async function alternarValidacaoNotaEquipa(nota) {
+  async function alternarValidacaoNotaEquipa(nota, novoEstadoForcado) {
     // Reforço no lado da gravação (não só na UI) — 2026-08-24: só Hugo/
     // Paulo por NOME validam Pedidos da Semana, nunca qualquer Master.
     if (!souDirecaoHorariosGlobal()) { showToast('Só a Direção (Hugo Cunha / Paulo Freitas) pode validar pedidos.', 'error'); return; }
-    const novoEstado = !nota.validadoDirecao;
+    // ALTERADO (2026-08-25, pedido explícito): antes só alternava
+    // (!nota.validadoDirecao); agora aceita um estado explícito, para os 2
+    // botões separados "Validar"/"Não Validar" (buildCartaoNotaEquipa)
+    // nunca dependerem de adivinhar o estado atual — cada botão diz
+    // exatamente o que faz.
+    const novoEstado = typeof novoEstadoForcado === 'boolean' ? novoEstadoForcado : !nota.validadoDirecao;
+    if (novoEstado === !!nota.validadoDirecao) { rerender(); return; }
     const patch = novoEstado
       ? { validadoDirecao: true, validadoPor: activeUser.nomeCompleto || activeUser.username, validadoEm: new Date().toISOString() }
       : { validadoDirecao: false, validadoPor: '', validadoEm: null };
@@ -31895,14 +31912,32 @@ function buildHorariosPage(container, goTo) {
     // Master (Lúcia, Joana, Ana também o são), daí ter aparecido "Validado
     // por Lúcia Rodrigues". Mesma restrição por NOME já usada no Gerador
     // de Horário, Validação de Horários e Gerir Posições.
+    // ALTERADO (2026-08-25, pedido explícito): o checkbox único ("clica-se
+    // na frase, enfim, nada intuitivo") deu lugar a 2 botões-ícone
+    // distintos — "Validar" e "Não Validar" — cada um só visível quando
+    // faz sentido (nunca os dois ao mesmo tempo: já validado só mostra
+    // "Não Validar", pendente só mostra "Validar"), com tooltip nativo a
+    // explicar a ação ao passar o rato (mesmo padrão dos botões
+    // Editar/Eliminar acima, .escala-nota-acao-discreta).
     if (souDirecaoHorariosGlobal()) {
-      const cb = h('input', { type: 'checkbox' });
-      cb.checked = !!nota.validadoDirecao;
-      cb.addEventListener('change', () => requireAuth(() => alternarValidacaoNotaEquipa(nota)));
-      const rotulo = nota.validadoDirecao
+      const rotulo = h('span', {}, nota.validadoDirecao
         ? ` Validado por ${nota.validadoPor || '—'} em ${formatCarimboNota(nota.validadoEm)}`
-        : ' Pendente de validação';
-      validacaoEl = h('label', { class: 'escala-nota-validacao-toggle' }, [cb, rotulo]);
+        : ' Pendente de validação');
+      const botoes = [];
+      if (nota.validadoDirecao) {
+        const naoValidarBtn = h('button', {
+          type: 'button', class: 'btn-fab-sm tone-gray', title: 'Não Validar (anular a validação)', 'aria-label': 'Não Validar',
+        }, Icon('x', { size: 13, strokeWidth: 2.4 }));
+        naoValidarBtn.addEventListener('click', () => requireAuth(() => alternarValidacaoNotaEquipa(nota, false)));
+        botoes.push(naoValidarBtn);
+      } else {
+        const validarBtn = h('button', {
+          type: 'button', class: 'btn-fab-sm tone-green', title: 'Validar Pedido', 'aria-label': 'Validar',
+        }, Icon('checkcircle', { size: 13, strokeWidth: 2.4 }));
+        validarBtn.addEventListener('click', () => requireAuth(() => alternarValidacaoNotaEquipa(nota, true)));
+        botoes.push(validarBtn);
+      }
+      validacaoEl = h('div', { class: 'escala-nota-validacao-toggle' }, [rotulo, ...botoes]);
     } else if (nota.validadoDirecao) {
       validacaoEl = h('span', { class: 'escala-nota-validacao-badge' }, [Icon('checkcircle', { size: 12, strokeWidth: 2.4 }), ` Validado por ${nota.validadoPor || 'Direção'} em ${formatCarimboNota(nota.validadoEm)}`]);
     } else {
@@ -33016,7 +33051,18 @@ function buildHorariosPage(container, goTo) {
   // submeter este formulário uma vez por pessoa, com o Início/Fim de
   // cada troço.
   function atribuirTarefaRapida(semana) {
-    if (escalaSemanaEstaCongelada(semana)) { atribuicaoRapidaError = 'Esta semana está congelada e não pode ser editada.'; rerender(); return; }
+    // ALTERADO (2026-08-25, pedido explícito): antes bloqueava com
+    // escalaSemanaEstaCongelada (passada OU publicada), obrigando a
+    // reabrir a semana para rascunho, atribuir, e republicar só para
+    // acrescentar uma tarefa — o que reenviava a notificação de
+    // republicação a toda a equipa por algo que não mexe no horário em
+    // si. Passa a usar escalaSemanaNoPassado (só bloqueia semanas
+    // REALMENTE já passadas) — mesmo padrão já aplicado em
+    // escalaAplicarTarefaPedidoNoHorario (2026-08-18): semana publicada e
+    // ainda a decorrer/futura aceita a atribuição diretamente, sem
+    // reabrir/editar/republicar, e sem disparar notificação nenhuma (só
+    // publicarSemana notifica a equipa).
+    if (escalaSemanaNoPassado(semana)) { atribuicaoRapidaError = 'Esta semana já passou — não é possível atribuir tarefas.'; rerender(); return; }
     // Usa sempre o MESMO dia selecionado no topo (diaVerticalSelecionado
     // — os separadores "Segunda, Terça, ..." que também controlam a
     // Timeline/Vista em Tabela), nunca um dia próprio deste formulário
@@ -33084,7 +33130,13 @@ function buildHorariosPage(container, goTo) {
     });
   }
   function buildPainelAtribuicaoRapidaTarefas(semana) {
-    const congelada = escalaSemanaCongelada(semana);
+    // ALTERADO (2026-08-25, pedido explícito, mesmo motivo de
+    // atribuirTarefaRapida acima): passou de escalaSemanaCongelada
+    // (passada OU publicada) para escalaSemanaNoPassado (só passada) —
+    // este painel é a única ação possível de continuar disponível numa
+    // semana já publicada, exatamente porque não mexe no horário
+    // publicado em si nem exige reabrir/republicar.
+    const congelada = escalaSemanaNoPassado(semana);
     // Dia sempre igual ao dos separadores do topo (diaVerticalSelecionado
     // — o mesmo que controla a Timeline/Vista em Tabela), nunca um
     // seletor à parte (pedido explícito 2026-08-14). Continua a mostrar-
@@ -33096,16 +33148,25 @@ function buildHorariosPage(container, goTo) {
     diaSelect.value = diaAtualKey;
     diaSelect.addEventListener('change', () => { diaVerticalSelecionado = diaSelect.value; atribuicaoRapidaDraft.colaboradorId = ''; atribuicaoRapidaError = ''; rerender(); });
     // Tipo de Tarefa PRIMEIRO (pedido explícito 2026-08-14: escolher
-    // antes do Colaborador) — e restrito só às 3 tarefas que este atalho
-    // foi pensado para agilizar (Chefe de Turno/Encomenda Manhã/Tarde);
-    // Conferência/Reunião/Outro continuam só no Editor de Dia célula-a-
-    // célula (não fazem sentido neste fluxo rápido de atribuição única).
-    const TIPOS_ATRIBUICAO_RAPIDA = ['chefe_turno', 'encomenda_manha', 'encomenda_tarde'];
+    // antes do Colaborador). ALTERADO (2026-08-25, pedido explícito):
+    // passou a incluir também Conferência/Reunião/Outro — antes só as 3
+    // tarefas "comuns" (Chefe de Turno/Encomenda Manhã/Tarde) estavam
+    // aqui, e as outras só se conseguiam atribuir célula a célula no
+    // Editor de Dia. Formação continua de fora de propósito (fluxo
+    // próprio — granularidade de 15min, campos Marca/Gama —, não cabe
+    // neste atalho de atribuição única).
+    const TIPOS_ATRIBUICAO_RAPIDA = ['chefe_turno', 'encomenda_manha', 'encomenda_tarde', 'conferencia', 'reuniao', 'outro'];
     const tipoSelect = h('select', { class: 'select' }, [
       h('option', { value: '' }, '— Escolher —'),
       ...ESCALA_TAREFAS_ESPECIAIS.filter(t => TIPOS_ATRIBUICAO_RAPIDA.includes(t.key)).map(t => h('option', { value: t.key, selected: atribuicaoRapidaDraft.tipo === t.key ? 'selected' : undefined }, `${t.icon} ${t.label}`)),
     ]);
     tipoSelect.value = atribuicaoRapidaDraft.tipo || '';
+    // Campo "Outro" (texto livre) — só aparece quando Tipo==='outro'; o
+    // draft e a validação já existiam para isto (ver atribuirTarefaRapida
+    // acima), só faltava mesmo o campo na UI.
+    const outroInput = h('input', { class: 'input', type: 'text', maxlength: '80', placeholder: 'Descrever a tarefa...' });
+    outroInput.value = atribuicaoRapidaDraft.outro || '';
+    outroInput.addEventListener('input', () => { atribuicaoRapidaDraft.outro = outroInput.value; atribuicaoRapidaError = ''; });
     const inicioInput = campoHora(atribuicaoRapidaDraft.inicio, false, (v) => { atribuicaoRapidaDraft.inicio = v; atribuicaoRapidaError = ''; rerender(); });
     const fimInput = campoHora(atribuicaoRapidaDraft.fim, true, (v) => { atribuicaoRapidaDraft.fim = v; atribuicaoRapidaError = ''; rerender(); });
     tipoSelect.addEventListener('change', () => {
@@ -33170,11 +33231,12 @@ function buildHorariosPage(container, goTo) {
     atribuirBtn.addEventListener('click', () => requireAuth(() => atribuirTarefaRapida(semana)));
     return h('div', { class: 'card card-pad', style: 'margin-top:16px;max-width:620px;width:100%;box-sizing:border-box;' }, [
       h('h3', { class: 'dash-card-title', style: 'margin:0 0 4px;display:flex;align-items:center;gap:7px;' }, [Icon('star', { size: 15, strokeWidth: 2.3 }), h('span', {}, 'Atribuição Rápida de Tarefas')]),
-      h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, 'Chefe de Turno / Encomendas — sem ter de abrir célula a célula. Só Farmacêutico(a)/Diretor(a) Técnico(a) e Adjunto(a).'),
-      congelada ? h('p', { class: 'field-helper-text', style: 'margin:0;' }, 'Semana congelada — não é possível atribuir tarefas.') : h('div', { class: 'form-grid' }, [
+      h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, 'Chefe de Turno / Encomendas / Conferência / Reunião / Outro — sem ter de abrir célula a célula. Só Farmacêutico(a)/Diretor(a) Técnico(a) e Adjunto(a).'),
+      congelada ? h('p', { class: 'field-helper-text', style: 'margin:0;' }, 'Esta semana já passou — não é possível atribuir tarefas.') : h('div', { class: 'form-grid' }, [
         atribuicaoRapidaError ? h('p', { class: 'form-error span2' }, atribuicaoRapidaError) : null,
         h('div', { class: 'field' }, [h('label', {}, 'Dia'), diaSelect]),
         h('div', { class: 'field' }, [h('label', {}, 'Tipo de Tarefa'), tipoSelect]),
+        atribuicaoRapidaDraft.tipo === 'outro' ? h('div', { class: 'field' }, [h('label', {}, 'Descrição'), outroInput]) : null,
         h('div', { class: 'field span2' }, [h('label', {}, 'Colaborador'), colabSelect]),
         contextoTurno ? h('div', { class: 'field span2', style: 'margin-top:-8px;' }, [contextoTurno]) : null,
         h('div', { class: 'field' }, [h('label', {}, 'Início'), inicioInput]),
