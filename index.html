@@ -2325,6 +2325,16 @@
      nunca centrado. */
   .escala-vertical-conta-horas-fim{position:absolute;left:0;right:0;bottom:2px;text-align:center;
     padding:0 2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  /* CRIADO 2026-08-26 (pedido explícito de Hugo, "falta mostrar o início
+     da hora extra"): num dia "Horas Extra (sem turno normal)" esta caixa
+     cobre exatamente 100% do turno por baixo (mesmo Início/Fim), por
+     isso esconde por completo a etiqueta de Início do bloco normal que,
+     nos outros casos (turno + bloco de HE a seguir), continua visível
+     por cima/ao lado. Só aparece quando faz falta (ver
+     escalaDiaHoraExtraSemTurno mais abaixo) — nos restantes casos a
+     caixa continua a mostrar só o Fim, como antes. */
+  .escala-vertical-conta-horas-inicio{position:absolute;left:0;right:0;top:2px;text-align:center;
+    padding:0 2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .escala-vertical-conta-horas-desconto{border-color:#b91c1c;background:rgba(220,38,38,.85);color:#fff;
     text-shadow:0 1px 2px rgba(0,0,0,.3);}
   .escala-vertical-conta-horas-ganho{border-color:#15803d;background:rgba(22,163,74,.85);color:#fff;
@@ -3452,6 +3462,14 @@
   .gaveta-tarefa-card-topo{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:10.5px;font-weight:800;
     text-transform:uppercase;letter-spacing:.03em;color:#b45309;margin-bottom:5px;}
   .gaveta-tarefa-card.concluida .gaveta-tarefa-card-topo{color:#059669;}
+  /* CRIADO 2026-08-26 (pedido explícito de Hugo, "botões aprovar e
+     rejeitar devidamente espaçados da hora de envio na bubble"): a hora
+     passa a ocupar sempre a sua própria linha (era um span inline que
+     podia ficar colado ao 1º botão a seguir, sem quebra de linha
+     garantida) e os botões ficam num contentor próprio, com espaço
+     claro acima e entre eles. */
+  .gaveta-tarefa-card .gaveta-bolha-hora{display:block;margin-top:2px;}
+  .gaveta-tarefa-card-acoes{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;}
   /* Aba de Gestão de Tarefas (visão global, sem entrar em cada conversa) */
   .gaveta-tarefa-global{display:flex;align-items:flex-start;gap:10px;padding:11px 12px;border-radius:11px;
     border:1px solid var(--pharm-200);margin-bottom:8px;}
@@ -14210,6 +14228,25 @@ function abrirModalGaveta(abrirThreadInicial) {
     showToast('Pedido validado pela Direção.', 'success');
     render();
   }
+  // CRIADO 2026-08-26 (pedido explícito de Hugo: "Paulo ou eu temos de
+  // ter acesso a essa notificação com botões de aprovar e rejeitar") —
+  // até agora só existia "Validar Pedido" na Gaveta, sem equivalente
+  // para rejeitar sem sair daqui (só era possível em Horários>Pedidos,
+  // botão "Não Validar"). Mesmo padrão/patch de alternarValidacaoNotaEquipa
+  // (novoEstadoForcado=false), mas como função própria porque essa vive
+  // dentro do closure de buildHorariosPage (depende de `rerender` local).
+  async function marcarNotaEquipaRejeitadaViaGaveta(r) {
+    if (!souDirecaoHorariosGlobal() || !r.referenciaId) return;
+    const patch = { validadoDirecao: false, validadoPor: '', validadoEm: null };
+    const updatedNota = await dbUpdate('escalaNotasSemana', r.referenciaId, patch);
+    if (!updatedNota) { showDbErrorToast('Não foi possível rejeitar o pedido'); return; }
+    STATE.escalaNotasSemana = (STATE.escalaNotasSemana || []).map(n => n.id === r.referenciaId ? updatedNota : n);
+    const updatedRecado = await dbMarcarRecadoTratado(r.id);
+    if (updatedRecado) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === r.id ? updatedRecado : x);
+    await notificarAutorNotaValidada(updatedNota, false);
+    showToast('Pedido rejeitado.', 'success');
+    render();
+  }
   function eliminarRecado(r) {
     confirmDialog('Tens a certeza de que pretendes eliminar este item? Esta ação não pode ser desfeita.', async () => {
       const ok = await dbEliminarRecado(r.id);
@@ -14517,24 +14554,41 @@ function abrirModalGaveta(abrirThreadInicial) {
         if (ehTarefa) {
           const concluida = !!r.tratado;
           const acoes = [];
-          if (!souEuRemetente && !concluida) {
-            const confirmarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;margin-top:8px;' }, '✓ Confirmar Conclusão');
+          // CORRIGIDO 2026-08-26 (pedido explícito de Hugo: "os pedidos só
+          // devem ter aprovar/rejeitar, sem precisar de concluir tarefa à
+          // parte — isso só dificulta o processo"): as 3 referências
+          // abaixo já têm o seu próprio par de botões de decisão
+          // (Aprovar/Rejeitar ou Validar/Invalidar), que já marca o
+          // recado como tratado ao decidir (ver
+          // marcarNotaEquipaVistaViaGaveta/marcarNotaEquipaRejeitadaViaGaveta/
+          // decidirPedidoEspecialViaGaveta/decidirHorasExtraReivindicacaoViaGaveta)
+          // — mostrar TAMBÉM o "Confirmar Conclusão" genérico ao lado só
+          // confundia (2 ações diferentes para a mesma decisão, uma das
+          // quais nunca decide nada a sério). Fica só para tarefas/pedidos
+          // ad-hoc enviados diretamente entre colegas, sem tabela própria.
+          const REFERENCIAS_COM_DECISAO_PROPRIA = ['escala_notas_semana', 'escala_pedidos_especiais', 'escala_horas_extra_reivindicacoes'];
+          const temDecisaoPropria = REFERENCIAS_COM_DECISAO_PROPRIA.includes(r.referenciaTabela);
+          if (!souEuRemetente && !concluida && !temDecisaoPropria) {
+            const confirmarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;' }, '✓ Confirmar Conclusão');
             confirmarBtn.addEventListener('click', () => requireAuth(() => marcarTarefaConcluida(r)));
             acoes.push(confirmarBtn);
           }
           // Item 7: recados originados por uma nota de "Escala da Equipa"
-          // ganham este botão extra — validação direta sem sair da Gaveta.
-          // Restrito a Hugo/Paulo por NOME (souDirecaoHorariosGlobal) —
-          // pedido explícito 2026-08-24: "pedidos só são validados por mim
-          // administrador ou paulo diretor técnico". Antes usava
-          // isMasterUser(), que autoriza QUALQUER perfil Master (Lúcia,
-          // Joana, Ana também o são) — daí ter aparecido "Validado por
-          // Lúcia Rodrigues" nos Pedidos da Semana. Mesma restrição que as
-          // reivindicações de Horas Extra abaixo já usavam.
+          // ganham este par de botões — decisão direta sem sair da
+          // Gaveta. Restrito a Hugo/Paulo por NOME (souDirecaoHorariosGlobal)
+          // — pedido explícito 2026-08-24: "pedidos só são validados por
+          // mim administrador ou paulo diretor técnico". ATUALIZADO
+          // 2026-08-26 (pedido explícito): "Validar Pedido" sozinho
+          // passou a "✅ Aprovar" + novo "❌ Rejeitar" ao lado — mesmo
+          // padrão visual dos outros 2 pares de decisão abaixo, para
+          // nunca obrigar a sair da Gaveta e ir a Horários>Pedidos só
+          // para rejeitar.
           if (r.referenciaTabela === 'escala_notas_semana' && !souEuRemetente && !concluida && souDirecaoHorariosGlobal()) {
-            const validarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;margin-top:8px;' }, '☑️ Validar Pedido');
-            validarBtn.addEventListener('click', () => requireAuth(() => marcarNotaEquipaVistaViaGaveta(r)));
-            acoes.push(validarBtn);
+            const aprovarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;' }, '✅ Aprovar');
+            aprovarBtn.addEventListener('click', () => requireAuth(() => marcarNotaEquipaVistaViaGaveta(r)));
+            const rejeitarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;' }, '❌ Rejeitar');
+            rejeitarBtn.addEventListener('click', () => requireAuth(() => marcarNotaEquipaRejeitadaViaGaveta(r)));
+            acoes.push(aprovarBtn, rejeitarBtn);
           }
           // Pedidos Especiais de Horário: aprovação/rejeição rápida direto
           // da Gaveta — mesmo espírito do botão acima, mas para
@@ -14545,9 +14599,9 @@ function abrirModalGaveta(abrirThreadInicial) {
           if (r.referenciaTabela === 'escala_pedidos_especiais' && !souEuRemetente && !concluida && souDirecaoHorariosGlobal()) {
             const pedidoRef = (STATE.escalaPedidosEspeciais || []).find(p => p.id === r.referenciaId);
             if (pedidoRef && pedidoRef.estado === 'pendente') {
-              const aprovarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;margin-top:8px;' }, '✅ Aprovar');
+              const aprovarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;' }, '✅ Aprovar');
               aprovarBtn.addEventListener('click', () => requireAuth(() => decidirPedidoEspecialViaGaveta(r, 'aprovado', render)));
-              const rejeitarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;margin-top:8px;' }, '❌ Rejeitar');
+              const rejeitarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;' }, '❌ Rejeitar');
               rejeitarBtn.addEventListener('click', () => requireAuth(() => decidirPedidoEspecialViaGaveta(r, 'rejeitado', render)));
               acoes.push(aprovarBtn, rejeitarBtn);
             }
@@ -14560,9 +14614,9 @@ function abrirModalGaveta(abrirThreadInicial) {
           if (r.referenciaTabela === 'escala_horas_extra_reivindicacoes' && !souEuRemetente && !concluida && souDirecaoHorariosGlobal()) {
             const reivRef = (STATE.escalaHorasExtraReivindicacoes || []).find(rv => String(rv.id) === String(r.referenciaId));
             if (reivRef && (reivRef.estado || 'pendente') === 'pendente') {
-              const validarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;margin-top:8px;' }, '✅ Validar');
+              const validarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;' }, '✅ Validar');
               validarBtn.addEventListener('click', () => requireAuth(() => decidirHorasExtraReivindicacaoViaGaveta(r, 'validado', render)));
-              const invalidarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;margin-top:8px;' }, '❌ Invalidar');
+              const invalidarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;' }, '❌ Invalidar');
               invalidarBtn.addEventListener('click', () => requireAuth(() => decidirHorasExtraReivindicacaoViaGaveta(r, 'invalidado', render)));
               acoes.push(validarBtn, invalidarBtn);
             }
@@ -14575,7 +14629,14 @@ function abrirModalGaveta(abrirThreadInicial) {
               ]),
               h('p', { style: 'margin:0;font-size:13px;white-space:pre-wrap;overflow-wrap:anywhere;' }, r.mensagem || ''),
               h('span', { class: 'gaveta-bolha-hora' }, formatDateTime(r.createdAt)),
-              ...acoes,
+              // CORRIGIDO 2026-08-26 (pedido explícito de Hugo, "botões
+              // aprovar e rejeitar devidamente espaçados da hora de
+              // envio"): a hora (span inline) e os botões seguiam-se em
+              // sequência crua no mesmo bloco — sem quebra de linha
+              // garantida, ficavam por vezes colados à hora. Agrupados
+              // agora num contentor próprio (flex+gap+margin-top, ver CSS
+              // .gaveta-tarefa-card-acoes), nunca mais junto ao texto.
+              acoes.length ? h('div', { class: 'gaveta-tarefa-card-acoes' }, acoes) : null,
             ]),
           ]);
         }
@@ -14664,8 +14725,22 @@ function abrirModalGaveta(abrirThreadInicial) {
   // para não puxar o utilizador para baixo à força enquanto ele está a
   // reler mensagens antigas propositadamente.
   function scrollHistoricoParaFim() {
-    const historicoEl = bodyEl.querySelector('.gaveta-main-historico');
-    if (historicoEl) historicoEl.scrollTop = historicoEl.scrollHeight;
+    // CORRIGIDO 2026-08-26 (pedido explícito de Hugo: "quando se recebem
+    // notificações não estão a ir para a última notificação, tem de se
+    // fazer scroll"): ler scrollHeight logo a seguir a render() podia
+    // ainda apanhar o layout por terminar (ex: modal a abrir com
+    // transição, cartões de tarefa com altura variável por causa dos
+    // botões novos) — scrollHeight ficava desatualizado nesse instante,
+    // parando o scroll a meio em vez de ir mesmo até ao fim. Adiado para
+    // depois do browser pintar a frame (2x requestAnimationFrame — 1
+    // frame só para o layout, garante que já reflete os botões/altura
+    // finais antes de medir).
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const historicoEl = bodyEl.querySelector('.gaveta-main-historico');
+        if (historicoEl) historicoEl.scrollTop = historicoEl.scrollHeight;
+      });
+    });
   }
 
   // Janela ampla tipo aplicação (sidebar de contactos + área principal de
@@ -38137,10 +38212,18 @@ function buildHorariosPage(container, goTo) {
           if (horasIv <= 0) return;
           const topPctHe = (minutosNoIntervalo(iv.inicio, false) / (totalHoras * 60)) * 100;
           const alturaPctHe = Math.max(1.5, ((minutosNoIntervalo(iv.fim, true) - minutosNoIntervalo(iv.inicio, false)) / (totalHoras * 60)) * 100);
+          // "sem turno normal": esta caixa cobre 100% do turno por baixo,
+          // escondendo a etiqueta de Início desse bloco — mostra também o
+          // Início aqui (ver CSS .escala-vertical-conta-horas-inicio);
+          // nos restantes dias mantém-se só o Fim, como já era.
+          const mostrarInicioHe = escalaDiaHoraExtraSemTurno(dia);
           const overlayHe = h('div', {
             class: 'escala-vertical-conta-horas-overlay escala-vertical-conta-horas-extra',
             style: `top:${topPctHe}%;height:${alturaPctHe}%;`, tabIndex: '0',
-          }, h('div', { class: 'escala-vertical-conta-horas-fim' }, iv.fim));
+          }, [
+            mostrarInicioHe ? h('div', { class: 'escala-vertical-conta-horas-inicio' }, iv.inicio) : null,
+            h('div', { class: 'escala-vertical-conta-horas-fim' }, iv.fim),
+          ].filter(Boolean));
           instalarTooltipContaHoras(overlayHe, `${colaboradorNome ? colaboradorNome + '\n' : ''}Hora Extra\n+${escalaFormatarHorasDecimal(horasIv)} (${iv.inicio} - ${iv.fim})`);
           // CORRIGIDO 2026-08-26 — ver nota igual em overlayBanco acima.
           if (editavel) overlayHe.addEventListener('dblclick', aoClicarPosicao);
