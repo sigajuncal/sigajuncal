@@ -2329,7 +2329,15 @@
     text-shadow:0 1px 2px rgba(0,0,0,.3);}
   .escala-vertical-conta-horas-ganho{border-color:#15803d;background:rgba(22,163,74,.85);color:#fff;
     text-shadow:0 1px 2px rgba(0,0,0,.3);}
-  .escala-vertical-conta-horas-extra{border-color:#b45309;background:rgba(245,158,11,.9);color:#451a03;}
+  /* CORRIGIDO 2026-08-26 (pedido explícito de Hugo, "uniformizar a cor
+     das horas extra, reivindicada ou planeada, para o mesmo amarelo") —
+     esta caixa (Hora Extra colocada manualmente no editor de turno)
+     usava um amarelo/âmbar mais escuro e texto branco, diferente do
+     amarelo claro já usado pela Hora Extra REIVINDICADA
+     (.escala-vertical-bloco-extra, #facc15/#78350f, ver acima) — agora
+     usa exatamente a mesma cor/texto, para nunca parecerem 2 tipos
+     diferentes de Hora Extra. */
+  .escala-vertical-conta-horas-extra{border-color:#eab308;background:#facc15;color:#78350f;text-shadow:none;}
   .escala-vertical-coluna-totais{min-width:56px;flex:0 0 56px;}
   .escala-vertical-total-hora{position:absolute;left:0;right:0;display:flex;align-items:center;justify-content:center;
     font-size:11px;font-weight:800;color:var(--pharm-600);border-top:1px dashed var(--pharm-100);}
@@ -27071,6 +27079,30 @@ function escalaHeHorasEfetivo(dia) {
   if (!dia) return 0;
   return (dia.heHorasCorrigido !== undefined && dia.heHorasCorrigido !== null) ? dia.heHorasCorrigido : (dia.heHoras || 0);
 }
+// CRIADO 2026-08-26 (bug corrigido, pedido explícito "está a contar em
+// duplicado"): identifica um dia criado via "Horas Extra (sem turno
+// normal)" — o turno (dia.entrada/dia.saida) e o(s) bloco(s) de Horas
+// Extra descrevem exatamente o MESMO intervalo (nunca 2 intervalos
+// distintos, como no caso normal de um turno + um bloco de HE a seguir).
+// Nestes dias, dia.horas e (heHoras+heHorasBanco) não devem ser somados
+// nas contagens de total — seria contar a mesma presença 2 vezes.
+// Confia primeiro na marca explícita gravada a partir de agora
+// (dia.heSemTurnoNormal); para dias GRAVADOS ANTES desta correção (sem a
+// marca), cai para uma deteção por forma — os blocos de Horas Extra
+// cobrem exatamente entrada→saída, sem qualquer Pausa/Almoço definida
+// (a secção de Pausa nem sequer aparece nesse fluxo) — reconhecendo
+// automaticamente o mesmo padrão sem precisar de reabrir/regravar cada
+// dia já existente à mão.
+function escalaDiaHoraExtraSemTurno(dia) {
+  if (!dia || dia.tipo !== 'normal' || !dia.entrada || !dia.saida) return false;
+  if (dia.heSemTurnoNormal) return true;
+  if (dia.pausaInicio || dia.pausaFim) return false;
+  const intervalos = Array.isArray(dia.heIntervalos) ? dia.heIntervalos.filter(iv => iv.inicio && iv.fim) : [];
+  if (!intervalos.length) return false;
+  const inicios = intervalos.map(iv => iv.inicio).sort();
+  const fins = intervalos.map(iv => iv.fim).sort();
+  return inicios[0] === dia.entrada && fins[fins.length - 1] === dia.saida;
+}
 function escalaCalcularHoras(entrada, saida) {
   if (!/^\d{1,2}:\d{2}$/.test(entrada) || !/^\d{1,2}:\d{2}$/.test(saida)) return 0;
   const [eh, em] = entrada.split(':').map(Number);
@@ -29911,7 +29943,15 @@ function escalaTotalHorasLinha(linha, semanaId) {
     // bancoHorasCorrigido, ver escalaHeHorasEfetivo/escalaBancoHorasEfetivo
     // acima) — lido diretamente, mesmo padrão já usado em
     // escalaCalcularEstatisticasPeriodo.
-    let total = soma + (dia.tipo === 'normal' ? (dia.horas || 0) : 0) + escalaHeHorasEfetivo(dia) + (dia.heHorasBanco || 0);
+    // BUG CORRIGIDO 2026-08-26: um dia "Horas Extra (sem turno normal)"
+    // tinha dia.horas (turno) E heHoras/heHorasBanco (blocos) a
+    // descrever o MESMO intervalo — somar os dois duplicava sempre o
+    // total desse dia (ver escalaDiaHoraExtraSemTurno). Nestes dias só
+    // entra heHoras+heHorasBanco (nunca dia.horas também); nos restantes
+    // dias (turno normal + bloco de HE separado a seguir) mantém-se
+    // exatamente como antes.
+    const contaComoHoraExtraSemTurno = escalaDiaHoraExtraSemTurno(dia);
+    let total = soma + (dia.tipo === 'normal' && !contaComoHoraExtraSemTurno ? (dia.horas || 0) : 0) + escalaHeHorasEfetivo(dia) + (dia.heHorasBanco || 0);
     if (semanaId) {
       const colaboradorIdDoDia = dia.colaboradorId || linha.colaboradorId;
       const reivindicadas = escalaReivindicacoesDoColaboradorNoDia(semanaId, d.key, colaboradorIdDoDia);
@@ -30506,6 +30546,17 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       return;
     }
     let tipo = tipoSelect.value;
+    // BUG CORRIGIDO 2026-08-26 (pedido explícito de Hugo, "está a contar
+    // em duplicado"): esta variável marca os dias criados via "Horas
+    // Extra (sem turno normal)" — nestes dias, dia.horas (turno
+    // entrada-saída) e heHoras/heHorasBanco (blocos) descrevem o MESMO
+    // intervalo, nunca 2 intervalos diferentes como no caso normal (turno
+    // normal + bloco de HE a seguir). Sem esta marca, escalaTotalHorasLinha/
+    // o total do PDF/a deteção automática de excesso semanal somavam as
+    // horas do "turno" E as horas do "HE" como se fossem 2 presenças
+    // distintas, duplicando sempre a totalidade destes dias (ex: 12h
+    // viravam 24h no "Total" da semana).
+    let horaExtraSemTurno = false;
     // "Horas Extra (sem turno normal)" nunca é gravada como tipo próprio
     // (pedido explícito 2026-08-19) — deriva Entrada/Saída diretamente
     // do(s) bloco(s) de Horas Extra preenchidos (o mais cedo/o mais
@@ -30525,6 +30576,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       entradaInput.value = ordenados[0].inicioInput.value.trim();
       saidaInput.value = ordenados[ordenados.length - 1].fimInput.value.trim();
       tipo = 'normal';
+      horaExtraSemTurno = true;
     }
     let entrada = '', saida = '', pausaInicio = '', pausaFim = '', horas = 0;
     let tarefas = [];
@@ -30713,6 +30765,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     const primeiraTarefa = tarefas[0] || { tipo: '', outro: '', inicio: '', fim: '' };
     novoDados[codigoVaga].dias[diaKey] = {
       entrada, saida, pausaInicio, pausaFim, tipo, heHoras, heHorasBanco, heInicio, heFim, heIntervalos, horas, tarefas,
+      heSemTurnoNormal: horaExtraSemTurno || undefined,
       bancoHorasIntervalos, bancoHorasDesconto,
       // Correção/Validação de Banco de Horas e Horas Extra (ver
       // escalaBancoHorasEfetivo/escalaHeHorasEfetivo) — sempre
@@ -34698,6 +34751,15 @@ function buildHorariosPage(container, goTo) {
         ESCALA_DIAS.forEach(d => {
           const alvo = escalaVagaDoColaboradorNoDia(semana, d.key, uid);
           if (!alvo) return;
+          // BUG CORRIGIDO 2026-08-26: um dia "Horas Extra (sem turno
+          // normal)" já entra no Banco/Extra pela marcação MANUAL de
+          // heHoras/heHorasBanco (ver loop de estatísticas por dia, mais
+          // acima) — incluir também aqui a duração do turno fazia este
+          // limiar automático de 40h/semana "ver" a mesma presença outra
+          // vez, podendo gerar Banco/Extra automático a somar por cima do
+          // que já tinha sido classificado manualmente. Estes dias ficam
+          // de fora desta soma automática (ver escalaDiaHoraExtraSemTurno).
+          if (escalaDiaHoraExtraSemTurno(alvo.dia)) return;
           totalSemana += escalaCalcularHorasComPausa(alvo.dia.entrada, alvo.dia.saida, alvo.dia.pausaInicio, alvo.dia.pausaFim);
         });
         if (totalSemana > limiarSemana) {
@@ -41032,6 +41094,10 @@ function buildHorarioSemanaGridPDFDoc(semana) {
     const reivindicadas = escalaReivindicacoesDoColaboradorNoDia(semana.id, d.key, colaboradorId).reduce((s, r) => s + escalaCalcularHoras(r.intervaloInicio, r.intervaloFim), 0);
     const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, colaboradorId);
     if (tipoEfetivo !== 'normal' || !dia.entrada || !dia.saida) return soma + reivindicadas;
+    // BUG CORRIGIDO 2026-08-26 — mesma correção de escalaTotalHorasLinha:
+    // "Horas Extra (sem turno normal)" nunca soma turno+HE (é o mesmo
+    // intervalo, ver escalaDiaHoraExtraSemTurno).
+    if (escalaDiaHoraExtraSemTurno(dia)) return soma + escalaHeHorasEfetivo(dia) + (dia.heHorasBanco || 0) + reivindicadas;
     return soma + escalaCalcularHorasComPausa(dia.entrada, dia.saida, dia.pausaInicio, dia.pausaFim) + escalaHeHorasEfetivo(dia) + reivindicadas;
   }, 0);
   // Conteúdo da célula do dia — pedido explícito 2026-08-23: "basta o
