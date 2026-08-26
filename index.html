@@ -1261,11 +1261,14 @@
      pseudo-elemento nativo. Um wrapper `.date-input-wrapper` (ver
      melhorarInputData() no JS) passa a envolver o <input> com um ícone SVG
      PRÓPRIO, sempre desenhado pela própria app (nunca pelo motor de
-     renderização do browser), sobreposto com position:absolute e
-     pointer-events:none (só decorativo — quem recebe o clique é sempre o
-     wrapper/input, nunca o ícone). O clique em QUALQUER zona (input OU
-     ícone) abre o seletor nativo via input.showPicker(), com fallback para
-     .focus()/.click() em browsers sem suporte. O pseudo-elemento nativo
+     renderização do browser), sobreposto com position:absolute. O ícone
+     recebe o clique diretamente (pointer-events:auto, corrigido
+     2026-08-26 — tinha pointer-events:none, o que fazia o clique
+     atravessar sempre para o indicador nativo escondido por baixo, cuja
+     posição exata varia por browser/OS/escala de ecrã, causando "o ícone
+     não abre, mas o espaço ao lado abre" nalguns PCs) e chama
+     input.showPicker(), com fallback para .focus()/.click() em browsers
+     sem suporte. O pseudo-elemento nativo
      fica escondido dentro do wrapper (para não duplicar o ícone); mantém-se
      como rede de segurança, com o mesmo ícone de fundo forçado por CSS,
      em qualquer <input type="date"> que por algum motivo ainda não tenha
@@ -1297,8 +1300,25 @@
   .date-input-wrapper input[type="date"]::-webkit-calendar-picker-indicator{
     opacity:0 !important;background-image:none !important;
   }
+  /* BUG CORRIGIDO 2026-08-26 (pedido explícito de Hugo, "ícone às vezes não
+     abre, mas o espaço em branco ao lado abre"): este ícone tinha
+     pointer-events:none, ou seja NUNCA recebia o clique — o clique
+     atravessava sempre para o <input> por baixo, cuja área realmente
+     clicável é a do ::-webkit-calendar-picker-indicator nativo escondido
+     (opacity:0, ver acima). Isso fazia o listener de clique do ícone
+     (icone.addEventListener, ver melhorarInputData() no JS) NUNCA disparar
+     em nenhum browser — o calendário só abria por coincidência, quando a
+     posição exata do indicador nativo (que varia por browser/OS/escala de
+     ecrã, ex: 125%/150% comum em PCs de secretária) calhava sobrepor-se à
+     zona onde o ícone decorativo está desenhado. Nos PCs da Juncal essa
+     coincidência falhava por uns pixels, daí "o ícone não abre mas o
+     espaço em branco ao lado abre" (esse espaço é que calhava coincidir
+     com o indicador nativo invisível). Corrigido com pointer-events:auto —
+     o ícone passa a receber o clique diretamente e a chamar
+     input.showPicker() por JS (com fallback para .focus()), já não
+     depende de nenhuma coincidência de posição do browser. */
   .date-input-icon{position:absolute;top:50%;right:11px;transform:translateY(-50%);
-    display:flex;align-items:center;justify-content:center;pointer-events:none;
+    display:flex;align-items:center;justify-content:center;pointer-events:auto;cursor:pointer;
     color:var(--pharm-700);}
   .date-input-icon svg{display:block;}
   .checkbox-field{display:flex;align-items:center;gap:8px;padding-top:23px;cursor:pointer;user-select:none;
@@ -4958,7 +4978,19 @@ function buildCampoHoraScrollVacinacao(field, draft) {
 // para a Lista de Espera e para o alerta de elegibilidade nas Marcações.
 function vacinacaoCalcularIdade(dataNascISO) {
   if (!dataNascISO) return null;
-  const nasc = new Date(dataNascISO + 'T00:00:00');
+  // BUG CORRIGIDO 2026-08-26: se a data já vier com componente de hora
+  // agregada (ex: "1958-03-12T00:00:00" ou "...+00:00", possível consoante
+  // o tipo real da coluna no Supabase — mesmo risco já identificado e
+  // tratado em normalizarDataParaComparacao(), para as Declarações),
+  // concatenar outro "T00:00:00" a seguir criava uma string inválida
+  // ("...T00:00:00T00:00:00") — new Date() dava Invalid Date, isNaN()
+  // rebentava, e a função devolvia null em silêncio: a Idade aparecia
+  // sempre "—" na Lista de Espera para esses registos, mesmo com a Data
+  // de Nascimento bem preenchida e gravada. Corrigido: descarta sempre
+  // primeiro qualquer parte a seguir a um eventual "T" antes de compor a
+  // data de referência.
+  const soData = String(dataNascISO).split('T')[0].trim();
+  const nasc = new Date(soData + 'T00:00:00');
   if (isNaN(nasc.getTime())) return null;
   const hoje = new Date();
   let idade = hoje.getFullYear() - nasc.getFullYear();
@@ -10717,7 +10749,44 @@ function buildField(field, draft) {
   if (extra) kids.push(extra);
   if (telefoneErroEl) kids.push(telefoneErroEl);
   if (field.helperText) kids.push(h('p', { class: 'field-helper-text' + (field.helperTone ? ' tone-' + field.helperTone : '') }, field.helperText));
-  return h('div', { class: 'field' + colClass }, kids);
+  // field.wrapId (opcional): dá um id estável a este wrapper — usado por
+  // atualizarHelperTextCampo() para atualizar o texto de ajuda por baixo do
+  // campo sem precisar de rerender() da página inteira (ver essa função
+  // para o porquê: um rerender() a meio da escrita destruía o próprio
+  // <input> e perdia o foco — bug corrigido 2026-08-26 na Data de
+  // Nascimento da Vacinação).
+  return h('div', { class: 'field' + colClass, id: field.wrapId || undefined }, kids);
+}
+// Atualiza (cria, edita ou remove) o texto de ajuda (helperText) de um campo
+// já construído por buildField(), SEM voltar a chamar rerender() da página
+// inteira — usado sempre que um texto de ajuda precisa de se atualizar a
+// CADA tecla escrita (ex: idade/elegibilidade sob "Data de Nascimento" na
+// Vacinação), nunca só no blur/change final.
+// BUG CORRIGIDO 2026-08-26 (Hugo: "não conseguia escrever o ano da Data de
+// Nascimento, escrevia até 19 e bloqueava, ficava 0019"): campos de data
+// disparam 'change' a CADA tecla, não só no fim, sempre que o valor
+// interpretado nesse momento já é uma data válida (comportamento nativo do
+// <input type="date">, não é bug do browser) — nomes/day/month já
+// preenchidos + só 2 dígitos no ano já bastam para formar uma data válida
+// (ainda que sem sentido, ex: "0019-06-05"). O onChange desses campos
+// chamava sempre rerender(), que reconstrói a página do zero (ver nota em
+// STATE/render() na Arquitetura) — isso destruía o próprio <input> a meio
+// da escrita e o foco perdia-se, por isso as teclas seguintes deixavam de
+// chegar a lado nenhum e o campo ficava "preso" no valor intermédio.
+// Corrigido: "Data de Nascimento" (Lista de Espera + Marcações) deixou de
+// chamar rerender() no onChange — atualiza só este parágrafo em DOM direto,
+// o <input> nunca é tocado/recriado, o foco e a escrita nunca se perdem.
+function atualizarHelperTextCampo(wrapId, texto, tone) {
+  const wrapEl = document.getElementById(wrapId);
+  if (!wrapEl) return;
+  let helperEl = wrapEl.querySelector('.field-helper-text');
+  if (!texto) { if (helperEl) helperEl.remove(); return; }
+  if (!helperEl) {
+    helperEl = h('p', { class: 'field-helper-text' }, texto);
+    wrapEl.appendChild(helperEl);
+  }
+  helperEl.textContent = texto;
+  helperEl.className = 'field-helper-text' + (tone ? ' tone-' + tone : '');
 }
 
 // Enter avança para o campo seguinte em formulários com vários campos —
@@ -23206,7 +23275,11 @@ function peloUtenteTexto(genero) { return genero === 'Feminino' ? 'pela utente' 
 // impressa não mudar cada vez que o documento é reaberto.
 function idadeAPartirDeNascimento(dataNascimentoISO, dataReferenciaISO) {
   if (!dataNascimentoISO) return null;
-  const nasc = new Date(dataNascimentoISO + 'T00:00:00');
+  // Mesma correção 2026-08-26 aplicada em vacinacaoCalcularIdade() — ver
+  // comentário lá para o detalhe do bug (data com hora agregada partia o
+  // cálculo em silêncio).
+  const soDataNasc = String(dataNascimentoISO).split('T')[0].trim();
+  const nasc = new Date(soDataNasc + 'T00:00:00');
   if (isNaN(nasc.getTime())) return null;
   const ref = dataReferenciaISO ? new Date(dataReferenciaISO + 'T00:00:00') : new Date();
   let idade = ref.getFullYear() - nasc.getFullYear();
@@ -40621,7 +40694,16 @@ function buildVacinacaoPage(container, goTo) {
       const toneElegibilidadeMarcacao = vacinacaoElegibilidadeTone(idadeMarcacaoDraft, !!marcacaoDraft.gripe, !!marcacaoDraft.covid);
       const camposComOverrides = (marcacaoEditId ? vacinacaoMarcacaoSchema : vacinacaoMarcacaoSchema.filter(f => f.name !== 'administradoPor')).map(f => {
         if (f.name === 'hora') return Object.assign({}, f, { type: 'combo', options: slots.map(s => s.hora), optionLabels: slots.map(s => s.label), placeholder: 'Ex: 08:20' });
-        if (f.name === 'dataNascimento') return Object.assign({}, f, { onChange: () => rerender(), helperText: avisoElegibilidadeMarcacao || undefined, helperTone: toneElegibilidadeMarcacao || undefined });
+        if (f.name === 'dataNascimento') return Object.assign({}, f, {
+          wrapId: 'marcacao-datanasc-wrap',
+          onChange: () => {
+            const idadeNova = vacinacaoCalcularIdade(marcacaoDraft.dataNascimento);
+            atualizarHelperTextCampo('marcacao-datanasc-wrap',
+              vacinacaoAvisoElegibilidade(idadeNova, !!marcacaoDraft.gripe, !!marcacaoDraft.covid),
+              vacinacaoElegibilidadeTone(idadeNova, !!marcacaoDraft.gripe, !!marcacaoDraft.covid));
+          },
+          helperText: avisoElegibilidadeMarcacao || undefined, helperTone: toneElegibilidadeMarcacao || undefined,
+        });
         if (f.name === 'data' || f.name === 'gripe' || f.name === 'covid' || f.name === 'colaboradorFarmacia') return Object.assign({}, f, { onChange: () => rerender() });
         return f;
       });
@@ -40920,7 +41002,16 @@ function buildVacinacaoPage(container, goTo) {
       const avisoTxt = vacinacaoAvisoElegibilidade(idade, !!esperaDraft.gripe, !!esperaDraft.covid);
       const toneEspera = vacinacaoElegibilidadeTone(idade, !!esperaDraft.gripe, !!esperaDraft.covid);
       wrap.appendChild(buildRecordFormEstreito(vacinacaoListaEsperaSchema.map(f => {
-        if (f.name === 'dataNascimento') return Object.assign({}, f, { onChange: () => rerender(), helperText: avisoTxt || undefined, helperTone: toneEspera || undefined });
+        if (f.name === 'dataNascimento') return Object.assign({}, f, {
+          wrapId: 'espera-datanasc-wrap',
+          onChange: () => {
+            const idadeNova = vacinacaoCalcularIdade(esperaDraft.dataNascimento);
+            atualizarHelperTextCampo('espera-datanasc-wrap',
+              vacinacaoAvisoElegibilidade(idadeNova, !!esperaDraft.gripe, !!esperaDraft.covid),
+              vacinacaoElegibilidadeTone(idadeNova, !!esperaDraft.gripe, !!esperaDraft.covid));
+          },
+          helperText: avisoTxt || undefined, helperTone: toneEspera || undefined,
+        });
         if (f.name === 'gripe' || f.name === 'covid') return Object.assign({}, f, { onChange: () => rerender() });
         return f;
       }), esperaDraft, {
