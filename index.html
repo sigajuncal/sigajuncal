@@ -31017,10 +31017,102 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       ]) : null,
     ]);
   }
+  // CRIADO 2026-08-27 (pedido explícito de Hugo, conversa com Paulo:
+  // "não existe forma de por exemplo eu trocar o horario entre eles
+  // mais facil, tipo troca horario com..." — troca sempre no MESMO dia,
+  // entre 2 colegas com turno Normal preenchido nesse dia). Lista só
+  // colegas com Entrada+Saída e tipoEfetivo==='normal' neste MESMO
+  // diaKey — nunca outras vagas em folga/ausência/sem turno, "trocar"
+  // não faz sentido nesses casos.
+  function candidatosTrocaTurno() {
+    const candidatos = [];
+    Object.keys(semana.dados || {}).forEach(codigo2 => {
+      if (codigo2 === codigoVaga) return;
+      const linha2 = semana.dados[codigo2];
+      const dia2 = (linha2.dias || {})[diaKey];
+      if (!dia2 || !dia2.entrada || !dia2.saida) return;
+      const colaboradorId2 = dia2.colaboradorId || linha2.colaboradorId;
+      if (escalaTipoEfetivoDia(dia2.tipo, colaboradorId2) !== 'normal') return;
+      const nome2 = dia2.colaboradorNome || linha2.colaboradorNome;
+      if (!nome2) return;
+      candidatos.push({ codigo: codigo2, nome: nome2, horario: `${dia2.entrada}–${dia2.saida}` });
+    });
+    candidatos.sort((a, b) => a.nome.localeCompare(b.nome, 'pt'));
+    return candidatos;
+  }
+  // Troca só o CONTEÚDO do horário (turno/pausa/HE/Banco/Tarefas) entre
+  // as 2 vagas neste dia — NUNCA colaboradorId/colaboradorNome, que
+  // continuam sempre a pertencer à própria vaga/linha (senão, em vez de
+  // trocar os HORÁRIOS entre as pessoas, estaria a trocar as PRÓPRIAS
+  // pessoas de posição/vaga, o que não foi pedido). Grava as 2 vagas
+  // numa única escrita, para nunca ficar a meio (um lado trocado, o
+  // outro não) se a ligação falhar a meio.
+  async function trocarTurnoCom(codigo2, nomeAlvo) {
+    if (escalaSemanaEstaCongelada(semana)) {
+      showToast('Esta semana está congelada (já passou ou foi publicada) e não pode ser editada.', 'error');
+      return;
+    }
+    const CAMPOS_HORARIO = ['entrada', 'saida', 'pausaInicio', 'pausaFim', 'tipo',
+      'heHoras', 'heHorasBanco', 'heInicio', 'heFim', 'heIntervalos', 'horas',
+      'heSemTurnoNormal', 'bancoHorasIntervalos', 'bancoHorasDesconto',
+      'bancoHorasCorrigido', 'heHorasCorrigido', 'correcaoBancoHePor', 'correcaoBancoHeEm',
+      'tarefas', 'tarefaTipo', 'tarefaOutro', 'tarefaInicio', 'tarefaFim',
+      'overrideDisponibilidade'];
+    const novoDados = JSON.parse(JSON.stringify(semana.dados));
+    if (!novoDados[codigoVaga] || !novoDados[codigo2] || !novoDados[codigoVaga].dias[diaKey] || !novoDados[codigo2].dias[diaKey]) {
+      showToast('Este dia já foi alterado entretanto — fecha e reabre para tentar de novo.', 'error');
+      return;
+    }
+    const dia1Atual = novoDados[codigoVaga].dias[diaKey];
+    const dia2Atual = novoDados[codigo2].dias[diaKey];
+    const dia1Novo = Object.assign({}, dia1Atual);
+    const dia2Novo = Object.assign({}, dia2Atual);
+    CAMPOS_HORARIO.forEach(campo => { dia1Novo[campo] = dia2Atual[campo]; dia2Novo[campo] = dia1Atual[campo]; });
+    novoDados[codigoVaga].dias[diaKey] = dia1Novo;
+    novoDados[codigo2].dias[diaKey] = dia2Novo;
+    saving = true; guardarBtn.disabled = true;
+    const updated = await dbUpdate('escalaSemanas', semana.id, { dados: novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() });
+    saving = false;
+    if (updated) {
+      STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
+      showToast(`Horário trocado com ${nomeAlvo}.`, 'success');
+      fechar();
+      onSaved();
+    } else {
+      guardarBtn.disabled = false;
+      showDbErrorToast('Não foi possível trocar o horário');
+    }
+  }
+  const candidatosTroca = candidatosTrocaTurno();
+  let trocarTurnoUI = null;
+  if (candidatosTroca.length) {
+    const trocarSelect = h('select', { class: 'select', style: 'font-size:12px;max-width:180px;display:none;' }, [
+      h('option', { value: '' }, 'Escolher colega...'),
+      ...candidatosTroca.map(c => h('option', { value: c.codigo }, `${c.nome} (${c.horario})`)),
+    ]);
+    trocarSelect.addEventListener('change', () => {
+      const codigo2 = trocarSelect.value;
+      trocarSelect.value = '';
+      if (!codigo2) return;
+      const alvo = candidatosTroca.find(c => c.codigo === codigo2);
+      const nomeAtual = (diaAtual.colaboradorNome || linha.colaboradorNome) || 'esta posição';
+      confirmDialog(`Trocar o horário deste dia entre ${nomeAtual} e ${alvo.nome}?`,
+        () => requireAuth(() => trocarTurnoCom(codigo2, alvo.nome)), { confirmLabel: 'Sim, trocar' });
+    });
+    const trocarBtn = h('button', {
+      type: 'button', class: 'btn-fab-sm tone-gray',
+      title: 'Trocar Turno com outro colega (mesmo dia)', 'aria-label': 'Trocar Turno',
+    }, Icon('rotatecw', { size: 13, strokeWidth: 2.2 }));
+    trocarBtn.addEventListener('click', () => {
+      trocarSelect.style.display = trocarSelect.style.display === 'none' ? '' : 'none';
+    });
+    trocarTurnoUI = h('span', { style: 'margin-left:auto;display:flex;align-items:center;gap:6px;' }, [trocarBtn, trocarSelect]);
+  }
   const panel = h('div', { class: 'modal-panel' }, [
     h('h3', { class: 'page-eyebrow', style: 'margin:0 0 4px;display:flex;align-items:center;gap:8px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, [
       escalaBadgePosicao(codigoVaga, escalaGrupoDoCodigo(codigoVaga)),
       h('span', {}, (diaAtual.colaboradorNome || linha.colaboradorNome) || 'Vaga por preencher'),
+      trocarTurnoUI,
     ]),
     h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;font-weight:700;' }, `${diaInfo ? diaInfo.label : diaKey}, ${formatDate(dataISOCelula)}`),
     h('div', { class: 'form-grid' }, [
