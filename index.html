@@ -30298,6 +30298,11 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   // com TODA a contagem já existente (Timeline, Estatísticas, Banco vs
   // Extra semanal), sem precisar de nenhuma lógica nova de contagem.
   if (!ehPrestadorCelula && podeGerirBancoHorasEHE()) tiposDisponiveisCelula.push({ key: 'horaextra', label: '⚡ Horas Extra (sem turno normal)' });
+  // Guardado UMA vez (nunca recalculado depois: reflete como o dia
+  // estava gravado ao ABRIR o editor, não o que se vai editando a
+  // seguir) — usado tanto para decidir o Tipo inicial como para mostrar
+  // o aviso em avisoOrigemHESemTurno mais abaixo.
+  const diaEraSemTurnoNormal = !ehPrestadorCelula && podeGerirBancoHorasEHE() && tiposDisponiveisCelula.some(t => t.key === 'horaextra') && escalaDiaHoraExtraSemTurno(diaAtual);
   const tipoInicialCelula = (ehPrestadorCelula && diaAtual.tipo && diaAtual.tipo !== 'normal' && diaAtual.tipo !== 'indisponivel')
     ? 'indisponivel'
     // CRIADO 2026-08-27 (pedido explícito de Hugo/Paulo: "faço remover no
@@ -30318,11 +30323,38 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     // "Horas Extra (sem turno normal)" — Entrada/Saída ficam escondidas
     // por trás, nunca mais parecendo um 2º registo a preencher/limpar à
     // parte.
-    : (!ehPrestadorCelula && podeGerirBancoHorasEHE() && tiposDisponiveisCelula.some(t => t.key === 'horaextra') && escalaDiaHoraExtraSemTurno(diaAtual))
+    : diaEraSemTurnoNormal
     ? 'horaextra'
     : (diaAtual.tipo || 'normal');
   const tipoSelect = h('select', { class: 'select' }, tiposDisponiveisCelula.map(t => h('option', { value: t.key, selected: tipoInicialCelula === t.key ? 'selected' : undefined }, t.label)));
   tipoSelect.value = tipoInicialCelula;
+  // CRIADO 2026-08-27 (pedido explícito de Hugo: "devia haver uma
+  // espécie de bloqueio ao preenchimento no normal... ou algo que dê
+  // essa indicação"): quando se muda manualmente o Tipo para "Normal"
+  // NUM DIA que foi criado como "Horas Extra (sem turno normal)", os
+  // campos Entrada/Saída aparecem preenchidos com o MESMO intervalo do
+  // bloco de Hora Extra mais abaixo — não é um bug/duplicação real (o
+  // total continua a contar 1 vez só, ver escalaDiaHoraExtraSemTurno),
+  // mas sem contexto parece um erro. Em vez de bloquear a edição (podia
+  // ser mesmo intenção converter para um turno normal a sério), mostra
+  // só um aviso com um atalho de 1 clique para limpar o bloco de Hora
+  // Extra a seguir e ficar com um turno normal "limpo".
+  const avisoOrigemHESemTurno = diaEraSemTurnoNormal
+    ? h('p', { class: 'field-helper-text span2', style: 'margin:0 0 10px;padding:8px 12px;border-radius:10px;background:#fffbeb;border:1px solid #fde68a;color:#92400e;font-weight:600;' }, [
+        '⚠️ Este dia foi criado como "Horas Extra (sem turno normal)" — a Entrada/Saída abaixo têm o mesmo intervalo do bloco de Hora Extra logo a seguir de propósito (não conta a dobrar no total). ',
+        (() => {
+          const limparHeAoConverterBtn = h('button', { type: 'button', class: 'btn-link', style: 'font-weight:800;' }, 'Limpar o bloco de Hora Extra e ficar só com o turno normal');
+          limparHeAoConverterBtn.addEventListener('click', () => {
+            heSecao.limparTudo();
+            // Já não faz sentido continuar a avisar depois de o próprio
+            // atalho ter limpo o bloco — o dia passa a ser um turno
+            // normal "a sério", sem sobreposição nenhuma para explicar.
+            avisoOrigemHESemTurno.style.display = 'none';
+          });
+          return limparHeAoConverterBtn;
+        })(),
+      ])
+    : null;
   const entradaInput = campoHora(diaAtual.entrada);
   const saidaInput = campoHora(diaAtual.saida, true);
   const pausaInicioInput = campoHora(diaAtual.pausaInicio);
@@ -30418,7 +30450,17 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     // seguir um atualizarVisibilidade()/atualizarVisibilidadeLocal() que
     // aplica esta mudança ao ecrã.
     function garantirPeloMenosUm() { if (visiveis < 1) visiveis = 1; }
-    return { blocos, addBtn, atualizarVisibilidadeLocal, garantirPeloMenosUm };
+    // CRIADO 2026-08-27 — usado pelo atalho "Limpar o bloco de Hora
+    // Extra e ficar só com o turno normal" (avisoOrigemHESemTurno, ver
+    // abrirEditorCelulaEscala): limpa TODOS os blocos de uma vez (não só
+    // o último) e recolhe a secção a 0 visíveis, sem precisar de clicar
+    // "Remover" bloco a bloco.
+    function limparTudo() {
+      blocos.forEach(bloco => { bloco.inicioInput.value = ''; bloco.fimInput.value = ''; if (bloco.bancoCheckbox) bloco.bancoCheckbox.checked = false; });
+      visiveis = 0;
+      atualizarVisibilidade();
+    }
+    return { blocos, addBtn, atualizarVisibilidadeLocal, garantirPeloMenosUm, limparTudo };
   }
   // Compatibilidade com dados antigos: um dia gravado antes desta secção
   // existir tinha só heInicio/heFim singulares (nunca um array) — lido
@@ -30593,6 +30635,12 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     saidaInput.closest('.field').style.display = on ? '' : 'none';
     pausaInicioInput.closest('.field').style.display = on ? '' : 'none';
     pausaFimInput.closest('.field').style.display = on ? '' : 'none';
+    // CRIADO 2026-08-27: o aviso só faz sentido enquanto se está mesmo a
+    // ver o Tipo "Normal" (onde a Entrada/Saída aparecem preenchidas
+    // "por trás") — com Tipo="Horas Extra (sem turno normal)" essa
+    // secção nem aparece (ver camposHorarioVisiveis), por isso mostrar o
+    // aviso aí seria confuso/despropositado.
+    if (avisoOrigemHESemTurno) avisoOrigemHESemTurno.style.display = on ? '' : 'none';
     // Tarefas/Cargos Especiais: nunca para Prestadores (pedido explícito
     // 2026-08-14, coerência com a Atribuição Rápida de Tarefas — só
     // colaboradores do Quadro fazem Chefe de Turno/Encomendas).
@@ -30957,6 +31005,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       overrideBanner,
       overrideRow,
       h('div', { class: 'field span2' }, [h('label', {}, 'Tipo'), tipoSelect]),
+      avisoOrigemHESemTurno,
       h('div', { class: 'field' }, [h('label', {}, 'Entrada'), entradaInput]),
       h('div', { class: 'field' }, [h('label', {}, 'Saída'), campoComLixo(saidaInput, limparEntradaSaidaBtn)]),
       secaoBoxCinza([
