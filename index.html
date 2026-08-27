@@ -4123,11 +4123,19 @@ const ESTADOS_MARCACAO_OPCOES = [
 ];
 const FORNECEDORES_MANIPULADOS = ['Guarani', 'Clérigos', 'Serpa Pinto'];
 
+// CORRIGIDO 2026-08-27 (pedido explícito de André, via Hugo: "confunde
+// satisfeito e resolvido, por serem os dois verdes"): "Satisfeito" e
+// "Resolvido" partilhavam a mesma cor (badge-green), impossível de
+// distinguir à primeira vista numa tabela com muitas linhas. "Satisfeito"
+// passa a laranja (badge-orange, cor já usada noutros "pendente/a
+// acompanhar" da app) e "Em Orçamento" passa de laranja a amarelo
+// (badge-amber, já existia no CSS mas nunca tinha sido usado num Estado)
+// — cada um dos 5 Estados fica agora com uma cor só sua, nunca repetida.
 const STATUS_CLASS = {
   'Pedido': 'badge-blue',
-  'Em Orçamento': 'badge-orange',
+  'Em Orçamento': 'badge-amber',
   'Resolvido': 'badge-green',
-  'Satisfeito': 'badge-green',
+  'Satisfeito': 'badge-orange',
   'Cancelado': 'badge-red',
 };
 
@@ -11278,7 +11286,7 @@ function buildCaracteristicasTexto(r) {
 // tiver Gestão de Orçamentos (sempre o caso na Ortopedia, mas o filtro
 // abaixo protege mesmo assim).
 const ORTOPEDIA_TABLE_ORDER = [
-  '__numero__', 'nome', 'estado', 'numCliente', 'contacto', 'data', 'responsavel', 'fornecedor', 'previsao',
+  '__numero__', 'numCliente', 'estado', 'nome', 'contacto', 'data', 'responsavel', 'fornecedor', 'previsao',
   'produto', '__caracteristicas__', 'descricaoArtigo', 'pvp', 'aviso', 'obs', '__cotacoes__',
 ];
 // Numeração sequencial e cronológica (mais antigo = nº mais baixo) de cada
@@ -11338,14 +11346,28 @@ function buildRecordTable(schema, records, selectedIds, onToggleSelect, listKey,
   // ---- Ordem das colunas ----
   // Ortopedia segue sempre a ordem fixa própria (ORTOPEDIA_TABLE_ORDER). As
   // restantes categorias continuam a seguir a ordem do schema, só com o
-  // Estado sempre movido para logo a seguir ao Nome do Utente/Cliente, para
-  // ficar visível sem scroll horizontal — pedido para todas as categorias
-  // de Pedidos, já que todas partilham esta mesma função de tabela.
+  // Nº Cliente/Ficha e o Estado sempre movidos para o início — pedido
+  // explícito 2026-08-27: "corrige a ordem das colunas para refletir a
+  // dos Manipulados... ordem de ficha, situação, nome utente" — em
+  // Manipulados o campo "Nº de Ficha" (numCliente) já vem em 1º lugar no
+  // próprio schema (é a chave de pesquisa do cliente), mas nas restantes
+  // categorias o schema começa por "nome" (mais natural para preencher o
+  // FORMULÁRIO — nunca se mexe nessa ordem do formulário aqui, só na
+  // tabela). Sem isto, a tabela ficava com "Nome, Estado, Nº Cliente..."
+  // em vez de "Nº Cliente, Estado, Nome..." como em Manipulados.
   let colEntries;
   if (isOrtopedia) {
     colEntries = ORTOPEDIA_TABLE_ORDER.filter(name => (name === '__numero__' || name === '__caracteristicas__') || (name === '__cotacoes__' ? temOrcamentos : (schemaByName[name] && !TABLE_HIDE.has(name))));
   } else {
     const cols = schema.filter(f => !TABLE_HIDE.has(f.name));
+    // Nº Cliente/Ficha para o início da TABELA (antes do Estado ser
+    // movido a seguir) — ver comentário acima. Em Manipulados já está no
+    // início do schema, por isso esta troca não muda nada aí.
+    const numClienteIdx = cols.findIndex(f => f.name === 'numCliente');
+    if (numClienteIdx > 0) {
+      const [numClienteCol] = cols.splice(numClienteIdx, 1);
+      cols.unshift(numClienteCol);
+    }
     const estadoIdx = cols.findIndex(f => f.name === 'estado');
     if (estadoIdx > 1) {
       const [estadoCol] = cols.splice(estadoIdx, 1);
@@ -31724,9 +31746,17 @@ function buildHorariosPage(container, goTo) {
           const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, colaboradorIdDoDia);
           let conteudo, classe = 'escala-cell';
           if (tipoEfetivo === 'normal') {
-            conteudo = `${dia.entrada}–${dia.saida} (${escalaFormatarHoras(dia.horas)})`;
+            // CORRIGIDO 2026-08-27 (pedido explícito: "parece que estão a
+            // ser somadas horas extra às normais" — o total real já
+            // estava certo, ver escalaDiaHoraExtraSemTurno, mas o TEXTO
+            // "11:00–18:00 (7h) +7hHE" dava a entender 7h+7h=14h, quando
+            // são as mesmas 7h): num dia "Horas Extra (sem turno
+            // normal)", mostra "(7h HE)" em vez de "(7h) +7hHE" — nunca
+            // mais parece uma soma.
+            const ehSoHoraExtra = escalaDiaHoraExtraSemTurno(dia);
+            conteudo = `${dia.entrada}–${dia.saida} (${escalaFormatarHoras(dia.horas)}${ehSoHoraExtra ? ' HE' : ''})`;
             if (dia.pausaInicio && dia.pausaFim) conteudo += ` · pausa ${dia.pausaInicio}-${dia.pausaFim}`;
-            if (escalaHeHorasEfetivo(dia)) conteudo += ` +${escalaFormatarHoras(escalaHeHorasEfetivo(dia))}HE`;
+            if (!ehSoHoraExtra && escalaHeHorasEfetivo(dia)) conteudo += ` +${escalaFormatarHoras(escalaHeHorasEfetivo(dia))}HE`;
           }
           else {
             conteudo = ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—';
@@ -33800,9 +33830,17 @@ function buildHorariosPage(container, goTo) {
           ? `${dia.entrada} – ${dia.saida}`
           : (ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—');
         const detalhesFrag = [];
+        // CORRIGIDO 2026-08-27 — mesma correção da Vista em Tabela: num
+        // dia "Horas Extra (sem turno normal)" a linha "+Xh HE" por
+        // baixo do horário dava a entender que se somava ao horário
+        // principal (ex: 10:00-22:00 + 12h HE = 24h), quando é a mesma
+        // presença. Nestes dias mostra só "(Hora Extra)" a seguir ao
+        // próprio horário, nunca um "+" a somar horas.
+        const ehSoHoraExtraSemana = tipoEfetivo === 'normal' && escalaDiaHoraExtraSemTurno(dia);
         if (tipoEfetivo === 'normal') {
           if (dia.pausaInicio && dia.pausaFim) detalhesFrag.push(`Pausa ${dia.pausaInicio}-${dia.pausaFim}`);
-          if (escalaHeHorasEfetivo(dia)) detalhesFrag.push(`+${escalaFormatarHoras(escalaHeHorasEfetivo(dia))} HE`);
+          if (ehSoHoraExtraSemana) detalhesFrag.push('Hora Extra');
+          else if (escalaHeHorasEfetivo(dia)) detalhesFrag.push(`+${escalaFormatarHoras(escalaHeHorasEfetivo(dia))} HE`);
         } else if (tipoEfetivo === 'banco' && escalaBancoHorasEfetivo(dia)) {
           // "Banco de Horas (Dia Completo)" mostra também as horas
           // descontadas aqui, mesmo padrão da Timeline (pedido explícito
@@ -34018,8 +34056,21 @@ function buildHorariosPage(container, goTo) {
       else if (!semanaVisivel) { texto = 'Por confirmar'; }
       else if (!dia) { texto = '—'; }
       else if (dia.tipo === 'normal' && dia.entrada && dia.saida) {
-        const heTotalBadge = Math.round((escalaHeHorasEfetivo(dia) + heReivindicadoDia) * 100) / 100;
-        texto = `${dia.entrada} – ${dia.saida}${(dia.pausaInicio && dia.pausaFim) ? ` (pausa ${dia.pausaInicio}-${dia.pausaFim})` : ''}${heTotalBadge ? ` (+${escalaFormatarHoras(heTotalBadge)} HE)` : ''}`;
+        // CORRIGIDO 2026-08-27 (mesma família do bug "parece que estão a
+        // ser somadas horas extra às normais" — ver Vista em Tabela/"A
+        // Minha Semana"): num dia "Horas Extra (sem turno normal)", o
+        // badge somava escalaHeHorasEfetivo(dia) — que aqui é a MESMA
+        // presença do horário já mostrado à esquerda — dando a entender
+        // "10:00-22:00 (+12h HE)" como 12h+12h. heReivindicadoDia é uma
+        // coisa GENUINAMENTE separada (Hora Extra Disponível reivindicada
+        // de outro turno) e continua sempre a somar à parte.
+        const ehSoHoraExtraMes = escalaDiaHoraExtraSemTurno(dia);
+        const heProprioDia = ehSoHoraExtraMes ? 0 : escalaHeHorasEfetivo(dia);
+        const heTotalBadge = Math.round((heProprioDia + heReivindicadoDia) * 100) / 100;
+        const sufixoHoraExtraMes = ehSoHoraExtraMes
+          ? (heReivindicadoDia ? ` (HE + ${escalaFormatarHoras(heReivindicadoDia)} HE reivindicada)` : ' (HE)')
+          : (heTotalBadge ? ` (+${escalaFormatarHoras(heTotalBadge)} HE)` : '');
+        texto = `${dia.entrada} – ${dia.saida}${(dia.pausaInicio && dia.pausaFim) ? ` (pausa ${dia.pausaInicio}-${dia.pausaFim})` : ''}${sufixoHoraExtraMes}`;
         const horasDia = dia.horas || escalaCalcularHorasComPausa(dia.entrada, dia.saida, dia.pausaInicio, dia.pausaFim);
         if (escalaFeriadoInfo(dataISO)) horasFeriado = Math.round((horasFeriado + horasDia) * 100) / 100;
         if (dObj.getDay() === 0) horasDomingo = Math.round((horasDomingo + horasDia) * 100) / 100;
