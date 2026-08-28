@@ -14796,10 +14796,21 @@ function abrirModalGaveta(abrirThreadInicial) {
     // depois do browser pintar a frame (2x requestAnimationFrame — 1
     // frame só para o layout, garante que já reflete os botões/altura
     // finais antes de medir).
+    const aplicar = () => {
+      const historicoEl = bodyEl.querySelector('.gaveta-main-historico');
+      if (historicoEl) historicoEl.scrollTop = historicoEl.scrollHeight;
+    };
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        const historicoEl = bodyEl.querySelector('.gaveta-main-historico');
-        if (historicoEl) historicoEl.scrollTop = historicoEl.scrollHeight;
+        aplicar();
+        // CORRIGIDO 2026-08-28 (ainda insuficiente numa conversa longa —
+        // Hugo: "não vai para a última mensagem", reproduzido ao abrir
+        // pelo widget "Última Notificação" da Home num histórico com
+        // meses de mensagens): 2 frames podem não bastar quando há
+        // MUITAS mensagens a montar de uma vez (layout mais lento a
+        // estabilizar) — reaplica-se mais uma vez 150ms depois, tempo
+        // de sobra para o browser terminar mesmo com um histórico grande.
+        setTimeout(aplicar, 150);
       });
     });
   }
@@ -39549,6 +39560,23 @@ function buildVacinacaoPage(container, goTo) {
     return c ? c.id : null;
   }
   let campanhaId = campanhaTemporadaAtualId(); // null só no instante antes da 1ª autossemeadura terminar
+  // CRIADO 2026-08-28 (pedido explícito de Hugo: "não consigo preencher o
+  // ano completo porque tenta fazer logo validação da idade"): o
+  // <input type="date"> nativo do campo Data de Nascimento dispara
+  // 'change' a cada dígito do ANO escrito, não só no fim — browsers como
+  // o Chrome consideram o valor "válido" assim que os 3 segmentos têm
+  // algum número, mesmo a meio de escrever o ano (ex: só o "1" de "1960"
+  // já conta como ano "0001"). Isso disparava logo rerender() +
+  // vacinacaoAvisoElegibilidade com uma idade absurda (milhares de anos),
+  // interrompendo a escrita a meio. `dataNascimentoRerenderTimer` (fora
+  // de buildAgendaTab/buildEsperaTab, para sobreviver aos rerenders)
+  // atrasa esse rerender até a pessoa PARAR de escrever, em vez de
+  // recalcular a cada dígito.
+  let dataNascimentoRerenderTimer = null;
+  function agendarRerenderDataNascimento() {
+    clearTimeout(dataNascimentoRerenderTimer);
+    dataNascimentoRerenderTimer = setTimeout(() => rerender(), 500);
+  }
   // Pedido temporário (2026-08-13): até 20 de setembro de 2026, a
   // Vacinação abre sempre diretamente na Lista de Espera em vez da Agenda
   // — depois dessa data volta sozinha ao normal (Agenda), sem precisar de
@@ -40932,7 +40960,7 @@ function buildVacinacaoPage(container, goTo) {
       const toneElegibilidadeMarcacao = vacinacaoElegibilidadeTone(idadeMarcacaoDraft, !!marcacaoDraft.gripe, !!marcacaoDraft.covid);
       const camposComOverrides = (marcacaoEditId ? vacinacaoMarcacaoSchema : vacinacaoMarcacaoSchema.filter(f => f.name !== 'administradoPor')).map(f => {
         if (f.name === 'hora') return Object.assign({}, f, { type: 'combo', options: slots.map(s => s.hora), optionLabels: slots.map(s => s.label), placeholder: 'Ex: 08:20' });
-        if (f.name === 'dataNascimento') return Object.assign({}, f, { onChange: () => rerender(), helperText: avisoElegibilidadeMarcacao || undefined, helperTone: toneElegibilidadeMarcacao || undefined });
+        if (f.name === 'dataNascimento') return Object.assign({}, f, { onChange: agendarRerenderDataNascimento, helperText: avisoElegibilidadeMarcacao || undefined, helperTone: toneElegibilidadeMarcacao || undefined });
         if (f.name === 'data' || f.name === 'gripe' || f.name === 'covid' || f.name === 'colaboradorFarmacia') return Object.assign({}, f, { onChange: () => rerender() });
         return f;
       });
@@ -41231,7 +41259,7 @@ function buildVacinacaoPage(container, goTo) {
       const avisoTxt = vacinacaoAvisoElegibilidade(idade, !!esperaDraft.gripe, !!esperaDraft.covid);
       const toneEspera = vacinacaoElegibilidadeTone(idade, !!esperaDraft.gripe, !!esperaDraft.covid);
       wrap.appendChild(buildRecordFormEstreito(vacinacaoListaEsperaSchema.map(f => {
-        if (f.name === 'dataNascimento') return Object.assign({}, f, { onChange: () => rerender(), helperText: avisoTxt || undefined, helperTone: toneEspera || undefined });
+        if (f.name === 'dataNascimento') return Object.assign({}, f, { onChange: agendarRerenderDataNascimento, helperText: avisoTxt || undefined, helperTone: toneEspera || undefined });
         if (f.name === 'gripe' || f.name === 'covid') return Object.assign({}, f, { onChange: () => rerender() });
         return f;
       }), esperaDraft, {
