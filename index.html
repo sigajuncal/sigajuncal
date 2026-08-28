@@ -27831,6 +27831,24 @@ function escalaTarefasDoDia(dia) {
   if (dia.tarefaTipo) return [{ tipo: dia.tarefaTipo, outro: dia.tarefaOutro || '', inicio: dia.tarefaInicio || '', fim: dia.tarefaFim || '' }];
   return [];
 }
+// CRIADO 2026-08-28 (causa raiz real do hover "não funcional" nas 2
+// tentativas anteriores: .escala-vertical-tarefa-overlay tem CSS
+// pointer-events:none — o rato atravessa-o sempre e nunca chega a
+// disparar mouseenter/mousemove nele, vai sempre parar ao bloco do
+// turno por baixo (daí só aparecer sempre "Inês", nunca a tarefa,
+// mesmo com o listener instalado). Ligar pointer-events:auto ao
+// overlay resolve o hover, mas por si só bloquearia o mousedown
+// (arrastar/redimensionar turno) e o dblclick (abrir editor) nessa
+// área — esta função reencaminha esses 2 eventos para o elemento que
+// está mesmo por baixo (o bloco do turno), assim que o overlay deixa
+// de intercetar por um instante, preservando o comportamento de
+// sempre nessa zona pequena.
+function escalaEncaminharEventoAoBloco(overlayEl, evento) {
+  overlayEl.style.pointerEvents = 'none';
+  const alvo = document.elementFromPoint(evento.clientX, evento.clientY);
+  overlayEl.style.pointerEvents = 'auto';
+  if (alvo && alvo !== overlayEl) alvo.dispatchEvent(new MouseEvent(evento.type, evento));
+}
 // Ícone + rótulo de UMA tarefa (item do array de escalaTarefasDoDia) —
 // usa o texto livre quando é "Outro" (t.outro), senão a etiqueta fixa.
 function escalaTarefaTextoItem(t) {
@@ -38510,27 +38528,34 @@ function buildHorariosPage(container, goTo) {
           const alturaPctTarefa = Math.max(1.5, ((minutosNoIntervalo(t.fim, true) - minutosNoIntervalo(t.inicio, false)) / (totalHoras * 60)) * 100);
           const tarefaOverlayEl = h('div', {
             class: 'escala-vertical-tarefa-overlay',
-            style: `top:${topPctTarefa}%;height:${alturaPctTarefa}%;`, tabIndex: '0',
+            style: `top:${topPctTarefa}%;height:${alturaPctTarefa}%;pointer-events:auto;`, tabIndex: '0',
           }, tarefaInfo ? tarefaInfo.icon : '★');
           // CORRIGIDO 2026-08-28 (revisão — Hugo pediu 1º "descrever a
           // tarefa além do nome", depois "mas só quando o cursor está
           // mesmo por cima do período da tarefa, no resto só o nome como
-          // já fazia"): usa agora o MESMO balão/mecanismo do resto do
-          // bloco (mostrarTooltipColaborador/moverTooltipColaborador),
-          // em vez de um 2º sistema de tooltip à parte (o antigo
-          // instalarTooltipContaHoras aqui, ou o `title` nativo antes
-          // disso) — como este ícone/overlay ocupa exatamente a área do
+          // já fazia", depois "não está funcional" — causa raiz real:
+          // pointer-events:none no CSS deste overlay, ver
+          // escalaEncaminharEventoAoBloco acima): usa o MESMO balão/
+          // mecanismo do resto do bloco (mostrarTooltipColaborador/
+          // moverTooltipColaborador, nunca um 2º sistema de tooltip à
+          // parte) — como este ícone/overlay ocupa exatamente a área do
           // período da tarefa (mesmo top/height dos overlays de Hora
           // Extra ao lado) e fica por CIMA do bloco do turno nessa
           // janela, o hover "inteligente" sai de graça: aqui mostra
           // nome+tarefa, fora daqui (no resto do bloco) mostra só o
-          // nome, sem qualquer cálculo de posição extra necessário.
+          // nome. Arrastar (mousedown) e abrir o editor (dblclick) nesta
+          // zona pequena continuam a funcionar como sempre — são
+          // reencaminhados para o bloco do turno por baixo.
           const textoTooltipTarefa = (colaboradorNome ? colaboradorNome + '\n' : '') + `${escalaTarefaTextoItem(t)}\n${t.inicio} - ${t.fim}`;
           tarefaOverlayEl.addEventListener('mouseenter', (e) => { mostrarTooltipColaborador(textoTooltipTarefa); moverTooltipColaborador(e); });
           tarefaOverlayEl.addEventListener('mousemove', moverTooltipColaborador);
           tarefaOverlayEl.addEventListener('mouseleave', esconderTooltipColaborador);
           tarefaOverlayEl.addEventListener('focus', () => mostrarTooltipColaborador(textoTooltipTarefa));
           tarefaOverlayEl.addEventListener('blur', esconderTooltipColaborador);
+          if (editavel) {
+            tarefaOverlayEl.addEventListener('mousedown', (e) => escalaEncaminharEventoAoBloco(tarefaOverlayEl, e));
+            tarefaOverlayEl.addEventListener('dblclick', (e) => escalaEncaminharEventoAoBloco(tarefaOverlayEl, e));
+          }
           tarefaOverlays.push(tarefaOverlayEl);
         });
       } else if (tipoEfetivoDia === 'folga' || tipoEfetivoDia === 'indisponivel') {
