@@ -8311,9 +8311,27 @@ async function dbFetchAll(listKey) {
   try {
     // Utilizadores são sempre devolvidos por ordem alfabética do nome completo;
     // as restantes tabelas mantêm a ordem cronológica habitual (mais recente primeiro).
-    const query = listKey === 'usuarios'
+    let query = listKey === 'usuarios'
       ? sb.from(TABLES[listKey]).select('*').eq('eliminado', false).order('nome_completo', { ascending: true })
       : sb.from(TABLES[listKey]).select('*').eq('eliminado', false).order('id', { ascending: false });
+    // CRIADO 2026-08-29 (Egress, pedido explícito de Hugo: "faz isso na
+    // vacinação... desde que não impeça acesso em caso de pesquisa. Não
+    // posso apagar dados de vacinação, precisamos de manter o histórico"):
+    // vacinacaoMarcacoes cresce sem parar ao longo de cada campanha e
+    // nunca é limpa — histórico continua TODO guardado para sempre no
+    // Supabase, isto só limita o que vem por omissão no arranque da app.
+    // Seguro porque TODA a lógica do módulo (pesquisa incluída, ver
+    // buildVacinacaoPage/marcacaoSearch) já filtra sempre por
+    // campanhaId===campanha ATUAL — nenhum sítio da app lê marcações de
+    // campanhas antigas, por isso restringir à época corrente não tira
+    // acesso a nada que já fosse alcançável, nem sequer pela pesquisa.
+    // Época = Julho a Junho (vacinacaoTemporadaAtual) — usa o INÍCIO da
+    // época, não uma janela de dias, para cobrir sempre a campanha
+    // corrente inteira, esteja "hoje" em que ponto estiver dela.
+    if (listKey === 'vacinacaoMarcacoes') {
+      const temporada = vacinacaoTemporadaAtual();
+      query = query.gte('data', `${temporada.inicio}-07-01`);
+    }
     const { data, error } = await query;
     if (error) {
       // "DataCloneError" nesta mensagem vem de dentro do próprio cliente
@@ -8347,6 +8365,27 @@ async function dbFetchAll(listKey) {
     }
     if (erroDeRede(e)) marcarConexao(false);
     lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error(`[Supabase] erro de rede ao ler ${listKey}:`, formatarErroSeguro(e)); return [];
+  }
+}
+// CRIADO 2026-08-29 (pedido explícito de Hugo, "mas se quiser aceder aos
+// dados através da app consigo?" — depois de dbFetchAll('vacinacaoMarcacoes')
+// passar a trazer só a época corrente por omissão): esta função vai buscar
+// as marcações de UMA campanha específica (qualquer época, mesmo antigas),
+// chamada por abrirCampanha() só quando se abre uma campanha que ainda não
+// está em STATE — garante que o histórico continua 100% acessível através
+// da própria app (Campanhas de Vacinação → abrir uma antiga), só deixou de
+// vir sempre por omissão logo no arranque.
+async function dbFetchMarcacoesDaCampanha(idCampanha) {
+  if (!sb) return [];
+  try {
+    const { data, error } = await sb.from(TABLES.vacinacaoMarcacoes).select('*').eq('eliminado', false).eq('campanha_id', idCampanha).order('id', { ascending: false });
+    if (error) { console.error('[Supabase] erro ao ler marcações da campanha:', error.message); return []; }
+    marcarConexao(true);
+    return sanitizarSupabase(data || []).map(rowToRecord);
+  } catch (e) {
+    lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.';
+    console.error('[Supabase] erro de rede ao ler marcações da campanha:', formatarErroSeguro(e));
+    return [];
   }
 }
 async function dbFetchDeleted(listKey) {
@@ -28738,6 +28777,27 @@ function colaboradoresElegiveisTarefaEspecial() {
     && CATEGORIAS_ELEGIVEIS_TAREFA_ESPECIAL.includes(u.categoriaProfissional)
     && !escalaUtilizadorEhPrestador(u)));
 }
+// CRIADO 2026-08-29 (pedido explícito de Hugo: "limita a Farmacêuticos
+// as tarefas chefe de turno e encomendas, o restante são para todos os
+// colaboradores do quadro" — reproduzido com "não conseguir selecionar
+// Ana Moreira para Conferência apesar de ela estar no horário", porque
+// a "Atribuição Rápida de Tarefas" usava sempre
+// colaboradoresElegiveisTarefaEspecial(), fosse qual fosse o Tipo de
+// Tarefa escolhido): mesma lista base, mas SEM a restrição de
+// categoria profissional — qualquer colaborador do Quadro (nunca
+// Prestador de Serviço, mesmo pedido de sempre). Usada só para
+// Conferência/Reunião/Outro/Formação; Chefe de Turno e Encomendas
+// continuam restritos a colaboradoresElegiveisTarefaEspecial() acima,
+// nunca mudou.
+function colaboradoresElegiveisTarefaGeral() {
+  return ordenarUsuariosPorHierarquia((STATE.usuarios || []).filter(u =>
+    !usuarioOculto(u) && u.ativo !== false && u.incluirHorarios && !escalaUtilizadorEhPrestador(u)));
+}
+// Devolve a lista certa consoante o tipo de tarefa — só Chefe de Turno/
+// Encomendas ficam restritos a Farmacêuticos/Direção Técnica.
+function colaboradoresElegiveisParaTipoTarefa(tipo) {
+  return TIPOS_TAREFA_SEM_SOBREPOSICAO.includes(tipo) ? colaboradoresElegiveisTarefaEspecial() : colaboradoresElegiveisTarefaGeral();
+}
 // Tipos de tarefa que NUNCA podem sobrepor-se no tempo, mesmo entre
 // pessoas diferentes — pedido explícito 2026-08-14: só pode haver 1
 // Chefe de Turno (ou 1 Encomenda da Manhã/1 da Tarde) em cada instante,
@@ -33595,7 +33655,13 @@ function buildHorariosPage(container, goTo) {
     // Colaborador DEPOIS do Tipo — lista filtrada às opções REALMENTE
     // disponíveis nesse dia (turno Normal, sem Férias/Baixa/Falta/
     // Indisponibilidade sobreposta — ver escalaVagaDoColaboradorNoDia).
-    const colaboradores = colaboradoresElegiveisTarefaEspecial();
+    // CORRIGIDO 2026-08-29 (pedido explícito: "limita a Farmacêuticos as
+    // tarefas chefe de turno e encomendas, o restante são para todos os
+    // colaboradores do quadro"): a lista de base já depende do Tipo
+    // escolhido (ver colaboradoresElegiveisParaTipoTarefa) — só Chefe de
+    // Turno/Encomendas continuam restritos a Farmacêuticos/Direção
+    // Técnica; Conferência/Reunião/Outro já aceitam todo o Quadro.
+    const colaboradores = colaboradoresElegiveisParaTipoTarefa(atribuicaoRapidaDraft.tipo);
     const colaboradoresDisponiveis = colaboradores.filter(u => !!escalaVagaDoColaboradorNoDia(semana, diaAtualKey, u.id));
     const colabSelect = h('select', { class: 'select' }, [
       h('option', { value: '' }, '— Escolher —'),
@@ -39645,11 +39711,34 @@ function buildVacinacaoPage(container, goTo) {
     });
   }
   function campanhaAtual() { return STATE.vacinacaoCampanhas.find(c => c.id === campanhaId) || null; }
+  // Wrapper de dbFetchMarcacoesDaCampanha(idCampanha) — junta o resultado a
+  // STATE.vacinacaoMarcacoes (sem duplicar, caso duas chamadas se cruzem) e
+  // manda redesenhar assim que chega; usado só por abrirCampanha() abaixo.
+  async function carregarMarcacoesDeCampanhaAntiga(idCampanha) {
+    const novas = await dbFetchMarcacoesDaCampanha(idCampanha);
+    if (!novas.length) return;
+    const existentesIds = new Set(STATE.vacinacaoMarcacoes.map(m => m.id));
+    STATE.vacinacaoMarcacoes = [...STATE.vacinacaoMarcacoes, ...novas.filter(m => !existentesIds.has(m.id))];
+    renderOuAdiarSeOcupado();
+  }
 
   /* ============ CAMPANHAS ============ */
   function abrirCampanha(c) {
     campanhaId = c.id;
-    activeSubTab = 'agenda';
+    // CRIADO 2026-08-29 (corrige um efeito secundário do fetch trimmed a
+    // vacinacaoMarcacoes só à época corrente — Hugo perguntou "mas se
+    // quiser aceder aos dados através da app consigo?", e a resposta
+    // honesta antes disto seria não: esta função TAMBÉM abre campanhas
+    // ANTIGAS — clicar num cartão em "Campanhas de Vacinação" — sem
+    // isto, uma campanha de uma época passada aparecia sempre vazia,
+    // porque as marcações dela nunca chegavam a ser descarregadas).
+    // Vai buscar à parte, só quando é mesmo preciso (1ª vez que se abre
+    // essa campanha nesta sessão — verifica se já cá está antes de
+    // pedir de novo), as marcações dessa campanha específica — nunca
+    // afeta o caso normal (época corrente, já vem tudo no arranque).
+    if (c.id !== campanhaTemporadaAtualId() && !STATE.vacinacaoMarcacoes.some(m => m.campanhaId === c.id)) {
+      carregarMarcacoesDeCampanhaAntiga(c.id);
+    }    activeSubTab = 'agenda';
     marcacaoTab = 'pendentes';
     // Reset total de qualquer estado local ao trocar de campanha — nada
     // (seleções, dia do calendário aberto, pesquisas, formulários a meio)
@@ -45413,18 +45502,20 @@ function renderInterno(ehTransicaoDePagina) {
     // também as outras formas de mudar de página que não passam por
     // goTo() (sino de Lembretes, ecrã de erro, etc.).
     STATE.navFrom = STATE.page; STATE.page = key; STATE.sidebarOpen = false; STATE.consultaPreset = preset || null; STATE.categoriaStatusFilter = {}; render();
-    // Atualização pontual e silenciosa ao trocar de módulo — é o que
-    // substitui o antigo polling por inatividade numa sessão ativa (ver
-    // resetIdleRefreshTimer). refrescarDadosSilenciosamente() já tem as
-    // suas próprias blindagens (nunca repete a menos de 15s, nunca
-    // interrompe um formulário em uso), por isso é seguro chamar sempre
-    // que a página muda, mesmo em navegação rápida. É também isto que
-    // implementa o "stale-while-revalidate" da Página Inicial e dos
-    // restantes módulos: nunca se bloqueia a navegação à espera de dados
-    // novos — mostra-se logo o que já está em STATE (praticamente sempre
-    // atualizado, por já vir do arranque/login ou de um refresh recente) e
-    // só se vai buscar dados frescos em segundo plano quando fizer sentido.
-    if (mudouDePagina) refrescarDadosSilenciosamente();
+    // CORRIGIDO 2026-08-29 (pedido explícito: "consegue reduzir ainda mais
+    // o Egress... em setembro inicia vacinação e vamos ter mais registos e
+    // acessos" — este era o gatilho que disparava MAIS VEZES por dia de
+    // longe, uma vez por cada clique a trocar de módulo/separador,
+    // multiplicado por todos os postos abertos): já não recarrega tudo ao
+    // trocar de módulo — o Realtime (ver setupRealtime/aplicarPayloadRealtimeAoState)
+    // já mantém o STATE sincronizado em tempo real independentemente de
+    // qual página está aberta, por isso uma simples navegação dentro da
+    // mesma aba já não precisa de nenhum recarregamento extra. A app
+    // continua a ressincronizar tudo sozinha nos momentos onde isso É
+    // justificado — ver refrescarDadosSilenciosamente(): ao voltar à aba/
+    // app (focus/visibilitychange, cobre o caso de a ligação Realtime ter
+    // ficado suspensa em segundo plano) e no temporizador de inatividade
+    // (idleRefreshTimer, standby prolongado).
   }
   function toggleSidebar(open) { esconderTooltipSidebarForcado(); STATE.sidebarOpen = open; render(); }
   // Sidebar de desktop recolhível — só tem efeito fora da Página Inicial
