@@ -14353,7 +14353,7 @@ function abrirModalGaveta(abrirThreadInicial) {
     STATE.escalaNotasSemana = (STATE.escalaNotasSemana || []).map(n => n.id === r.referenciaId ? updatedNota : n);
     const updatedRecado = await dbMarcarRecadoTratado(r.id);
     if (updatedRecado) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === r.id ? updatedRecado : x);
-    await notificarAutorNotaValidada(updatedNota, false);
+    await notificarAutorNotaValidada(updatedNota, false, 'rejeitado');
     showToast('Pedido rejeitado.', 'success');
     render();
   }
@@ -28970,11 +28970,22 @@ async function decidirHorasExtraReivindicacaoViaGaveta(r, novoEstado, onDone) {
 // avisa também ao DESMARCAR a validação (invalidar) — antes só avisava
 // ao validar, nunca ao reverter, mas o colaborador também precisa de
 // saber se a Direção veio a invalidar a nota depois.
-async function notificarAutorNotaValidada(nota, validada) {
+async function notificarAutorNotaValidada(nota, validada, motivo) {
   if (!nota || !nota.autorId || String(nota.autorId) === String(activeUser.id)) return;
   const resumo = (nota.texto || '').slice(0, 80) + ((nota.texto || '').length > 80 ? '…' : '');
+  // CORRIGIDO 2026-08-29 (pedido explícito de Hugo, "só há botão para
+  // aprovar e nenhum para rejeitar" — que causou uma rejeição acidental:
+  // 1 único ícone alternava Validar/Não Validar no MESMO sítio, muda de
+  // verde-check para cinza-X consoante o estado; clicar 2 vezes sem
+  // reparar que o ícone tinha mudado desfazia a própria aprovação):
+  // `motivo` diferencia agora "rejeitado a partir de pendente" (nunca
+  // tinha sido aprovado) de "anulada uma validação já feita" — a mesma
+  // alteração no estado (validadoDirecao=false) passa a ter a palavra
+  // certa consoante o botão que a originou.
   const mensagem = validada
     ? `O seu pedido em "Pedidos e Registos da Semana" foi validado pela Direção: "${resumo}"`
+    : motivo === 'rejeitado'
+    ? `O seu pedido em "Pedidos e Registos da Semana" foi rejeitado pela Direção: "${resumo}"`
     : `A validação do seu pedido em "Pedidos e Registos da Semana" foi anulada pela Direção: "${resumo}"`;
   // BUG CORRIGIDO (2026-08-18): ver nota em notificarDirecaoPedidoEspecial
   // — mesmo problema, dbInsert('gavetaRecados', ...) falhava sempre.
@@ -32274,7 +32285,7 @@ function buildHorariosPage(container, goTo) {
       rerender();
     }, { danger: true, confirmLabel: 'Eliminar' });
   }
-  async function alternarValidacaoNotaEquipa(nota, novoEstadoForcado) {
+  async function alternarValidacaoNotaEquipa(nota, novoEstadoForcado, motivo) {
     // Reforço no lado da gravação (não só na UI) — 2026-08-24: só Hugo/
     // Paulo por NOME validam Pedidos da Semana, nunca qualquer Master.
     if (!souDirecaoHorariosGlobal()) { showToast('Só a Direção (Hugo Cunha / Paulo Freitas) pode validar pedidos.', 'error'); return; }
@@ -32306,7 +32317,7 @@ function buildHorariosPage(container, goTo) {
     const updated = await dbUpdate('escalaNotasSemana', nota.id, patch);
     if (updated) {
       STATE.escalaNotasSemana = STATE.escalaNotasSemana.map(n => n.id === nota.id ? updated : n);
-      await notificarAutorNotaValidada(updated, novoEstado);
+      await notificarAutorNotaValidada(updated, novoEstado, motivo);
     }
     else escalaShowErro('Não foi possível atualizar a validação');
     rerender();
@@ -32397,20 +32408,37 @@ function buildHorariosPage(container, goTo) {
         ? ` Validado por ${nota.validadoPor || '—'} em ${formatCarimboNota(nota.validadoEm)}`
         : ' Pendente de validação');
       const botoes = [];
+      // CORRIGIDO 2026-08-29 (pedido explícito de Hugo, "só há botão para
+      // aprovar e nenhum para rejeitar" — reproduzido com um caso real:
+      // quis aprovar um pedido da Ana, "nada acontecia", e acabou por
+      // rejeitá-lo sem querer). Causa raiz: 1 ÚNICO ícone ocupava sempre
+      // o mesmo sítio, mudando de ✅ verde para ✕ cinza consoante o
+      // estado — a MESMA posição/clique passava a fazer o oposto do que
+      // fazia um segundo antes, sem isso saltar à vista; clicar 2 vezes
+      // sem reparar que o ícone tinha mudado desfazia a própria
+      // aprovação. Agora, enquanto pendente, aparecem sempre os DOIS
+      // botões lado a lado (✅ Aprovar / ❌ Rejeitar) — nunca dependem de
+      // adivinhar o estado atual, mesmo padrão já usado nos Pedidos
+      // Especiais e Reivindicações de Horas Extra. Só depois de já
+      // decidido é que passa a mostrar 1 botão só, para desfazer.
       if (nota.validadoDirecao) {
         const naoValidarBtn = h('button', {
-          type: 'button', class: 'btn-fab-sm tone-gray', title: 'Não Validar (anular a validação)', 'aria-label': 'Não Validar',
+          type: 'button', class: 'btn-fab-sm tone-gray', title: 'Anular Validação (volta a pendente)', 'aria-label': 'Anular Validação',
         }, Icon('x', { size: 13, strokeWidth: 2.4 }));
-        naoValidarBtn.addEventListener('click', () => requireAuth(() => alternarValidacaoNotaEquipa(nota, false)));
+        naoValidarBtn.addEventListener('click', () => requireAuth(() => alternarValidacaoNotaEquipa(nota, false, 'anulado')));
         botoes.push(naoValidarBtn);
       } else {
-        const validarBtn = h('button', {
-          type: 'button', class: 'btn-fab-sm tone-green', title: 'Validar Pedido', 'aria-label': 'Validar',
-        }, Icon('checkcircle', { size: 13, strokeWidth: 2.4 }));
-        validarBtn.addEventListener('click', () => requireAuth(() => alternarValidacaoNotaEquipa(nota, true)));
-        botoes.push(validarBtn);
+        const aprovarBtn = h('button', {
+          type: 'button', class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;',
+        }, '✅ Aprovar');
+        aprovarBtn.addEventListener('click', () => requireAuth(() => alternarValidacaoNotaEquipa(nota, true)));
+        const rejeitarBtn = h('button', {
+          type: 'button', class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;',
+        }, '❌ Rejeitar');
+        rejeitarBtn.addEventListener('click', () => requireAuth(() => alternarValidacaoNotaEquipa(nota, false, 'rejeitado')));
+        botoes.push(aprovarBtn, rejeitarBtn);
       }
-      validacaoEl = h('div', { class: 'escala-nota-validacao-toggle' }, [rotulo, ...botoes]);
+      validacaoEl = h('div', { class: 'escala-nota-validacao-toggle' }, [rotulo, h('div', { style: 'display:flex;gap:8px;' }, botoes)]);
     } else if (nota.validadoDirecao) {
       validacaoEl = h('span', { class: 'escala-nota-validacao-badge' }, [Icon('checkcircle', { size: 12, strokeWidth: 2.4 }), ` Validado por ${nota.validadoPor || 'Direção'} em ${formatCarimboNota(nota.validadoEm)}`]);
     } else {
