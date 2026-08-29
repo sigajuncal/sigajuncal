@@ -45948,6 +45948,32 @@ function aplicarPayloadRealtimeAoState(listKey, payload) {
   }
   return true;
 }
+// CRIADO 2026-08-28 (mesma refatoração de Egress acima, extensão pedida
+// por Hugo — "prioridade dos próximos dias, quero manter a gratuitidade
+// do Supabase"): mensagens_chat e gaveta_recados ainda faziam fetch
+// completo a cada evento Realtime (dbFetchChat/dbFetchGavetaRecados) —
+// tabelas pequenas comparadas com as ~57 do loop genérico, por isso
+// eram prioridade menor, mas continuam a ser pedidos desnecessários.
+// Versão desta função para listas ordenadas por `created_at` (em vez de
+// `id`) — mensagens_chat é ascending (mais antiga primeiro),
+// gaveta_recados é descending (mais recente primeiro).
+function aplicarPayloadRealtimeAoStateOrdenadoPorData(stateKey, payload, ascending) {
+  const linhaBruta = payload.new || payload.old;
+  if (!linhaBruta || linhaBruta.id === undefined || linhaBruta.id === null) return false;
+  const registo = sanitizarSupabase(rowToRecord(linhaBruta));
+  const lista = STATE[stateKey] || (STATE[stateKey] = []);
+  const idx = lista.findIndex(r => String(r.id) === String(registo.id));
+  if (payload.eventType === 'DELETE') {
+    if (idx !== -1) lista.splice(idx, 1);
+    return true;
+  }
+  if (idx !== -1) { lista[idx] = registo; return true; }
+  const chave = registo.createdAt || '';
+  let pos = lista.findIndex(r => ascending ? (String(r.createdAt || '') > chave) : (String(r.createdAt || '') < chave));
+  if (pos === -1) pos = lista.length;
+  lista.splice(pos, 0, registo);
+  return true;
+}
 function setupRealtime() {
   if (!sb) return;
   // financeiro/objetivosMensais ficam de fora desta subscrição genérica: a
@@ -45984,7 +46010,8 @@ function setupRealtime() {
   });
   sb.channel('realtime-mensagens_chat')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_chat' }, async (payload) => {
-      STATE.mensagensChat = sanitizarSupabase(await dbFetchChat());
+      const aplicado = aplicarPayloadRealtimeAoStateOrdenadoPorData('mensagensChat', payload, true);
+      if (!aplicado) STATE.mensagensChat = sanitizarSupabase(await dbFetchChat());
       if (payload.eventType === 'INSERT' && payload.new) {
         handleNovaMensagemChat(sanitizarSupabase(rowToRecord(payload.new)));
       }
@@ -46006,7 +46033,8 @@ function setupRealtime() {
   sb.channel('realtime-gaveta_recados')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'gaveta_recados' }, async (payload) => {
       const anteriores = STATE.gavetaRecados || [];
-      STATE.gavetaRecados = sanitizarSupabase(await dbFetchGavetaRecados());
+      const aplicado = aplicarPayloadRealtimeAoStateOrdenadoPorData('gavetaRecados', payload, false);
+      if (!aplicado) STATE.gavetaRecados = sanitizarSupabase(await dbFetchGavetaRecados());
       // Aviso in-app (nunca push do sistema — ver nota abaixo) quando chega
       // um recado novo dirigido a este utilizador — nunca para quem não
       // tem gaveta.
@@ -46912,7 +46940,7 @@ function setupInactivityWatcher() {
    foco do teclado.
 ----------------------------------------------------------------------- */
 let ultimoRefreshSilenciosoEm = 0;
-const REFRESH_SILENCIOSO_MIN_INTERVALO_MS = 15000; // nunca repete a menos de 15s de distância
+const REFRESH_SILENCIOSO_MIN_INTERVALO_MS = 60000; // CORRIGIDO 2026-08-28 (Egress): era 15000 — agora que o Realtime aplica cada mudança diretamente (ver aplicarPayloadRealtimeAoState), este refresco completo passou de mecanismo principal a rede de segurança; nunca repete a menos de 60s de distância
 // Standby (SEM sessão ativa) — o único caso em que ainda faz sentido um
 // temporizador de inatividade puro: um ecrã de login/apresentação parado
 // não tem "módulos" para trocar nem formulários para proteger. 5 minutos,
