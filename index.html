@@ -45906,6 +45906,48 @@ async function autoCancelOldOrders() {
   }
 }
 
+// CRIADO 2026-08-28 (refatoração de Egress — pedido explícito: consumo
+// PostgREST saltou de <50MB/dia para ~300MB/dia). CAUSA RAIZ PRINCIPAL: a
+// subscrição Realtime genérica abaixo recebia o evento (que já traz a
+// linha completa que mudou, via WebSocket — esse custo é o "Realtime
+// Egress", os 16.6%) e, em vez de aplicar só essa linha, disparava um
+// dbFetchAll(listKey) — ou seja, voltava a descarregar a TABELA INTEIRA
+// outra vez via PostgREST a cada escrita de QUALQUER pessoa, em TODOS os
+// postos com a app aberta. Numa farmácia com vários postos abertos ao
+// mesmo tempo e escritas frequentes (Entregas, Stocks, Agendas, etc.),
+// isto multiplica o tráfego várias vezes por cada alteração real — é
+// isto que explica os 83.4% de PostgREST Egress.
+// Esta função aplica só a linha do próprio evento (payload.new/old, que
+// o Realtime já trouxe) diretamente ao array em STATE — insere, substitui
+// ou remove (DELETE físico, ou soft-delete via eliminado=true, que é como
+// esta app apaga tudo — ver dbDelete), preservando a mesma ordenação que
+// dbFetchAll() já garantia (usuarios por nome_completo asc; resto por id
+// desc). O resultado final em STATE.listKey é idêntico a um dbFetchAll —
+// zero impacto na UI/UX — mas sem nenhum pedido extra à rede.
+function aplicarPayloadRealtimeAoState(listKey, payload) {
+  const linhaBruta = payload.new || payload.old;
+  if (!linhaBruta || linhaBruta.id === undefined || linhaBruta.id === null) return false;
+  const registo = sanitizarSupabase(rowToRecord(linhaBruta));
+  const lista = STATE[listKey] || (STATE[listKey] = []);
+  const idx = lista.findIndex(r => String(r.id) === String(registo.id));
+  const removido = payload.eventType === 'DELETE' || registo.eliminado === true;
+  if (removido) {
+    if (idx !== -1) lista.splice(idx, 1);
+    return true;
+  }
+  if (idx !== -1) { lista[idx] = registo; return true; }
+  // Registo novo (INSERT) — inserir já na posição certa em vez de deixar
+  // simplesmente no fim, para a ordenação em STATE continuar idêntica à
+  // que dbFetchAll() devolvia.
+  if (listKey === 'usuarios') {
+    let pos = lista.findIndex(r => String(r.nomeCompleto || '').localeCompare(String(registo.nomeCompleto || '')) > 0);
+    if (pos === -1) pos = lista.length;
+    lista.splice(pos, 0, registo);
+  } else {
+    lista.unshift(registo); // resto das tabelas: id desc — o mais recente vai para o topo
+  }
+  return true;
+}
 function setupRealtime() {
   if (!sb) return;
   // financeiro/objetivosMensais ficam de fora desta subscrição genérica: a
@@ -45917,12 +45959,14 @@ function setupRealtime() {
   Object.keys(TABLES).filter(k => k !== 'financeiro' && k !== 'objetivosMensais').forEach(listKey => {
     sb.channel('realtime-' + TABLES[listKey])
       .on('postgres_changes', { event: '*', schema: 'public', table: TABLES[listKey] }, async (payload) => {
-        // Sanitização explícita, mesmo em cima do que dbFetchAll() já devolve
-        // limpo — o STATE nunca recebe diretamente o que vem do Realtime/rede.
-        // Esta atualização acontece SEMPRE, mesmo com um modal/formulário
-        // aberto neste posto — os dados nunca ficam desatualizados; só o
-        // redesenho do ecrã é que pode ficar em espera (ver renderOuAdiarSeOcupado).
-        STATE[listKey] = sanitizarSupabase(await dbFetchAll(listKey));
+        // Aplica só a linha do próprio evento (ver aplicarPayloadRealtimeAoState
+        // acima) — nunca mais um dbFetchAll (tabela inteira) por cada evento.
+        // Fallback: se por algum motivo a linha não vier utilizável no
+        // payload (raro — ex: REPLICA IDENTITY sem todas as colunas), cai
+        // de volta ao comportamento antigo só nesse evento específico, para
+        // nunca ficar com dados incompletos.
+        const aplicado = aplicarPayloadRealtimeAoState(listKey, payload);
+        if (!aplicado) STATE[listKey] = sanitizarSupabase(await dbFetchAll(listKey));
         if (listKey === 'desafios') normalizarTipoPremioDesafios();
         if (listKey === 'lembretes' && lembretesUrgentesPopupAtualizar) lembretesUrgentesPopupAtualizar();
         // Timestamp da última atualização de dados com sucesso — alimenta o
