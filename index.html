@@ -14318,13 +14318,25 @@ function abrirModalGaveta(abrirThreadInicial) {
     if (!souDirecaoHorariosGlobal() || !r.referenciaId) return;
     const notaAtual = (STATE.escalaNotasSemana || []).find(n => n.id === r.referenciaId);
     const patch = { validadoDirecao: true, validadoPor: activeUser.nomeCompleto || activeUser.username, validadoEm: new Date().toISOString() };
+    // CORRIGIDO 2026-08-29 (2ª cópia do mesmo bug já corrigido em
+    // alternarValidacaoNotaEquipa — Hugo: "estes botões ainda não fazem
+    // nada", desta vez na Gaveta de Recados, não na página Pedidos; esta
+    // função é uma cópia separada, só usada aqui, por isso o 1º fix não
+    // chegou a cobri-la): quando a gravação da tarefa no horário falhava
+    // (`!semanaUpdated`), abortava a validação toda e devolvia — a nota
+    // ficava "Pendente" para sempre. Agora trata-se como "melhor
+    // esforço" tal como a falha de validação já era tratada logo abaixo:
+    // avisa e valida o pedido na mesma, nunca mais fica preso.
     if (notaAtual && notaAtual.tipo === 'tarefa' && !notaAtual.aplicadoHorario) {
       const resultado = escalaAplicarTarefaPedidoNoHorario(notaAtual);
       if (resultado.ok) {
         const semanaUpdated = await dbUpdate('escalaSemanas', resultado.semana.id, { dados: resultado.novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() });
-        if (!semanaUpdated) { showDbErrorToast('Não foi possível atribuir a tarefa no horário — validação cancelada'); return; }
-        STATE.escalaSemanas = (STATE.escalaSemanas || []).map(s => s.id === semanaUpdated.id ? semanaUpdated : s);
-        patch.aplicadoHorario = true;
+        if (semanaUpdated) {
+          STATE.escalaSemanas = (STATE.escalaSemanas || []).map(s => s.id === semanaUpdated.id ? semanaUpdated : s);
+          patch.aplicadoHorario = true;
+        } else {
+          showToast('Validado, mas não foi possível gravar a tarefa no horário (falha de rede) — agende a tarefa manualmente.', 'error');
+        }
       } else {
         showToast(`Validado, mas não foi possível atribuir sozinha (${escalaMensagemErroPedidoTarefa(resultado.motivo)}) — agende a tarefa manualmente.`, 'error');
       }
@@ -27891,6 +27903,56 @@ function escalaTarefasDoDia(dia) {
   if (dia.tarefaTipo) return [{ tipo: dia.tarefaTipo, outro: dia.tarefaOutro || '', inicio: dia.tarefaInicio || '', fim: dia.tarefaFim || '' }];
   return [];
 }
+// CRIADO 2026-08-29 (BUG GRAVE encontrado ao verificar a pedido de Hugo
+// "confirma pf que tudo funciona na perfeição" — esta função vivia SÓ
+// dentro do closure de buildHorariosPage (function local, 2 espaços de
+// indentação, linha ~33347), mas escalaAplicarTarefaPedidoNoHorario()
+// — que a chama — é uma função de TOPO DE FICHEIRO, fora desse closure.
+// Em JavaScript, uma função declarada dentro de outra NUNCA fica
+// acessível de fora — isto significa que, desde sempre, chamar
+// escalaAplicarTarefaPedidoNoHorario() rebentava com "escalaAdicionar
+// TarefaComumAoDia is not defined" ANTES de sequer chegar a tentar
+// gravar nada. Como o erro era síncrono e sem try/catch à volta no
+// ponto da chamada (alternarValidacaoNotaEquipa/marcarNotaEquipaVista
+// ViaGaveta), ficava só na consola do browser — daí "nada acontecia"
+// visivelmente, em TODOS os pedidos de "Atribuição de Tarefa" desde
+// sempre, mesmo antes de qualquer uma das minhas 2 tentativas
+// anteriores de correção (que corrigiam falhas a jusante deste ponto,
+// nunca alcançadas). Movida para aqui — topo de ficheiro — para ficar
+// acessível de ambos os sítios que a usam (aqui E dentro de
+// buildHorariosPage, que continua a funcionar na mesma ao chamá-la,
+// closures veem sempre funções de fora). Removida a cópia duplicada
+// que vivia lá dentro.
+function escalaAdicionarTarefaComumAoDia(novoDados, codigo, diaKey, tipo, inicio, fim) {
+  const linha = novoDados[codigo];
+  if (!linha || !linha.dias) return false;
+  const diaAtual = linha.dias[diaKey] || { entrada: '', saida: '', pausaInicio: '', pausaFim: '', tipo: 'normal', heHoras: 0, horas: 0, tarefas: [] };
+  const tarefasAtuais = escalaTarefasDoDia(diaAtual);
+  if (tarefasAtuais.length >= 3) return false;
+  const novasTarefas = [...tarefasAtuais, { tipo, outro: '', inicio, fim }];
+  const primeira = novasTarefas[0];
+  linha.dias[diaKey] = { ...diaAtual, tarefas: novasTarefas, tarefaTipo: primeira.tipo, tarefaOutro: primeira.outro, tarefaInicio: primeira.inicio, tarefaFim: primeira.fim };
+  return true;
+}
+// Contraparte de escalaAdicionarTarefaComumAoDia — remove UMA tarefa
+// específica (por tipo+início+fim) do dia de um colaborador, devolvendo
+// true se removeu algo. Usada para desfazer a auto-atribuição de um
+// pedido de "Atribuição de Tarefa" quando a Direção anula uma validação
+// já feita (ver alternarValidacaoNotaEquipa) — pedido explícito de Hugo,
+// "trata disso também": sem isto, anular a validação deixava a tarefa
+// órfã no horário, sem qualquer registo a explicar porque lá está.
+function escalaRemoverTarefaComumDoDia(novoDados, codigo, diaKey, tipo, inicio, fim) {
+  const linha = novoDados[codigo];
+  if (!linha || !linha.dias || !linha.dias[diaKey]) return false;
+  const diaAtual = linha.dias[diaKey];
+  const tarefasAtuais = escalaTarefasDoDia(diaAtual);
+  const idx = tarefasAtuais.findIndex(t => t.tipo === tipo && t.inicio === inicio && t.fim === fim);
+  if (idx === -1) return false;
+  const novasTarefas = tarefasAtuais.slice(0, idx).concat(tarefasAtuais.slice(idx + 1));
+  const primeira = novasTarefas[0] || { tipo: '', outro: '', inicio: '', fim: '' };
+  linha.dias[diaKey] = { ...diaAtual, tarefas: novasTarefas, tarefaTipo: primeira.tipo, tarefaOutro: primeira.outro, tarefaInicio: primeira.inicio, tarefaFim: primeira.fim };
+  return true;
+}
 // CRIADO 2026-08-28 (causa raiz real do hover "não funcional" nas 2
 // tentativas anteriores: .escala-vertical-tarefa-overlay tem CSS
 // pointer-events:none — o rato atravessa-o sempre e nunca chega a
@@ -28757,6 +28819,27 @@ function escalaAplicarTarefaPedidoNoHorario(nota) {
     tarefas[tarefas.length - 1].outro = nota.tarefaDescricao;
     novoDados[vaga.codigo].dias[diaInfo.key] = { ...dia, tarefas, tarefaOutro: tarefas.length === 1 ? nota.tarefaDescricao : dia.tarefaOutro };
   }
+  return { ok: true, semana, novoDados };
+}
+// Contraparte de escalaAplicarTarefaPedidoNoHorario — remove do horário a
+// tarefa que uma validação anterior lá tinha colocado, chamada quando a
+// Direção ANULA uma validação já feita (ver alternarValidacaoNotaEquipa,
+// só quando nota.aplicadoHorario é true). Usa escalaCelulaColaboradorNoDia
+// (mais permissiva que escalaVagaDoColaboradorNoDia — não exige
+// tipo==='normal') porque o turno pode entretanto ter mudado desde a
+// aprovação; mesmo assim, "melhor esforço": se a célula/tarefa já não
+// existir por lá (ex: alguém já a removeu à mão, ou o turno foi apagado),
+// não é erro nenhum — só não há nada para desfazer.
+function escalaRemoverTarefaPedidoDoHorario(nota) {
+  const semana = (STATE.escalaSemanas || []).find(s => s.semanaInicio === nota.semanaInicio);
+  if (!semana) return { ok: false, motivo: 'a semana já não existe' };
+  const diaInfo = ESCALA_DIAS.find(d => escalaDataDoDia(semana.semanaInicio, d.key) === nota.dataPedido);
+  if (!diaInfo) return { ok: false, motivo: 'a data já não pertence a esta semana' };
+  const vaga = escalaCelulaColaboradorNoDia(semana, diaInfo.key, nota.autorId);
+  if (!vaga) return { ok: false, motivo: 'já não há turno nesse dia' };
+  const novoDados = JSON.parse(JSON.stringify(semana.dados));
+  const removeu = escalaRemoverTarefaComumDoDia(novoDados, vaga.codigo, diaInfo.key, nota.tarefaTipo, nota.horaInicio, nota.horaFim);
+  if (!removeu) return { ok: false, motivo: 'a tarefa já não estava lá' };
   return { ok: true, semana, novoDados };
 }
 // Categorias Profissionais elegíveis para tarefas especiais (Chefe de
@@ -32301,18 +32384,54 @@ function buildHorariosPage(container, goTo) {
       : { validadoDirecao: false, validadoPor: '', validadoEm: null };
     // Auto-atribuição no horário (só tipo==='tarefa', só ao VALIDAR — nunca
     // ao desmarcar, e nunca 2ª vez se já tiver conseguido da 1ª): tenta
-    // gravar a tarefa no turno certo antes de marcar como validado, para
-    // nunca ficar "validado" sem se saber se a atribuição resultou.
+    // gravar a tarefa no turno certo antes de marcar como validado.
+    // CORRIGIDO 2026-08-29 (vídeo de Hugo mostrou o "Aprovar" a não fazer
+    // nada, repetidamente, só neste tipo de pedido — "Atribuição de
+    // Tarefa"; outros tipos, ex: "Troca de Turno", validavam bem):
+    // quando a gravação da tarefa no horário falhava (`!semanaUpdated`,
+    // ex: rede instável), a função ABORTAVA a validação toda e devolvia
+    // — a nota ficava "Pendente" para sempre, e cada novo clique em
+    // "Aprovar" repetia a MESMA tentativa (com o mesmo risco de falhar
+    // outra vez), sem qualquer forma de sair desse impasse a não ser
+    // corrigir manualmente na Base de Dados. Isto contradizia o design já
+    // documentado logo acima em escalaAplicarTarefaPedidoNoHorario — "o
+    // pedido fica validado na mesma, só sem aplicadoHorario" — que só
+    // cobria a FALHA DE VALIDAÇÃO (não caber no turno, etc.), nunca esta
+    // falha de GRAVAÇÃO. Agora tratam-se da mesma forma: se não conseguir
+    // aplicar ao horário por qualquer motivo (não coube OU falha de
+    // rede/BD), avisa e valida o pedido na mesma — nunca mais fica preso.
     if (novoEstado && nota.tipo === 'tarefa' && !nota.aplicadoHorario) {
       const resultado = escalaAplicarTarefaPedidoNoHorario(nota);
       if (resultado.ok) {
         const semanaUpdated = await dbUpdate('escalaSemanas', resultado.semana.id, { dados: resultado.novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() });
-        if (!semanaUpdated) { escalaShowErro('Não foi possível atribuir a tarefa no horário — validação cancelada'); rerender(); return; }
-        STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semanaUpdated.id ? semanaUpdated : s);
-        patch.aplicadoHorario = true;
+        if (semanaUpdated) {
+          STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semanaUpdated.id ? semanaUpdated : s);
+          patch.aplicadoHorario = true;
+        } else {
+          showToast('Validado, mas não foi possível gravar a tarefa no horário (falha de rede) — agende a tarefa manualmente.', 'error');
+        }
       } else {
         showToast(`Validado, mas não foi possível atribuir sozinha (${escalaMensagemErroPedidoTarefa(resultado.motivo)}) — agende a tarefa manualmente.`, 'error');
       }
+    }
+    // CRIADO 2026-08-29 (pedido explícito de Hugo, "trata disso também" —
+    // depois de reparar que anular uma validação já aplicada deixava a
+    // tarefa órfã no horário): ao ANULAR (novoEstado=false) uma nota do
+    // tipo 'tarefa' que já tinha sido colocada no horário, remove-a de lá
+    // também — "melhor esforço", nunca bloqueia a anulação em si (se por
+    // algum motivo já não estiver lá, ou a semana já não existir, só
+    // avisa, a nota anula-se na mesma).
+    if (!novoEstado && nota.tipo === 'tarefa' && nota.aplicadoHorario) {
+      const resultado = escalaRemoverTarefaPedidoDoHorario(nota);
+      if (resultado.ok) {
+        const semanaUpdated = await dbUpdate('escalaSemanas', resultado.semana.id, { dados: resultado.novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() });
+        if (semanaUpdated) {
+          STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semanaUpdated.id ? semanaUpdated : s);
+        } else {
+          showToast('Validação anulada, mas não foi possível remover a tarefa do horário (falha de rede) — remova manualmente.', 'error');
+        }
+      }
+      patch.aplicadoHorario = false;
     }
     const updated = await dbUpdate('escalaNotasSemana', nota.id, patch);
     if (updated) {
@@ -32616,15 +32735,25 @@ function buildHorariosPage(container, goTo) {
     return escalaSegundaFeiraDaSemanaDeISO(pedido.dataFim) < escalaSegundaFeiraHoje();
   }
   function pedidosUnificadosTodosPorOrdem() {
+    // CORRIGIDO 2026-08-29 (pedido explícito de Hugo: "ordena por ordem de
+    // chegada dos pedidos, em cima os mais recentes e em baixo os mais
+    // antigos"): usava a data do EVENTO pedido (dataPedido/dataInicio —
+    // ex: dia 16/09) como critério principal, só caindo para createdAt se
+    // faltasse — por isso um pedido só agora submetido (createdAt=hoje),
+    // mas sobre uma data mais cedo no calendário, aparecia enterrado no
+    // meio da lista em vez de no topo. Passa a ordenar pela data de
+    // CRIAÇÃO do próprio pedido (submissão), sempre — é isso que "ordem
+    // de chegada" quer dizer; a data do evento continua visível em cada
+    // cartão, só deixou de ser o critério de ordenação.
     const semanas = (STATE.escalaNotasSemana || []).map(n => ({
       tipo: 'semana', ref: n,
-      dataChave: n.dataPedido || n.createdAt || '',
+      dataChave: n.createdAt || n.dataPedido || '',
       jaPassou: pedidoSemanaJaPassou(n),
       nomeResponsavel: n.autorNome || '',
     }));
     const especiais = (STATE.escalaPedidosEspeciais || []).map(p => ({
       tipo: 'especial', ref: p,
-      dataChave: p.dataInicio || p.createdAt || '',
+      dataChave: p.createdAt || p.dataInicio || '',
       jaPassou: pedidoEspecialJaPassou(p),
       nomeResponsavel: p.colaboradorNome || '',
     }));
@@ -33305,17 +33434,12 @@ function buildHorariosPage(container, goTo) {
   // Grava 1 tarefa comum numa célula (posição+dia) de um `novoDados` em
   // construção — devolve false (sem gravar) se essa célula já tiver as 3
   // tarefas possíveis, para o chamador reportar no resumo.
-  function escalaAdicionarTarefaComumAoDia(novoDados, codigo, diaKey, tipo, inicio, fim) {
-    const linha = novoDados[codigo];
-    if (!linha || !linha.dias) return false;
-    const diaAtual = linha.dias[diaKey] || { entrada: '', saida: '', pausaInicio: '', pausaFim: '', tipo: 'normal', heHoras: 0, horas: 0, tarefas: [] };
-    const tarefasAtuais = escalaTarefasDoDia(diaAtual);
-    if (tarefasAtuais.length >= 3) return false;
-    const novasTarefas = [...tarefasAtuais, { tipo, outro: '', inicio, fim }];
-    const primeira = novasTarefas[0];
-    linha.dias[diaKey] = { ...diaAtual, tarefas: novasTarefas, tarefaTipo: primeira.tipo, tarefaOutro: primeira.outro, tarefaInicio: primeira.inicio, tarefaFim: primeira.fim };
-    return true;
-  }
+  // CORRIGIDO 2026-08-29: definição movida para o topo do ficheiro (ver
+  // nota lá, junto a escalaTarefasDoDia) — vivia só aqui dentro,
+  // inacessível a escalaAplicarTarefaPedidoNoHorario (função de fora
+  // deste closure), que rebentava sempre que a chamava. Esta função
+  // continua a poder ser usada normalmente aqui dentro na mesma —
+  // closures veem sempre as funções de fora.
   // Janela operacional da farmácia nesse dia — min(Entrada) a max(Saída)
   // de TODAS as posições com turno Normal nesse dia (qualquer grupo, não
   // só farmacêuticos), ou seja "o horário em que a farmácia está mesmo
