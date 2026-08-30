@@ -3971,6 +3971,37 @@ function h(tag, attrs, children) {
   return e;
 }
 function clear(el) { closePopover(); while (el.firstChild) el.removeChild(el.firstChild); }
+// CRIADO 2026-08-30 (BUG GRAVE encontrado por Hugo: "cliquei em Retirar
+// e a página inteira ficou em branco"). CAUSA RAIZ: o padrão local de
+// rerender() usado em TODOS os módulos da app (27 sítios idênticos —
+// `clear(container); container.appendChild(build());`) faz sempre
+// `clear()` PRIMEIRO e só DEPOIS chama `build()` — se `build()`
+// lançar qualquer exceção (nem que seja um bug pontual nalgum sítio
+// distante da ação em si), o contentor já tinha sido esvaziado e nunca
+// chega a receber nada de volta, ficando em branco para sempre até a
+// pessoa navegar para outra página. Isto é diferente da rede de
+// segurança que já existia para TROCAS de página (ver renderInterno,
+// "Ocorreu um erro a abrir esta página") — essa nunca cobria
+// atualizações DENTRO da mesma página, que é o que este rerender()
+// local faz a cada ação do utilizador.
+// Esta função aplica a MESMA rede de segurança a esse padrão local,
+// num único sítio reutilizado pelos 27 — nunca deixa a página em
+// branco por um erro inesperado nalgum sítio; mostra um aviso
+// recuperável e regista o erro na consola (com o número de linha),
+// para a próxima vez ser possível corrigir a causa exata em vez de só
+// a esconder.
+function construirComRedeDeSeguranca(build) {
+  try {
+    return build();
+  } catch (e) {
+    console.error('[SigaJuncal] erro inesperado a atualizar esta página:', formatarErroSeguro(e));
+    return h('div', { class: 'animate-in card card-pad', style: 'margin:24px;max-width:520px;' }, [
+      h('h3', { class: 'dash-card-title', style: 'color:var(--red);' }, 'Ocorreu um erro inesperado'),
+      h('p', { class: 'login-sub', style: 'text-align:left;margin-top:8px;' }, 'Alguma coisa correu mal a atualizar esta página. Tente novamente ou recarregue a página — os seus dados já gravados não foram afetados.'),
+      h('button', { class: 'btn btn-primary', style: 'margin-top:14px;', onclick: () => location.reload() }, 'Recarregar a Página'),
+    ]);
+  }
+}
 
 /* ---- Preservação da posição de scroll em re-renders ----
    Reconstruir o DOM de uma lista/modal colapsa momentaneamente a altura do
@@ -7661,7 +7692,7 @@ function abrirModalMarcacoesAtrasadas(itensIniciais, prestador, onFechar) {
 function buildAgendaPage(container, goTo, prestadorKey) {
   const prestador = PRESTADORES_AGENDA.find(p => p.key === prestadorKey);
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
   function onDayClick(dateISO) { document.body.appendChild(buildAgendaDiaModal(prestadorKey, dateISO, rerender)); }
 
   function build() {
@@ -11856,7 +11887,7 @@ function buildOrtopediaPage(container, goTo) {
   let fornecedorEditadoManualmente = false;
 
   function records() { return STATE.ortopedia; }
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
   function openNew() {
     draft = emptyRecord(ortopediaSchema);
@@ -15892,7 +15923,7 @@ function buildErrosPage(container, goTo) {
   let saving = false;
   let selectedIds = new Set();
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
   function openNew() {
     draft = emptyRecord(errosSchema);
     // Data preenchida logo com hoje (continua editável) e foco automático
@@ -16433,7 +16464,7 @@ function buildValidadesPage(container, goTo) {
   let searchQuery = '';
   let selectedIds = new Set();
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
   function openNew() {
     editingId = null;
@@ -19847,7 +19878,7 @@ function buildFinanceiroPage(container, goTo) {
   // do histórico incorporado).
   let mesSel = mesAtualReal, anoSel = anoAtualReal;
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
 
   function irParaMesAnterior() {
     const alvo = financeiroMesAnterior(anoSel, mesSel);
@@ -20649,7 +20680,7 @@ function buildLembretesPage(container, goTo, embedded) {
     });
   }
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
   function openNew() { draft = criarRascunhoLembreteVazio(); editingId = null; formError = ''; showForm = true; rerender(); }
   function openEdit(r) { draft = normalizarLembreteParaEdicao(r); editingId = r.id; formError = ''; showForm = true; rerender(); }
   function openEditSelected() {
@@ -21198,7 +21229,7 @@ function buildReclamacoesPage(container, goTo) {
   // se o campo está a autopreencher a partir de uma ficha conhecida.
   let clienteFichaCarregada = null;
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
   function openNew() { draft = emptyRecord(reclamacoesSchema); editingId = null; formError = ''; clienteFichaCarregada = null; showForm = true; rerender(); }
   function openEditSelected() {
     if (selectedIds.size !== 1) return;
@@ -22675,7 +22706,7 @@ function buildEventoTipoPage(container, goTo, tipo) {
   const tipoInfo = EVENTO_TIPOS.find(t => t.key === tipo);
   const ehDiaEspecial = tipo === 'DiaEspecial';
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
   function onDayClick(dateISO, isPast, ev) {
     if (ehDiaEspecial) {
       // Dias Especiais (2026-08-18, pedido explícito): clicar num dia com
@@ -22749,7 +22780,7 @@ function buildOrcamentosPage(container, goTo) {
   let orcRowError = '';
   let selectedOrcIds = new Set();
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
 
   function orcStartNew() {
     editingOrcId = 'new';
@@ -22941,7 +22972,7 @@ function buildDesafiosPage(container, goTo, embedded) {
   let showForm = false, editingId = null, draft = {}, formError = '', saving = false;
   let selectedIds = new Set();
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
 
   function openNew() { draft = { tipoPremio: 'Coletivo', tituloDesafio: '', marcaLaboratorio: '', objetivo: '', premioIncentivo: '', dataInicio: todayISO(), dataFim: '', concluido: false }; editingId = null; formError = ''; showForm = true; rerender(); }
   function openEditSelected() {
@@ -23118,7 +23149,7 @@ function buildObjetivosPage(container, goTo, embedded) {
   let showForm = false, editingId = null, draft = {}, formError = '', saving = false;
   let selectedIds = new Set();
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
   function openNew() { draft = { titulo: '', dataInicio: todayISO(), dataFim: '', ativo: 'Sim', produtos: [{ cnp: '', nome: '', meta: '', atual: '0' }] }; editingId = null; formError = ''; showForm = true; rerender(); }
   function openEditSelected() {
     if (selectedIds.size !== 1) return;
@@ -24165,7 +24196,7 @@ function buildDeclaracaoDespesasPage(container, goTo) {
   let clienteFichaCarregada = null;
   const perguntarSobreFichaClienteDeclaracao = criarPerguntaSobreFichaCliente(draft, () => clienteFichaCarregada);
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
   function calcularTotal() {
     if (!draft.discriminado) return parseFloat(String(draft.valorTotalManual).replace(',', '.')) || 0;
     return draft.itens.reduce((s, it) => s + (parseFloat(String(it.preco).replace(',', '.')) || 0), 0);
@@ -24387,7 +24418,7 @@ function buildDeclaracaoAvaliacaoFisicaPage(container, goTo) {
   let clienteFichaCarregada = null;
   const perguntarSobreFichaClienteDeclaracao = criarPerguntaSobreFichaCliente(draft, () => clienteFichaCarregada);
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
 
   // Idade calculada a partir da Data de Nascimento — evita depender de um
   // número que fica desatualizado; se a data não estiver preenchida, o
@@ -24551,7 +24582,7 @@ function buildDeclaracaoPresencaPage(container, goTo) {
   let clienteFichaCarregada = null;
   const perguntarSobreFichaClienteDeclaracao = criarPerguntaSobreFichaCliente(draft, () => clienteFichaCarregada);
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
   function tipoServicoFinal() { return draft.tipoServico === 'Outro' ? (draft.tipoServicoOutro || 'Outro') : draft.tipoServico; }
 
   function construirDocumentoNode(dataEmissaoISO) {
@@ -24679,7 +24710,7 @@ function buildDeclaracaoLivrePage(container, goTo) {
   })() : { titulo: 'Declaração', corpoHtml: '' };
   let saving = false;
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
 
   function construirDocumentoNode(dataEmissaoISO) {
     const corpoNode = document.createElement('div');
@@ -25008,7 +25039,7 @@ function buildHistoricoMensagensPage(container, goTo, embedded) {
   let loading = true;
   let selectedIds = new Set();
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
   function load() {
     loading = true; rerender();
     dbFetchMensagemDiaHistorico().then(list => { historico = list; loading = false; rerender(); });
@@ -25353,7 +25384,7 @@ function buildDefinicoesPage(container, goTo) {
   let selectedIds = new Set();
   let showForm = false, editingId = null, draft = {}, formError = '', saving = false;
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
   function toggleSelect(id) { if (!isMasterUser()) return; if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
 
   function isSelf(id) { return activeUser && activeUser.id === id; }
@@ -28745,6 +28776,18 @@ function escalaTodosBlocosHorasExtraFuturos() {
   return resultado;
 }
 function escalaReivindicacoesDoBloco(blocoId) {
+  // CORRIGIDO 2026-08-30 (BUG GRAVE, Hugo: "continuava a contabilizar as
+  // horas extra da Sofia apesar de o bloco ter sido eliminado"):
+  // reforço extra aqui, no ponto único usado por TODA a app para somar
+  // reivindicações (Estatísticas/Vista Mensal/PDF) — nunca conta uma
+  // reivindicação cujo bloco já não exista (eliminado ou apagado por
+  // completo), mesmo que essa reivindicação já esteja órfã (ativo:true)
+  // por qualquer motivo antigo, incluindo dados já órfãos de antes desta
+  // correção. `eliminarBlocoHorasExtra` já limpa isto na origem para
+  // eliminações a partir de agora — isto é a rede de segurança para
+  // nunca depender só disso.
+  const blocoAindaExiste = (STATE.escalaHorasExtra || []).some(b => String(b.id) === String(blocoId) && !b.eliminado);
+  if (!blocoAindaExiste) return [];
   return (STATE.escalaHorasExtraReivindicacoes || []).filter(r => r.ativo && !r.eliminado && String(r.blocoId) === String(blocoId));
 }
 // Estado de disponibilidade de um bloco de Horas Extra (2026-08-19,
@@ -31885,7 +31928,7 @@ function buildHorariosPage(container, goTo) {
     if (sugestao) varianteSelecionada = sugestao;
   }
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
 
 
   // Segunda-feira da semana que contém uma data qualquer.
@@ -33261,6 +33304,25 @@ function buildHorariosPage(container, goTo) {
       const ok = await dbDelete('escalaHorasExtra', bloco.id);
       if (ok) {
         STATE.escalaHorasExtra = (STATE.escalaHorasExtra || []).filter(b => b.id !== bloco.id);
+        // CORRIGIDO 2026-08-30 (BUG GRAVE, Hugo: "continuava a contabilizar
+        // as horas extra da Sofia apesar de o bloco ter sido eliminado"):
+        // eliminar o bloco só o apagava A ELE — as reivindicações já
+        // feitas sobre ele (ex: a de Sofia) ficavam órfãs na base de
+        // dados, ainda `ativo:true`, e continuavam a ser contadas em todo
+        // o lado que soma reivindicações (Estatísticas/Vista Mensal/PDF —
+        // ver escalaReivindicacoesDoColaboradorNoDia). O diálogo de
+        // confirmação já dizia "perde-a de imediato" — mas o código nunca
+        // chegava a cumprir essa promessa. Corrigido: desativa também
+        // (ativo:false) todas as reivindicações deste bloco ao eliminá-lo,
+        // igual ao que "🗑️ Retirar" já fazia para 1 reivindicação de cada
+        // vez — aqui faz o mesmo para todas de uma só vez.
+        const reivindicacoesDoBloco = (STATE.escalaHorasExtraReivindicacoes || []).filter(r => r.ativo && String(r.blocoId) === String(bloco.id));
+        if (reivindicacoesDoBloco.length) {
+          const atualizadas = await Promise.all(reivindicacoesDoBloco.map(r => dbUpdate('escalaHorasExtraReivindicacoes', r.id, { ativo: false })));
+          atualizadas.filter(Boolean).forEach(upd => {
+            STATE.escalaHorasExtraReivindicacoes = STATE.escalaHorasExtraReivindicacoes.map(r => r.id === upd.id ? upd : r);
+          });
+        }
         showToast('Bloco de Horas Extra eliminado.', 'success');
       } else {
         escalaShowErro('Não foi possível eliminar');
@@ -39466,7 +39528,7 @@ function buildMapa48hPage(container, goTo) {
   let showForm = false, editingId = null, draft = {}, formError = '', saving = false;
   let selectedIds = new Set();
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
 
   function openNew(prefill) {
@@ -39959,7 +40021,7 @@ function buildVacinacaoPage(container, goTo) {
   let responsavelSelectedIds = new Set();
 
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
   // A campanha ATUALMENTE em vigor (hoje dentro de dataInicio-dataFim)
   // fica sempre em primeiro lugar, qualquer que seja a data — as
   // restantes (passadas ou futuras já semeadas) seguem-se por ordem
@@ -42594,7 +42656,7 @@ function buildMapaTarefasPage(container, goTo) {
   let activeCategoria = 'Todas';
 
   function podeEditar() { return isMasterUser(); }
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
   function toggleSelect(id) {
     if (!podeEditar()) return;
     if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id);
@@ -42869,7 +42931,7 @@ function buildEmpresasParceirasPage(container, goTo, farmaciaAtiva) {
   // Só entram nesta lista as empresas criadas nesta farmácia — nunca as da
   // outra farmácia, mesmo que STATE.empresasParceiras traga ambas.
   function records() { return (STATE.empresasParceiras || []).filter(e => e.farmacia === farmaciaAtiva); }
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
 
   function openNew() { draft = emptyRecord(empresaParceiraSchema); draft.farmacia = farmaciaAtiva; editingId = null; formError = ''; showForm = true; rerender(); }
   function openEdit(r) { draft = Object.assign({}, r); editingId = r.id; formError = ''; showForm = true; rerender(); }
@@ -44108,7 +44170,7 @@ function buildRecolhasPage(container, goTo) {
   let showForm = false, editingId = null, draft = {}, formError = '', saving = false;
   let selectedIds = new Set();
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
 
   function openNew() {
@@ -44278,7 +44340,7 @@ function buildConsumiveisPage(container, goTo) {
   let selectedIds = new Set();
   let searchQuery = '';
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
 
   function openNew() {
@@ -44408,7 +44470,7 @@ function buildTarefasPage(container, goTo) {
   let showForm = false, editingId = null, draft = {}, formError = '', saving = false;
   let selectedIds = new Set();
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
   function openNew() { draft = { titulo: '', dataLimite: todayISO(), responsavelAtribuido: '', estado: 'Pendente' }; editingId = null; formError = ''; showForm = true; rerender(); }
   function openEditSelected() {
@@ -44635,7 +44697,7 @@ function buildFormacoesPage(container, goTo) {
   let anoFiltro = 'Todos'; // 'Todos' | 'YYYY' — filtro por ano da listagem inferior
   let colaboradorFiltro = 'Todos'; // 'Todos' | nome do colaborador
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
   function openNew() { draft = { data: todayISO(), laboratorioEntidade: '', gamaTema: '', duracao: '', regime: 'Presencial', horario: 'Laboral', participantes: '' }; editingId = null; formError = ''; showForm = true; rerender(); }
   function openEditSelected() {
@@ -44919,7 +44981,7 @@ function buildLixoPage(container, goTo) {
   let searchQuery = '';
   let selectedUids = new Set();
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(build()); }); }
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
   function toggleSelect(uid) {
     if (selectedUids.has(uid)) selectedUids.delete(uid);
     else selectedUids.add(uid);
