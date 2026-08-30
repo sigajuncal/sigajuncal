@@ -8367,6 +8367,117 @@ async function dbFetchAll(listKey) {
     lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error(`[Supabase] erro de rede ao ler ${listKey}:`, formatarErroSeguro(e)); return [];
   }
 }
+// CRIADO 2026-08-30 (pedido explícito de Hugo: reduzir mais o Egress
+// "desde que o conteúdo fique acessível... quero que garantas que tudo
+// funciona de forma impecável"). PROBLEMA REAL identificado: a base de
+// dados inteira tem só ~42MB, mas um dia normal já gasta ~80-90MB de
+// Egress — ou seja, o mesmo conteúdo (pequeno) está a ser descarregado
+// MAIS DE 1 VEZ por dia. Causa: loadAllData() (arranque da app, voltar à
+// aba depois de estar em segundo plano) pede sempre a TABELA INTEIRA de
+// novo, mesmo que nada tenha mudado desde a última vez que esteve aberta
+// neste dispositivo.
+//
+// SOLUÇÃO: cache local (localStorage, por dispositivo) + sincronização
+// por DIFERENÇA — em vez de "dá-me tudo outra vez", pergunta ao Supabase
+// "o que mudou desde a última vez que estive aqui" (updated_at > X).
+//
+// GARANTIA DE CORREÇÃO (o que torna isto seguro para produção): a app já
+// confia na coluna `updated_at` para bloqueio otimista em edições
+// concorrentes (ver dbUpdate/usaLockOtimista) — não é uma suposição
+// nova, é a MESMA confiança que já existia. Mesmo assim, para nunca
+// arriscar dados desatualizados por engano:
+// 1. Cada tabela só usa sincronização por diferença se os PRÓPRIOS DADOS
+//    em cache tiverem mesmo updated_at (verificado nos dados reais, nunca
+//    assumido às cegas) — uma tabela sem essa coluna faz sempre fetch
+//    completo, exactamente como sempre fez, sem qualquer risco extra.
+// 2. Se o pedido de diferença falhar por qualquer razão (rede, erro do
+//    servidor), essa tabela específica cai sempre para fetch completo
+//    nesse momento — nunca fica com dados a menos só por uma falha.
+// 3. A cache expira ao fim de 24h — nunca fica "para sempre" por
+//    confirmar, é sempre renovada por completo pelo menos 1x por dia.
+// 4. Se o localStorage falhar (quota excedida, modo privado, o que for),
+//    a app funciona exactamente como antes — só perde a otimização,
+//    nunca parte nada.
+const STATE_CACHE_VERSION = 'v1';
+const STATE_CACHE_KEY = 'sigajuncal_cache_' + STATE_CACHE_VERSION;
+const STATE_CACHE_MAX_IDADE_MS = 24 * 60 * 60 * 1000;
+function lerCacheLocalEstado() {
+  try {
+    const raw = localStorage.getItem(STATE_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.version !== STATE_CACHE_VERSION || !parsed.tabelas || !parsed.savedAtCliente) return null;
+    if ((Date.now() - parsed.savedAtCliente) > STATE_CACHE_MAX_IDADE_MS) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+function guardarCacheLocalEstado() {
+  try {
+    const tabelas = {};
+    Object.keys(TABLES).forEach(k => { if (k !== 'financeiro' && k !== 'objetivosMensais') tabelas[k] = STATE[k] || []; });
+    localStorage.setItem(STATE_CACHE_KEY, JSON.stringify({ version: STATE_CACHE_VERSION, savedAtCliente: Date.now(), tabelas }));
+  } catch (e) {
+    // Sem espaço, modo privado, ou qualquer outro motivo — sem cache
+    // desta vez, a app continua perfeitamente funcional, só sem a
+    // otimização de Egress neste dispositivo.
+  }
+}
+// Data/hora mais recente vista nos dados em cache de UMA tabela — é o
+// ponto a partir do qual se pergunta "o que mudou desde aqui". null se
+// esta tabela não tiver a coluna updated_at (aí nunca se tenta a
+// diferença, faz-se sempre fetch completo).
+function watermarkDaTabela(registos) {
+  let maior = null;
+  (registos || []).forEach(r => { if (r && r.updatedAt && (!maior || r.updatedAt > maior)) maior = r.updatedAt; });
+  return maior;
+}
+// Vai buscar só o que mudou numa tabela desde `desde` (updated_at > desde)
+// — devolve null (não []) em caso de falha, para o chamador nunca
+// confundir "sem alterações" com "não sei se há alterações" (nesse caso
+// cai sempre para fetch completo, ver loadAllData).
+async function dbFetchAllDesde(listKey, desde) {
+  if (!sb) return null;
+  try {
+    let query = sb.from(TABLES[listKey]).select('*').gt('updated_at', desde);
+    // Mesma janela da época corrente já aplicada em dbFetchAll — nunca
+    // deixa entrar de novo em STATE uma marcação de campanha antiga só
+    // por causa de uma alteração pontual nela.
+    if (listKey === 'vacinacaoMarcacoes') {
+      const temporada = vacinacaoTemporadaAtual();
+      query = query.gte('data', `${temporada.inicio}-07-01`);
+    }
+    const { data, error } = await query;
+    if (error) { console.error(`[Supabase] erro ao ler alterações de ${listKey}:`, error.message); return null; }
+    return sanitizarSupabase(data || []).map(rowToRecord);
+  } catch (e) {
+    console.error(`[Supabase] erro de rede ao ler alterações de ${listKey}:`, formatarErroSeguro(e));
+    return null;
+  }
+}
+// Aplica um LOTE de registos (já convertidos/sanitizados, resultado de
+// dbFetchAllDesde) a uma lista em STATE — insere/substitui por id, remove
+// se eliminado=true (soft delete). Mesma ordenação de sempre (usuarios
+// por nome asc, resto id desc) para registos novos — mesmo espírito de
+// aplicarPayloadRealtimeAoState, mas para vários registos de uma vez.
+function aplicarLoteAoState(listKey, registosNovos) {
+  if (!registosNovos || !registosNovos.length) return;
+  const lista = STATE[listKey] || (STATE[listKey] = []);
+  registosNovos.forEach(registo => {
+    const idx = lista.findIndex(r => String(r.id) === String(registo.id));
+    if (registo.eliminado === true) {
+      if (idx !== -1) lista.splice(idx, 1);
+      return;
+    }
+    if (idx !== -1) { lista[idx] = registo; return; }
+    if (listKey === 'usuarios') {
+      let pos = lista.findIndex(r => String(r.nomeCompleto || '').localeCompare(String(registo.nomeCompleto || '')) > 0);
+      if (pos === -1) pos = lista.length;
+      lista.splice(pos, 0, registo);
+    } else {
+      lista.unshift(registo);
+    }
+  });
+}
 // CRIADO 2026-08-29 (pedido explícito de Hugo, "mas se quiser aceder aos
 // dados através da app consigo?" — depois de dbFetchAll('vacinacaoMarcacoes')
 // passar a trazer só a época corrente por omissão): esta função vai buscar
@@ -46046,12 +46157,36 @@ async function loadAllData() {
     // servidor através da RPC segura carregarDadosFinanceirosSeAutorizado(),
     // que valida o perfil de quem está autenticado antes de devolver dados.
     const keys = Object.keys(TABLES).filter(k => k !== 'financeiro' && k !== 'objetivosMensais');
-    const results = await Promise.all(keys.map(k => dbFetchAll(k)));
-    // dbFetchAll() já devolve dados sanitizados (ver rowToRecord), mas volta a
-    // passar por sanitizarSupabase() mesmo aqui, no exato ponto em que entra
-    // no STATE — garante blindagem total, mesmo que algum dia uma função de
-    // leitura nova seja adicionada sem essa sanitização embutida.
-    keys.forEach((k, i) => { STATE[k] = sanitizarSupabase(results[i]); });
+    // CRIADO 2026-08-30 (Egress — ver nota completa em
+    // lerCacheLocalEstado/dbFetchAllDesde acima): com cache local válida,
+    // parte da última cópia conhecida e só pergunta ao Supabase o que
+    // mudou desde então, tabela a tabela — sem cache (1ª vez neste
+    // dispositivo, ou cache expirada/inválida), continua a fazer
+    // exactamente o fetch completo de sempre, sem qualquer mudança de
+    // comportamento.
+    const cache = lerCacheLocalEstado();
+    if (cache) {
+      keys.forEach(k => { STATE[k] = cache.tabelas[k] || []; });
+      const resultadosDelta = await Promise.all(keys.map(async k => {
+        const watermark = watermarkDaTabela(cache.tabelas[k]);
+        if (!watermark) return { k, modo: 'completo', dados: await dbFetchAll(k) };
+        const delta = await dbFetchAllDesde(k, watermark);
+        if (delta === null) return { k, modo: 'completo', dados: await dbFetchAll(k) };
+        return { k, modo: 'delta', dados: delta };
+      }));
+      resultadosDelta.forEach(({ k, modo, dados }) => {
+        if (modo === 'completo') STATE[k] = sanitizarSupabase(dados);
+        else aplicarLoteAoState(k, dados);
+      });
+    } else {
+      const results = await Promise.all(keys.map(k => dbFetchAll(k)));
+      // dbFetchAll() já devolve dados sanitizados (ver rowToRecord), mas volta a
+      // passar por sanitizarSupabase() mesmo aqui, no exato ponto em que entra
+      // no STATE — garante blindagem total, mesmo que algum dia uma função de
+      // leitura nova seja adicionada sem essa sanitização embutida.
+      keys.forEach((k, i) => { STATE[k] = sanitizarSupabase(results[i]); });
+    }
+    guardarCacheLocalEstado();
     normalizarTipoPremioDesafios();
     // Os 5 pedidos secundários (financeiro, mensagem do dia, chat,
     // documentos emitidos, gaveta de recados) são independentes entre si —
