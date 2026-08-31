@@ -17237,17 +17237,6 @@ function financeiroProjecaoFechoMesEmCurso(ano, mes, campo) {
   const acumulado = registos.reduce((s, r) => s + r.valor, 0);
   const ultimoDiaRegistado = Math.max(...registos.map(r => parseInt(r.data.slice(8, 10), 10)));
   const fracao = financeiroFracaoMesConcluidaAteDia(ano, mes, ultimoDiaRegistado, campo);
-  // DIAGNÓSTICO TEMPORÁRIO 2026-08-31 (pedido de Hugo: "não está igual?"
-  // — a Projeção continuava idêntica ao Mês Analisado mesmo depois da
-  // correção da proporção; para confirmar qual dos 2 caminhos está a
-  // correr, e com que valores, em vez de continuar a adivinhar às cegas)
-  // — remover depois de confirmado.
-  console.log('[Financeiro] diagnóstico Projeção de Fecho:', {
-    ano, mes, campo, campoReal: financeiroCampoReal(campo),
-    diasRegistados: registos.length, diasNoMes: financeiroDiasDoMes(ano, mes),
-    acumulado, ultimoDiaRegistado, fracao,
-    caminho: (fracao && fracao > 0.05) ? 'fração (novo)' : 'regra de três (recurso)',
-  });
   if (fracao && fracao > 0.05) return acumulado / fracao;
   // Rede de segurança: regra de três antiga (média diária × dias do mês).
   return financeiroMediaDiariaMes(ano, mes, campo) * financeiroDiasDoMes(ano, mes);
@@ -20022,16 +20011,28 @@ function buildFinanceiroPage(container, goTo) {
     const totalMesSel = financeiroTotalMes(anoSel, mesSel);
     const mediaMesSel = financeiroMediaDiariaMes(anoSel, mesSel);
     const diasNoMesSel = financeiroDiasDoMes(anoSel, mesSel);
-    // Mês já FECHADO (qualquer mês anterior ao mês real atual, ou o próprio
-    // mês atual já no seu último dia) — a Projeção de Fecho tem de ser
-    // EXATAMENTE a Faturação Real, nunca um valor recalculado. Usar
-    // média×dias-do-mês aqui seria errado sempre que algum dia do mês não
-    // tem valor conhecido (ex: farmácia fechada nesse dia, ou um dia por
-    // registar) — a média sairia calculada sobre MENOS dias do que
-    // diasNoMesSel, inflacionando a projeção acima do total real. Só um mês
-    // ainda em curso (dias por vir) precisa mesmo de projeção estimada.
-    const mesSelJaFechado = (anoSel < anoAtualReal) || (anoSel === anoAtualReal && mesSel < mesAtualReal)
-      || (anoSel === anoAtualReal && mesSel === mesAtualReal && hojeReal.getDate() >= diasNoMesSel);
+    // Mês já FECHADO (só meses genuinamente ANTERIORES ao mês real atual —
+    // nunca o próprio mês atual, nem no seu último dia) — a Projeção de
+    // Fecho tem de ser EXATAMENTE a Faturação Real assim que o mês
+    // realmente termina.
+    // BUG CORRIGIDO 2026-08-31 (Hugo: "projeção continua a mostrar isto,
+    // que é o total à data de ontem ignorando que falta ainda o dia 31" —
+    // confirmado via consola/diagnóstico, `fracao` calculava-se bem
+    // (0,9647), mas o valor projetado nunca chegava a ser usado): esta
+    // condição também considerava o mês "fechado" assim que
+    // `hojeReal.getDate() >= diasNoMesSel` — ou seja, a partir do
+    // ÚLTIMO DIA DE CALENDÁRIO do mês (dia 31 de Agosto, neste caso),
+    // MESMO que os dados desse próprio dia ainda não tivessem sido
+    // registados. Nesse ponto exato, `projecaoFechoMesSel = totalMesSel`
+    // (o acumulado até ao dia 30) de forma direta, ignorando por completo
+    // financeiroProjecaoFechoMesEmCurso() — daí a Projeção parecer sempre
+    // "igual ao total", nunca refletir o dia em falta. Removida essa 3ª
+    // condição: o mês corrente NUNCA é tratado como "já fechado" só por
+    // se estar no seu último dia de calendário — a própria fórmula da
+    // projeção converge sozinha para o total real assim que TODOS os
+    // dias (incluindo o último) estiverem registados, sem precisar deste
+    // atalho.
+    const mesSelJaFechado = (anoSel < anoAtualReal) || (anoSel === anoAtualReal && mesSel < mesAtualReal);
     const projecaoFechoMesSel = mesSelJaFechado ? totalMesSel : financeiroProjecaoFechoMesEmCurso(anoSel, mesSel);
     const totalMesAntSel = financeiroTotalMes(mesAntSel.ano, mesAntSel.mes);
     const pctVsMesAntSel = totalMesAntSel > 0 ? ((totalMesSel - totalMesAntSel) / totalMesAntSel) * 100 : null;
