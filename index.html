@@ -30608,6 +30608,14 @@ function campoHora(valorInicial, permitirMeiaNoite, onChange, horaMin, horaMax, 
   // Entrada/Saída do turno muda. "00" some do laço normal quando
   // permitirMeiaNoite, para nunca duplicar com a opção "00 (meia-noite)"
   // à parte (turno a terminar à meia-noite).
+  // CORRIGIDO 2026-08-31 (Hugo: "aparece opção meia-noite quando o meu
+  // horário só se estende até às 22h"): a opção "00 (meia-noite)" era
+  // sempre acrescentada quando permitirMeiaNoite=true, INDEPENDENTEMENTE
+  // do intervalo (minH/maxH) — mesmo um turno a terminar às 22h mostrava
+  // meia-noite como opção de Fim, que nem sequer é uma hora alcançável
+  // dentro desse turno. Só faz sentido a opção existir quando o
+  // intervalo realmente chega ao fim do dia (maxH>=23 — o turno pode
+  // mesmo terminar à meia-noite); nunca aparece por omissão.
   function construirOpcoesHora(minH, maxH) {
     horaSel.replaceChildren(h('option', { value: '' }, '--'));
     for (let hVal = minH; hVal <= maxH; hVal += 1) {
@@ -30615,7 +30623,7 @@ function campoHora(valorInicial, permitirMeiaNoite, onChange, horaMin, horaMax, 
       if (permitirMeiaNoite && hStr === '00') continue;
       horaSel.appendChild(h('option', { value: hStr }, hStr));
     }
-    if (permitirMeiaNoite) horaSel.appendChild(h('option', { value: '00' }, '00 (meia-noite)'));
+    if (permitirMeiaNoite && maxH >= 23) horaSel.appendChild(h('option', { value: '00' }, '00 (meia-noite)'));
   }
   construirOpcoesHora(minPadrao, maxPadrao);
   const minSel = h('select', { class: 'time-picker-select' });
@@ -31191,19 +31199,6 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   }
 
   async function guardar() {
-    // CORRIGIDO 2026-08-31 (Hugo: validação a acusar colisão com a Sofia
-    // numa hora que já tinha corrigido): `semana` é a cópia capturada no
-    // momento em que este editor de célula abriu — se entretanto outra
-    // alteração à MESMA semana foi gravada (ex: corrigir o turno da
-    // Sofia noutra célula, sem fechar este editor específico), a
-    // validação de colisão (escalaTarefaColisao, mais abaixo) continuava
-    // a comparar contra os dados ANTIGOS de antes dessa correção — daí
-    // o falso positivo. Atualiza-se aqui, mesmo antes de validar/
-    // gravar, para usar sempre a versão mais recente conhecida desta
-    // semana; se por algum motivo já não existir em STATE (raríssimo),
-    // mantém-se a cópia capturada, para nunca rebentar por causa disto.
-    const semanaFresca = (STATE.escalaSemanas || []).find(s => s.id === semana.id);
-    if (semanaFresca) semana = semanaFresca;
     if (escalaSemanaEstaCongelada(semana)) {
       errorEl.textContent = 'Esta semana está congelada (já passou ou foi publicada) e não pode ser editada.';
       errorEl.style.display = '';
@@ -31324,7 +31319,17 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
         // — ver TIPOS_TAREFA_SEM_SOBREPOSICAO/escalaTarefaColisao. Exclui
         // a própria vaga inteira da procura (esta célula está prestes a
         // ser reescrita de qualquer forma, nunca colide consigo mesma).
-        const colisaoT = escalaTarefaColisao(semana, diaKey, tipoT, inicioT, fimT, codigoVaga);
+        // CORRIGIDO 2026-08-31 (Hugo: colisão a acusar a Sofia numa hora
+        // que já tinha corrigido noutra célula, sem fechar este editor):
+        // usa aqui, só para esta verificação pontual (nunca para a
+        // gravação em si nem para o bloqueio de semana congelada — isso
+        // ficou a causar um problema pior, semanas em rascunho a serem
+        // bloqueadas por engano), a versão mais recente conhecida da
+        // semana em STATE — sem isto, comparava sempre contra os dados
+        // de quando este editor abriu, ignorando alterações a OUTRAS
+        // células gravadas entretanto.
+        const semanaParaColisao = (STATE.escalaSemanas || []).find(s => s.id === semana.id) || semana;
+        const colisaoT = escalaTarefaColisao(semanaParaColisao, diaKey, tipoT, inicioT, fimT, codigoVaga);
         if (colisaoT) {
           errorEl.textContent = `${escalaTarefaInfo(tipoT)?.label || 'Esta tarefa'} já está atribuída a ${colisaoT.nome} nesse horário (${colisaoT.inicio}-${colisaoT.fim}). Ajuste o Início/Fim para não sobrepor.`;
           errorEl.style.display = '';
