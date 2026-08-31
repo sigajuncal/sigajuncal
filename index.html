@@ -17133,11 +17133,28 @@ function financeiroMediaDiariaMes(ano, mes, campo) {
 // acumulado ÷ essa fração. Sem meses fechados suficientes com dados
 // diários (ex: Janeiro, ou anos anteriores a FINANCEIRO_ANO_MINIMO_DIARIO,
 // que só têm o total mensal), cai para a regra de três antiga.
-function financeiroFracaoMesConcluidaAteDia(ano, diaN, campo) {
+// BUG CORRIGIDO 2026-08-31 (Hugo: "projeção ser igual ao total quando
+// ainda falta dia 31 agosto"): esta função comparava o dia N (ex: 30) do
+// mês alvo com o MESMO número de dia nos meses de referência, ignorando
+// que meses têm durações diferentes (28 a 31 dias) — para um mês de
+// referência com só 30 dias, "até ao dia 30" É o mês inteiro (fração
+// 100%), mesmo quando o mês ALVO (ex: Agosto, 31 dias) ainda tem 1 dia
+// por vir nesse ponto. Isto inflacionava a fração média sempre que havia
+// meses de referência mais curtos do que o mês atual, empurrando a
+// projeção para cima do valor real — no caso limite (dia 30 de Agosto,
+// muito perto do fim), suficiente para a projeção colapsar para o mesmo
+// valor do acumulado, escondendo que ainda faltava 1 dia. Corrigido para
+// comparar por POSIÇÃO PROPORCIONAL no mês (dia N ÷ dias do mês alvo),
+// convertida para o dia equivalente em cada mês de referência consoante
+// a duração PRÓPRIA desse mês — nunca compara dias de calendário
+// diferentes como se fossem a mesma fração de mês.
+function financeiroFracaoMesConcluidaAteDia(ano, mes, diaN, campo) {
   campo = campo || 'faturacao';
   if (ano < FINANCEIRO_ANO_MINIMO_DIARIO) return null;
   const mesAtual = new Date().getMonth() + 1;
   const anoAtual = new Date().getFullYear();
+  const diasNoMesAlvo = financeiroDiasDoMes(ano, mes);
+  const proporcaoAlvo = diaN / diasNoMesAlvo;
   // Recolhe meses de referência do ano em curso primeiro (mais recentes,
   // logo mais representativos da farmácia hoje) e, se não chegarem,
   // continua a recuar para os anos anteriores — pedido explícito
@@ -17158,7 +17175,9 @@ function financeiroFracaoMesConcluidaAteDia(ano, diaN, campo) {
       if (registos.length < financeiroDiasDoMes(a, m) - 2) continue;
       const total = registos.reduce((s, r) => s + r.valor, 0);
       if (total <= 0) continue;
-      const ateDia = registos.filter(r => parseInt(r.data.slice(8, 10), 10) <= diaN).reduce((s, r) => s + r.valor, 0);
+      const diasNoMesRef = financeiroDiasDoMes(a, m);
+      const diaEquivalente = Math.max(1, Math.round(proporcaoAlvo * diasNoMesRef));
+      const ateDia = registos.filter(r => parseInt(r.data.slice(8, 10), 10) <= diaEquivalente).reduce((s, r) => s + r.valor, 0);
       if (ateDia > 0) fracoes.push(ateDia / total);
     }
   }
@@ -17173,7 +17192,7 @@ function financeiroProjecaoFechoMesEmCurso(ano, mes, campo) {
   if (!registos.length) return 0;
   const acumulado = registos.reduce((s, r) => s + r.valor, 0);
   const ultimoDiaRegistado = Math.max(...registos.map(r => parseInt(r.data.slice(8, 10), 10)));
-  const fracao = financeiroFracaoMesConcluidaAteDia(ano, ultimoDiaRegistado, campo);
+  const fracao = financeiroFracaoMesConcluidaAteDia(ano, mes, ultimoDiaRegistado, campo);
   if (fracao && fracao > 0.05) return acumulado / fracao;
   // Rede de segurança: regra de três antiga (média diária × dias do mês).
   return financeiroMediaDiariaMes(ano, mes, campo) * financeiroDiasDoMes(ano, mes);
@@ -32220,7 +32239,19 @@ function buildHorariosPage(container, goTo) {
       if (!vagas.length) return;
       bodyRows.push(h('tr', {}, [h('td', { colspan: String(3 + ESCALA_DIAS.length), class: 'escala-grupo-header' }, g.label)]));
       vagas.forEach(v => {
-        const linha = semana.dados[v.codigo] || { colaboradorNome: '', dias: {} };
+        // BUG GRAVE CORRIGIDO 2026-08-31 (erro real capturado na consola do
+        // Safari por Paulo — "TypeError: undefined is not an object
+        // (evaluating 'semana.dados[v.codigo]')" — reproduzido depois de
+        // publicar um horário; causa da "página em branco"/"erro
+        // inesperado" investigada nas últimas mensagens): `|| {}` só
+        // protege o RESULTADO de indexar `semana.dados[v.codigo]` — nunca
+        // protegia `semana.dados` EM SI, que pode legitimamente vir null/
+        // undefined (ex: uma semana recém-criada, antes da 1ª gravação).
+        // Indexar `undefined[v.codigo]` rebenta ANTES do `||` sequer
+        // entrar em jogo — corrigido nas 8 ocorrências deste padrão em
+        // toda a app para `(semana.dados || {})[v.codigo]`, protegendo o
+        // objeto base também, não só o resultado.
+        const linha = (semana.dados || {})[v.codigo] || { colaboradorNome: '', dias: {} };
         // BUG CORRIGIDO 2026-08-23 (pedido explícito: "olha ali o Simão...
         // não é do quadro, não tem folgas, tem indisponibilidade"): mesma
         // causa raiz do bug do F5 corrigido ontem, mas a afetar o TIPO do
@@ -36936,20 +36967,39 @@ function buildHorariosPage(container, goTo) {
 
     // feriasSubVista === 'quadro' (predefinido) — vista original,
     // filtrada para nunca incluir indisponibilidades de Prestadores.
+    // CORRIGIDO 2026-08-31 (Paulo reportou "Ocorreu um erro inesperado" ao
+    // clicar no separador Férias — sem acesso à consola do browser para
+    // identificar a causa exata): esta vista tem 5 secções bem distintas
+    // (aviso de sobreposições, calendário anual, saldos anuais, resumo de
+    // férias, tabela de prioridades) — sem isto, um erro em QUALQUER uma
+    // delas derrubava a vista inteira (ver construirComRedeDeSeguranca,
+    // que só protege a PÁGINA toda, não secções individuais dela). Cada
+    // secção passa a construir-se isolada das outras — se uma falhar, as
+    // restantes continuam normais, e o aviso mostra logo QUAL secção
+    // falhou, dando uma pista imediata mesmo sem consola.
+    function secaoIsolada(nomeSecao, build) {
+      try {
+        return build();
+      } catch (e) {
+        console.error(`[SigaJuncal] erro na secção "${nomeSecao}" de Férias:`, formatarErroSeguro(e));
+        return h('div', { class: 'card card-pad', style: 'margin-bottom:16px;background:#fef2f2;border-color:#fecaca;' },
+          h('p', { style: 'margin:0;font-size:12.5px;color:#991b1b;' }, `Não foi possível mostrar "${nomeSecao}" — as restantes secções continuam disponíveis. Tente recarregar a página.`));
+      }
+    }
     if (masterGestao) {
-      const aviso = buildAvisoSobreposicoes();
+      const aviso = secaoIsolada('Sobreposições', buildAvisoSobreposicoes);
       if (aviso) wrap.appendChild(aviso);
     }
 
     // 1) Calendário Anual/Mensal Geral da Equipa — vista principal.
-    wrap.appendChild(buildCalendarioEquipaAnual('quadro'));
+    wrap.appendChild(secaoIsolada('Calendário da Equipa', () => buildCalendarioEquipaAnual('quadro')));
 
     // Saldos Anuais — gestão da Direção, nunca em mobile (mesmo para
     // Hugo/Paulo): a vista mobile de Férias fica estritamente por
     // "consulta do calendário/resumo de ausências".
     if (masterGestao) {
       wrap.appendChild(h('h3', { class: 'page-eyebrow', style: 'margin:22px 0 10px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, 'Saldos Anuais — Quadro'));
-      wrap.appendChild(buildSaldosAnuais());
+      wrap.appendChild(secaoIsolada('Saldos Anuais', buildSaldosAnuais));
     }
 
     // 2) Tabela de Resumo de Férias/Ausências por Colaborador — ordenada
@@ -36958,13 +37008,15 @@ function buildHorariosPage(container, goTo) {
     // em desktop — em mobile, mesmo o Master só consulta. Nunca inclui
     // indisponibilidades de Prestador (essas vivem no sub-separador
     // próprio, ver feriasSubVista==='indisponibilidade').
-    const todasQuadro = escalaFeriasOrdenadas().filter(p => p.tipo !== 'indisponivel');
     wrap.appendChild(h('h3', { class: 'page-eyebrow', style: 'margin:22px 0 10px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, 'Resumo de Férias / Ausências'));
-    wrap.appendChild(buildListaFerias(todasQuadro, { comColaborador: true, comAcoesGestao: masterGestao }));
+    wrap.appendChild(secaoIsolada('Resumo de Férias / Ausências', () => {
+      const todasQuadro = escalaFeriasOrdenadas().filter(p => p.tipo !== 'indisponivel');
+      return buildListaFerias(todasQuadro, { comColaborador: true, comAcoesGestao: masterGestao });
+    }));
 
     // 3) Tabela Final de Rotações — apenas consulta passiva (a gestão da
     // lista base vive só no Modal de Configurações, desktop only).
-    wrap.appendChild(buildPainelPrioridadeFerias({ somenteLeitura: true }));
+    wrap.appendChild(secaoIsolada('Prioridade de Escolha de Férias', () => buildPainelPrioridadeFerias({ somenteLeitura: true })));
 
     if (masterGestao && mostrarModalMarcacaoFerias) wrap.appendChild(buildModalMarcacaoFerias());
     if (podeConfigurarFerias() && !horariosEhMobile && mostrarModalConfiguracoesFerias) wrap.appendChild(buildModalConfiguracoesFerias());
@@ -38523,7 +38575,7 @@ function buildHorariosPage(container, goTo) {
     const alertas = [];
     const jaAvisados = new Set();
     posicoes.forEach(v => {
-      const linha = semana.dados[v.codigo] || { dias: {} };
+      const linha = (semana.dados || {})[v.codigo] || { dias: {} };
       const dia = linha.dias[diaKey] || { tipo: 'folga' };
       if (dia.tipo !== 'normal' || !dia.entrada || !dia.saida) return;
       const colaboradorId = (dia && dia.colaboradorId) || linha.colaboradorId;
@@ -38539,7 +38591,7 @@ function buildHorariosPage(container, goTo) {
   function validarCoberturaHorario({ semana, diaKey, dataISO, posicoes, minutosNoIntervalo, HORA_INICIO, HORA_FIM }) {
     const turnosDia = [];
     posicoes.filter(escalaContaParaCoberturaTotal).forEach(v => {
-      const linha = semana.dados[v.codigo] || { dias: {} };
+      const linha = (semana.dados || {})[v.codigo] || { dias: {} };
       const dia = linha.dias[diaKey] || { tipo: 'folga' };
       if (dia.tipo !== 'normal' || !dia.entrada || !dia.saida) return;
       // Ausência (Férias/Baixa/Falta/...) registada DEPOIS de o turno já
@@ -38737,7 +38789,7 @@ function buildHorariosPage(container, goTo) {
     }
     const legendaEntradas = [];
     const colunas = posicoes.map(v => {
-      const linha = semana.dados[v.codigo] || { dias: {} };
+      const linha = (semana.dados || {})[v.codigo] || { dias: {} };
       const dia = linha.dias[diaKey] || { tipo: 'folga' };
       // Dono FIXO da vaga, ao vivo a partir de "Gerir Posições" (só
       // Grupos F/P — ver escalaColaboradorFixoDaVaga) — usado como
@@ -39151,7 +39203,7 @@ function buildHorariosPage(container, goTo) {
     // colaborador nessa situação — nunca atribui nem inventa turno
     // nenhum, só dá onde desenhar o(s) bloco(s) amarelo(s) dessa pessoa.
     const colaboradoresComVagaHoje = new Set(posicoes.map(v => {
-      const linha = semana.dados[v.codigo] || { dias: {} };
+      const linha = (semana.dados || {})[v.codigo] || { dias: {} };
       const dia = linha.dias[diaKey] || {};
       return String((dia && dia.colaboradorId) || linha.colaboradorId || '');
     }).filter(Boolean));
@@ -39196,7 +39248,7 @@ function buildHorariosPage(container, goTo) {
     for (let hr = HORA_INICIO; hr < HORA_FIM; hr += 1) {
       const presentesNestaHora = new Set();
       posicoes.filter(escalaContaParaCoberturaTotal).forEach(v => {
-        const linha = semana.dados[v.codigo] || { dias: {} };
+        const linha = (semana.dados || {})[v.codigo] || { dias: {} };
         const dia = linha.dias[diaKey] || { tipo: 'folga' };
         const colaboradorIdDoDia = (dia && dia.colaboradorId) || linha.colaboradorId;
         if (dia.tipo === 'normal' && dia.entrada && dia.saida
@@ -42000,7 +42052,7 @@ function buildHorarioSemanaGridPDFDoc(semana) {
       const ordemNomes = [];
       const diasPorNome = {};
       vagas.forEach(v => {
-        const linha = semana.dados[v.codigo] || { colaboradorNome: '', dias: {} };
+        const linha = (semana.dados || {})[v.codigo] || { colaboradorNome: '', dias: {} };
         ESCALA_DIAS.forEach(d => {
           const dia = linha.dias[d.key] || { tipo: 'folga' };
           const nome = dia.colaboradorNome || linha.colaboradorNome || '';
@@ -42031,7 +42083,7 @@ function buildHorarioSemanaGridPDFDoc(semana) {
       return;
     }
     vagas.forEach(v => {
-      const linha = semana.dados[v.codigo] || { colaboradorNome: '', dias: {} };
+      const linha = (semana.dados || {})[v.codigo] || { colaboradorNome: '', dias: {} };
       // BUG CORRIGIDO 2026-08-23 (pedido explícito: "olha ali o Simão...
       // não é do quadro, não tem folgas, tem indisponibilidade") — mesma
       // causa do bug do nome "Posição por preencher" corrigido ontem,
