@@ -17186,13 +17186,68 @@ function financeiroFracaoMesConcluidaAteDia(ano, mes, diaN, campo) {
 }
 // Projeção de fecho de um mês AINDA EM CURSO (nunca usar num mês já
 // fechado — aí o valor certo é sempre o total real, ver mesSelJaFechado).
+// CRIADO 2026-08-31 (pedido explícito de Hugo: "como vai ser calculada a
+// projeção para Setembro sem nenhum dia ainda... trajetória dos dias
+// anteriores, progresso homólogo... rigoroso"): antes disto, um mês sem
+// NENHUM dia registado (ex: dia 1 de Setembro, antes do 1º registo do
+// mês) devolvia projeção 0 → a UI mostrava "—", sem fundamento nenhum
+// por trás. Reutiliza EXATAMENTE o mesmo raciocínio já usado para os
+// "meses futuros" da Projeção Anual (ver financeiroProjecaoAnual) —
+// nunca inventa um método novo/paralelo:
+// 1) Forma sazonal real deste mês (financeiroFormaSazonalMes — que fatia
+//    % do ano este mês costuma valer, ponderado pelos anos mais
+//    recentes) × Nível anual estimado (Total do ano anterior × 
+//    Crescimento Homólogo médio dos meses já fechados este ano) — o
+//    método principal, mesma "trajetória + homólogo equiparados" pedida.
+// 2) Sem histórico sazonal/homólogo suficiente: Objetivo Mensal deste
+//    mês × desempenho médio (Real ÷ Objetivo) dos meses já fechados
+//    este ano — mede se a farmácia está a bater ou a ficar aquém da
+//    meta, e aplica esse mesmo ritmo ao mês sem dados.
+// 3) Sem nenhuma das duas: o total real do MESMO mês no ano anterior,
+//    sem qualquer ajuste — última rede de segurança antes de admitir
+//    "sem dados suficientes para projetar" (0, mostra "—" como sempre).
+function financeiroProjetarMesSemDados(ano, mes, campo) {
+  campo = campo || 'faturacao';
+  const crescimentoHomologo = financeiroCrescimentoHomologo(ano, campo);
+  const totalAnoAnterior = financeiroTotalAno(ano - 1, campo);
+  const nivelAnoEstimado = (totalAnoAnterior > 0 && crescimentoHomologo) ? totalAnoAnterior * crescimentoHomologo : null;
+  const formaMes = financeiroFormaSazonalMes(mes, campo);
+  if (formaMes && nivelAnoEstimado) return formaMes * nivelAnoEstimado;
+  if (campo === 'faturacao') {
+    const objMes = financeiroMetaDoMes(ano, mes);
+    if (objMes) {
+      let somaObjetivo = 0, somaReal = 0;
+      for (let m = 1; m < mes; m++) {
+        const obj = financeiroMetaDoMes(ano, m);
+        if (!obj) continue;
+        somaObjetivo += obj;
+        somaReal += financeiroTotalMes(ano, m, campo);
+      }
+      if (somaObjetivo > 0) return objMes * (somaReal / somaObjetivo);
+    }
+  }
+  const totalHomologo = financeiroTotalMes(ano - 1, mes, campo);
+  if (totalHomologo > 0) return totalHomologo;
+  return 0;
+}
 function financeiroProjecaoFechoMesEmCurso(ano, mes, campo) {
   campo = campo || 'faturacao';
   const registos = financeiroRegistosDoMes(ano, mes, campo);
-  if (!registos.length) return 0;
+  if (!registos.length) return financeiroProjetarMesSemDados(ano, mes, campo);
   const acumulado = registos.reduce((s, r) => s + r.valor, 0);
   const ultimoDiaRegistado = Math.max(...registos.map(r => parseInt(r.data.slice(8, 10), 10)));
   const fracao = financeiroFracaoMesConcluidaAteDia(ano, mes, ultimoDiaRegistado, campo);
+  // DIAGNÓSTICO TEMPORÁRIO 2026-08-31 (pedido de Hugo: "não está igual?"
+  // — a Projeção continuava idêntica ao Mês Analisado mesmo depois da
+  // correção da proporção; para confirmar qual dos 2 caminhos está a
+  // correr, e com que valores, em vez de continuar a adivinhar às cegas)
+  // — remover depois de confirmado.
+  console.log('[Financeiro] diagnóstico Projeção de Fecho:', {
+    ano, mes, campo, campoReal: financeiroCampoReal(campo),
+    diasRegistados: registos.length, diasNoMes: financeiroDiasDoMes(ano, mes),
+    acumulado, ultimoDiaRegistado, fracao,
+    caminho: (fracao && fracao > 0.05) ? 'fração (novo)' : 'regra de três (recurso)',
+  });
   if (fracao && fracao > 0.05) return acumulado / fracao;
   // Rede de segurança: regra de três antiga (média diária × dias do mês).
   return financeiroMediaDiariaMes(ano, mes, campo) * financeiroDiasDoMes(ano, mes);
@@ -19983,7 +20038,7 @@ function buildFinanceiroPage(container, goTo) {
     const totalHomologoMesSel = financeiroTotalMes(anoSel - 1, mesSel);
     const pctVsHomologoMesSel = totalHomologoMesSel > 0 ? ((totalMesSel - totalHomologoMesSel) / totalHomologoMesSel) * 100 : null;
     const metaMesSel = financeiroMetaDoMes(anoSel, mesSel);
-    const pctProjecaoVsMetaMensal = (metaMesSel && mediaMesSel > 0) ? ((projecaoFechoMesSel - metaMesSel) / metaMesSel) * 100 : null;
+    const pctProjecaoVsMetaMensal = (metaMesSel && projecaoFechoMesSel > 0) ? ((projecaoFechoMesSel - metaMesSel) / metaMesSel) * 100 : null;
     const editarMetaBtn = podeEditar ? h('button', { class: 'btn-fab-sm tone-blue', title: 'Definir/Editar Objetivo Mensal', 'aria-label': 'Definir/Editar Objetivo Mensal' }, Icon('pencil', { size: 12, strokeWidth: 2.2 })) : null;
     if (editarMetaBtn) editarMetaBtn.addEventListener('click', () => requireAuth(() => abrirModalDefinirMeta(anoSel, mesSel, rerender)));
 
@@ -20043,14 +20098,24 @@ function buildFinanceiroPage(container, goTo) {
       ]),
       h('p', { class: 'fin-kpi-valor' }, temDadosMesSel ? financeiroFormatarEuro(totalMesSel, 2) : '—'),
       h('p', { class: 'fin-kpi-sub', style: 'margin-top:4px;' }, `Média Diária: ${mediaMesSel > 0 ? financeiroFormatarEuro(mediaMesSel, 2) : '—'}`),
-      h('p', { class: 'fin-kpi-sub', style: 'margin-top:2px;' }, `Projeção de Fecho: ${mediaMesSel > 0 ? financeiroFormatarEuro(projecaoFechoMesSel, 2) : '—'}`),
+      // CORRIGIDO 2026-08-31 (Hugo: "projeção para Setembro sem nenhum dia
+      // ainda... rigoroso"): esta linha só aparecia com mediaMesSel > 0,
+      // ou seja, só depois do 1º dia do mês ser registado — escondia
+      // exatamente a estimativa nova (ver financeiroProjetarMesSemDados)
+      // pensada PARA o caso de ainda não haver nenhum dia. Passa a
+      // depender de projecaoFechoMesSel (que já cobre os dois casos:
+      // com dias registados OU projetada por sazonalidade/homólogo) —
+      // "(estimativa)" identifica quando é 100% baseada em anos
+      // anteriores, nunca escondendo que ainda não há nenhum dado real
+      // deste mês por trás do número.
+      h('p', { class: 'fin-kpi-sub', style: 'margin-top:2px;' }, `Projeção de Fecho: ${projecaoFechoMesSel > 0 ? financeiroFormatarEuro(projecaoFechoMesSel, 2) + (temDadosMesSel ? '' : ' (estimativa)') : '—'}`),
       buildLinhaComparativa(`vs. ${MESES_PT_NOMES[mesAntSel.mes - 1]} ${mesAntSel.ano}`, totalMesAntSel || null, pctVsMesAntSel),
       buildLinhaComparativa(`vs. Homólogo ${anoSel - 1}`, totalHomologoMesSel || null, pctVsHomologoMesSel),
       metaMesSel ? h('div', { style: 'margin-top:6px;' }, [
         h('p', { class: 'fin-comp-linha' }, [h('span', { class: 'fin-comp-rotulo' }, 'Objetivo Mensal: '), h('span', { class: 'fin-comp-ref' }, financeiroFormatarEuro(metaMesSel, 2))]),
         h('div', { class: 'progress-track', style: 'margin:8px 0;' }, [h('div', { class: 'progress-fill', style: `width:${Math.min(100, (totalMesSel / metaMesSel) * 100)}%;background:${objetivoProgressoCor(Math.min(100, (totalMesSel / metaMesSel) * 100))};` })]),
         buildLinhaCumprimento(totalMesSel, metaMesSel),
-        buildLinhaComparativaValor('vs. Objetivo Mensal', 'Projeção', mediaMesSel > 0 ? projecaoFechoMesSel : null, pctProjecaoVsMetaMensal),
+        buildLinhaComparativaValor('vs. Objetivo Mensal', 'Projeção', projecaoFechoMesSel > 0 ? projecaoFechoMesSel : null, pctProjecaoVsMetaMensal),
       ]) : h('p', { class: 'fin-kpi-sub', style: 'margin-top:6px;' }, 'Sem Objetivo Mensal definido — clique no lápis para definir.'),
       h('div', { class: 'fin-subbloco-atendimentos' }, [
         h('div', { class: 'fin-metric-header' }, [
@@ -31126,6 +31191,19 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   }
 
   async function guardar() {
+    // CORRIGIDO 2026-08-31 (Hugo: validação a acusar colisão com a Sofia
+    // numa hora que já tinha corrigido): `semana` é a cópia capturada no
+    // momento em que este editor de célula abriu — se entretanto outra
+    // alteração à MESMA semana foi gravada (ex: corrigir o turno da
+    // Sofia noutra célula, sem fechar este editor específico), a
+    // validação de colisão (escalaTarefaColisao, mais abaixo) continuava
+    // a comparar contra os dados ANTIGOS de antes dessa correção — daí
+    // o falso positivo. Atualiza-se aqui, mesmo antes de validar/
+    // gravar, para usar sempre a versão mais recente conhecida desta
+    // semana; se por algum motivo já não existir em STATE (raríssimo),
+    // mantém-se a cópia capturada, para nunca rebentar por causa disto.
+    const semanaFresca = (STATE.escalaSemanas || []).find(s => s.id === semana.id);
+    if (semanaFresca) semana = semanaFresca;
     if (escalaSemanaEstaCongelada(semana)) {
       errorEl.textContent = 'Esta semana está congelada (já passou ou foi publicada) e não pode ser editada.';
       errorEl.style.display = '';
