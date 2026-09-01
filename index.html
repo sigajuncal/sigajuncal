@@ -8429,7 +8429,34 @@ async function dbFetchAll(listKey) {
 // 4. Se o localStorage falhar (quota excedida, modo privado, o que for),
 //    a app funciona exactamente como antes — só perde a otimização,
 //    nunca parte nada.
-const STATE_CACHE_VERSION = 'v1';
+// BUG GRAVE CORRIGIDO 2026-09-01 (Hugo/Paulo: semanas de Horários já
+// editadas/publicadas apareciam com 0 pessoas em todo o lado — "às vezes
+// aparece"): causa raiz real, nada a ver com perda de dados — dbUpdate()
+// nunca escrevia explicitamente em `updated_at`, e o Supabase só aplica
+// DEFAULT now() nessa coluna na CRIAÇÃO da linha, nunca numa atualização;
+// sem trigger nenhum na base de dados, `updated_at` ficava congelado desde
+// sempre. A sincronização por diferença introduzida em 2026-08-30
+// (dbFetchAllDesde, ver mais abaixo) pergunta exatamente "há alguma linha
+// com updated_at mais recente que X" — como X nunca avançava, um
+// dispositivo com cache local de ANTES de uma edição nunca mais detetava
+// essa edição, ficando preso à versão antiga até a cache expirar sozinha
+// ao fim de 24h (ou a app estar mesmo aberta e ligada ao Realtime no
+// preciso instante da gravação, que ignora updated_at por completo).
+// Efeito colateral mais grave, no mesmo sítio: o bloqueio otimista contra
+// edições concorrentes (dbUpdate, usaLockOtimista) também compara sempre
+// updated_at — pelo mesmo motivo, essa proteção estava efetivamente
+// inútil desde sempre (não é recente), porque o valor nunca mudava a
+// seguir a uma edição para detetar o conflito.
+// CORREÇÃO REAL (lado do Supabase, ver SQL entregue): trigger genérico
+// que força updated_at=now() em QUALQUER UPDATE de qualquer tabela que
+// tenha essa coluna — resolve os dois problemas de uma vez, sem tocar em
+// nenhum dado existente.
+// Este bump de versão é só o "empurrão" final: força, uma única vez, um
+// fetch completo (não-delta) em todos os dispositivos, para descartar
+// qualquer cache já desatualizada de ANTES da correção acima — daqui em
+// diante, com o trigger a funcionar, a sincronização por diferença volta
+// a ser fiável sozinha, sem precisar de mais nenhum bump destes.
+const STATE_CACHE_VERSION = 'v2';
 const STATE_CACHE_KEY = 'sigajuncal_cache_' + STATE_CACHE_VERSION;
 const STATE_CACHE_MAX_IDADE_MS = 24 * 60 * 60 * 1000;
 function lerCacheLocalEstado() {
