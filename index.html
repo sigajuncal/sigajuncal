@@ -28676,14 +28676,30 @@ function formatarDataHoraICS(dataISO, horaHHMM) {
 function descarregarICSSemanaPessoal(semana) {
   if (!activeUser) { showToast('Inicie sessão para exportar o seu horário.', 'error'); return; }
   if (!semana) { showToast('Sem horário gerado para esta semana.', 'info'); return; }
-  const codigosMeus = Object.keys(semana.dados || {}).filter(cod => semana.dados[cod].colaboradorId === activeUser.id);
+  // BUG CORRIGIDO 2026-09-02 (mesma causa raiz já corrigida em
+  // buildVistaPessoal/buildVistaPessoalMensal — ver comentário completo
+  // lá: linha.colaboradorId só é fiável para Grupo A/F/P; no Grupo B é só
+  // a legenda do 1º dia normal trabalhado). Sem esta correção, o .ics
+  // de uma pessoa do Grupo B tanto podia ficar sem nenhum evento (se
+  // nunca fosse a legenda de nenhum código) como exportar para o
+  // calendário pessoal os turnos do COLEGA de rotação nos dias que não
+  // são seus.
+  const codigosMeus = Object.keys(semana.dados || {}).filter(cod => {
+    const linhaCod = semana.dados[cod];
+    if (linhaCod.colaboradorId === activeUser.id) return true;
+    return ESCALA_DIAS.some(d => linhaCod.dias && linhaCod.dias[d.key] && linhaCod.dias[d.key].colaboradorId === activeUser.id);
+  });
   if (!codigosMeus.length) { showToast('Não está atribuído a nenhuma posição nesta semana.', 'info'); return; }
   const eventos = [];
   const agora = formatarCarimboICS(new Date());
   codigosMeus.forEach(codigo => {
     const linha = semana.dados[codigo];
     ESCALA_DIAS.forEach(d => {
-      const dia = linha.dias[d.key] || { tipo: 'folga' };
+      let dia = linha.dias[d.key] || { tipo: 'folga' };
+      // Dia deste código que na verdade pertence ao colega de rotação do
+      // Grupo B — nunca exportar o turno dele para o calendário desta
+      // pessoa. `dia.colaboradorId` só existe no Grupo B.
+      if (dia.colaboradorId !== undefined && dia.colaboradorId !== activeUser.id) dia = { tipo: 'folga' };
       const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, activeUser.id);
       if (tipoEfetivo !== 'normal' || !dia.entrada || !dia.saida) return;
       const dataDoDia = escalaDataDoDia(semana.semanaInicio, d.key);
@@ -31828,7 +31844,21 @@ function buildHorariosPage(container, goTo) {
     const semana = (STATE.escalaSemanas || []).find(s => s.semanaInicio === segundaISO);
     if (!semana) { correcaoBancoHeError = 'Não foi encontrada a semana desta data.'; rerender(); return; }
     const diaKey = ESCALA_DIAS[(new Date(dataISO + 'T12:00:00').getDay() + 6) % 7].key;
-    const codigo = Object.keys(semana.dados || {}).find(cod => semana.dados[cod].colaboradorId === colaboradorId);
+    // BUG CORRIGIDO 2026-09-02 (mesma causa raiz de buildVistaPessoalMensal
+    // — ver comentário completo lá): sem este fallback, corrigir Banco de
+    // Horas/HE de uma pessoa do Grupo B num dia em que ela não é a
+    // "legenda" do código falhava sempre com "Não foi encontrado turno
+    // desta pessoa nesse dia", mesmo havendo turno real gravado nesse dia.
+    const codigos = Object.keys(semana.dados || {});
+    let codigo = codigos.find(cod => semana.dados[cod].colaboradorId === colaboradorId);
+    const diaDoCodigoTopo = codigo && semana.dados[codigo].dias && semana.dados[codigo].dias[diaKey];
+    if (!codigo || (diaDoCodigoTopo && diaDoCodigoTopo.colaboradorId !== undefined && diaDoCodigoTopo.colaboradorId !== colaboradorId)) {
+      const codigoPorDia = codigos.find(cod => {
+        const d = semana.dados[cod].dias && semana.dados[cod].dias[diaKey];
+        return d && d.colaboradorId === colaboradorId;
+      });
+      if (codigoPorDia) codigo = codigoPorDia;
+    }
     if (!codigo || !semana.dados[codigo].dias[diaKey]) { correcaoBancoHeError = 'Não foi encontrado turno desta pessoa nesse dia.'; rerender(); return; }
     correcaoBancoHeSaving = true; rerender();
     const novoDados = JSON.parse(JSON.stringify(semana.dados));
