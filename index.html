@@ -34534,7 +34534,20 @@ function buildHorariosPage(container, goTo) {
   function buildVistaPessoal(semana) {
     if (!activeUser) return EmptyState('Inicie sessão para ver o seu horário pessoal.');
     if (!semana) return EmptyState('Ainda não existe nenhum horário gerado para esta semana.');
-    const codigosMeus = Object.keys(semana.dados || {}).filter(cod => semana.dados[cod].colaboradorId === activeUser.id);
+    // BUG CORRIGIDO 2026-09-02 (mesma causa raiz de buildVistaPessoalMensal
+    // acima, ver comentário completo lá — resumo: linha.colaboradorId só é
+    // fiável para A/F/P; no Grupo B é só o "1º dia normal trabalhado" como
+    // legenda, escondendo por completo um código onde a pessoa só aparece
+    // em dias que não são esse 1º dia). Aqui o efeito era mais grave —
+    // "Não está atribuído a nenhuma posição nesta semana" mesmo estando
+    // corretamente atribuída em vários dias — por isso a lista de códigos
+    // passa a incluir também qualquer código onde a pessoa apareça em
+    // QUALQUER dia (dia.colaboradorId), não só como legenda do topo.
+    const codigosMeus = Object.keys(semana.dados || {}).filter(cod => {
+      const linhaCod = semana.dados[cod];
+      if (linhaCod.colaboradorId === activeUser.id) return true;
+      return ESCALA_DIAS.some(d => linhaCod.dias && linhaCod.dias[d.key] && linhaCod.dias[d.key].colaboradorId === activeUser.id);
+    });
     if (!codigosMeus.length) return EmptyState('Não está atribuído a nenhuma posição nesta semana.');
     // display:flex + gap (não margens fixas por bloco) — pedido explícito
     // 2026-08-22: "eliminar o espaço entre Notas Pessoais e A Minha
@@ -34559,7 +34572,13 @@ function buildHorariosPage(container, goTo) {
     codigosMeus.forEach(codigo => {
       const linha = semana.dados[codigo];
       const rows = ESCALA_DIAS.map(d => {
-        const dia = linha.dias[d.key] || { tipo: 'folga' };
+        let dia = linha.dias[d.key] || { tipo: 'folga' };
+        // Ver comentário acima em codigosMeus: este código pode pertencer
+        // ao colega de rotação do Grupo B num dia em concreto — sem esta
+        // guarda, esse dia mostraria o horário do COLEGA como se fosse
+        // meu. `dia.colaboradorId` só existe no Grupo B (undefined nos
+        // outros grupos, guarda nunca dispara para eles).
+        if (dia.colaboradorId !== undefined && dia.colaboradorId !== activeUser.id) dia = { tipo: 'folga' };
         const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, activeUser.id);
         // Ausência (Férias/Baixa/Falta/...) registada DEPOIS de o turno já
         // estar na grelha — mesma verificação usada em buildGrelhaEquipa/
@@ -34792,7 +34811,33 @@ function buildHorariosPage(container, goTo) {
       const semanaVisivel = !!semanaDoDia && (semanaDoDia.estado === 'publicado' || isMasterUser() || escalaMostrarRascunhosEquipa(semanaDoDia));
       let dia = null;
       if (semanaVisivel) {
-        const codigoMeu = Object.keys(semanaDoDia.dados || {}).find(cod => semanaDoDia.dados[cod].colaboradorId === colaboradorId);
+        // BUG CORRIGIDO 2026-09-02 (Hugo/Carina: horário dela "não está a
+        // rodar com o do Adriano" — confirmado que "Gerador de Horário" e
+        // "Escala da Equipa" mostravam certo, só "A Minha Semana"/
+        // "Validação de Horários" mostravam errado para os mesmos dias):
+        // esta procura só olhava para `linha.colaboradorId` — o "topo" de
+        // cada posição, que para o Grupo A/F/P é sempre a mesma pessoa a
+        // semana toda (correto), mas para o Grupo B (rotação DIÁRIA,
+        // B1/B2) é só uma "legenda" do 1º dia normal trabalhado (ver
+        // escalaConstruirDadosSemana) — todos os OUTROS dias em que a
+        // pessoa está numa posição B diferente da desse 1º dia ficavam
+        // invisíveis aqui, mesmo já corretamente gravados em
+        // `dia.colaboradorId` (por dia, só existe no Grupo B). Corrigido
+        // para procurar primeiro o código de sempre (cobre A/F/P e o dia-
+        // legenda do B, sem mudar nada do comportamento já correto) e,
+        // se esse código não pertencer à pessoa NESTE dia em concreto
+        // (só pode acontecer no Grupo B), procurar antes pelo
+        // `dia.colaboradorId` gravado nesse dia específico.
+        const codigos = Object.keys(semanaDoDia.dados || {});
+        let codigoMeu = codigos.find(cod => semanaDoDia.dados[cod].colaboradorId === colaboradorId);
+        const diaDoCodigoTopo = codigoMeu && semanaDoDia.dados[codigoMeu].dias && semanaDoDia.dados[codigoMeu].dias[diaKey];
+        if (!codigoMeu || (diaDoCodigoTopo && diaDoCodigoTopo.colaboradorId !== undefined && diaDoCodigoTopo.colaboradorId !== colaboradorId)) {
+          const codigoPorDia = codigos.find(cod => {
+            const d = semanaDoDia.dados[cod].dias && semanaDoDia.dados[cod].dias[diaKey];
+            return d && d.colaboradorId === colaboradorId;
+          });
+          if (codigoPorDia) codigoMeu = codigoPorDia;
+        }
         if (codigoMeu) dia = semanaDoDia.dados[codigoMeu].dias[diaKey] || null;
       }
       // ATUALIZADO (2026-08-20, auditoria de consistência entre Horas
