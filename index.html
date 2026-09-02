@@ -12971,7 +12971,7 @@ function escalaSituacaoTurnoHoje(utilizadorId) {
   const hojeISO = dateToISO(agora);
   if (escalaAusenciaDoDia(utilizadorId, hojeISO)) return null;
   const segundaISO = escalaSegundaFeiraDaSemanaDeISO(hojeISO);
-  const semana = (STATE.escalaSemanas || []).find(s => s.semanaInicio === segundaISO);
+  const semana = escalaSemanaPorInicio(segundaISO);
   if (!semana) return null;
   if (semana.estado !== 'publicado' && !escalaMostrarRascunhosEquipa(semana) && !isMasterUser()) return null;
   const diaKey = escalaDiaKeyDeData(agora);
@@ -27328,6 +27328,28 @@ function escalaSegundaFeiraDaSemanaDeISO(dataISO) {
   d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
   return dateToISO(d);
 }
+// CRIADO 2026-09-02 (bug real de dados encontrado, Hugo/Carina: 2 linhas
+// em escala_semanas com a mesma semana_inicio — uma publicada e atual,
+// outra um rascunho órfão nunca terminado, esquecido na base de dados
+// desde muito antes; um .find(s => s.semanaInicio === X) simples apanhava
+// qualquer uma das duas consoante a ordem de chegada, sem preferência
+// nenhuma — "Gerador"/"Escala da Equipa" calhavam na certa, "A Minha
+// Semana"/"Validação de Horários" calhavam na órfã incompleta, sem
+// nenhum erro na consola a denunciar a causa). Esta função substitui
+// TODOS os .find() diretos a escala_semanas por uma escolha
+// determinística: havendo mais que uma linha para a mesma semana,
+// prefere sempre a publicada; sem nenhuma publicada, a mais
+// recentemente editada. O SQL para apagar a linha órfã é a correção
+// definitiva de cada caso concreto — isto é só uma rede de segurança
+// para nunca mais um caso destes (duplicado esquecido, futuro erro de
+// sincronização, etc.) conseguir confundir a app outra vez.
+function escalaSemanaPorInicio(semanaInicio) {
+  const candidatas = (STATE.escalaSemanas || []).filter(s => s.semanaInicio === semanaInicio);
+  if (candidatas.length <= 1) return candidatas[0] || null;
+  const publicada = candidatas.find(s => s.estado === 'publicado');
+  if (publicada) return publicada;
+  return candidatas.slice().sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0];
+}
 // Rótulo bem visível com o intervalo completo da semana (Segunda a
 // Domingo) a partir da Segunda-feira ISO — ex: "Semana de 3 a 9 de Agosto
 // de 2026". Lida com viradas de mês ("Semana de 28 de Julho a 3 de Agosto
@@ -28402,7 +28424,7 @@ function escalaDiaKeyDeData(data) { return ESCALA_DIAS[(data.getDay() + 6) % 7].
 function escalaTarefasAtivasAgora() {
   const agora = new Date();
   const segundaISO = escalaSegundaFeiraDaSemanaDeISO(dateToISO(agora));
-  const semana = (STATE.escalaSemanas || []).find(s => s.semanaInicio === segundaISO);
+  const semana = escalaSemanaPorInicio(segundaISO);
   if (!semana) return [];
   if (semana.estado !== 'publicado' && !escalaMostrarRascunhosEquipa(semana) && !isMasterUser()) return [];
   const diaKey = escalaDiaKeyDeData(agora);
@@ -28473,7 +28495,7 @@ function escalaMinhasTarefasHoje() {
   const hojeISO = dateToISO(agora);
   if (escalaAusenciaDoDia(activeUser.id, hojeISO)) return [];
   const segundaISO = escalaSegundaFeiraDaSemanaDeISO(hojeISO);
-  const semana = (STATE.escalaSemanas || []).find(s => s.semanaInicio === segundaISO);
+  const semana = escalaSemanaPorInicio(segundaISO);
   if (!semana) return [];
   if (semana.estado !== 'publicado' && !escalaMostrarRascunhosEquipa(semana) && !isMasterUser()) return [];
   const diaKey = escalaDiaKeyDeData(agora);
@@ -28525,7 +28547,7 @@ function escalaTarefasHojeEquipa() {
   const agora = new Date();
   const hojeISO = dateToISO(agora);
   const segundaISO = escalaSegundaFeiraDaSemanaDeISO(hojeISO);
-  const semana = (STATE.escalaSemanas || []).find(s => s.semanaInicio === segundaISO);
+  const semana = escalaSemanaPorInicio(segundaISO);
   if (!semana) return [];
   if (semana.estado !== 'publicado' && !escalaMostrarRascunhosEquipa(semana) && !isMasterUser()) return [];
   const diaKey = escalaDiaKeyDeData(agora);
@@ -29106,7 +29128,7 @@ function escalaMensagemErroPedidoTarefa(motivo) {
 // pessoa mudou ENTRE o pedido ser feito e ser validado, já que o próprio
 // formulário já valida tudo isto em tempo real antes de aceitar o pedido.
 function escalaAplicarTarefaPedidoNoHorario(nota) {
-  const semana = (STATE.escalaSemanas || []).find(s => s.semanaInicio === nota.semanaInicio);
+  const semana = escalaSemanaPorInicio(nota.semanaInicio);
   if (!semana) return { ok: false, motivo: 'a semana ainda não foi gerada' };
   // Só semanas REALMENTE já passadas são imutáveis aqui — uma semana já
   // PUBLICADA mas ainda atual/futura continua a poder receber uma tarefa
@@ -29144,7 +29166,7 @@ function escalaAplicarTarefaPedidoNoHorario(nota) {
 // existir por lá (ex: alguém já a removeu à mão, ou o turno foi apagado),
 // não é erro nenhum — só não há nada para desfazer.
 function escalaRemoverTarefaPedidoDoHorario(nota) {
-  const semana = (STATE.escalaSemanas || []).find(s => s.semanaInicio === nota.semanaInicio);
+  const semana = escalaSemanaPorInicio(nota.semanaInicio);
   if (!semana) return { ok: false, motivo: 'a semana já não existe' };
   const diaInfo = ESCALA_DIAS.find(d => escalaDataDoDia(semana.semanaInicio, d.key) === nota.dataPedido);
   if (!diaInfo) return { ok: false, motivo: 'a data já não pertence a esta semana' };
@@ -30500,7 +30522,7 @@ async function escalaGerarOuAbrirSemana(semanaInicioISO, variante) {
   // duplicada em vez de só o mitigar. Semanas passadas/publicadas nunca
   // são regeradas nem alteradas por este caminho — ver
   // escalaSemanaEstaCongelada().
-  const existente = (STATE.escalaSemanas || []).find(s => s.semanaInicio === semanaInicioISO);
+  const existente = escalaSemanaPorInicio(semanaInicioISO);
   if (existente) return { semana: existente, criada: false, vagasLibertadas: [], vagasComCobertura: [] };
   const varianteFinal = ESCALA_VARIANTES.some(v => v.key === variante) ? variante : 'com_mariana';
   const { dados, vagasLibertadas, vagasComCobertura } = escalaConstruirDadosSemana(semanaInicioISO, varianteFinal);
@@ -30540,7 +30562,7 @@ async function escalaGerarOuAbrirSemana(semanaInicioISO, variante) {
   const atualizadas = await dbFetchAll('escalaSemanas');
   if (Array.isArray(atualizadas)) {
     STATE.escalaSemanas = sanitizarSupabase(atualizadas);
-    const encontradaAgora = STATE.escalaSemanas.find(s => s.semanaInicio === semanaInicioISO);
+    const encontradaAgora = escalaSemanaPorInicio(semanaInicioISO);
     if (encontradaAgora) return { semana: encontradaAgora, criada: false, vagasLibertadas: [], vagasComCobertura: [] };
   }
   return { semana: null, criada: false, vagasLibertadas: [], vagasComCobertura: [] };
@@ -31841,7 +31863,7 @@ function buildHorariosPage(container, goTo) {
       valorNum = Math.round(valorNum * 100) / 100;
     }
     const segundaISO = escalaSegundaFeiraDaSemanaDeISO(dataISO);
-    const semana = (STATE.escalaSemanas || []).find(s => s.semanaInicio === segundaISO);
+    const semana = escalaSemanaPorInicio(segundaISO);
     if (!semana) { correcaoBancoHeError = 'Não foi encontrada a semana desta data.'; rerender(); return; }
     const diaKey = ESCALA_DIAS[(new Date(dataISO + 'T12:00:00').getDay() + 6) % 7].key;
     // BUG CORRIGIDO 2026-09-02 (mesma causa raiz de buildVistaPessoalMensal
@@ -32140,7 +32162,7 @@ function buildHorariosPage(container, goTo) {
   // O registo escala_semanas correspondente à semana selecionada, ou null
   // se essa semana ainda não tiver sido gerada.
   function semanaSelecionada() {
-    return (STATE.escalaSemanas || []).find(s => s.semanaInicio === dataSemanaSelecionada()) || null;
+    return escalaSemanaPorInicio(dataSemanaSelecionada()) || null;
   }
   function irSemanaAnterior() {
     const d = new Date(dataSemanaSelecionada() + 'T12:00:00');
@@ -34832,7 +34854,7 @@ function buildHorariosPage(container, goTo) {
       const dObj = new Date(dataISO + 'T12:00:00');
       const diaKey = ESCALA_DIAS[(dObj.getDay() + 6) % 7].key;
       const segundaISO = escalaSegundaFeiraDaSemanaDeISO(dataISO);
-      const semanaDoDia = (STATE.escalaSemanas || []).find(s => s.semanaInicio === segundaISO);
+      const semanaDoDia = escalaSemanaPorInicio(segundaISO);
       // Mesma regra de visibilidade da Vista Semana: rascunho não
       // publicado nem autorizado para pré-visualização (escalaMostrarRascunhosEquipa)
       // não conta nem aparece — só "Por confirmar". Master/Administrador
