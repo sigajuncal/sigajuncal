@@ -34723,59 +34723,42 @@ function buildHorariosPage(container, goTo) {
   function buildVistaPessoal(semana) {
     if (!activeUser) return EmptyState('Inicie sessão para ver o seu horário pessoal.');
     if (!semana) return EmptyState('Ainda não existe nenhum horário gerado para esta semana.');
-    // BUG CORRIGIDO 2026-09-02 (mesma causa raiz de buildVistaPessoalMensal
-    // acima, ver comentário completo lá — resumo: linha.colaboradorId só é
-    // fiável para A/F/P; no Grupo B é só o "1º dia normal trabalhado" como
-    // legenda, escondendo por completo um código onde a pessoa só aparece
-    // em dias que não são esse 1º dia). Aqui o efeito era mais grave —
-    // "Não está atribuído a nenhuma posição nesta semana" mesmo estando
-    // corretamente atribuída em vários dias — por isso a lista de códigos
-    // passa a incluir também qualquer código onde a pessoa apareça em
-    // QUALQUER dia (dia.colaboradorId), não só como legenda do topo.
-    const codigosMeus = Object.keys(semana.dados || {}).filter(cod => {
-      const linhaCod = semana.dados[cod];
-      if (linhaCod.colaboradorId === activeUser.id) return true;
-      return ESCALA_DIAS.some(d => linhaCod.dias && linhaCod.dias[d.key] && linhaCod.dias[d.key].colaboradorId === activeUser.id);
+    // BUG CORRIGIDO 2026-09-03 (Carina, fotografada no próprio posto de
+    // trabalho por Hugo — "vista da Carina, acredito que Adriano seja
+    // igual"): a correção anterior (ver escalaCodigoDaPessoaNoDia) já
+    // mostrava sempre o horário CERTO em cada dia, mas ainda construía
+    // "codigosMeus.forEach(codigo => ...)" — 1 cartão inteiro por
+    // código. No Grupo B (rotação diária), isso passou a gerar 2
+    // cartões "A Minha Semana" (B1 e B2) EMPILHADOS, cada um mostrando
+    // Folga nos dias que pertencem ao outro código — tecnicamente
+    // correto dia a dia, mas visualmente partido ao meio, sem nenhum
+    // sentido para quem só quer ver a SUA semana. Reescrito para
+    // resolver o código certo DIA A DIA (não por código inteiro) e
+    // construir um único cartão unificado, com um pequeno emblema de
+    // posição (B1/B2/A4/...) em cada linha — nunca mais se divide,
+    // mesmo quando a pessoa muda de código a meio da semana. Sem efeito
+    // visível no Grupo A/F/P (o código resolvido é sempre o mesmo em
+    // todos os 7 dias, exatamente como um único cartão de sempre).
+    const diasResolvidos = {};
+    const codigoPorDia = {};
+    let temAlgumaPosicaoNaSemana = false;
+    ESCALA_DIAS.forEach(d => {
+      const dataDoDiaResolucao = escalaDataDoDia(semana.semanaInicio, d.key);
+      const codigoDoDia = escalaCodigoDaPessoaNoDia(semana.dados, d.key, activeUser.id, dataDoDiaResolucao);
+      codigoPorDia[d.key] = codigoDoDia;
+      if (codigoDoDia) { temAlgumaPosicaoNaSemana = true; diasResolvidos[d.key] = semana.dados[codigoDoDia].dias[d.key] || { tipo: 'folga' }; }
+      else diasResolvidos[d.key] = { tipo: 'folga' };
     });
-    if (!codigosMeus.length) return EmptyState('Não está atribuído a nenhuma posição nesta semana.');
-    // display:flex + gap (não margens fixas por bloco) — pedido explícito
-    // 2026-08-22: "eliminar o espaço entre Notas Pessoais e A Minha
-    // Semana, deve ajustar dinamicamente". Antes, o cartão de "A Minha
-    // Semana"/painel HE tinha margin-bottom próprio E "Notas Pessoais"
-    // tinha margin-top próprio — os dois somavam-se (double margin),
-    // dando um vazio maior do que o previsto sempre que a coluna de "A
-    // Minha Semana" era a mais alta do grid de 2 colunas (ver
-    // .escala-semana-he-grid). Com gap no próprio `wrap`, o espaçamento
-    // entre blocos passa a ser sempre exatamente 1 unidade, calculado
-    // pelo browser a cada redesenho — nunca depende de qual bloco é mais
-    // alto nem duplica margens.
+    if (!temAlgumaPosicaoNaSemana) return EmptyState('Não está atribuído a nenhuma posição nesta semana.');
     const wrap = h('div', { style: 'display:flex;flex-direction:column;gap:16px;' });
     const hojeISO = dateToISO(new Date());
-    // "A Minha Semana" passou a viver num sub-wrap próprio (2026-08-17,
-    // pedido explícito) para poder ser reposicionado face ao painel
-    // "Horas Extra Disponíveis" consoante o estatuto do colaborador —
-    // ver decisão de layout mais abaixo (ehPrestador). Também em
-    // flex+gap (2026-08-22) — cobre o caso de mais do que 1 posição
-    // (vários cartões "A Minha Semana" empilhados) sem margens fixas.
     const semanaCardsWrap = h('div', { style: 'display:flex;flex-direction:column;gap:16px;' });
-    codigosMeus.forEach(codigo => {
-      const linha = semana.dados[codigo];
+    {
+      const linha = { dias: diasResolvidos };
       const rows = ESCALA_DIAS.map(d => {
-        // BUG CORRIGIDO 2026-09-03 (2ª vez no mesmo dia — Hugo: "não
-        // aparece a rodar com Adriano, faz sempre o mesmo horário
-        // semanal"): a guarda anterior só reagia a este dia estar
-        // EXPLICITAMENTE marcado a outra pessoa (só acontece em dias de
-        // ausência) — numa semana normal, sem ninguém ausente, nunca
-        // disparava, e todos os 7 dias deste cartão mostravam sempre o
-        // horário do MESMO código, mesmo nos dias em que a pessoa está
-        // no outro código do Grupo B. Substituído por
-        // escalaCodigoDaPessoaNoDia (ver comentário completo lá) — sabe
-        // sempre o código certo do dia, ausência ou não, porque consulta
-        // a rotação ao vivo em vez de depender só do que ficou gravado.
+        const codigo = codigoPorDia[d.key];
         const dataDoDia = escalaDataDoDia(semana.semanaInicio, d.key);
-        const codigoResolvidoHoje = escalaCodigoDaPessoaNoDia(semana.dados, d.key, activeUser.id, dataDoDia);
-        let dia = linha.dias[d.key] || { tipo: 'folga' };
-        if (codigoResolvidoHoje !== null && codigoResolvidoHoje !== codigo) dia = { tipo: 'folga' };
+        const dia = diasResolvidos[d.key];
         const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, activeUser.id);
         // Ausência (Férias/Baixa/Falta/...) registada DEPOIS de o turno já
         // estar na grelha — mesma verificação usada em buildGrelhaEquipa/
@@ -34846,23 +34829,31 @@ function buildHorariosPage(container, goTo) {
         // — o badge "Hoje" ao lado do dia foi removido por ser redundante
         // (pedido explícito 2026-08-19).
         const ehHoje = dataDoDia === hojeISO;
+        // Emblema de posição por LINHA (novo 2026-09-03, substitui o
+        // emblema único do cabeçalho do cartão — ver comentário acima):
+        // com o cartão agora unificado, o código pode variar de dia para
+        // dia (Grupo B); cada linha mostra a sua própria posição, para a
+        // pessoa continuar a saber onde está escalada nesse dia
+        // específico. Omitido nos dias sem nenhuma posição (folga fora
+        // de qualquer código).
+        const diaLabelComBadge = h('span', { class: 'escala-pessoal-dia', style: 'display:flex;align-items:center;gap:6px;' }, [
+          escalaDiaLabelCompacto(d.key, d.label, semana.semanaInicio),
+          codigo ? escalaBadgePosicao(codigo, escalaGrupoDoCodigo(codigo)) : null,
+        ].filter(Boolean));
         return h('div', { class: 'escala-pessoal-linha' + (tipoEfetivo !== 'normal' ? ` escala-cell-${tipoEfetivo}` : '') + (ausencia ? ' escala-cell-ausencia-sobreposta' : '') + (ehHoje ? ' escala-pessoal-linha-hoje' : '') }, [
-          h('span', { class: 'escala-pessoal-dia' }, escalaDiaLabelCompacto(d.key, d.label, semana.semanaInicio)),
+          diaLabelComBadge,
           horasEl,
           tarefasEl,
         ]);
       });
       semanaCardsWrap.appendChild(h('div', { class: 'card card-pad', style: 'max-width:780px;' }, [
         h('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px;' }, [
-          h('div', { style: 'display:flex;align-items:center;gap:8px;' }, [
-            escalaBadgePosicao(codigo, escalaGrupoDoCodigo(codigo)),
-            h('h3', { class: 'dash-card-title', style: 'margin:0;' }, 'A Minha Semana'),
-          ]),
+          h('h3', { class: 'dash-card-title', style: 'margin:0;' }, 'A Minha Semana'),
           h('span', { class: 'cell-strong' }, `Total: ${escalaFormatarHoras(escalaTotalHorasLinha(linha, semana.id))}`),
         ]),
         ...rows,
       ]));
-    });
+    }
     // Posicionamento de "Horas Extra Disponíveis" face a "A Minha Semana"
     // (2026-08-17, pedido explícito): o próprio painel traz um
     // margin-top:16px pensado para viver sempre por BAIXO de algo — aqui
