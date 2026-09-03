@@ -14382,6 +14382,18 @@ function abrirModalGaveta(abrirThreadInicial) {
   let searchQuery = '';
   let streamFiltro = 'tudo'; // 'tudo' | 'pendentes' | 'concluidas'
   let threadComId = null; // id do utilizador, 'EQUIPA' (broadcast) ou 'MULTI' (seleção múltipla)
+  // CRIADO 2026-09-03 (Hugo: "novas notificações continuam a não abrir no
+  // fundo da conversa, obriga a pessoa a fazer scroll"): scrollHistoricoParaFim()
+  // só disparava quando a PRÓPRIA pessoa abria a conversa ou enviava uma
+  // mensagem — nunca quando chegava algo novo por Realtime enquanto a
+  // conversa já estava aberta (ex: outro colega a responder, uma
+  // notificação automática de publicação). Esta variável guarda o id da
+  // última mensagem já vista nessa conversa; buildThreadView() compara a
+  // cada redesenho e só desce ao fundo quando encontra mesmo uma
+  // mensagem nova — nunca força o scroll num redesenho qualquer sem
+  // conteúdo novo (não incomoda quem tenha subido de propósito a ler
+  // histórico antigo).
+  let ultimaMensagemVistaIdNaThread = null;
   let multiSelecionados = new Map(); // id (string) -> nome — só usado com threadComId==='MULTI'
   let tipoEnvio = 'mensagem'; // 'mensagem' | 'tarefa'
   let composerTexto = '';
@@ -14560,7 +14572,7 @@ function abrirModalGaveta(abrirThreadInicial) {
     }, { danger: true, confirmLabel: 'Eliminar' });
   }
   function abrirThread(outroId) {
-    threadComId = outroId; tipoEnvio = 'mensagem'; composerTexto = lerRascunhoLocal(`gaveta_composer_${activeUser.id}_${outroId}`) || ''; composerError = ''; multiSelecionados = new Map(); searchQuery = '';
+    threadComId = outroId; tipoEnvio = 'mensagem'; composerTexto = lerRascunhoLocal(`gaveta_composer_${activeUser.id}_${outroId}`) || ''; composerError = ''; multiSelecionados = new Map(); searchQuery = ''; ultimaMensagemVistaIdNaThread = null;
     render();
     scrollHistoricoParaFim();
     if (outroId !== 'EQUIPA' && outroId !== 'MULTI') marcarMensagensLidas(outroId);
@@ -14658,7 +14670,7 @@ function abrirModalGaveta(abrirThreadInicial) {
       h('div', { class: 'gaveta-contacto-avatar' + (ehEquipa ? ' tone-equipa' : '') }, ehEquipa ? '📢' : iniciais(nome)),
       h('div', { class: 'gaveta-contacto-info' }, [
         h('p', { class: 'gaveta-contacto-nome' }, nome),
-        preview ? h('p', { class: 'gaveta-contacto-preview' + (preview.tipo === 'tarefa' ? ' tone-tarefa' : '') }, [
+        preview ? h('p', { class: 'gaveta-contacto-preview' + (preview.pendente ? ' tone-tarefa' : '') }, [
           (preview.tipo === 'tarefa' ? '📋 ' : '') + preview.texto, tagDirecao,
         ]) : null,
       ]),
@@ -14826,8 +14838,17 @@ function abrirModalGaveta(abrirThreadInicial) {
             const souEuRemetente = String(c.ultima.remetenteId) === String(activeUser.id);
             const prefixo = souEuRemetente ? 'Tu: ' : '';
             const ultimaEhTarefaPendenteParaMim = !souEuRemetente && (c.ultima.tipo || 'mensagem') === 'tarefa' && !c.ultima.tratado;
+            // BUG CORRIGIDO 2026-09-03 (Hugo: "letras laranjas... dá a
+            // sensação que há algo por ler, quando não é verdade"): a cor
+            // de aviso (tone-tarefa) estava ligada só ao TIPO da última
+            // mensagem ser 'tarefa', mesmo já tratada/validada há muito —
+            // uma tarefa concluída há semanas continuava laranja para
+            // sempre. Passa a exigir também !tratado (em qualquer
+            // direção — enviada por mim a aguardar confirmação, ou
+            // recebida por mim a aguardar a minha ação).
+            const ultimaPendente = !c.ultima.tratado && (c.ultima.tipo || 'mensagem') === 'tarefa';
             itens.push(buildContactoItem(c.outroId, nomeUtilizador(c.outroId),
-              { texto: prefixo + (c.ultima.mensagem || ''), tipo: c.ultima.tipo, pendentes: c.pendentes, souEuRemetente }, false,
+              { texto: prefixo + (c.ultima.mensagem || ''), tipo: c.ultima.tipo, pendente: ultimaPendente, pendentes: c.pendentes, souEuRemetente }, false,
               ultimaEhTarefaPendenteParaMim ? c.ultima : null));
           });
       }
@@ -14840,7 +14861,13 @@ function abrirModalGaveta(abrirThreadInicial) {
     col.appendChild(searchInput);
     col.appendChild(filtrosEl);
     col.appendChild(filtroSubtexto);
-    col.appendChild(selecionarTodosBtn);
+    // "Selecionar Todos" ESCONDIDO em Pendentes/Concluídas 2026-09-03
+    // (Hugo: "faz sentido ali? eu acho que não, só polui visualmente"):
+    // este botão serve só para escolher vários colegas e começar uma
+    // mensagem nova — nada a ver com o que "Pendentes"/"Concluídas"
+    // mostram (tarefas já existentes). Só continua visível em "Tudo",
+    // onde pesquisar um colega para começar de novo já está disponível.
+    if (streamFiltro === 'tudo') col.appendChild(selecionarTodosBtn);
     col.appendChild(pillsEl);
     col.appendChild(resultsEl);
     renderResults();
@@ -14870,6 +14897,18 @@ function abrirModalGaveta(abrirThreadInicial) {
         `Esta mensagem é enviada individualmente a cada um dos colegas selecionados: ${[...multiSelecionados.values()].join(', ')} — nunca cria um chat de grupo; cada um recebe e trata a sua própria cópia, na sua conversa privada.`);
     } else {
       const mensagens = recadosDaThread(threadComId);
+      const ultimaAgora = mensagens.length ? mensagens[mensagens.length - 1].id : null;
+      if (ultimaAgora !== null && ultimaAgora !== ultimaMensagemVistaIdNaThread) {
+        const eraPrimeiraVez = ultimaMensagemVistaIdNaThread === null;
+        ultimaMensagemVistaIdNaThread = ultimaAgora;
+        // Sem preocupação de duplicar com abrirThread()/enviarComposer()
+        // (que também chamam scrollHistoricoParaFim logo a seguir a
+        // definir threadComId) — nessa 1ª vez esta variável ainda está a
+        // null, por isso não dispara aqui duas vezes seguidas; só entra
+        // em ação a partir da mensagem seguinte, exatamente quando chega
+        // algo novo com a conversa já aberta.
+        if (!eraPrimeiraVez) setTimeout(scrollHistoricoParaFim, 0);
+      }
       const itens = mensagens.map(r => {
         const souEuRemetente = String(r.remetenteId) === String(activeUser.id);
         const ehTarefa = (r.tipo || 'mensagem') === 'tarefa';
@@ -27350,6 +27389,56 @@ function escalaSemanaPorInicio(semanaInicio) {
   if (publicada) return publicada;
   return candidatas.slice().sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0];
 }
+// CORRIGIDO A FUNDO 2026-09-03, 2ª vez no mesmo dia (Hugo: "não aparece a
+// rodar com Adriano, faz sempre o mesmo horário semanal" — a Carina
+// mostrava o MESMO código a semana toda, em vez de alternar B1/B2 dia a
+// dia): a versão acima (candidatosTopo.length===1 → devolve logo, sem
+// verificar mais nada) só corrigia o caso ambíguo (colega ausente quase a
+// semana toda, 2 legendas iguais); numa semana NORMAL (ninguém ausente),
+// cada código tem exatamente 1 legenda (quem lá estava no dia 1), e como
+// `dia.colaboradorId` só é gravado em dias de ausência, NÃO HÁ NENHUM
+// SINAL nos dados guardados para saber que nos outros dias dessa semana a
+// pessoa está no código diferente — ficava sempre presa na legenda do
+// dia 1. A única fonte que sabe mesmo quem está em B1/B2 em qualquer dia,
+// independentemente do que ficou gravado, é o próprio cálculo da rotação
+// (escalaAtribuirGrupoBParaDia) — 100% determinístico a partir da Lista
+// Única de Rotação + data, nunca depende de nada em `dados`. Passa a ser
+// a fonte PRINCIPAL para o Grupo B; só cai para a legenda/eliminação de
+// baixo se essa vaga, nesse dia, estiver EXPLICITAMENTE marcada a outra
+// pessoa (uma edição manual a sobrepor-se à rotação nesse dia em
+// concreto) ou se a pessoa não pertencer de todo à rotação do Grupo B
+// (Grupo A/F/P, onde a legenda do topo já é sempre fiável).
+function escalaCodigoDaPessoaNoDia(dados, diaKey, colaboradorId, dataISO) {
+  // Comparações sempre via String() — alguns chamadores passam o id como
+  // veio de um <select> (string), outros o id numérico direto de
+  // STATE.usuarios; era assim também antes desta correção
+  // (String(idDoDia) === String(utilizadorId)), mantido de propósito.
+  const alvo = String(colaboradorId);
+  const codigos = Object.keys(dados || {});
+  if (dataISO) {
+    const { atribuicoes } = escalaAtribuirGrupoBParaDia(dataISO);
+    const daRotacao = atribuicoes.find(a => String(a.utilizadorId) === alvo && codigos.includes(a.codigo));
+    if (daRotacao) {
+      const diaDoCodigo = dados[daRotacao.codigo].dias && dados[daRotacao.codigo].dias[diaKey];
+      if (!diaDoCodigo || diaDoCodigo.colaboradorId === undefined || String(diaDoCodigo.colaboradorId) === alvo) return daRotacao.codigo;
+    }
+  }
+  const candidatosTopo = codigos.filter(cod => String(dados[cod].colaboradorId) === alvo);
+  if (candidatosTopo.length === 1) {
+    const diaDoCodigoTopo = dados[candidatosTopo[0]].dias && dados[candidatosTopo[0]].dias[diaKey];
+    if (!diaDoCodigoTopo || diaDoCodigoTopo.colaboradorId === undefined || String(diaDoCodigoTopo.colaboradorId) === alvo) return candidatosTopo[0];
+  } else if (candidatosTopo.length > 1) {
+    const semConflito = candidatosTopo.filter(cod => {
+      const d = dados[cod].dias && dados[cod].dias[diaKey];
+      return !d || d.colaboradorId === undefined || String(d.colaboradorId) === alvo;
+    });
+    if (semConflito.length) return semConflito[0];
+  }
+  return codigos.find(cod => {
+    const d = dados[cod].dias && dados[cod].dias[diaKey];
+    return d && String(d.colaboradorId) === alvo;
+  }) || candidatosTopo[0] || null;
+}
 // Rótulo bem visível com o intervalo completo da semana (Segunda a
 // Domingo) a partir da Segunda-feira ISO — ex: "Semana de 3 a 9 de Agosto
 // de 2026". Lida com viradas de mês ("Semana de 28 de Julho a 3 de Agosto
@@ -27589,6 +27678,29 @@ function escalaTipoEfetivoDia(tipo, colaboradorId) {
 function escalaBancoHorasEfetivo(dia) {
   if (!dia) return 0;
   return (dia.bancoHorasCorrigido !== undefined && dia.bancoHorasCorrigido !== null) ? dia.bancoHorasCorrigido : (dia.bancoHorasDesconto || 0);
+}
+// CRIADO 2026-09-03 (pedido explícito de Hugo, junto com a remoção do
+// mecanismo automático de Banco de Horas por feriado — ver
+// escalaCalcularEstatisticasPeriodo): a coluna "Banco de Horas" da
+// Validação de Horários passou a interpretar o valor corrigido por
+// SINAL — positivo escrito por Paulo/Hugo = Ganho, negativo = Usado —
+// decisão humana célula a célula, já que o cálculo automático deixou de
+// existir. Um dia "Banco de Horas (Dia Completo)" (dia.tipo==='banco')
+// fica à parte, sempre Usado via escalaBancoHorasEfetivo (inalterado) —
+// não faz sentido "ganhar" banco num dia que é precisamente sobre GASTAR
+// banco já acumulado. Sem nenhuma correção manual gravada, mantém o
+// comportamento de sempre: bancoHorasDesconto (legado, sempre Usado) +
+// heHorasBanco (Ganho manual via "Contar como Banco de Horas" no bloco
+// de Hora Extra no Gerador — mecanismo já existente, inalterado),
+// nunca fundidos num só número.
+function escalaBancoHorasGanhoUsadoDoDia(dia) {
+  if (!dia) return { ganho: 0, usado: 0 };
+  if (dia.tipo === 'banco') return { ganho: 0, usado: escalaBancoHorasEfetivo(dia) };
+  if (dia.bancoHorasCorrigido !== undefined && dia.bancoHorasCorrigido !== null) {
+    const v = Number(dia.bancoHorasCorrigido) || 0;
+    return v >= 0 ? { ganho: v, usado: 0 } : { ganho: 0, usado: -v };
+  }
+  return { ganho: dia.heHorasBanco || 0, usado: dia.bancoHorasDesconto || 0 };
 }
 function escalaHeHorasEfetivo(dia) {
   if (!dia) return 0;
@@ -28501,12 +28613,18 @@ function escalaMinhasTarefasHoje() {
   const diaKey = escalaDiaKeyDeData(agora);
   const agoraMin = escalaMinutosAbsolutos(`${pad2(agora.getHours())}:${pad2(agora.getMinutes())}`, false);
   const minhas = [];
+  // BUG CORRIGIDO 2026-09-03 (mesma causa raiz de buildVistaPessoal/
+  // buildVistaPessoalMensal — ver escalaCodigoDaPessoaNoDia): o
+  // `dia.colaboradorId || linha.colaboradorId` caía sempre na legenda do
+  // topo quando o dia não tinha marcação explícita (dias normais nunca
+  // têm) — numa semana normal do Grupo B, atribuía a tarefa ao código
+  // errado sempre que a pessoa estivesse hoje no OUTRO código.
+  const meuCodigoHoje = escalaCodigoDaPessoaNoDia(semana.dados, diaKey, activeUser.id, hojeISO);
   Object.keys(semana.dados || {}).forEach(codigo => {
+    if (codigo !== meuCodigoHoje) return;
     const linha = semana.dados[codigo];
     const dia = linha && linha.dias ? linha.dias[diaKey] : null;
     if (!dia || dia.tipo !== 'normal') return;
-    const colaboradorId = dia.colaboradorId || (linha && linha.colaboradorId);
-    if (!colaboradorId || String(colaboradorId) !== String(activeUser.id)) return;
     escalaTarefasDoDia(dia).forEach(t => {
       if (!t.inicio || !t.fim) return;
       if (escalaMinutosAbsolutos(t.fim, true) <= agoraMin) return; // já terminou — não mostrar
@@ -28557,12 +28675,20 @@ function escalaTarefasHojeEquipa() {
   // "Encomenda da Manhã"/"da Tarde" caírem na mesma família.
   const porFamilia = {};
   ESCALA_FAMILIAS_TAREFA_HOME.forEach(f => { porFamilia[f.chave] = []; });
+  // BUG CORRIGIDO 2026-09-03 (mesma causa raiz de escalaCodigoDaPessoaNoDia
+  // — ver comentário completo lá): a legenda do topo de um código do
+  // Grupo B só é fiável no dia em que essa pessoa lá esteve — nos outros
+  // dias da semana normal, mostrava sempre o mesmo nome errado para quem
+  // faz a tarefa. A rotação ao vivo é a única fonte sempre certa.
+  const mapaRotacaoBHoje = {};
+  escalaAtribuirGrupoBParaDia(hojeISO).atribuicoes.forEach(a => { mapaRotacaoBHoje[a.codigo] = a; });
   Object.keys(semana.dados || {}).forEach(codigo => {
     const linha = semana.dados[codigo];
     const dia = linha && linha.dias ? linha.dias[diaKey] : null;
     if (!dia || dia.tipo !== 'normal') return;
-    const nomeColaborador = dia.colaboradorNome || (linha && linha.colaboradorNome) || '';
-    const colaboradorId = dia.colaboradorId || (linha && linha.colaboradorId) || null;
+    const daRotacaoB = mapaRotacaoBHoje[codigo];
+    const nomeColaborador = dia.colaboradorNome || (daRotacaoB && daRotacaoB.colaboradorNome) || (linha && linha.colaboradorNome) || '';
+    const colaboradorId = dia.colaboradorId || (daRotacaoB && daRotacaoB.utilizadorId) || (linha && linha.colaboradorId) || null;
     escalaTarefasDoDia(dia).forEach(t => {
       if (!t.inicio || !t.fim) return;
       const familia = ESCALA_FAMILIAS_TAREFA_HOME.find(f => f.tipos.includes(t.tipo));
@@ -28718,13 +28844,16 @@ function descarregarICSSemanaPessoal(semana) {
     const linha = semana.dados[codigo];
     ESCALA_DIAS.forEach(d => {
       let dia = linha.dias[d.key] || { tipo: 'folga' };
-      // Dia deste código que na verdade pertence ao colega de rotação do
-      // Grupo B — nunca exportar o turno dele para o calendário desta
-      // pessoa. `dia.colaboradorId` só existe no Grupo B.
-      if (dia.colaboradorId !== undefined && dia.colaboradorId !== activeUser.id) dia = { tipo: 'folga' };
+      // BUG CORRIGIDO 2026-09-03 (mesma causa raiz de buildVistaPessoal —
+      // ver comentário completo lá): a guarda antiga só reagia a uma
+      // marcação explícita de ausência, que numa semana normal nunca
+      // existe — substituída por escalaCodigoDaPessoaNoDia, que sabe
+      // sempre o código certo do dia via a rotação ao vivo do Grupo B.
+      const dataDoDia = escalaDataDoDia(semana.semanaInicio, d.key);
+      const codigoResolvidoHoje = escalaCodigoDaPessoaNoDia(semana.dados, d.key, activeUser.id, dataDoDia);
+      if (codigoResolvidoHoje !== null && codigoResolvidoHoje !== codigo) dia = { tipo: 'folga' };
       const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, activeUser.id);
       if (tipoEfetivo !== 'normal' || !dia.entrada || !dia.saida) return;
-      const dataDoDia = escalaDataDoDia(semana.semanaInicio, d.key);
       if (escalaAusenciaDoDia(activeUser.id, dataDoDia)) return;
       let dataFimISO = dataDoDia;
       // "00:00" como saída = meia-noite do dia seguinte (mesma convenção
@@ -29013,16 +29142,22 @@ function escalaReivindicacoesDoColaboradorNoDia(semanaId, diaKey, colaboradorId)
 // em qualquer vaga da semana — para nunca deixar reivindicar horas que já
 // fazem parte do horário base dele (ex: Vanessa 08:00-18:00, não pode
 // reivindicar as 17:00, essa hora já é dela).
+// BUG CORRIGIDO 2026-09-03 (mesma causa raiz de escalaCodigoDaPessoaNoDia,
+// ver comentário completo lá): as 3 funções abaixo iteravam todos os
+// códigos e usavam `dia.colaboradorId || linha.colaboradorId` — em dias
+// normais (sem marcação explícita), isto caía sempre na legenda do topo,
+// que só é fiável no dia em que essa pessoa lá esteve. No Grupo B, numa
+// semana normal (ninguém ausente), isto encontrava sempre o código
+// errado — ex: "Atribuição Rápida de Tarefas" a atribuir Chefe de Turno
+// à posição errada da Carina sempre que ela estivesse hoje no código que
+// não é a sua legenda.
 function escalaHorarioProprioNoDia(semana, diaKey, utilizadorId) {
   if (!utilizadorId) return null;
-  for (const codigo of Object.keys(semana.dados || {})) {
-    const linha = semana.dados[codigo];
-    const dia = linha && linha.dias && linha.dias[diaKey];
-    if (!dia || dia.tipo !== 'normal' || !dia.entrada || !dia.saida) continue;
-    const idDoDia = dia.colaboradorId || linha.colaboradorId;
-    if (String(idDoDia) === String(utilizadorId)) return { entrada: dia.entrada, saida: dia.saida };
-  }
-  return null;
+  const dataISO = escalaDataDoDia(semana.semanaInicio, diaKey);
+  const codigo = escalaCodigoDaPessoaNoDia(semana.dados, diaKey, utilizadorId, dataISO);
+  const dia = codigo && semana.dados[codigo].dias && semana.dados[codigo].dias[diaKey];
+  if (!dia || dia.tipo !== 'normal' || !dia.entrada || !dia.saida) return null;
+  return { entrada: dia.entrada, saida: dia.saida };
 }
 // Vaga (posição) + célula do dia de um colaborador específico, numa
 // semana — usado pela Atribuição Rápida de Tarefas (ver
@@ -29040,16 +29175,11 @@ function escalaHorarioProprioNoDia(semana, diaKey, utilizadorId) {
 function escalaVagaDoColaboradorNoDia(semana, diaKey, utilizadorId) {
   if (!utilizadorId) return null;
   const dataISO = escalaDataDoDia(semana.semanaInicio, diaKey);
-  for (const codigo of Object.keys(semana.dados || {})) {
-    const linha = semana.dados[codigo];
-    const dia = linha && linha.dias && linha.dias[diaKey];
-    if (!dia || dia.tipo !== 'normal' || !dia.entrada || !dia.saida) continue;
-    const idDoDia = dia.colaboradorId || linha.colaboradorId;
-    if (String(idDoDia) !== String(utilizadorId)) continue;
-    if (dataISO && escalaAusenciaDoDia(utilizadorId, dataISO)) return null;
-    return { codigo, dia };
-  }
-  return null;
+  const codigo = escalaCodigoDaPessoaNoDia(semana.dados, diaKey, utilizadorId, dataISO);
+  const dia = codigo && semana.dados[codigo].dias && semana.dados[codigo].dias[diaKey];
+  if (!dia || dia.tipo !== 'normal' || !dia.entrada || !dia.saida) return null;
+  if (dataISO && escalaAusenciaDoDia(utilizadorId, dataISO)) return null;
+  return { codigo, dia };
 }
 // Variante de escalaVagaDoColaboradorNoDia SEM a exigência de
 // tipo==='normal'+entrada/saída — usada só para encontrar a célula de um
@@ -29059,15 +29189,11 @@ function escalaVagaDoColaboradorNoDia(semana, diaKey, utilizadorId) {
 // (tarefas/HE continuam a exigir um turno normal real).
 function escalaCelulaColaboradorNoDia(semana, diaKey, utilizadorId) {
   if (!utilizadorId) return null;
-  for (const codigo of Object.keys(semana.dados || {})) {
-    const linha = semana.dados[codigo];
-    const dia = linha && linha.dias && linha.dias[diaKey];
-    if (!dia) continue;
-    const idDoDia = dia.colaboradorId || linha.colaboradorId;
-    if (String(idDoDia) !== String(utilizadorId)) continue;
-    return { codigo, dia };
-  }
-  return null;
+  const dataISO = escalaDataDoDia(semana.semanaInicio, diaKey);
+  const codigo = escalaCodigoDaPessoaNoDia(semana.dados, diaKey, utilizadorId, dataISO);
+  const dia = codigo && semana.dados[codigo].dias && semana.dados[codigo].dias[diaKey];
+  if (!dia) return null;
+  return { codigo, dia };
 }
 // Validação partilhada de um pedido de "Atribuição de Tarefa" contra o
 // turno real da pessoa nesse dia — usada tanto no PRÓPRIO FORMULÁRIO (em
@@ -30840,6 +30966,23 @@ async function escalaSincronizarAusenciaComGerador(colaboradorId, colaboradorNom
     console.error('[Sincronização Férias] falha ao sincronizar dia do Gerador com o calendário:', formatarErroSeguro(e));
   }
 }
+// BUG CORRIGIDO 2026-09-03 (mesma causa raiz de escalaCodigoDaPessoaNoDia,
+// mas em sentido inverso — dado um código+dia, quem é que lá está de
+// facto): usado pelo editor de célula para saber a quem verificar
+// ausência formal (Override de Disponibilidade) — `linha.colaboradorId`
+// sozinho só é fiável no dia da legenda; no Grupo B, num dia normal
+// qualquer, a rotação ao vivo é que sabe mesmo quem lá está.
+function escalaOcupanteRealDoCodigo(dados, codigo, diaKey, dataISO) {
+  const linha = dados && dados[codigo];
+  const dia = linha && linha.dias && linha.dias[diaKey];
+  if (dia && dia.colaboradorId !== undefined) return dia.colaboradorId;
+  if (dataISO) {
+    const { atribuicoes } = escalaAtribuirGrupoBParaDia(dataISO);
+    const doGrupoB = atribuicoes.find(a => a.codigo === codigo);
+    if (doGrupoB) return doGrupoB.utilizadorId;
+  }
+  return linha ? linha.colaboradorId : null;
+}
 function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   const overlay = h('div', { class: 'modal-overlay' });
   let saving = false;
@@ -30861,8 +31004,8 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   // marcação formal em escala_ferias nem nos saldos de Férias — o
   // registo de ausência continua intacto, só deixa de bloquear ESTA
   // célula da escala.
-  const colaboradorIdCelula = diaAtual.colaboradorId || linha.colaboradorId;
   const dataISOCelula = escalaDataDoDia(semana.semanaInicio, diaKey);
+  const colaboradorIdCelula = escalaOcupanteRealDoCodigo(semana.dados, codigoVaga, diaKey, dataISOCelula);
   const ausenciaCelula = escalaAusenciaDoDia(colaboradorIdCelula, dataISOCelula);
   const podeOverride = isMasterUser() && !!ausenciaCelula;
   let overrideAtivo = !!diaAtual.overrideDisponibilidade;
@@ -31856,8 +31999,14 @@ function buildHorariosPage(container, goTo) {
     let valorNum = null;
     if (valorLimpo !== '') {
       valorNum = parseFloat(valorLimpo.replace(',', '.'));
-      if (isNaN(valorNum) || valorNum < 0) {
-        correcaoBancoHeError = 'Indica um número de horas válido (ou deixa em branco para remover a correção).';
+      // Sinal ADICIONADO 2026-09-03 (pedido explícito de Hugo, junto com
+      // a remoção do cálculo automático de Banco de Horas por feriado):
+      // "banco" passa a aceitar negativos (Usado); "he" (Horas Extra)
+      // continua sempre ≥0, nunca faz sentido uma Hora Extra negativa.
+      if (isNaN(valorNum) || (campo !== 'banco' && valorNum < 0)) {
+        correcaoBancoHeError = campo === 'banco'
+          ? 'Indica um número de horas válido — positivo para Ganho, negativo para Usado (ou deixa em branco para remover a correção).'
+          : 'Indica um número de horas válido (ou deixa em branco para remover a correção).';
         rerender(); return;
       }
       valorNum = Math.round(valorNum * 100) / 100;
@@ -31866,21 +32015,9 @@ function buildHorariosPage(container, goTo) {
     const semana = escalaSemanaPorInicio(segundaISO);
     if (!semana) { correcaoBancoHeError = 'Não foi encontrada a semana desta data.'; rerender(); return; }
     const diaKey = ESCALA_DIAS[(new Date(dataISO + 'T12:00:00').getDay() + 6) % 7].key;
-    // BUG CORRIGIDO 2026-09-02 (mesma causa raiz de buildVistaPessoalMensal
-    // — ver comentário completo lá): sem este fallback, corrigir Banco de
-    // Horas/HE de uma pessoa do Grupo B num dia em que ela não é a
-    // "legenda" do código falhava sempre com "Não foi encontrado turno
-    // desta pessoa nesse dia", mesmo havendo turno real gravado nesse dia.
-    const codigos = Object.keys(semana.dados || {});
-    let codigo = codigos.find(cod => semana.dados[cod].colaboradorId === colaboradorId);
-    const diaDoCodigoTopo = codigo && semana.dados[codigo].dias && semana.dados[codigo].dias[diaKey];
-    if (!codigo || (diaDoCodigoTopo && diaDoCodigoTopo.colaboradorId !== undefined && diaDoCodigoTopo.colaboradorId !== colaboradorId)) {
-      const codigoPorDia = codigos.find(cod => {
-        const d = semana.dados[cod].dias && semana.dados[cod].dias[diaKey];
-        return d && d.colaboradorId === colaboradorId;
-      });
-      if (codigoPorDia) codigo = codigoPorDia;
-    }
+    // BUG CORRIGIDO 2026-09-02, corrigido a fundo 2026-09-03 — ver
+    // escalaCodigoDaPessoaNoDia() para o histórico completo.
+    const codigo = escalaCodigoDaPessoaNoDia(semana.dados, diaKey, colaboradorId, dataISO);
     if (!codigo || !semana.dados[codigo].dias[diaKey]) { correcaoBancoHeError = 'Não foi encontrado turno desta pessoa nesse dia.'; rerender(); return; }
     correcaoBancoHeSaving = true; rerender();
     const novoDados = JSON.parse(JSON.stringify(semana.dados));
@@ -34624,18 +34761,25 @@ function buildHorariosPage(container, goTo) {
     codigosMeus.forEach(codigo => {
       const linha = semana.dados[codigo];
       const rows = ESCALA_DIAS.map(d => {
+        // BUG CORRIGIDO 2026-09-03 (2ª vez no mesmo dia — Hugo: "não
+        // aparece a rodar com Adriano, faz sempre o mesmo horário
+        // semanal"): a guarda anterior só reagia a este dia estar
+        // EXPLICITAMENTE marcado a outra pessoa (só acontece em dias de
+        // ausência) — numa semana normal, sem ninguém ausente, nunca
+        // disparava, e todos os 7 dias deste cartão mostravam sempre o
+        // horário do MESMO código, mesmo nos dias em que a pessoa está
+        // no outro código do Grupo B. Substituído por
+        // escalaCodigoDaPessoaNoDia (ver comentário completo lá) — sabe
+        // sempre o código certo do dia, ausência ou não, porque consulta
+        // a rotação ao vivo em vez de depender só do que ficou gravado.
+        const dataDoDia = escalaDataDoDia(semana.semanaInicio, d.key);
+        const codigoResolvidoHoje = escalaCodigoDaPessoaNoDia(semana.dados, d.key, activeUser.id, dataDoDia);
         let dia = linha.dias[d.key] || { tipo: 'folga' };
-        // Ver comentário acima em codigosMeus: este código pode pertencer
-        // ao colega de rotação do Grupo B num dia em concreto — sem esta
-        // guarda, esse dia mostraria o horário do COLEGA como se fosse
-        // meu. `dia.colaboradorId` só existe no Grupo B (undefined nos
-        // outros grupos, guarda nunca dispara para eles).
-        if (dia.colaboradorId !== undefined && dia.colaboradorId !== activeUser.id) dia = { tipo: 'folga' };
+        if (codigoResolvidoHoje !== null && codigoResolvidoHoje !== codigo) dia = { tipo: 'folga' };
         const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, activeUser.id);
         // Ausência (Férias/Baixa/Falta/...) registada DEPOIS de o turno já
         // estar na grelha — mesma verificação usada em buildGrelhaEquipa/
         // buildVistaVertical (ver comentários lá).
-        const dataDoDia = escalaDataDoDia(semana.semanaInicio, d.key);
         const ausencia = tipoEfetivo === 'normal' ? escalaAusenciaDoDia(activeUser.id, dataDoDia) : null;
         // Horas construídas em DUAS linhas dentro da mesma coluna (pedido
         // explícito 2026-08-18: "garante que a pausa cabe por baixo do
@@ -34802,12 +34946,16 @@ function buildHorariosPage(container, goTo) {
     // um mini-formulário inline (input + Guardar/Cancelar), mesmo padrão
     // do "Ajuste ao Saldo Inicial de Banco de Horas" nas Estatísticas.
     // Nunca bloqueada por semana congelada — ver guardarCorrecaoBancoHe.
-    function celulaCorrecao(dataISO, campo, valorEfetivo, temOrigem, ganhoExtra) {
+    function celulaCorrecao(dataISO, campo, valorEfetivo, temOrigem, ganhoExtra, valorBrutoParaEditar) {
       const editando = correcaoBancoHeEditando && correcaoBancoHeEditando.dataISO === dataISO && correcaoBancoHeEditando.campo === campo;
       const foiCorrigido = temOrigem && temOrigem.corrigido;
       const textoValor = valorEfetivo ? (campo === 'banco' ? `-${escalaFormatarHoras(valorEfetivo)}` : `+${escalaFormatarHoras(valorEfetivo)}`) : '—';
       if (editando) {
-        const input = h('input', { class: 'input', type: 'number', step: '0.5', min: '0', style: 'max-width:80px;padding:3px 6px;font-size:12.5px;', placeholder: 'horas' });
+        // Sem min="0" para "banco" (2026-09-03) — a coluna passou a
+        // interpretar sinal: positivo=Ganho, negativo=Usado, decisão do
+        // Paulo/Hugo em cada dia; "he" (Horas Extra) mantém-se sempre
+        // ≥0, uma Hora Extra nunca é negativa.
+        const input = h('input', { class: 'input', type: 'number', step: '0.5', min: campo === 'banco' ? undefined : '0', style: 'max-width:80px;padding:3px 6px;font-size:12.5px;', placeholder: campo === 'banco' ? '+ganho / -usado' : 'horas' });
         input.value = correcaoBancoHeDraft;
         input.addEventListener('input', () => { correcaoBancoHeDraft = input.value; });
         const guardarBtn = h('button', { class: 'btn-fab-sm tone-green', title: 'Guardar', 'aria-label': 'Guardar', disabled: correcaoBancoHeSaving ? 'disabled' : undefined }, Icon('check', { size: 12, strokeWidth: 2.4 }));
@@ -34846,7 +34994,7 @@ function buildHorariosPage(container, goTo) {
       if (foiCorrigido) conteudo.push(h('span', { title: `Corrigido por ${temOrigem.corrigidoPor || '—'}`, style: 'margin-left:4px;font-size:10.5px;color:var(--pharm-500);' }, '✎'));
       const td = h('td', { class: 'escala-mes-col-corrigivel' + (podeValidarBancoHe ? ' escala-cell-editavel' : '') }, conteudo);
       if (podeValidarBancoHe && temOrigem) {
-        td.addEventListener('click', () => requireAuth(() => { abrirCorrecaoBancoHe(dataISO, campo, valorEfetivo); rerender(); }));
+        td.addEventListener('click', () => requireAuth(() => { abrirCorrecaoBancoHe(dataISO, campo, campo === 'banco' ? (valorBrutoParaEditar !== undefined && valorBrutoParaEditar !== null ? valorBrutoParaEditar : '') : valorEfetivo); rerender(); }));
       }
       return td;
     }
@@ -34863,33 +35011,11 @@ function buildHorariosPage(container, goTo) {
       const semanaVisivel = !!semanaDoDia && (semanaDoDia.estado === 'publicado' || isMasterUser() || escalaMostrarRascunhosEquipa(semanaDoDia));
       let dia = null;
       if (semanaVisivel) {
-        // BUG CORRIGIDO 2026-09-02 (Hugo/Carina: horário dela "não está a
-        // rodar com o do Adriano" — confirmado que "Gerador de Horário" e
-        // "Escala da Equipa" mostravam certo, só "A Minha Semana"/
-        // "Validação de Horários" mostravam errado para os mesmos dias):
-        // esta procura só olhava para `linha.colaboradorId` — o "topo" de
-        // cada posição, que para o Grupo A/F/P é sempre a mesma pessoa a
-        // semana toda (correto), mas para o Grupo B (rotação DIÁRIA,
-        // B1/B2) é só uma "legenda" do 1º dia normal trabalhado (ver
-        // escalaConstruirDadosSemana) — todos os OUTROS dias em que a
-        // pessoa está numa posição B diferente da desse 1º dia ficavam
-        // invisíveis aqui, mesmo já corretamente gravados em
-        // `dia.colaboradorId` (por dia, só existe no Grupo B). Corrigido
-        // para procurar primeiro o código de sempre (cobre A/F/P e o dia-
-        // legenda do B, sem mudar nada do comportamento já correto) e,
-        // se esse código não pertencer à pessoa NESTE dia em concreto
-        // (só pode acontecer no Grupo B), procurar antes pelo
-        // `dia.colaboradorId` gravado nesse dia específico.
-        const codigos = Object.keys(semanaDoDia.dados || {});
-        let codigoMeu = codigos.find(cod => semanaDoDia.dados[cod].colaboradorId === colaboradorId);
-        const diaDoCodigoTopo = codigoMeu && semanaDoDia.dados[codigoMeu].dias && semanaDoDia.dados[codigoMeu].dias[diaKey];
-        if (!codigoMeu || (diaDoCodigoTopo && diaDoCodigoTopo.colaboradorId !== undefined && diaDoCodigoTopo.colaboradorId !== colaboradorId)) {
-          const codigoPorDia = codigos.find(cod => {
-            const d = semanaDoDia.dados[cod].dias && semanaDoDia.dados[cod].dias[diaKey];
-            return d && d.colaboradorId === colaboradorId;
-          });
-          if (codigoPorDia) codigoMeu = codigoPorDia;
-        }
+        // BUG CORRIGIDO 2026-09-02, corrigido a fundo 2026-09-03 — ver
+        // escalaCodigoDaPessoaNoDia() para o histórico completo: primeira
+        // tentativa assumia colaboradorId sempre gravado por dia, o que só
+        // é verdade em dias de ausência, nunca em dias normais.
+        const codigoMeu = escalaCodigoDaPessoaNoDia(semanaDoDia.dados, diaKey, colaboradorId, dataISO);
         if (codigoMeu) dia = semanaDoDia.dados[codigoMeu].dias[diaKey] || null;
       }
       // ATUALIZADO (2026-08-20, auditoria de consistência entre Horas
@@ -34928,15 +35054,14 @@ function buildHorariosPage(container, goTo) {
         classeExtra = ` escala-cell-${tipoEfetivo}`;
         if (tipoEfetivo === 'ferias') diasFerias += 1;
       }
-      // Banco de Horas/Horas Extra do dia (pedido explícito 2026-08-18) —
-      // sempre o valor EFETIVO (com correção aplicada, se houver), tanto
-      // na soma do mês como na própria célula da tabela — nunca o valor
-      // em bruto, para nunca haver 2 números diferentes na app para o
-      // mesmo dia.
-      const bancoValorDia = (semanaVisivel && dia) ? escalaBancoHorasEfetivo(dia) : 0;
-      // Ganho manual (dia.heHorasBanco) — ver comentário completo em
-      // celulaCorrecao acima; contado à parte do Usado, nunca fundido.
-      const bancoGanhoDia = (semanaVisivel && dia) ? (dia.heHorasBanco || 0) : 0;
+      // Banco de Horas/Horas Extra do dia (pedido explícito 2026-08-18,
+      // sinal ADICIONADO 2026-09-03) — sempre o valor EFETIVO (com
+      // correção aplicada, se houver), tanto na soma do mês como na
+      // própria célula da tabela — nunca o valor em bruto, para nunca
+      // haver 2 números diferentes na app para o mesmo dia. Ver
+      // escalaBancoHorasGanhoUsadoDoDia — Ganho e Usado vêm sempre do
+      // mesmo sítio agora, nunca calculados em separado.
+      const { ganho: bancoGanhoDia, usado: bancoValorDia } = (semanaVisivel && dia) ? escalaBancoHorasGanhoUsadoDoDia(dia) : { ganho: 0, usado: 0 };
       // Reaproveita heReivindicadoDia já calculado acima (junto ao
       // texto do horário) — mesmo padrão já aplicado a
       // escalaTotalHorasLinha e à Estatística "Horas Extra".
@@ -34957,7 +35082,7 @@ function buildHorariosPage(container, goTo) {
           h('span', { class: 'escala-mes-dia-curto' }, ESCALA_MES_DIA_CURTO[diaKey]),
         ]),
         h('td', { class: 'escala-mes-col-horario' }, texto),
-        celulaCorrecao(dataISO, 'banco', bancoValorDia, origemCelula ? { corrigido: dia.bancoHorasCorrigido !== undefined, corrigidoPor: dia.correcaoBancoHePor } : null, bancoGanhoDia),
+        celulaCorrecao(dataISO, 'banco', bancoValorDia, origemCelula ? { corrigido: dia.bancoHorasCorrigido !== undefined, corrigidoPor: dia.correcaoBancoHePor } : null, bancoGanhoDia, dia ? dia.bancoHorasCorrigido : null),
         celulaCorrecao(dataISO, 'he', heValorDia, origemCelula ? { corrigido: dia.heHorasCorrigido !== undefined, corrigidoPor: dia.correcaoBancoHePor } : null),
       ]);
     });
@@ -35444,7 +35569,14 @@ function buildHorariosPage(container, goTo) {
     anoInput.addEventListener('change', () => { const v = parseInt(anoInput.value, 10); if (!isNaN(v)) { feriasAnoSaldos = v; editingSaldoUserId = null; rerender(); } });
     const anoCongelado = escalaAnoSaldoBaseCongelado(feriasAnoSaldos);
     const anoPermanentementeCongelado = Number(feriasAnoSaldos) >= ESCALA_ANO_SALDO_CONGELAMENTO_FIXO;
-    const thead = h('thead', {}, h('tr', {}, ['Colaborador', 'Dias Base', 'Dias Prémio', 'Saldo Transitado', 'Total a Gozar', 'Marcados', 'Por Marcar', 'A Transitar', ''].map(t => h('th', {}, t))));
+    // Coluna "Aniversário" ADICIONADA 2026-09-03 (pedido explícito de Hugo,
+    // depois de Paulo/André reportarem uma discrepância de +1 dia entre
+    // esta tabela e a folha de férias em Excel deles): o dia de aniversário
+    // automático (ver escalaBonusAniversarioAno) sempre entrou corretamente
+    // no "Total a Gozar" — nunca foi um bug de duplicação — mas nunca teve
+    // coluna própria nenhuma, ficando um +1 invisível e sem explicação
+    // para quem já fez anos este ano, exatamente o que confundiu o André.
+    const thead = h('thead', {}, h('tr', {}, ['Colaborador', 'Dias Base', 'Dias Prémio', 'Aniversário', 'Saldo Transitado', 'Total a Gozar', 'Marcados', 'Por Marcar', 'A Transitar', ''].map(t => h('th', {}, t))));
     const rows = usuariosQuadroAtivos().map(u => {
       const saldo = escalaSaldoAnual(u.id, feriasAnoSaldos);
       if (editingSaldoUserId === u.id) {
@@ -35475,6 +35607,7 @@ function buildHorariosPage(container, goTo) {
           h('td', { class: 'cell-strong' }, u.nomeCompleto || u.username),
           h('td', {}, baseInput),
           h('td', {}, bonusInput),
+          h('td', {}, saldo.diasAniversario > 0 ? h('span', { class: 'badge badge-pink' }, '🎂 +1') : h('span', { class: 'field-helper-text' }, '—')),
           h('td', {}, [
             ajusteInput,
             h('div', { class: 'field-helper-text', style: 'margin-top:2px;' }, `automático: ${saldo.saldoTransitadoAuto}`),
@@ -35506,10 +35639,29 @@ function buildHorariosPage(container, goTo) {
       // que respondem é diferente ("ainda tenho de marcar quê?" vs "o que
       // segue para o próximo ano?"), não porque o valor difira.
       const totalAGozar = saldo.diasRestantes + saldo.diasGozados;
+      const colaboradorAniversario = (STATE.usuarios || []).find(uu => uu.id === u.id);
+      const janelaAniversario = escalaJanelaAniversario(colaboradorAniversario, feriasAnoSaldos);
+      // Hover SIMPLIFICADO 2026-09-03 (pedido explícito de Hugo: "coloca
+      // hover semelhante ao que aparece na escala da equipa e não esse
+      // que está a aparecer agora... basta algo assim mais simples"): o
+      // texto grande explicativo saiu; passou a usar o mesmo tooltip
+      // escuro instantâneo da Timeline (instalarTooltipContaHoras, nunca
+      // `title` nativo — ver padrão geral da app), só com a data do
+      // aniversário.
+      let celulaAniversario;
+      if (saldo.diasAniversario > 0) {
+        celulaAniversario = h('span', { class: 'badge badge-pink', tabindex: '0' }, '🎂 +1');
+        const partesNasc = colaboradorAniversario && colaboradorAniversario.dataNascimento ? String(colaboradorAniversario.dataNascimento).split('-').map(Number) : null;
+        instalarTooltipContaHoras(celulaAniversario, partesNasc && partesNasc[2] && partesNasc[1] ? `Aniversário: ${partesNasc[2]} de ${MESES_PT[partesNasc[1] - 1]}` : 'Dia de Aniversário');
+      } else {
+        celulaAniversario = h('span', { class: 'field-helper-text', tabindex: '0' }, '—');
+        instalarTooltipContaHoras(celulaAniversario, janelaAniversario ? `Aniversário ainda não chegou este ano (a partir de ${formatDate(janelaAniversario.inicio)})` : 'Sem Data de Nascimento registada');
+      }
       return h('tr', {}, [
         h('td', { class: 'cell-strong' }, u.nomeCompleto || u.username),
         h('td', {}, String(saldo.diasLei)),
         h('td', {}, String(saldo.diasBonus)),
+        h('td', {}, celulaAniversario),
         h('td', { title: `Automático: ${saldo.saldoTransitadoAuto}${saldo.ajusteSaldoTransitado ? ` · Ajuste: ${saldo.ajusteSaldoTransitado > 0 ? '+' : ''}${saldo.ajusteSaldoTransitado}` : ''}` }, String(saldo.saldoTransitado)),
         h('td', {}, String(totalAGozar)),
         h('td', {}, String(saldo.diasGozados)),
@@ -35714,20 +35866,17 @@ function buildHorariosPage(container, goTo) {
           if (horasNoiteDia > 0) escalaEmpurrarDetalheEstatistica(s, 'horasNoturnas', dataISO, `${escalaFormatarHoras(horasNoiteDia)} · turno ${rotuloTurno}`);
           if (escalaMinutosAbsolutos(dia.saida, true) <= 14 * 60) { s.tardesLivres += 1; escalaEmpurrarDetalheEstatistica(s, 'tardesLivres', dataISO, `Saída ${dia.saida} · turno ${rotuloTurno}`); }
           if (escalaMinutosAbsolutos(dia.entrada, false) > 14 * 60) { s.manhasLivres += 1; escalaEmpurrarDetalheEstatistica(s, 'manhasLivres', dataISO, `Entrada ${dia.entrada} · turno ${rotuloTurno}`); }
-          // Banco de Horas USADO (pedido explícito 2026-08-17): soma dos
-          // blocos de Banco de Horas descontados manualmente por
-          // Hugo/Paulo célula a célula (dia.bancoHorasDesconto — ver
-          // abrirEditorCelulaEscala/podeGerirBancoHorasEHE). Distinto do
-          // Banco de Horas GANHO automaticamente por feriado trabalhado
-          // (calculado à parte, por semana, mais abaixo).
-          if (escalaBancoHorasEfetivo(dia) > 0) { s.bancoHorasUsado += escalaBancoHorasEfetivo(dia); escalaEmpurrarDetalheEstatistica(s, 'bancoHorasUsado', dataISO, `-${escalaFormatarHorasDecimal(escalaBancoHorasEfetivo(dia))} · turno ${rotuloTurno}`); }
-          // Banco de Horas GANHO manualmente (pedido explícito de Hugo,
-          // 2026-08-19): bloco de "Horas Extra" marcado com o checkbox
-          // "Contar como Banco de Horas" pelo Gestor no momento de criar
-          // o horário — soma-se diretamente ao Banco GANHO, ao lado da
-          // recuperação automática de feriado (calculada à parte, por
-          // semana, mais abaixo), nunca contando também como Hora Extra
-          // (ver split heHoras/heHorasBanco em abrirEditorCelulaEscala).
+          // Banco de Horas Usado/Ganho (sinal ADICIONADO 2026-09-03,
+          // pedido explícito de Hugo — mecanismo automático de feriado
+          // REMOVIDO, ver bloco que existia aqui antes): um só ponto de
+          // verdade agora, escalaBancoHorasGanhoUsadoDoDia — usa a
+          // correção manual (bancoHorasCorrigido, sinal: positivo=Ganho,
+          // negativo=Usado) sempre que exista; sem correção, mantém-se
+          // exatamente como antes (bancoHorasDesconto sempre Usado,
+          // heHorasBanco sempre Ganho, nunca fundidos).
+          const { ganho: bancoGanhoDia, usado: bancoUsadoDia } = escalaBancoHorasGanhoUsadoDoDia(dia);
+          if (bancoUsadoDia > 0) { s.bancoHorasUsado += bancoUsadoDia; escalaEmpurrarDetalheEstatistica(s, 'bancoHorasUsado', dataISO, `-${escalaFormatarHorasDecimal(bancoUsadoDia)} · turno ${rotuloTurno}`); }
+          if (bancoGanhoDia > 0) { s.bancoHorasGanho += bancoGanhoDia; escalaEmpurrarDetalheEstatistica(s, 'bancoHorasGanho', dataISO, `+${escalaFormatarHorasDecimal(bancoGanhoDia)} · turno ${rotuloTurno}`); }
           // Horas Extra REGISTADAS MANUALMENTE (pedido explícito de Hugo,
           // 2026-08-20 — auditoria: "verifica se a contagem de horas
           // extra está consistente, quer tenha sido reivindicada ou
@@ -35742,10 +35891,6 @@ function buildHorariosPage(container, goTo) {
           if (escalaHeHorasEfetivo(dia) > 0) {
             s.horasExtra += escalaHeHorasEfetivo(dia);
             escalaEmpurrarDetalheEstatistica(s, 'horasExtra', dataISO, `+${escalaFormatarHorasDecimal(escalaHeHorasEfetivo(dia))} · turno ${rotuloTurno} (marcado manualmente como Horas Extra)`);
-          }
-          if (dia.heHorasBanco > 0) {
-            s.bancoHorasGanho += dia.heHorasBanco;
-            escalaEmpurrarDetalheEstatistica(s, 'bancoHorasGanho', dataISO, `+${escalaFormatarHorasDecimal(dia.heHorasBanco)} · turno ${rotuloTurno} (marcado manualmente como Banco de Horas)`);
           }
         });
         // Classificação do fim de semana — só conta quando Sábado E
@@ -35764,63 +35909,20 @@ function buildHorariosPage(container, goTo) {
         }
       });
     });
-    // Horas Extra vs Banco de Horas GANHO (pedido explícito 2026-08-14,
-    // distinção pedida explicitamente 2026-08-17): passagem à parte, por
-    // SEMANA inteira (não por dia como o resto) — soma-se o total
-    // trabalhado de Segunda a Domingo dessa semana. O limiar normal é
-    // 40h, MAS cada Feriado que caia nessa semana desconta 8h a esse
-    // limiar — a farmácia dá sempre folga extra por feriado trabalhado
-    // (nesse dia ou noutro da mesma semana). O excesso sobre esse limiar
-    // reduzido divide-se em 2 partes, nunca as duas juntas como "Horas
-    // Extra": até ao valor do desconto do feriado (feriadosNaSemana×8h) é
-    // só RECUPERAÇÃO do feriado trabalhado → vai para Banco de Horas
-    // (ganho automático); só o que sobra ACIMA das 40h normais da semana
-    // é que é mesmo Horas Extra a pagar/compensar à parte. Exemplo (1
-    // feriado, limiar 32h): trabalhar 40h ⇒ 8h Banco, 0h Extra; trabalhar
-    // 42h ⇒ 8h Banco (o máximo possível de recuperação de feriado) + 2h
-    // Extra (o que passa das 40h normais). Cada semana é atribuída ao
-    // período a que pertence a sua própria 2ª feira (semana.semanaInicio)
-    // — as raríssimas semanas a cavalo entre dois períodos ficam inteiras
-    // no período em que começam, para nunca partir o total semanal ao
-    // meio.
-    (STATE.escalaSemanas || []).filter(s => s.estado === 'publicado' && (!intervalo.desde || s.semanaInicio >= intervalo.desde) && (!intervalo.ate || s.semanaInicio <= intervalo.ate)).forEach(semana => {
-      const feriadosNaSemana = ESCALA_DIAS.filter(d => escalaEhFeriado(escalaDataDoDia(semana.semanaInicio, d.key))).length;
-      const limiarFeriado = feriadosNaSemana * 8;
-      const limiarSemana = Math.max(0, 40 - limiarFeriado);
-      colaboradoresQuadro.forEach(u => {
-        const uid = u.id;
-        let totalSemana = 0;
-        ESCALA_DIAS.forEach(d => {
-          const alvo = escalaVagaDoColaboradorNoDia(semana, d.key, uid);
-          if (!alvo) return;
-          // BUG CORRIGIDO 2026-08-26: um dia "Horas Extra (sem turno
-          // normal)" já entra no Banco/Extra pela marcação MANUAL de
-          // heHoras/heHorasBanco (ver loop de estatísticas por dia, mais
-          // acima) — incluir também aqui a duração do turno fazia este
-          // limiar automático de 40h/semana "ver" a mesma presença outra
-          // vez, podendo gerar Banco/Extra automático a somar por cima do
-          // que já tinha sido classificado manualmente. Estes dias ficam
-          // de fora desta soma automática (ver escalaDiaHoraExtraSemTurno).
-          if (escalaDiaHoraExtraSemTurno(alvo.dia)) return;
-          totalSemana += escalaCalcularHorasComPausa(alvo.dia.entrada, alvo.dia.saida, alvo.dia.pausaInicio, alvo.dia.pausaFim);
-        });
-        if (totalSemana > limiarSemana) {
-          const excesso = totalSemana - limiarSemana;
-          const banco = Math.min(excesso, limiarFeriado);
-          const extra = Math.max(0, excesso - banco);
-          const notaFeriado = feriadosNaSemana ? ` · limiar ${limiarSemana}h (${feriadosNaSemana} feriado${feriadosNaSemana > 1 ? 's' : ''} nesta semana)` : '';
-          if (banco > 0) {
-            stats[uid].bancoHorasGanho += banco;
-            escalaEmpurrarDetalheEstatistica(stats[uid], 'bancoHorasGanho', semana.semanaInicio, `Semana de ${formatDate(semana.semanaInicio)} — total ${escalaFormatarHoras(totalSemana)}${notaFeriado} (+${escalaFormatarHorasDecimal(banco)} Banco, recuperação do feriado trabalhado)`);
-          }
-          if (extra > 0) {
-            stats[uid].horasExtra += extra;
-            escalaEmpurrarDetalheEstatistica(stats[uid], 'horasExtra', semana.semanaInicio, `Semana de ${formatDate(semana.semanaInicio)} — total ${escalaFormatarHoras(totalSemana)}, acima das 40h normais (+${escalaFormatarHoras(extra)} extra)`);
-          }
-        }
-      });
-    });
-    return stats;
+    // MECANISMO AUTOMÁTICO REMOVIDO 2026-09-03 (pedido explícito de Hugo:
+    // "quero eliminar aquele mecanismo de contabilização automática de
+    // horas de banco sempre que havia feriado(s) na semana... deve ser
+    // validado pelo Paulo ou por mim, usar antes aquele mecanismo na
+    // validação de horários que já está implementado"): este bloco
+    // calculava sozinho, por semana inteira, quantas horas iam para Banco
+    // (recuperação de feriado) e quantas para Horas Extra, a partir do
+    // total trabalhado vs. um limiar de 40h reduzido 8h por cada feriado
+    // nessa semana — nunca mais dispara. Banco de Horas Ganho passa a vir
+    // SÓ de fontes manuais: a correção "Banco de Horas" em Validação de
+    // Horários (ver celulaCorrecao/guardarCorrecaoBancoHe — valor
+    // POSITIVO=Ganho, NEGATIVO=Usado, decisão humana do Paulo/Hugo em
+    // cada caso) e o já existente "Contar como Banco de Horas" ao marcar
+    // um bloco de Hora Extra no Gerador (dia.heHorasBanco, inalterado).
   }
   // Saldo de Banco de Horas (pedido explícito 2026-08-17) — SEMPRE
   // histórico completo (nunca filtrado pelo período das Estatísticas
@@ -35935,8 +36037,8 @@ function buildHorariosPage(container, goTo) {
       return h('tr', {}, [
         h('td', { class: 'cell-strong' }, s.nome),
         celInicial,
-        h('td', { title: 'Ganho acumulado: recuperação automática de feriado trabalhado (ver coluna "Banco (Feriado)" acima) + blocos de Horas Extra marcados manualmente como "Contar como Banco de Horas" no editor de turno — histórico completo' }, escalaFormatarHorasDecimalComSinal(s.ganho)),
-        h('td', { title: 'Usado manualmente (descontos lançados célula a célula por Hugo/Paulo) — histórico completo' }, s.usado ? `-${escalaFormatarHorasDecimal(s.usado)}` : '0h'),
+        h('td', { title: 'Ganho acumulado: correções positivas em Validação de Horários + blocos de Horas Extra marcados manualmente como "Contar como Banco de Horas" no editor de turno — histórico completo' }, escalaFormatarHorasDecimalComSinal(s.ganho)),
+        h('td', { title: 'Usado: descontos lançados célula a célula em Validação de Horários (correção negativa) ou dias completos de Banco de Horas — histórico completo' }, s.usado ? `-${escalaFormatarHorasDecimal(s.usado)}` : '0h'),
         h('td', { class: 'cell-strong' }, escalaFormatarHorasDecimalComSinal(s.saldoAtual)),
         celAcoes,
       ]);
@@ -36063,8 +36165,8 @@ function buildHorariosPage(container, goTo) {
         colunas: [
           { key: 'horasFeriado', label: 'H. em Feriado', title: 'Horas trabalhadas em dias de Feriado', grav: 'verde' },
           { key: 'horasNoturnas', label: 'H. Noturnas', title: 'Horas trabalhadas entre as 22:00 e as 00:00', grav: 'laranja' },
-          { key: 'bancoHorasGanho', label: 'Banco (Feriado)', title: 'Banco de Horas ganho automaticamente por trabalhar até às 40h normais numa semana com Feriado (recuperação do feriado trabalhado, nunca conta como Horas Extra)', grav: 'verde' },
-          { key: 'horasExtra', label: 'H. Extra', title: 'Horas acima das 40h semanais normais, já descontada a parte que foi para Banco de Horas por feriado nessa semana', grav: 'vermelho' },
+          { key: 'bancoHorasGanho', label: 'Banco (Ganho)', title: 'Banco de Horas ganho — validado manualmente por Hugo/Paulo em Validação de Horários (correção positiva), ou marcado "Contar como Banco de Horas" no editor de turno', grav: 'verde' },
+          { key: 'horasExtra', label: 'H. Extra', title: 'Horas Extra registadas manualmente ou reivindicadas', grav: 'vermelho' },
         ],
       },
       {
