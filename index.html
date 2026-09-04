@@ -46254,8 +46254,10 @@ function renderInterno(ehTransicaoDePagina) {
     // continua a ressincronizar tudo sozinha nos momentos onde isso É
     // justificado — ver refrescarDadosSilenciosamente(): ao voltar à aba/
     // app (focus/visibilitychange, cobre o caso de a ligação Realtime ter
-    // ficado suspensa em segundo plano) e no temporizador de inatividade
-    // (idleRefreshTimer, standby prolongado).
+    // ficado suspensa em segundo plano). Sem sessão iniciada, o
+    // temporizador de standby de 5 em 5 min foi removido por completo
+    // (2026-09-03, poupança de Egress) — ver comentário completo em
+    // setupSilentDataRefreshWatcher().
   }
   function toggleSidebar(open) { esconderTooltipSidebarForcado(); STATE.sidebarOpen = open; render(); }
   // Sidebar de desktop recolhível — só tem efeito fora da Página Inicial
@@ -47729,7 +47731,7 @@ function clearSessionSilently() {
   STATE.financeiro = [];
   STATE.objetivosMensais = [];
   pararPresenca();
-  resetIdleRefreshTimer(); // sem sessão a partir de agora — arranca o temporizador de standby (5 min)
+  // resetIdleRefreshTimer() REMOVIDO 2026-09-03 (Egress) — sem sessão, a app já não tem nenhum polling periódico próprio.
   // Fim de sessão: o slider da Calculadora de Posologia volta ao valor inicial.
   if (resetPosologiaCalc) resetPosologiaCalc();
   atualizarIndicadoresChat();
@@ -47756,7 +47758,7 @@ function manualLogout() {
   STATE.objetivosMensais = [];
   limparSessaoPersistente();
   pararPresenca();
-  resetIdleRefreshTimer(); // sem sessão a partir de agora — arranca o temporizador de standby (5 min)
+  // resetIdleRefreshTimer() REMOVIDO 2026-09-03 (Egress) — sem sessão, a app já não tem nenhum polling periódico próprio.
   // Fim de sessão explícito (ao contrário do timeout silencioso por
   // inatividade): repõe a memória de farmácia/separador/pesquisa de
   // Entregas, para o próximo login neste dispositivo — eventualmente de
@@ -47796,12 +47798,9 @@ function setupInactivityWatcher() {
 ----------------------------------------------------------------------- */
 let ultimoRefreshSilenciosoEm = 0;
 const REFRESH_SILENCIOSO_MIN_INTERVALO_MS = 60000; // CORRIGIDO 2026-08-28 (Egress): era 15000 — agora que o Realtime aplica cada mudança diretamente (ver aplicarPayloadRealtimeAoState), este refresco completo passou de mecanismo principal a rede de segurança; nunca repete a menos de 60s de distância
-// Standby (SEM sessão ativa) — o único caso em que ainda faz sentido um
-// temporizador de inatividade puro: um ecrã de login/apresentação parado
-// não tem "módulos" para trocar nem formulários para proteger. 5 minutos,
-// não 20 segundos — não há necessidade de dados frescos ao segundo num
-// ecrã que ninguém está a usar ativamente.
-const IDLE_REFRESH_STANDBY_MS = 5 * 60 * 1000;
+// Standby (SEM sessão ativa): já não existe temporizador de inatividade
+// nenhum aqui — ver comentário completo junto a setupSilentDataRefreshWatcher()
+// mais abaixo (removido 2026-09-03, poupança de Egress).
 // Nunca dois pedidos ao mesmo tempo: o intervalo mínimo de 15s acima já
 // evita a maioria das sobreposições, mas sozinho não chega numa rede lenta
 // (um loadAllData() que demore mais de 15s a responder deixaria um 2º
@@ -47830,43 +47829,30 @@ async function refrescarDadosSilenciosamente() {
     refreshSilenciosoEmCurso = false;
   }
 }
-// Com SESSÃO ATIVA já não há temporizador de inatividade nenhum — o "piscar"
-// de ecrã constante vinha precisamente daqui (recarregava tudo e voltava a
-// desenhar o ecrã inteiro sempre que a pessoa ficava só 20s sem tocar no
-// rato/teclado, o que acontece a toda a hora só a ler um ecrã). Uma sessão
-// ativa só volta a sincronizar em momentos pontuais e justificados: ao
-// trocar de módulo (ver goTo, dentro de render()), ao voltar à aba/app
-// (focus/visibilitychange, já tratados à parte — nunca dependem deste
-// temporizador), e imediatamente a seguir ao login (concluirLogin).
-// SEM sessão (ecrã de login/apresentação, "standby"), mantém-se um
-// temporizador simples de 5 em 5 minutos — não há formulários a proteger
-// nem módulos para trocar, por isso o disparo por inatividade ainda faz
-// sentido aqui, só que muito mais espaçado.
-let idleRefreshTimer = null;
-function resetIdleRefreshTimer() {
-  if (idleRefreshTimer) clearTimeout(idleRefreshTimer);
-  idleRefreshTimer = null;
-  if (activeUser) return; // sessão ativa: sem polling por inatividade
-  idleRefreshTimer = setTimeout(() => { refrescarDadosSilenciosamente(); resetIdleRefreshTimer(); }, IDLE_REFRESH_STANDBY_MS);
-}
+// TEMPORIZADOR DE INATIVIDADE (5 em 5 min) SEM SESSÃO — REMOVIDO POR
+// COMPLETO 2026-09-03 (pedido explícito de Hugo, poupança de Egress no
+// Supabase): um posto deixado em "Modo Sem Sessão"/ecrã de login (ex: a
+// noite toda, fim de turno) ficava a repetir refrescarDadosSilenciosamente()
+// de 5 em 5 minutos, indefinidamente, mesmo sem ninguém a olhar para o
+// ecrã — cada disparo é um pedido real ao Supabase (delta desde a última
+// vez, não download completo, mas continua a ser tráfego só para
+// ninguém ver). Removido sem substituto — não faz falta nenhum: a
+// subscrição Realtime já fica ativa mesmo sem sessão (mantém os alertas
+// do chat a funcionar, ver handleNovaMensagemChat) e já mantém o STATE
+// atualizado sozinho em segundo plano; e a chegada de alguém ao posto já
+// dispara um refresh imediato à parte (focus/visibilitychange, logo
+// abaixo) — sem perda nenhuma de fresquidão de dados no preciso momento
+// em que alguém volta a olhar para o ecrã, só a poupança do polling
+// periódico enquanto ninguém está a usar.
 function setupSilentDataRefreshWatcher() {
-  ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'].forEach(evt => {
-    document.addEventListener(evt, resetIdleRefreshTimer, { passive: true });
-  });
   // Regresso à aba/app (troca de separador, minimizar/restaurar, voltar de
-  // outra app no telemóvel) — atualiza logo, sem esperar pela pausa de
-  // 20s, e SEM depender do setTimeout do idleRefreshTimer (browsers
-  // suspendem/atrasam fortemente setInterval/setTimeout em separadores em
-  // segundo plano — "tab throttling"). Estes dois listeners disparam
-  // diretamente, à parte desse temporizador, mal a aba volte a ficar
-  // visível/em foco — e reiniciam também a contagem de inatividade, para
-  // não haver um 2º disparo do temporizador (atrasado, represado durante o
-  // tempo em segundo plano) logo a seguir a este.
-  window.addEventListener('focus', () => { refrescarDadosSilenciosamente(); resetIdleRefreshTimer(); });
+  // outra app no telemóvel) — atualiza logo. Único gatilho de
+  // sincronização "espontânea" agora, além da troca de módulo (ver goTo)
+  // e do próprio Realtime.
+  window.addEventListener('focus', () => { refrescarDadosSilenciosamente(); });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') { refrescarDadosSilenciosamente(); resetIdleRefreshTimer(); }
+    if (document.visibilityState === 'visible') { refrescarDadosSilenciosamente(); }
   });
-  resetIdleRefreshTimer();
 }
 
 async function startApp() {
