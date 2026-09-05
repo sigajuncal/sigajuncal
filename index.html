@@ -3994,7 +3994,17 @@ function construirComRedeDeSeguranca(build) {
   try {
     return build();
   } catch (e) {
-    console.error('[SigaJuncal] erro inesperado a atualizar esta página:', formatarErroSeguro(e));
+    // MELHORADO 2026-09-05 (Hugo, erro real na consola sem detalhe
+    // nenhum a apontar para onde aconteceu: "construirComRedeDeSeguranca
+    // @ index.html:3997" era a ÚNICA linha, porque formatarErroSeguro(e)
+    // converte o erro num texto simples PARA MOSTRAR AO UTILIZADOR
+    // (correto, usado 78x na app) — mas isso descarta o stack trace
+    // original, perdendo-se para sempre onde dentro de build() a exceção
+    // aconteceu. Passar também o objeto `e` (não só o texto) como
+    // argumento extra ao console.error não muda nada do que aparece na
+    // app — só ativa a stack trace completa e clicável na consola do
+    // browser, com a linha exata de onde a exceção partiu.
+    console.error('[SigaJuncal] erro inesperado a atualizar esta página:', formatarErroSeguro(e), e);
     return h('div', { class: 'animate-in card card-pad', style: 'margin:24px;max-width:520px;' }, [
       h('h3', { class: 'dash-card-title', style: 'color:var(--red);' }, 'Ocorreu um erro inesperado'),
       h('p', { class: 'login-sub', style: 'text-align:left;margin-top:8px;' }, 'Alguma coisa correu mal a atualizar esta página. Tente novamente ou recarregue a página — os seus dados já gravados não foram afetados.'),
@@ -8305,6 +8315,14 @@ const LAZY_TABLE_KEYS = [
 // buildMapa48hPage) — confirmado por auditoria ao código, não por
 // suposição, antes de fixar esta lista.
 const PAGINA_TABELAS_LAZY = {
+  // BUG CORRIGIDO 2026-09-05 (Hugo: "não atualiza esta tabela mal se
+  // clica em Pedidos... só atualiza quando se clica nos botões
+  // específicos"): faltava esta página no mapa — o "Dashboard Resumo por
+  // Setor" da própria página Pedidos (hub-pedidos) lê as 5 tabelas de
+  // categoria diretamente (STATE[info.listKey], ver buildPedidosHubPage),
+  // mas só os botões que levam a CADA categoria estavam ligados ao
+  // carregamento lazy, nunca o hub que as resume todas de uma vez.
+  'hub-pedidos': ['manipulados', 'ortopedia', 'ervanaria', 'outros', 'veterinaria'],
   manipulados: ['manipulados'],
   ortopedia: ['ortopedia'],
   ervanaria: ['ervanaria'],
@@ -46513,7 +46531,7 @@ function renderInterno(ehTransicaoDePagina) {
       case 'definicoes': buildDefinicoesPage(pageContainer, goTo); break;
       case 'seguranca': buildSegurancaPage(pageContainer, goTo); break;
       case 'sobre': buildSobrePage(pageContainer, goTo); break;
-      case 'hub-pedidos': buildPedidosHubPage(pageContainer, STATE.consultaPreset, goTo); STATE.consultaPreset = null; break;
+      case 'hub-pedidos': if (tabelasProntas) buildPedidosHubPage(pageContainer, STATE.consultaPreset, goTo); else pageContainer.appendChild(CarregandoState('A carregar Pedidos…')); STATE.consultaPreset = null; break;
       case 'hub-stocks': buildSectorHubPage(pageContainer, goTo, 'Stocks', 'package'); break;
       case 'hub-gestao': buildSectorHubPage(pageContainer, goTo, 'Gestão', 'briefcase'); break;
       case 'hub-agendas': buildAgendasHubPage(pageContainer, goTo); break;
@@ -46525,7 +46543,7 @@ function renderInterno(ehTransicaoDePagina) {
   } catch (erroPagina) {
     // Nunca deixa um erro nesta página em concreto derrubar a app inteira
     // (ecrã em branco) — regista no console e mostra um ecrã recuperável.
-    console.error('[SigaJuncal] erro ao construir a página "' + STATE.page + '":', formatarErroSeguro(erroPagina));
+    console.error('[SigaJuncal] erro ao construir a página "' + STATE.page + '":', formatarErroSeguro(erroPagina), erroPagina);
     if (pageContainer) {
       clear(pageContainer);
       pageContainer.appendChild(h('div', { class: 'animate-in card card-pad', style: 'margin:24px;max-width:520px;' }, [
@@ -46865,28 +46883,40 @@ async function carregarDadosFinanceirosSeAutorizado() {
 
 // Cancela automaticamente pedidos ativos há mais de 6 meses (exceto Resolvido/Cancelado)
 const PEDIDO_LIST_KEYS = ['manipulados', 'ortopedia', 'ervanaria', 'veterinaria', 'outros'];
-async function autoCancelOldOrders() {
+// BUG CORRIGIDO 2026-09-05 (achado durante a auditoria do "Dashboard
+// Resumo por Setor" desatualizado — Hugo: "não atualiza mal se clica em
+// Pedidos"): esta limpeza automática só corria 1 vez no arranque, logo a
+// seguir a loadAllData() — desde que as 5 tabelas de PEDIDO_LIST_KEYS
+// passaram a lazy (2026-09-04), ficam todas vazias nesse momento, e esta
+// função deixou de encontrar seja o que for para cancelar, em silêncio,
+// para toda a gente, todos os arranques. Extraída a lógica de UMA tabela
+// para autoCancelOldOrdersDaTabela(listKey), reutilizável — chamada aqui
+// em loop (arranque, cobre o que já estiver eager) E também a partir de
+// garantirTabelasCarregadas() assim que uma destas 5 tabelas carrega pela
+// primeira vez nesta sessão (mesmo espírito de ortopediaMigrarFornecedorAntigo
+// — preservar um efeito de arranque que dependia de dados agora lazy).
+async function autoCancelOldOrdersDaTabela(listKey) {
   try {
     const cutoff = new Date();
     cutoff.setMonth(cutoff.getMonth() - 6);
     const cutoffISO = dateToISO(cutoff);
-
-    for (const listKey of PEDIDO_LIST_KEYS) {
-      const toCancel = (STATE[listKey] || []).filter(r =>
-        r.data && r.data < cutoffISO && r.estado !== 'Resolvido' && r.estado !== 'Cancelado'
-      );
-      if (toCancel.length === 0) continue;
-      const updates = await Promise.all(toCancel.map(r => dbUpdate(listKey, r.id, { estado: 'Cancelado' })));
-      STATE[listKey] = STATE[listKey].map(r => {
-        const idx = toCancel.findIndex(t => t.id === r.id);
-        return (idx >= 0 && updates[idx]) ? updates[idx] : r;
-      });
-    }
+    const toCancel = (STATE[listKey] || []).filter(r =>
+      r.data && r.data < cutoffISO && r.estado !== 'Resolvido' && r.estado !== 'Cancelado'
+    );
+    if (toCancel.length === 0) return;
+    const updates = await Promise.all(toCancel.map(r => dbUpdate(listKey, r.id, { estado: 'Cancelado' })));
+    STATE[listKey] = STATE[listKey].map(r => {
+      const idx = toCancel.findIndex(t => t.id === r.id);
+      return (idx >= 0 && updates[idx]) ? updates[idx] : r;
+    });
   } catch (e) {
     // Nunca deve impedir o arranque da app — na pior das hipóteses, os
-    // pedidos antigos ficam por cancelar automaticamente até ao próximo arranque.
+    // pedidos antigos ficam por cancelar automaticamente até à próxima vez.
     console.error('[Arranque] falha ao cancelar pedidos antigos automaticamente:', formatarErroSeguro(e));
   }
+}
+async function autoCancelOldOrders() {
+  for (const listKey of PEDIDO_LIST_KEYS) await autoCancelOldOrdersDaTabela(listKey);
 }
 
 // CRIADO 2026-08-28 (refatoração de Egress — pedido explícito: consumo
@@ -46998,6 +47028,11 @@ function garantirTabelasCarregadas(keys) {
       // vez que Ortopedia é mesmo aberta nesta sessão, para nunca perder
       // o seu efeito autolimitado.
       if (k === 'ortopedia') ortopediaMigrarFornecedorAntigo();
+      // BUG CORRIGIDO 2026-09-05 — ver comentário completo junto a
+      // autoCancelOldOrdersDaTabela: preserva o cancelamento automático
+      // de pedidos parados há >6 meses, que só corria no arranque
+      // (quando estas 5 tabelas ainda eram eager).
+      if (PEDIDO_LIST_KEYS.includes(k)) autoCancelOldOrdersDaTabela(k);
       renderOuAdiarSeOcupado();
     })();
   });
