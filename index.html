@@ -1954,7 +1954,7 @@
      razão de sempre: cada dia é a sua própria grelha independente, um
      <div> por linha; com frações a largura variava consoante o
      conteúdo e desalinhava a coluna de Tarefas entre linhas). */
-  .escala-pessoal-linha{display:grid;grid-template-columns:92px 190px 1fr;
+  .escala-pessoal-linha{display:grid;grid-template-columns:130px 190px 1fr;
     align-items:start;column-gap:10px;row-gap:4px;
     padding:8px 0;border-bottom:1px solid var(--pharm-100);font-size:13.5px;}
   .escala-pessoal-linha:last-child{border-bottom:none;}
@@ -2016,7 +2016,7 @@
        "Quarta", etc. cabiam perfeitamente — quebra desnecessária e
        inconsistente entre dias. white-space:nowrap garante que nunca
        mais quebra, seja qual for o dia. */
-    .escala-pessoal-dia{flex:0 0 92px;width:92px;white-space:nowrap;}
+    .escala-pessoal-dia{flex:0 0 130px;width:130px;white-space:nowrap;}
     .escala-pessoal-horas{flex:0 1 auto;align-items:flex-start;text-align:left;}
     .escala-pessoal-tarefas{flex:0 0 auto;margin-left:auto;flex-direction:row;
       flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:4px;}
@@ -4009,7 +4009,17 @@ function construirComRedeDeSeguranca(build) {
    selecionar vários itens seguidos. Estes helpers tiram uma fotografia das
    posições de scroll (janela + contentores conhecidos, por ordem de
    ocorrência) antes do re-render e repõem-nas imediatamente a seguir. */
-const SCROLL_PRESERVAR_SELETORES = ['.modal-panel', '.agenda-dia-scroll', '.agenda-slots-list', '.recent-list-scroll', '.metas-list-scroll', '.dash-grid > .card', '.notas-pessoais-lista'];
+// BUG CORRIGIDO 2026-09-04 (Hugo, vídeo — Vacinação: "clico na última
+// linha, quando há scroll, vai para cima e não consigo ver a linha
+// selecionada"): a causa é geral, não só da Vacinação — TODAS as tabelas
+// da app (37 sítios) usam `.table-wrap` para o scroll interno próprio
+// (ver CSS, overflow:auto + max-height), mas esta classe nunca tinha sido
+// incluída aqui. Clicar numa linha desencadeia sempre um rerender
+// completo da página (ver toggleMarcacaoSelect e equivalentes); sem
+// `.table-wrap` nesta lista, o scroll dessa tabela específica saltava
+// sempre de volta ao topo a cada clique — mais visível em listas longas
+// (Vacinação, mas o mesmo aconteceria em qualquer tabela da app).
+const SCROLL_PRESERVAR_SELETORES = ['.modal-panel', '.agenda-dia-scroll', '.agenda-slots-list', '.recent-list-scroll', '.metas-list-scroll', '.dash-grid > .card', '.notas-pessoais-lista', '.table-wrap'];
 function capturarPosicoesScroll(raiz) {
   const base = raiz || document;
   const estado = { janelaX: window.scrollX, janelaY: window.scrollY, porSeletor: {} };
@@ -8265,6 +8275,52 @@ const TABLES = {
   clientesHabituais: 'clientes_habituais',
 };
 
+// LAZY LOADING — 19 tabelas menos usadas, adiadas até ao módulo respetivo
+// ser aberto (2026-09-03, pedido explícito de Hugo, poupança de Egress:
+// "sempre que se encontrar histórico desnecessário a carregar
+// automaticamente, deve passar a ficar por trás de um botão"). Sem isto,
+// TODAS as ~57 tabelas eram sempre carregadas E subscritas ao Realtime
+// para toda a gente que iniciasse sessão, mesmo perfis que nunca abrem
+// Manipulados/Ortopedia/Vacinação/etc. Ver garantirTabelasCarregadas() —
+// carrega (fetch completo, sem cache/delta — estas tabelas são raras de
+// abrir, não vale a complexidade extra) + subscreve ao Realtime só na
+// primeira vez que o módulo é mesmo aberto nesta sessão; chamado a partir
+// do router (render(), antes do switch de STATE.page).
+// DELIBERADAMENTE FORA desta lista (ficou eager, ao contrário do resto de
+// Vacinação): `vacinacaoCampanhas` — é lida por
+// vacinacaoAutoSemearCampanha() logo no arranque (loadAllData), fora de
+// qualquer módulo, para decidir se já existe campanha da época corrente
+// antes de criar uma nova; lazy aqui criaria uma campanha DUPLICADA a
+// cada arranque enquanto ninguém abrisse Vacinação nessa sessão. Tabela
+// pequena (1 registo por época/ano) — manter eager não pesa no Egress.
+const LAZY_TABLE_KEYS = [
+  'manipulados', 'ortopedia', 'ervanaria', 'outros', 'veterinaria', 'orcamentos',
+  'reclamacoes', 'mapa48h',
+  'vacinacaoMarcacoes', 'vacinacaoEncomendas', 'vacinacaoListaEspera', 'vacinacaoResponsaveis', 'vacinacaoQuebras',
+  'recolhas', 'consumiveis', 'tarefas', 'mapaTarefas', 'formacoes',
+];
+// Tabelas lazy que cada página do router precisa de ter carregadas antes
+// de se construir — ver garantirTabelasCarregadas() chamado em render().
+// Mapa 48h cruza dados de 4 tabelas de Vacinação além da sua própria (ver
+// buildMapa48hPage) — confirmado por auditoria ao código, não por
+// suposição, antes de fixar esta lista.
+const PAGINA_TABELAS_LAZY = {
+  manipulados: ['manipulados'],
+  ortopedia: ['ortopedia'],
+  ervanaria: ['ervanaria'],
+  outros: ['outros'],
+  veterinaria: ['veterinaria'],
+  orcamentos: ['orcamentos'],
+  reclamacoes: ['reclamacoes'],
+  mapa48h: ['mapa48h', 'vacinacaoMarcacoes', 'vacinacaoEncomendas', 'vacinacaoListaEspera', 'vacinacaoQuebras'],
+  vacinacao: ['vacinacaoMarcacoes', 'vacinacaoEncomendas', 'vacinacaoListaEspera', 'vacinacaoResponsaveis', 'vacinacaoQuebras'],
+  recolhas: ['recolhas'],
+  consumiveis: ['consumiveis'],
+  tarefas: ['tarefas'],
+  'mapa-tarefas': ['mapaTarefas'],
+  formacoes: ['formacoes'],
+};
+
 function camelToSnake(s) { return s.replace(/[A-Z]/g, m => '_' + m.toLowerCase()); }
 function snakeToCamel(s) { return s.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase()); }
 // Converte qualquer exceção apanhada num catch(e) para uma string simples e
@@ -8486,7 +8542,9 @@ function lerCacheLocalEstado() {
 function guardarCacheLocalEstado() {
   try {
     const tabelas = {};
-    Object.keys(TABLES).forEach(k => { if (k !== 'financeiro' && k !== 'objetivosMensais') tabelas[k] = STATE[k] || []; });
+    // Tabelas lazy nunca entram na cache — só participam nela as tabelas
+    // eager, exatamente como antes de LAZY_TABLE_KEYS existir (2026-09-03).
+    Object.keys(TABLES).forEach(k => { if (k !== 'financeiro' && k !== 'objetivosMensais' && !LAZY_TABLE_KEYS.includes(k)) tabelas[k] = STATE[k] || []; });
     localStorage.setItem(STATE_CACHE_KEY, JSON.stringify({ version: STATE_CACHE_VERSION, savedAtCliente: Date.now(), tabelas }));
   } catch (e) {
     // Sem espaço, modo privado, ou qualquer outro motivo — sem cache
@@ -9680,6 +9738,11 @@ const STATE = {
   navFrom: 'home',
   consultaState: { query: '', cat: 'Todos', statusFilter: null },
   utilizadoresOnline: [],
+  // Tabelas cujo carregamento foi ADIADO até ao módulo respetivo ser
+  // aberto (ver LAZY_TABLE_KEYS/garantirTabelasCarregadas, 2026-09-03,
+  // poupança de Egress) — chave = listKey, presente quando já carregada
+  // nesta sessão (fetch feito + subscrita ao Realtime).
+  tabelasLazyCarregadas: new Set(),
   manipulados: [],
   ortopedia: [],
   ervanaria: [],
@@ -10254,6 +10317,16 @@ function EmptyState(text) {
   return h('div', { class: 'card-dashed' }, [
     h('span', { class: 'empty-icon' }, Icon('inbox', { size: 26 })),
     h('span', {}, text),
+  ]);
+}
+// CRIADO 2026-09-03 (lazy loading — ver LAZY_TABLE_KEYS/
+// garantirTabelasCarregadas): mesmo espírito visual de EmptyState, usado
+// enquanto um módulo lazy ainda está a carregar os seus dados pela
+// primeira vez nesta sessão — nunca confundir com "sem registos".
+function CarregandoState(text) {
+  return h('div', { class: 'card-dashed' }, [
+    h('span', { class: 'empty-icon' }, Icon('clock', { size: 26 })),
+    h('span', {}, text || 'A carregar…'),
   ]);
 }
 function editIconButton(onClick) {
@@ -17327,6 +17400,23 @@ function financeiroProjetarMesSemDados(ano, mes, campo) {
   if (totalHomologo > 0) return totalHomologo;
   return 0;
 }
+// Nº de dias já registados a partir do qual a Projeção de Fecho passa a
+// confiar 100% no método refinado (fração histórica do mês concluída até
+// esse dia) — antes deste ponto, mistura-o com a estimativa ESTÁVEL (a
+// mesma já usada para meses sem nenhum dado, ver financeiroProjetarMesSemDados
+// — forma sazonal×nível anual, ou Objetivo×desempenho, ou homólogo do ano
+// anterior), com peso crescente a cada dia. CRIADO 2026-09-05 (pedido
+// explícito de Hugo, depois de reparar que a Projeção de 4/09 parecia
+// "ambiciosa e desfasada"): com só 4 dias de 30 registados (~13% do mês),
+// o método refinado divide por uma fração muito pequena — um único dia
+// acima da média (ex: sexta-feira +7,8% face à média das sextas de 2026)
+// fica amplificado para o mês inteiro de forma desproporcional. Misturar
+// com a estimativa estável nos primeiros dias amortece esse ruído inicial
+// sem abandonar o método refinado — que continua a ser mais rigoroso do
+// que a regra de três simples assim que há dias suficientes para confiar
+// nele (ver comentário completo mais acima, sobre o porquê da criação
+// deste método a 2026-08-24).
+const FINANCEIRO_DIAS_CONFIANCA_TOTAL_PROJECAO = 10;
 function financeiroProjecaoFechoMesEmCurso(ano, mes, campo) {
   campo = campo || 'faturacao';
   const registos = financeiroRegistosDoMes(ano, mes, campo);
@@ -17334,9 +17424,15 @@ function financeiroProjecaoFechoMesEmCurso(ano, mes, campo) {
   const acumulado = registos.reduce((s, r) => s + r.valor, 0);
   const ultimoDiaRegistado = Math.max(...registos.map(r => parseInt(r.data.slice(8, 10), 10)));
   const fracao = financeiroFracaoMesConcluidaAteDia(ano, mes, ultimoDiaRegistado, campo);
-  if (fracao && fracao > 0.05) return acumulado / fracao;
-  // Rede de segurança: regra de três antiga (média diária × dias do mês).
-  return financeiroMediaDiariaMes(ano, mes, campo) * financeiroDiasDoMes(ano, mes);
+  // Rede de segurança: regra de três antiga (média diária × dias do mês),
+  // só usada quando não há fração histórica fiável (ver
+  // financeiroFracaoMesConcluidaAteDia — poucos meses de referência).
+  const estimativaRefinada = (fracao && fracao > 0.05) ? (acumulado / fracao) : (financeiroMediaDiariaMes(ano, mes, campo) * financeiroDiasDoMes(ano, mes));
+  if (ultimoDiaRegistado >= FINANCEIRO_DIAS_CONFIANCA_TOTAL_PROJECAO) return estimativaRefinada;
+  const estimativaEstavel = financeiroProjetarMesSemDados(ano, mes, campo);
+  if (!(estimativaEstavel > 0)) return estimativaRefinada;
+  const pesoRefinado = ultimoDiaRegistado / FINANCEIRO_DIAS_CONFIANCA_TOTAL_PROJECAO;
+  return estimativaEstavel * (1 - pesoRefinado) + estimativaRefinada * pesoRefinado;
 }
 // Média diária de um ANO inteiro — se ateDataISO for indicado, só conta
 // dias até essa data (inclusive); usada para a Média do Ano em curso,
@@ -18672,7 +18768,19 @@ function financeiroGerarBriefing() {
   const totalMesUlt = financeiroTotalMes(anoUlt, mesUlt);
   const mediaMesUlt = financeiroMediaDiariaMes(anoUlt, mesUlt);
   const mesUltFechado = diaDoMesUlt >= diasNoMesUlt;
-  const projecaoMesUlt = mesUltFechado ? totalMesUlt : mediaMesUlt * diasNoMesUlt;
+  // BUG CORRIGIDO 2026-09-05 (Hugo: "porque é que a projeção de fecho no
+  // texto é uma e no Mês Analisado é outra?"): esta frase calculava a
+  // projeção com a fórmula antiga e simples (média diária × dias do mês
+  // — uma regra de três, dá o mesmo peso a todos os dias do mês), a
+  // MESMA que foi deliberadamente substituída no cartão "Mês Analisado"
+  // a 2026-08-24 por inflacionar sistematicamente o valor (ver comentário
+  // completo em financeiroProjecaoFechoMesEmCurso — o fim do mês é
+  // tipicamente mais fraco do que uma divisão simples pressupõe). Esta
+  // frase nunca foi atualizada nessa altura, ficando com um número
+  // diferente do resto da app para a mesma coisa. Corrigido para usar a
+  // mesma função do cartão — nunca mais duas fórmulas em paralelo para a
+  // "Projeção de Fecho".
+  const projecaoMesUlt = mesUltFechado ? totalMesUlt : financeiroProjecaoFechoMesEmCurso(anoUlt, mesUlt);
   const metaMesUlt = financeiroMetaDoMes(anoUlt, mesUlt);
   const parteMes = [mesUltFechado
     ? `${MESES_PT_NOMES[mesUlt - 1]} fechou com ${financeiroFormatarEuro(totalMesUlt, 2)} de faturação`
@@ -34750,6 +34858,16 @@ function buildHorariosPage(container, goTo) {
       else diasResolvidos[d.key] = { tipo: 'folga' };
     });
     if (!temAlgumaPosicaoNaSemana) return EmptyState('Não está atribuído a nenhuma posição nesta semana.');
+    // CORRIGIDO 2026-09-04 (Hugo: "não faz sentido dizer F3 em todas as
+    // linhas (apenas faz sentido para os B), de resto pode ficar em
+    // cima"): quando a posição é sempre a mesma a semana toda (Grupo
+    // A/F/P — o caso mais comum, de longe), o emblema por linha é só
+    // ruído repetido; volta a aparecer 1 única vez no cabeçalho, como
+    // era antes da unificação em cartão único. Só quando varia mesmo
+    // (Grupo B) é que continua a fazer sentido por linha.
+    const codigosDistintosNaSemana = new Set(Object.values(codigoPorDia).filter(Boolean));
+    const posicaoVariaNaSemana = codigosDistintosNaSemana.size > 1;
+    const codigoUnicoDaSemana = !posicaoVariaNaSemana ? [...codigosDistintosNaSemana][0] : null;
     const wrap = h('div', { style: 'display:flex;flex-direction:column;gap:16px;' });
     const hojeISO = dateToISO(new Date());
     const semanaCardsWrap = h('div', { style: 'display:flex;flex-direction:column;gap:16px;' });
@@ -34836,17 +34954,15 @@ function buildHorariosPage(container, goTo) {
         // pessoa continuar a saber onde está escalada nesse dia
         // específico. Omitido nos dias sem nenhuma posição (folga fora
         // de qualquer código).
-        // Empilhado (coluna), não lado a lado — CORRIGIDO 2026-09-03
-        // (Hugo, fotografia: "melhora a formatação para aparecer tudo
-        // alinhado"): a coluna do dia é largura FIXA (92px, ver CSS
-        // .escala-pessoal-linha) — dia + emblema lado a lado nunca cabia
-        // aí, partindo o texto de forma imprevisível a meio (ex: "7 ·" /
-        // "Segunda B1" em vez de tudo alinhado). Em coluna, cada linha
-        // só precisa caber o seu próprio conteúdo — sempre previsível,
-        // mesmo com nomes de dia mais compridos.
-        const diaLabelComBadge = h('span', { class: 'escala-pessoal-dia', style: 'display:flex;flex-direction:column;align-items:flex-start;gap:3px;' }, [
-          h('span', {}, escalaDiaLabelCompacto(d.key, d.label, semana.semanaInicio)),
-          codigo ? escalaBadgePosicao(codigo, escalaGrupoDoCodigo(codigo)) : null,
+        // Empilhado (coluna) só quando faz falta — CORRIGIDO 2026-09-04:
+        // o emblema por linha só aparece de todo quando a posição varia
+        // (Grupo B); nesse caso, em LINHA com o dia (não empilhado por
+        // baixo — pedido explícito), a coluna do dia foi alargada (ver
+        // CSS .escala-pessoal-linha) precisamente para caber os dois
+        // lado a lado sem partir o texto de forma estranha.
+        const diaLabelComBadge = h('span', { class: 'escala-pessoal-dia', style: 'display:flex;align-items:center;gap:6px;' }, [
+          escalaDiaLabelCompacto(d.key, d.label, semana.semanaInicio),
+          posicaoVariaNaSemana && codigo ? escalaBadgePosicao(codigo, escalaGrupoDoCodigo(codigo)) : null,
         ].filter(Boolean));
         return h('div', { class: 'escala-pessoal-linha' + (tipoEfetivo !== 'normal' ? ` escala-cell-${tipoEfetivo}` : '') + (ausencia ? ' escala-cell-ausencia-sobreposta' : '') + (ehHoje ? ' escala-pessoal-linha-hoje' : '') }, [
           diaLabelComBadge,
@@ -34856,7 +34972,10 @@ function buildHorariosPage(container, goTo) {
       });
       semanaCardsWrap.appendChild(h('div', { class: 'card card-pad', style: 'max-width:780px;' }, [
         h('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px;' }, [
-          h('h3', { class: 'dash-card-title', style: 'margin:0;' }, 'A Minha Semana'),
+          h('div', { style: 'display:flex;align-items:center;gap:8px;' }, [
+            codigoUnicoDaSemana ? escalaBadgePosicao(codigoUnicoDaSemana, escalaGrupoDoCodigo(codigoUnicoDaSemana)) : null,
+            h('h3', { class: 'dash-card-title', style: 'margin:0;' }, 'A Minha Semana'),
+          ].filter(Boolean)),
           h('span', { class: 'cell-strong' }, `Total: ${escalaFormatarHoras(escalaTotalHorasLinha(linha, semana.id))}`),
         ]),
         ...rows,
@@ -46347,32 +46466,36 @@ function renderInterno(ehTransicaoDePagina) {
     STATE.page = 'home';
   }
   if (!handledByAgenda) {
+    // CRIADO 2026-09-03 (lazy loading) — ver garantirTabelasCarregadas/
+    // PAGINA_TABELAS_LAZY: para páginas fora deste mapa (a maioria),
+    // devolve sempre true (nada a esperar, comportamento inalterado).
+    const tabelasProntas = garantirTabelasCarregadas(PAGINA_TABELAS_LAZY[STATE.page] || []);
     switch (STATE.page) {
       case 'home': buildHomepage(pageContainer, goTo); break;
       case 'chat': buildChatPage(pageContainer, goTo); break;
-      case 'manipulados': buildCategoryPage(pageContainer, 'Manipulados', 'flask', 'Registo e controlo de fórmulas magistrais.', manipuladosSchema, 'manipulados', goTo, { label: 'Orçamentos Conhecidos', onClick: () => goTo('orcamentos') }); break;
-      case 'ortopedia': buildOrtopediaPage(pageContainer, goTo); break;
-      case 'ervanaria': buildCategoryPage(pageContainer, 'Ervanária', 'leaf', 'Registo de pedidos de produtos de ervanária.', ervanariaSchema, 'ervanaria', goTo); break;
-      case 'outros': buildCategoryPage(pageContainer, 'Outros Fornecedores', 'package', 'Gestão de encomendas a outros fornecedores e laboratórios.', outrosSchema, 'outros', goTo); break;
-      case 'veterinaria': buildCategoryPage(pageContainer, 'Veterinária', 'paw', 'Controlo e pedidos de produtos veterinários.', veterinariaSchema, 'veterinaria', goTo); break;
+      case 'manipulados': if (tabelasProntas) buildCategoryPage(pageContainer, 'Manipulados', 'flask', 'Registo e controlo de fórmulas magistrais.', manipuladosSchema, 'manipulados', goTo, { label: 'Orçamentos Conhecidos', onClick: () => goTo('orcamentos') }); else pageContainer.appendChild(CarregandoState('A carregar Manipulados…')); break;
+      case 'ortopedia': if (tabelasProntas) buildOrtopediaPage(pageContainer, goTo); else pageContainer.appendChild(CarregandoState('A carregar Ortopedia…')); break;
+      case 'ervanaria': if (tabelasProntas) buildCategoryPage(pageContainer, 'Ervanária', 'leaf', 'Registo de pedidos de produtos de ervanária.', ervanariaSchema, 'ervanaria', goTo); else pageContainer.appendChild(CarregandoState('A carregar Ervanária…')); break;
+      case 'outros': if (tabelasProntas) buildCategoryPage(pageContainer, 'Outros Fornecedores', 'package', 'Gestão de encomendas a outros fornecedores e laboratórios.', outrosSchema, 'outros', goTo); else pageContainer.appendChild(CarregandoState('A carregar Outros Fornecedores…')); break;
+      case 'veterinaria': if (tabelasProntas) buildCategoryPage(pageContainer, 'Veterinária', 'paw', 'Controlo e pedidos de produtos veterinários.', veterinariaSchema, 'veterinaria', goTo); else pageContainer.appendChild(CarregandoState('A carregar Veterinária…')); break;
       case 'erros': buildErrosPage(pageContainer, goTo); break;
-      case 'reclamacoes': buildReclamacoesPage(pageContainer, goTo); break;
+      case 'reclamacoes': if (tabelasProntas) buildReclamacoesPage(pageContainer, goTo); else pageContainer.appendChild(CarregandoState('A carregar Reclamações…')); break;
       case 'parcerias': buildParceriasPage(pageContainer, goTo); break;
       case 'eventos': buildEventosPage(pageContainer, goTo); break;
       case 'eventos-rastreio': buildEventoTipoPage(pageContainer, goTo, 'Rastreio'); break;
       case 'eventos-conselheira': buildEventoTipoPage(pageContainer, goTo, 'Conselheira'); break;
       case 'eventos-dia-especial': buildEventoTipoPage(pageContainer, goTo, 'DiaEspecial'); break;
-      case 'mapa48h': buildMapa48hPage(pageContainer, goTo); break;
-      case 'vacinacao': buildVacinacaoPage(pageContainer, goTo); break;
-      case 'mapa-tarefas': buildMapaTarefasPage(pageContainer, goTo); break;
+      case 'mapa48h': if (tabelasProntas) buildMapa48hPage(pageContainer, goTo); else pageContainer.appendChild(CarregandoState('A carregar Mapa 48h…')); break;
+      case 'vacinacao': if (tabelasProntas) buildVacinacaoPage(pageContainer, goTo); else pageContainer.appendChild(CarregandoState('A carregar Vacinação…')); break;
+      case 'mapa-tarefas': if (tabelasProntas) buildMapaTarefasPage(pageContainer, goTo); else pageContainer.appendChild(CarregandoState('A carregar Mapa de Tarefas…')); break;
       case 'entregas': buildEntregasPage(pageContainer, goTo, ehTransicaoDePagina); break;
       case 'horarios': buildHorariosPage(pageContainer, goTo); break;
       case 'gestao-empresas-parceiras': buildEmpresasParceirasPage(pageContainer, goTo, entregasContextoMemorizado.farmaciaAtiva || (STATE.consultaPreset && STATE.consultaPreset.farmacia) || 'Juncal'); STATE.consultaPreset = null; break;
-      case 'recolhas': buildRecolhasPage(pageContainer, goTo); break;
-      case 'consumiveis': buildConsumiveisPage(pageContainer, goTo); break;
-      case 'tarefas': buildTarefasPage(pageContainer, goTo); break;
-      case 'formacoes': buildFormacoesPage(pageContainer, goTo); break;
-      case 'orcamentos': buildOrcamentosPage(pageContainer, goTo); break;
+      case 'recolhas': if (tabelasProntas) buildRecolhasPage(pageContainer, goTo); else pageContainer.appendChild(CarregandoState('A carregar Recolhas…')); break;
+      case 'consumiveis': if (tabelasProntas) buildConsumiveisPage(pageContainer, goTo); else pageContainer.appendChild(CarregandoState('A carregar Consumíveis…')); break;
+      case 'tarefas': if (tabelasProntas) buildTarefasPage(pageContainer, goTo); else pageContainer.appendChild(CarregandoState('A carregar Tarefas…')); break;
+      case 'formacoes': if (tabelasProntas) buildFormacoesPage(pageContainer, goTo); else pageContainer.appendChild(CarregandoState('A carregar Formações…')); break;
+      case 'orcamentos': if (tabelasProntas) buildOrcamentosPage(pageContainer, goTo); else pageContainer.appendChild(CarregandoState('A carregar Orçamentos…')); break;
       case 'calculadoras': buildCalculadorasPage(pageContainer, goTo); break;
       case 'lembretes': buildLembretesPage(pageContainer, goTo); break;
       case 'bloco-notas-pessoal': buildBlocoNotasPessoalPage(pageContainer, goTo); break;
@@ -46635,7 +46758,10 @@ async function loadAllData() {
     // já não aceita SELECT direto da app (ver RLS no Supabase) — só saem do
     // servidor através da RPC segura carregarDadosFinanceirosSeAutorizado(),
     // que valida o perfil de quem está autenticado antes de devolver dados.
-    const keys = Object.keys(TABLES).filter(k => k !== 'financeiro' && k !== 'objetivosMensais');
+    // As 18 tabelas de LAZY_TABLE_KEYS também ficam de fora — carregam-se
+    // sozinhas quando o módulo respetivo é aberto (ver
+    // garantirTabelasCarregadas/PAGINA_TABELAS_LAZY, 2026-09-03, Egress).
+    const keys = Object.keys(TABLES).filter(k => k !== 'financeiro' && k !== 'objetivosMensais' && !LAZY_TABLE_KEYS.includes(k));
     // CRIADO 2026-08-30 (Egress — ver nota completa em
     // lerCacheLocalEstado/dbFetchAllDesde acima): com cache local válida,
     // parte da última cópia conhecida e só pergunta ao Supabase o que
@@ -46831,6 +46957,80 @@ function aplicarPayloadRealtimeAoStateOrdenadoPorData(stateKey, payload, ascendi
   lista.splice(pos, 0, registo);
   return true;
 }
+// Canais Realtime já ativos (listKey → true) — evita subscrever a mesma
+// tabela 2 vezes (ex: garantirTabelasCarregadas chamada outra vez para o
+// mesmo módulo, já carregado). Extraído de setupRealtime() 2026-09-03
+// para poder subscrever tabelas LAZY só quando são mesmo carregadas
+// (garantirTabelasCarregadas), em vez de todas as ~57 de uma vez sempre
+// que alguém inicia sessão — ver LAZY_TABLE_KEYS.
+const canaisRealtimeAtivos = {};
+// CRIADO 2026-09-03 (lazy loading, ver LAZY_TABLE_KEYS/PAGINA_TABELAS_LAZY
+// acima): ponto único chamado pelo router (render(), antes do switch de
+// STATE.page) para garantir que as tabelas lazy de que a página vai
+// precisar já estão carregadas. SÍNCRONA de propósito — devolve logo
+// true/false para o router decidir OU construir a página normal OU
+// mostrar CarregandoState() por agora; o carregamento em si corre em
+// segundo plano (fire-and-forget, mesmo espírito de
+// escalaAutoSemearFeriados/vacinacaoAutoSemearCampanha) e dispara um
+// render() sozinho assim que terminar — a mesma página volta a
+// construir-se automaticamente, desta vez já com os dados.
+// Fetch sempre COMPLETO (dbFetchAll), nunca delta/cache — estas tabelas
+// são raras de abrir, não compensa a complexidade extra da otimização já
+// usada nas ~38 tabelas eager.
+const tabelasLazyEmCarregamento = {};
+function garantirTabelasCarregadas(keys) {
+  const emFalta = keys.filter(k => !STATE.tabelasLazyCarregadas.has(k) && !tabelasLazyEmCarregamento[k]);
+  emFalta.forEach(k => {
+    tabelasLazyEmCarregamento[k] = true;
+    (async () => {
+      try {
+        STATE[k] = sanitizarSupabase(await dbFetchAll(k));
+      } catch (e) {
+        console.error(`[SigaJuncal] erro ao carregar tabela lazy ${k}:`, formatarErroSeguro(e));
+        STATE[k] = STATE[k] || [];
+      }
+      STATE.tabelasLazyCarregadas.add(k);
+      delete tabelasLazyEmCarregamento[k];
+      subscreverTabelaRealtime(k);
+      // Migração silenciosa "Sr. Luís"→"STOP Ortopedia" (ver
+      // ortopediaMigrarFornecedorAntigo) já não corre no arranque para
+      // esta tabela (deixou de ser eager) — preservada aqui, na primeira
+      // vez que Ortopedia é mesmo aberta nesta sessão, para nunca perder
+      // o seu efeito autolimitado.
+      if (k === 'ortopedia') ortopediaMigrarFornecedorAntigo();
+      renderOuAdiarSeOcupado();
+    })();
+  });
+  return keys.every(k => STATE.tabelasLazyCarregadas.has(k));
+}
+function subscreverTabelaRealtime(listKey) {
+  if (!sb || canaisRealtimeAtivos[listKey]) return;
+  canaisRealtimeAtivos[listKey] = true;
+  sb.channel('realtime-' + TABLES[listKey])
+    .on('postgres_changes', { event: '*', schema: 'public', table: TABLES[listKey] }, async (payload) => {
+      // Aplica só a linha do próprio evento (ver aplicarPayloadRealtimeAoState
+      // acima) — nunca mais um dbFetchAll (tabela inteira) por cada evento.
+      // Fallback: se por algum motivo a linha não vier utilizável no
+      // payload (raro — ex: REPLICA IDENTITY sem todas as colunas), cai
+      // de volta ao comportamento antigo só nesse evento específico, para
+      // nunca ficar com dados incompletos.
+      const aplicado = aplicarPayloadRealtimeAoState(listKey, payload);
+      if (!aplicado) STATE[listKey] = sanitizarSupabase(await dbFetchAll(listKey));
+      if (listKey === 'desafios') normalizarTipoPremioDesafios();
+      if (listKey === 'lembretes' && lembretesUrgentesPopupAtualizar) lembretesUrgentesPopupAtualizar();
+      // Timestamp da última atualização de dados com sucesso — alimenta o
+      // indicador discreto "Atualizado há X min" na Página Inicial.
+      STATE.ultimaAtualizacaoEm = new Date().toISOString();
+      // Notificação nativa de "Nova Entrega Pendente" — exclusiva da tabela
+      // de Entregas e só quando é mesmo um registo novo (INSERT); a
+      // verificação de perfil (só Estafeta) acontece dentro da função.
+      if (listKey === 'entregas' && payload.eventType === 'INSERT' && payload.new) {
+        handleNovaEntregaPendente(sanitizarSupabase(rowToRecord(payload.new)));
+      }
+      renderOuAdiarSeOcupado();
+    })
+    .subscribe();
+}
 function setupRealtime() {
   if (!sb) return;
   // financeiro/objetivosMensais ficam de fora desta subscrição genérica: a
@@ -46839,32 +47039,10 @@ function setupRealtime() {
   // dois módulos vem do refresh periódico em segundo plano
   // (refrescarDadosSilenciosamente → carregarDadosFinanceirosSeAutorizado)
   // e da atualização imediata do STATE logo a seguir a cada escrita.
-  Object.keys(TABLES).filter(k => k !== 'financeiro' && k !== 'objetivosMensais').forEach(listKey => {
-    sb.channel('realtime-' + TABLES[listKey])
-      .on('postgres_changes', { event: '*', schema: 'public', table: TABLES[listKey] }, async (payload) => {
-        // Aplica só a linha do próprio evento (ver aplicarPayloadRealtimeAoState
-        // acima) — nunca mais um dbFetchAll (tabela inteira) por cada evento.
-        // Fallback: se por algum motivo a linha não vier utilizável no
-        // payload (raro — ex: REPLICA IDENTITY sem todas as colunas), cai
-        // de volta ao comportamento antigo só nesse evento específico, para
-        // nunca ficar com dados incompletos.
-        const aplicado = aplicarPayloadRealtimeAoState(listKey, payload);
-        if (!aplicado) STATE[listKey] = sanitizarSupabase(await dbFetchAll(listKey));
-        if (listKey === 'desafios') normalizarTipoPremioDesafios();
-        if (listKey === 'lembretes' && lembretesUrgentesPopupAtualizar) lembretesUrgentesPopupAtualizar();
-        // Timestamp da última atualização de dados com sucesso — alimenta o
-        // indicador discreto "Atualizado há X min" na Página Inicial.
-        STATE.ultimaAtualizacaoEm = new Date().toISOString();
-        // Notificação nativa de "Nova Entrega Pendente" — exclusiva da tabela
-        // de Entregas e só quando é mesmo um registo novo (INSERT); a
-        // verificação de perfil (só Estafeta) acontece dentro da função.
-        if (listKey === 'entregas' && payload.eventType === 'INSERT' && payload.new) {
-          handleNovaEntregaPendente(sanitizarSupabase(rowToRecord(payload.new)));
-        }
-        renderOuAdiarSeOcupado();
-      })
-      .subscribe();
-  });
+  // As tabelas LAZY (ver LAZY_TABLE_KEYS) também ficam de fora aqui —
+  // só são subscritas quando o módulo respetivo é mesmo aberto (ver
+  // garantirTabelasCarregadas), nunca logo ao iniciar sessão.
+  Object.keys(TABLES).filter(k => k !== 'financeiro' && k !== 'objetivosMensais' && !LAZY_TABLE_KEYS.includes(k)).forEach(subscreverTabelaRealtime);
   sb.channel('realtime-mensagens_chat')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_chat' }, async (payload) => {
       const aplicado = aplicarPayloadRealtimeAoStateOrdenadoPorData('mensagensChat', payload, true);
