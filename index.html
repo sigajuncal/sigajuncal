@@ -30624,25 +30624,60 @@ function escalaAtribuirGrupoRotativo(grupo, lista, semanaInicioISO) {
   if (!lista.length) return { atribuicoes: vagasGrupo.map(v => ({ vagaId: v.id, codigo: v.codigo, utilizadorId: null, colaboradorNome: '' })), vagasLibertadas };
   const n = lista.length;
   let indiceInicial = 0;
-  const anteriores = (STATE.escalaSemanas || []).filter(s => s.semanaInicio < semanaInicioISO).sort((a, b) => (a.semanaInicio < b.semanaInicio ? 1 : -1));
-  const semanaAnterior = anteriores[0] || null;
+  // BUG CORRIGIDO 2026-09-07 (Paulo: "a malta passa de A1 para A2... algo
+  // se passou na passagem da semana 2 de novembro para a seguinte, o gajo
+  // trocou ordens às letras" — confirmado por comparação direta das duas
+  // semanas: deslocamento de exatamente 3 posições em vez de 1, uniforme
+  // em todos os A1-A9, a "assinatura" de a referência usada na geração
+  // não ser a mesma que está publicada agora): esta procura da "semana
+  // anterior" fazia um `.filter/.sort` cru sobre STATE.escalaSemanas, sem
+  // preferir a linha PUBLICADA em caso de haver mais que uma linha para a
+  // mesma semana_inicio (mesma classe de bug já corrigida para a busca
+  // por data exata, ver escalaSemanaPorInicio — aqui nunca tinha sido
+  // aplicado). Se existisse uma linha órfã/rascunho antiga para 2 de
+  // Novembro na base de dados no momento em que a semana de 9 de Novembro
+  // foi gerada, o `.sort` (instável em empates de semanaInicio) podia
+  // apanhá-la em vez da publicada, gerando a partir de uma referência
+  // errada — o "+3" fica congelado nos dados dessa semana para sempre,
+  // mesmo já não havendo nenhuma duplicada agora. Corrigido para
+  // encontrar primeiro a semana_inicio anterior mais próxima (só a data),
+  // e só depois resolver a LINHA certa dessa data através de
+  // escalaSemanaPorInicio (prefere sempre a publicada).
+  const semanasInicioAnteriores = [...new Set((STATE.escalaSemanas || []).map(s => s.semanaInicio).filter(si => si < semanaInicioISO))].sort((a, b) => (a < b ? 1 : -1));
+  const semanaAnterior = semanasInicioAnteriores.length ? escalaSemanaPorInicio(semanasInicioAnteriores[0]) : null;
+  // REFORÇADO 2026-09-07 (pedido explícito de Hugo, depois do bug acima:
+  // "a rotação deve acontecer sempre de forma previsível sem saltar
+  // nunca, mesmo que a semana anterior ainda esteja em rascunho"): só
+  // olhar para a 1ª vaga do grupo (ex: A1) tinha um 2º ponto de falha
+  // silencioso — se essa vaga em concreto tivesse ficado por preencher
+  // nessa semana (equipa insuficiente nesse dia-modelo) OU se quem lá
+  // estava já não constar da Lista Única atual (saiu, ou o nome/conta
+  // mudou), `idx` ficava -1 e o cursor RESETAVA para o topo da lista sem
+  // aviso nenhum — outra forma de "saltar" sem ninguém perceber porquê.
+  // Corrigido para tentar TODAS as vagas do grupo, pela ordem, até
+  // encontrar uma cujo ocupante anterior resolva — e ajustar
+  // matematicamente pelo deslocamento dessa vaga em relação à 1ª, para o
+  // resultado continuar exatamente o mesmo de sempre nesse caso comum
+  // (só a 1ª vaga a ter sucesso, como acontecia até agora).
   if (semanaAnterior && semanaAnterior.dados) {
-    const primeiraVaga = vagasGrupo[0];
-    const linhaAnterior = semanaAnterior.dados[primeiraVaga.codigo];
-    if (linhaAnterior) {
+    let idxResolvido = -1;
+    for (let k = 0; k < vagasGrupo.length; k += 1) {
+      const linhaAnterior = semanaAnterior.dados[vagasGrupo[k].codigo];
+      if (!linhaAnterior) continue;
       let idx = -1;
       if (linhaAnterior.colaboradorId) idx = lista.findIndex(e => e.utilizadorId === linhaAnterior.colaboradorId);
       if (idx === -1 && linhaAnterior.colaboradorNome) idx = lista.findIndex(e => String(e.nome || '').trim() === String(linhaAnterior.colaboradorNome || '').trim());
-      // Direção da rotação (pedido explícito): quem ocupava A1 numa semana
-      // deve passar a ocupar A2 na semana seguinte (não o contrário) — ou
-      // seja, cada colaborador AVANÇA de posição (A1→A2→A3...) semana a
-      // semana. Andar para trás na Lista Única (idx-1, não idx+1) produz
-      // exatamente esse efeito: o cursor que define quem entra em A1 na
-      // semana nova recua 1 posição na lista, o que empurra quem estava em
-      // A1 para A2 (e assim sucessivamente) em vez de trazer quem estava
-      // em A2 para A1.
-      indiceInicial = idx === -1 ? 0 : (idx - 1 + n) % n;
+      if (idx !== -1) { idxResolvido = (idx - k + n) % n; break; }
     }
+    // Direção da rotação (pedido explícito): quem ocupava A1 numa semana
+    // deve passar a ocupar A2 na semana seguinte (não o contrário) — ou
+    // seja, cada colaborador AVANÇA de posição (A1→A2→A3...) semana a
+    // semana. Andar para trás na Lista Única (idx-1, não idx+1) produz
+    // exatamente esse efeito: o cursor que define quem entra em A1 na
+    // semana nova recua 1 posição na lista, o que empurra quem estava em
+    // A1 para A2 (e assim sucessivamente) em vez de trazer quem estava
+    // em A2 para A1.
+    if (idxResolvido !== -1) indiceInicial = (idxResolvido - 1 + n) % n;
   }
   // Percorre a lista a partir de "cursor", posição a posição, e nunca pára
   // numa entrada sem utilizador válido (sem conta associada ou inativo) —
