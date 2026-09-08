@@ -25858,7 +25858,12 @@ function buildDefinicoesPage(container, goTo) {
     const apelido = partesNome.slice(1).join(' ') || '';
     draft = isSelf(u.id)
       ? Object.assign({}, u, { primeiroNome, apelido, incluirHorarios: u.incluirHorarios === true, estatutoColaborador: u.estatutoColaborador || '', dataNascimento: u.dataNascimento || '' })
-      : { primeiroNome, apelido, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', prestadorKey: u.prestadorKey || '', ativo: u.ativo !== false, incluirHorarios: u.incluirHorarios === true, estatutoColaborador: u.estatutoColaborador || '', dataNascimento: u.dataNascimento || '' };
+      // Username/PIN de outra pessoa: só pré-preenchidos com os valores
+      // atuais quando quem abre a edição é Hugo/Paulo (isMasterUser) —
+      // pedido explícito 2026-09-08. Para os restantes, nem aparecem no
+      // formulário (ver usuarioFormSchema), por isso nem faz sentido
+      // andar a copiá-los para o draft.
+      : { primeiroNome, apelido, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', prestadorKey: u.prestadorKey || '', ativo: u.ativo !== false, incluirHorarios: u.incluirHorarios === true, estatutoColaborador: u.estatutoColaborador || '', dataNascimento: u.dataNascimento || '', ...(isMasterUser() ? { username: u.username || '', pin: u.pin || '' } : {}) };
     formError = '';
     showForm = true;
     rerender();
@@ -25910,14 +25915,14 @@ function buildDefinicoesPage(container, goTo) {
       rerender();
       return;
     }
-    if (!editingId || editingSelf) {
+    if (!editingId || editingSelf || isMasterUser()) {
       if (!formatoUsernamePinValido(draft.username) || !formatoUsernamePinValido(draft.pin)) {
         formError = 'O Username e o PIN devem conter apenas números, entre 2 e 4 algarismos.';
         rerender();
         return;
       }
     }
-    if ((!editingId || editingSelf) && String(draft.username || '').trim()) {
+    if ((!editingId || editingSelf || isMasterUser()) && String(draft.username || '').trim()) {
       const usernameNorm = String(draft.username).trim().toLowerCase();
       // Só entre utilizadores ATIVOS: um username de alguém inativado pode
       // ser reaproveitado por um novo registo (o antigo continua na base de
@@ -25943,7 +25948,11 @@ function buildDefinicoesPage(container, goTo) {
     if (editingId) {
       const payload = editingSelf
         ? { nomeCompleto, categoriaProfissional, perfilNivel: draft.perfilNivel, prestadorKey, incluirHorarios, estatutoColaborador, dataNascimento, username: draft.username, pin: draft.pin }
-        : { nomeCompleto, categoriaProfissional, perfilNivel: draft.perfilNivel, prestadorKey, incluirHorarios, estatutoColaborador, dataNascimento, ativo: draft.ativo !== false };
+        // Username/PIN de outra pessoa: só entram no payload quando quem
+        // está a gravar é Hugo/Paulo (isMasterUser) — pedido explícito
+        // 2026-09-08. Sem isto, os campos apareciam editáveis no
+        // formulário mas a alteração era sempre ignorada ao guardar.
+        : { nomeCompleto, categoriaProfissional, perfilNivel: draft.perfilNivel, prestadorKey, incluirHorarios, estatutoColaborador, dataNascimento, ativo: draft.ativo !== false, ...(isMasterUser() ? { username: draft.username, pin: draft.pin } : {}) };
       const updated = await dbUpdate('usuarios', editingId, payload);
       if (updated) {
         STATE.usuarios = STATE.usuarios.map(u => u.id === editingId ? updated : u);
@@ -26059,8 +26068,12 @@ function buildDefinicoesPage(container, goTo) {
         optionLabels: PRESTADORES_AGENDA.map(p => p.nome),
       });
     }
-    if (!editingId || editingSelf) {
+    if (!editingId || editingSelf || isMasterUser()) {
       base.push(
+        // Editar o Username/PIN de outra pessoa (não o próprio) — só
+        // Hugo/Paulo (isMasterUser, pedido explícito 2026-09-08: "às
+        // vezes é preciso mudar"). Continua sempre visível ao criar um
+        // utilizador novo e ao editar o próprio, como já era.
         { name: 'username', label: 'Username (2 a 4 números)', type: 'text', maxLength: 4, inputmode: 'numeric', pattern: '[0-9]{2,4}', digitsOnly: true, placeholder: 'Ex: 123', size: 'xs' },
         { name: 'pin', label: 'PIN (2 a 4 números)', type: 'text', maxLength: 4, inputmode: 'numeric', pattern: '[0-9]{2,4}', digitsOnly: true, placeholder: 'Ex: 1234', size: 'xs' },
       );
