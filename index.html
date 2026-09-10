@@ -37259,7 +37259,14 @@ function buildHorariosPage(container, goTo) {
   function buildCartaoPedido(pedido) {
     const estadoInfo = escalaEstadoPedidoInfo(pedido);
     const dataTexto = pedido.dataInicio === pedido.dataFim ? formatDate(pedido.dataInicio) : `${formatDate(pedido.dataInicio)} — ${formatDate(pedido.dataFim)}`;
-    const acoes = [];
+    // BUG CORRIGIDO 2026-09-10 (Hugo: "uniformiza botões de aprovar ou
+    // rejeitar aqui, deveriam ficar sempre à direita como nos pedidos da
+    // semana"): editar/eliminar e Aprovar/Rejeitar viviam todos na MESMA
+    // fila, à esquerda — nos cartões de "Pedido da Semana"
+    // (buildCartaoNotaEquipa) ficam sempre separados: editar/eliminar à
+    // esquerda, decisão (Aprovar/Rejeitar) à direita, numa fila com
+    // justify-content:space-between. Replicado aqui.
+    const acoesDiscretas = [];
     if (podeEditarPedidoEspecial(pedido)) {
       // Mesma classe discreta já usada nos botões de editar/eliminar de
       // "Pedidos e Registos da Semana" (.escala-nota-acao-discreta) —
@@ -37270,17 +37277,18 @@ function buildHorariosPage(container, goTo) {
       editarBtn.addEventListener('click', () => requireAuth(() => pedidoEspecialAbrirEdicao(pedido)));
       const eliminarBtn = h('button', { class: 'escala-nota-acao-discreta', title: 'Eliminar' }, Icon('trash', { size: 12, strokeWidth: 2.2 }));
       eliminarBtn.addEventListener('click', () => requireAuth(() => eliminarPedidoEspecialConfirm(pedido, rerender)));
-      acoes.push(editarBtn, eliminarBtn);
+      acoesDiscretas.push(editarBtn, eliminarBtn);
     }
     // souDirecaoHorariosGlobal (2026-08-24) em vez de isMasterUser() —
     // botões Aprovar/Rejeitar de Pedidos Especiais em Férias, alinhados
     // com a mesma regra dos restantes pontos de decisão.
+    let botoesDecisao = null;
     if (souDirecaoHorariosGlobal() && pedido.estado === 'pendente') {
       const aprovarBtn = h('button', { class: 'btn btn-primary', style: 'padding:5px 10px;font-size:12px;' }, '✅ Aprovar');
       aprovarBtn.addEventListener('click', () => requireAuth(async () => { const ok = await decidirPedidoEspecial(pedido, 'aprovado'); if (ok) rerender(); else escalaShowErro('Não foi possível aprovar'); }));
       const rejeitarBtn = h('button', { class: 'btn btn-secondary', style: 'padding:5px 10px;font-size:12px;' }, '❌ Rejeitar');
       rejeitarBtn.addEventListener('click', () => requireAuth(async () => { const ok = await decidirPedidoEspecial(pedido, 'rejeitado'); if (ok) rerender(); else escalaShowErro('Não foi possível rejeitar'); }));
-      acoes.push(aprovarBtn, rejeitarBtn);
+      botoesDecisao = h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;' }, [aprovarBtn, rejeitarBtn]);
     }
     return h('div', { class: 'card card-pad', style: 'margin-bottom:10px;' }, [
       h('div', { style: 'display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;' }, [
@@ -37292,7 +37300,10 @@ function buildHorariosPage(container, goTo) {
         ]),
         h('span', { style: `font-size:11px;font-weight:800;padding:4px 10px;border-radius:999px;color:${estadoInfo.cor};background:${estadoInfo.bg};white-space:nowrap;` }, estadoInfo.label),
       ]),
-      acoes.length ? h('div', { style: 'display:flex;gap:6px;margin-top:10px;flex-wrap:wrap;' }, acoes) : null,
+      (acoesDiscretas.length || botoesDecisao) ? h('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-top:10px;flex-wrap:wrap;gap:8px;' }, [
+        h('div', { style: 'display:flex;gap:4px;' }, acoesDiscretas),
+        botoesDecisao || h('span', {}),
+      ]) : null,
     ]);
   }
   function buildSecaoPedidosEspeciais() {
@@ -39837,19 +39848,21 @@ function buildHorariosPage(container, goTo) {
         // segue o cursor em qualquer um dos dois segmentos — nunca só no
         // primeiro — para não "desaparecer" ao passar o rato pelo espaço
         // em branco do intervalo ou pelo segundo bloco.
+        // BUG CORRIGIDO 2026-09-10 (Hugo, mobile: "clico em período com
+        // tarefa... depois clico na mesma barra... não surge o nome, só
+        // se clicar noutra barra"): antes só reagia a mouseenter/
+        // mousemove/mouseleave (rato) — em toque, o 1º toque simula um
+        // "hover" que fica preso nesse elemento (nunca chega
+        // mouseleave), por isso tocar OUTRA VEZ na mesma barra nunca
+        // disparava um novo mouseenter; só mudar de barra (hover novo
+        // elemento) voltava a funcionar. instalarTooltipContaHoras já
+        // resolve exatamente isto (mesmo mecanismo usado no Banco de
+        // Horas/Hora Extra/Aniversário) — adiciona também click/touch.
         const ancorasTooltip = blocos.length ? blocos : [trilho];
-        ancorasTooltip.forEach(ancoraTooltip => {
-          ancoraTooltip.addEventListener('mouseenter', (e) => { mostrarTooltipColaborador(textoTooltipColaborador); moverTooltipColaborador(e); });
-          ancoraTooltip.addEventListener('mousemove', moverTooltipColaborador);
-          ancoraTooltip.addEventListener('mouseleave', esconderTooltipColaborador);
-        });
+        ancorasTooltip.forEach(ancoraTooltip => instalarTooltipContaHoras(ancoraTooltip, textoTooltipColaborador));
       }
       const titulo = h('div', { class: 'escala-vertical-coluna-titulo' + (editavel ? ' escala-vertical-coluna-titulo-interativa' : '') }, v.codigo);
-      if (colaboradorNome) {
-        titulo.addEventListener('mouseenter', (e) => { mostrarTooltipColaborador(textoTooltipColaborador); moverTooltipColaborador(e); });
-        titulo.addEventListener('mousemove', moverTooltipColaborador);
-        titulo.addEventListener('mouseleave', esconderTooltipColaborador);
-      }
+      if (colaboradorNome) instalarTooltipContaHoras(titulo, textoTooltipColaborador);
       if (editavel) titulo.addEventListener('click', aoClicarPosicao);
       // Item 3 (Pedidos Especiais): badge de alerta no cabeçalho da
       // coluna quando o colaborador desse dia tem um Pedido Especial
@@ -46663,6 +46676,11 @@ function renderInterno(ehTransicaoDePagina) {
   }
 
   const pageContainerAntigo = mainWrap.querySelector(':scope > .page-container');
+  // CRIADO 2026-09-03 (lazy loading) — ver garantirTabelasCarregadas/
+  // PAGINA_TABELAS_LAZY: calculado aqui em cima (não só dentro do switch,
+  // mais abaixo) para também poder entrar na condição da proteção
+  // "nunca reconstrói em fundo" logo a seguir.
+  const tabelasProntas = garantirTabelasCarregadas(PAGINA_TABELAS_LAZY[STATE.page] || []);
   // Módulos protegidos (ver PAGINAS_NUNCA_RECONSTROI_EM_FUNDO): se já está
   // montado o mesmo módulo e isto NÃO é uma transição real de página, salta
   // a reconstrução por completo — não mexe no .page-container nem invoca
@@ -46670,7 +46688,20 @@ function renderInterno(ehTransicaoDePagina) {
   // (Realtime, refresh silencioso); a vista só volta a desenhar-se quando
   // o utilizador navegar para fora e para dentro outra vez, ou interagir
   // dentro do próprio módulo (rerender() local desse módulo).
-  if (!ehTransicaoDePagina && PAGINAS_NUNCA_RECONSTROI_EM_FUNDO.has(STATE.page) && pageContainerAntigo && pageContainerAntigo.dataset.pagina === STATE.page) {
+  // BUG CORRIGIDO 2026-09-10 (Hugo: "quando carrego no módulo vacinação
+  // nunca abre logo, só à segunda vez"): esta proteção disparava mesmo
+  // enquanto a página ainda só mostrava o estado "A carregar Vacinação…"
+  // (1ª abertura da sessão, tabelas lazy ainda a chegar) — cada uma das 5
+  // tabelas, ao terminar, chamava renderOuAdiarSeOcupado() → render() →
+  // renderInterno(false) (mesma página, não é transição), e esta condição
+  // bloqueava a reconstrução que trocaria o "A carregar…" pelo conteúdo
+  // real, mesmo depois de as 5 tabelas já estarem prontas — só uma
+  // transição REAL (sair e voltar a entrar no módulo) reconstruía de
+  // novo, dessa vez já com tabelasProntas=true. Adicionado `&&
+  // tabelasProntas`: a proteção só se aplica ao conteúdo REAL (com o seu
+  // próprio estado local — separador ativo, formulários abertos), nunca
+  // ao placeholder de carregamento.
+  if (!ehTransicaoDePagina && tabelasProntas && PAGINAS_NUNCA_RECONSTROI_EM_FUNDO.has(STATE.page) && pageContainerAntigo && pageContainerAntigo.dataset.pagina === STATE.page) {
     // A sidebar/topbar continuam a atualizar-se normalmente a seguir a
     // este bloco (badges, destaque de página ativa) — só o conteúdo
     // principal do módulo protegido é que fica intocado.
@@ -46709,10 +46740,10 @@ function renderInterno(ehTransicaoDePagina) {
     STATE.page = 'home';
   }
   if (!handledByAgenda) {
-    // CRIADO 2026-09-03 (lazy loading) — ver garantirTabelasCarregadas/
-    // PAGINA_TABELAS_LAZY: para páginas fora deste mapa (a maioria),
-    // devolve sempre true (nada a esperar, comportamento inalterado).
-    const tabelasProntas = garantirTabelasCarregadas(PAGINA_TABELAS_LAZY[STATE.page] || []);
+    // tabelasProntas já foi calculado mais acima (antes do if/else da
+    // proteção PAGINAS_NUNCA_RECONSTROI_EM_FUNDO) — reaproveitado aqui.
+    // Para páginas fora do mapa PAGINA_TABELAS_LAZY (a maioria), vale
+    // sempre true (nada a esperar, comportamento inalterado).
     switch (STATE.page) {
       case 'home': buildHomepage(pageContainer, goTo); break;
       case 'chat': buildChatPage(pageContainer, goTo); break;
