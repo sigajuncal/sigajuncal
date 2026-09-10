@@ -5905,9 +5905,20 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
 
   async function submitForm() {
     tipoConsultaInvalido = false;
-    if (!String(formDraft.nomeCliente || '').trim()) { formError = 'Por favor, preencha o Nome do Cliente.'; render(); return; }
-    if (!String(formDraft.contacto || '').trim()) { formError = 'Por favor, preencha o Contacto.'; render(); return; }
-    if (!/^[0-9]{9}$/.test(String(formDraft.contacto || '').trim())) { formError = 'O Contacto deve ter exatamente 9 dígitos numéricos.'; render(); return; }
+    // BUG CORRIGIDO 2026-09-10 (Hugo: "quero que a vaga fique
+    // disponível... deveria ser tão simples como editar a hora da
+    // vaga" — mesmo pedido já aplicado em Eventos, agora também aqui):
+    // Nome/Contacto/Tipo de Consulta eram sempre obrigatórios, mesmo
+    // num Encaixe novo — não havia forma de criar só uma vaga livre a
+    // uma hora fora da grelha. Se Nome e Contacto ficarem os dois em
+    // branco num Encaixe novo, cria-se só a vaga (sem cliente).
+    const criandoVagaLivre = showForm === 'encaixe' && !formDraft.editId
+      && !String(formDraft.nomeCliente || '').trim() && !String(formDraft.contacto || '').trim();
+    if (!criandoVagaLivre) {
+      if (!String(formDraft.nomeCliente || '').trim()) { formError = 'Por favor, preencha o Nome do Cliente.'; render(); return; }
+      if (!String(formDraft.contacto || '').trim()) { formError = 'Por favor, preencha o Contacto.'; render(); return; }
+      if (!/^[0-9]{9}$/.test(String(formDraft.contacto || '').trim())) { formError = 'O Contacto deve ter exatamente 9 dígitos numéricos.'; render(); return; }
+    }
     // Nutrição, Prima Corpus, Podologia e Massagem do Marco: sem opção
     // predefinida no dropdown — a colega tem sempre de escolher
     // explicitamente o Tipo de Consulta/Serviço antes de poder confirmar.
@@ -5915,13 +5926,13 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     // silencioso) — ao clicar sem preencher, este erro aparece bem visível
     // (mensagem + campo destacado a vermelho), em vez de o botão
     // simplesmente não reagir.
-    if (agendaTipoConsultaObrigatorio(prestadorKey) && !String(formDraft.tipoConsulta || '').trim()) {
+    if (!criandoVagaLivre && agendaTipoConsultaObrigatorio(prestadorKey) && !String(formDraft.tipoConsulta || '').trim()) {
       tipoConsultaInvalido = true;
       formError = 'Campo Obrigatório: por favor, selecione o Tipo de Consulta.'; render(); return;
     }
     if (showForm === 'encaixe') {
       formDraft.hora = normalizarHora(formDraft.hora);
-      if (!/^\d{2}:\d{2}$/.test(formDraft.hora)) {
+      if (!horaFormatoValido(formDraft.hora)) {
         formError = 'Indica a hora do encaixe no formato HH:MM (ex: 14:10).'; render(); return;
       }
     }
@@ -5931,7 +5942,9 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     // 2) Podem existir DOIS serviços em simultâneo, mas o segundo carece de
     //    validação com a Andreia (tempo necessário) — pede-se confirmação.
     //    Três ou mais em simultâneo é sempre bloqueado.
-    if (agendaEhPrimaCorpus(prestadorKey) && !formDraft.forcarEncaixe) {
+    // Nenhuma destas regras se aplica a criar só uma vaga livre — ainda
+    // não há ninguém marcado, não faz sentido perguntar sobre simultâneos.
+    if (!criandoVagaLivre && agendaEhPrimaCorpus(prestadorKey) && !formDraft.forcarEncaixe) {
       if (normalizarHora(formDraft.hora) > PRIMA_CORPUS_ULTIMA_HORA_INICIO) {
         formError = `ATENÇÃO: Nos serviços Prima Corpus, o último serviço do dia tem de ter início até às ${PRIMA_CORPUS_ULTIMA_HORA_INICIO}.`;
         render();
@@ -5969,7 +5982,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       prestadorKey, data: dateISO, hora: formDraft.hora, duracaoMin,
       tipoConsulta: formDraft.tipoConsulta || '', nomeCliente: formatarNomeUtente(formDraft.nomeCliente),
       contacto: formDraft.contacto || '', aviso: !!formDraft.aviso, observacoes: formDraft.observacoes || '',
-      tipoLinha: 'vaga', estado: 'agendada',
+      tipoLinha: 'vaga', estado: criandoVagaLivre ? '' : 'agendada',
     };
     // Responsável: definido só na criação (nunca reescrito ao editar —
     // fica sempre a identificar quem criou a marcação). Última
@@ -6104,6 +6117,32 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       if (ok) { STATE.agendaMarcacoes = STATE.agendaMarcacoes.filter(x => x.id !== m.id); if (onSaved) onSaved(); render(); }
       else showDbErrorToast('Não foi possível desbloquear a vaga');
     });
+  }
+  // Vaga livre criada por Encaixe (sem cliente) — pedido explícito
+  // 2026-09-10, mesma funcionalidade do módulo de Eventos, mas SEM
+  // "Editar Hora" aqui (reduzir complexidade: essa parte fica só em
+  // Eventos, por agora). "Marcar" reabre pelo caminho de EDIÇÃO
+  // (openEditarMarcacao), nunca cria um registo novo — evita duplicar a
+  // vaga ou entrar em conflito consigo própria.
+  function vagaLivreSemCliente(m) {
+    return !!m && m.tipoLinha !== 'bloqueado' && !String(m.nomeCliente || '').trim() && !String(m.contacto || '').trim();
+  }
+  function removerVagaLivreAgenda(m) {
+    confirmDialog(`Remover a vaga das ${m.hora}, sem cliente?`, async () => {
+      const ok = await dbDelete('agendaMarcacoes', m.id);
+      if (ok) { STATE.agendaMarcacoes = STATE.agendaMarcacoes.filter(x => x.id !== m.id); if (onSaved) onSaved(); render(); }
+      else showDbErrorToast('Não foi possível remover a vaga');
+    });
+  }
+  function buildLinhaVagaLivreAgenda(m, hora, ehEncaixe) {
+    const bookBtn = h('button', { class: 'btn-fab-sm tone-blue', title: 'Marcar', 'aria-label': 'Marcar' }, Icon('plus', { size: 13, strokeWidth: 2.4 }));
+    bookBtn.addEventListener('click', () => requireAuth(() => openEditarMarcacao(m)));
+    const removeBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Remover esta vaga', 'aria-label': 'Remover esta vaga' }, Icon('trash', { size: 12, strokeWidth: 2.2 }));
+    removeBtn.addEventListener('click', () => requireAuth(() => removerVagaLivreAgenda(m)));
+    return h('div', { class: 'agenda-slot-row agenda-slot-livre agenda-vaga-futura' + (ehEncaixe ? ' agenda-slot-encaixe' : '') }, [
+      h('span', { class: 'agenda-slot-hora' }, hora + (ehEncaixe ? ' · Encaixe' : '')), h('span', { class: 'agenda-slot-label cell-muted' }, 'Vaga livre'),
+      h('div', { class: 'row-actions' }, [bookBtn, removeBtn]),
+    ]);
   }
   function eliminarMarcacao(m) {
     confirmDialog(`Eliminar a marcação de ${m.nomeCliente || 'sem nome'}?`, async () => {
@@ -6338,8 +6377,9 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       estadoSelect.addEventListener('change', () => { formDraft.estado = estadoSelect.value; });
     }
 
-    campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Nome do Cliente *'), nomeInput, attachAvisoNomeUtente(nomeInput)]));
-    campos.push(h('div', { class: 'field field-sm' }, [h('label', {}, 'Contacto *'), contactoInput]));
+    const ehVagaLivreNova = showForm === 'encaixe' && !formDraft.editId;
+    campos.push(h('div', { class: 'field span2' }, [h('label', {}, ehVagaLivreNova ? 'Nome do Cliente' : 'Nome do Cliente *'), nomeInput, attachAvisoNomeUtente(nomeInput)]));
+    campos.push(h('div', { class: 'field field-sm' }, [h('label', {}, ehVagaLivreNova ? 'Contacto' : 'Contacto *'), contactoInput]));
     if (estadoSelect) {
       campos.push(h('div', { class: 'field field-sm' }, [h('label', {}, 'Estado *'), estadoSelect]));
     }
@@ -6348,6 +6388,13 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Responsável pela Marcação'), responsavelInput]));
     if (ultimaAtualizacaoInput) {
       campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Última Atualização Por'), ultimaAtualizacaoInput]));
+    }
+    // Pedido explícito 2026-09-10 (mesma funcionalidade já usada em
+    // Eventos): deixar claro que dá para criar só a vaga (sem marcar
+    // ninguém) num Encaixe novo — Nome/Contacto deixam de ser
+    // obrigatórios se ficarem os dois em branco (ver submitForm).
+    if (ehVagaLivreNova) {
+      campos.push(h('p', { class: 'field-helper-text span2', style: 'margin:0;' }, 'Deixa Nome e Contacto em branco para criar só a vaga livre a esta hora, sem marcar já ninguém.'));
     }
 
     const duracaoInfo = h('p', { class: 'field-helper-text' }, `Duração desta marcação: ${agendaDuracaoPorTipo(prestadorKey, formDraft.tipoConsulta, formDraft.duracaoManual)} minutos.`);
@@ -6414,6 +6461,10 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
         linhasGrade.push({ hora, node });
         return;
       }
+      if (vagaLivreSemCliente(m)) {
+        linhasGrade.push({ hora, node: isPast ? h('div', { class: 'agenda-slot-row agenda-vaga-passada' }, [h('span', { class: 'agenda-slot-hora' }, hora), h('span', { class: 'agenda-slot-label cell-muted' }, '—')]) : buildLinhaVagaLivreAgenda(m, hora, false) });
+        return;
+      }
       const primeiraLinha = agendaHorariosOcupados(m.hora, m.duracaoMin || 15, prestadorKey)[0] === hora;
       if (!primeiraLinha) {
         // Slot "arrastado" por uma marcação mais longa que começou antes
@@ -6472,6 +6523,12 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     });
 
     const linhasEncaixe = encaixes.map(m => {
+      if (vagaLivreSemCliente(m)) {
+        const node = isPast
+          ? h('div', { class: 'agenda-slot-row agenda-slot-encaixe agenda-vaga-passada' }, [h('span', { class: 'agenda-slot-hora' }, `${m.hora} · Encaixe`), h('span', { class: 'agenda-slot-label cell-muted' }, '—')])
+          : buildLinhaVagaLivreAgenda(m, m.hora, true);
+        return { hora: normalizarHora(m.hora), node };
+      }
       // Lembrete 🔔 direto + olho 👁 (só com observações) + checkbox de
       // seleção (barra flutuante para o resto).
       const acoes = [avisoToggleBtn(m)];
@@ -9986,6 +10043,21 @@ function normalizarHora(str) {
   if (!h) h = '00';
   if (!m) m = '00';
   return `${h.padStart(2, '0')}:${m.padStart(2, '0')}`;
+}
+// BUG CORRIGIDO 2026-09-10 (Hugo: "impede estes erros no formato de hora
+// em toda a app" — reproduzido com um caso real: "15:78" foi aceite e
+// gravado como Encaixe, deixando o registo original de 14:15 órfão).
+// Todos os campos de hora "HH:MM" da app (Encaixe, Editar Hora, horário
+// de eventos, etc.) só validavam o FORMATO com /^\d{2}:\d{2}$/ — isto
+// aceita "15:78" ou "99:00" sem problema, porque a regex não olha para o
+// VALOR de cada parte, só para "2 dígitos : 2 dígitos". Esta função
+// valida também o intervalo (horas 00-23, minutos 00-59) — usar sempre
+// esta em vez da regex sozinha para validar uma hora escrita à mão.
+function horaFormatoValido(str) {
+  const m = /^(\d{2}):(\d{2})$/.exec(String(str || ''));
+  if (!m) return false;
+  const hh = parseInt(m[1], 10), mm = parseInt(m[2], 10);
+  return hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59;
 }
 // Junta hora+minuto (já como números/strings soltas) sempre em "HH:MM",
 // cortando horas/minutos fora do intervalo válido (nunca 25:99) — usada
@@ -21075,7 +21147,7 @@ function buildLembretesPage(container, goTo, embedded) {
       rerender();
       return;
     }
-    if (!draft.todoDia && !/^\d{2}:\d{2}$/.test(String(draft.hora || ''))) {
+    if (!draft.todoDia && !horaFormatoValido(String(draft.hora || ''))) {
       formError = 'Indica a Hora (ou ativa "Todo o dia").';
       rerender();
       return;
@@ -22415,6 +22487,15 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
   let formDraft = {};
   let formError = '';
   let saving = false;
+  // Editar a Hora de uma vaga livre já existente (pedido explícito
+  // 2026-09-10: "não era mais fácil eu chegar a essa de 15:15 e alterar
+  // para 15?" — em vez de criar um Encaixe novo a par, que deixava a
+  // vaga automática antiga por preencher lá no meio) — troca só o campo
+  // `hora` do registo, sem tocar em mais nada; funciona tanto numa vaga
+  // da grelha automática como numa de Encaixe.
+  let editandoHoraVagaId = null;
+  let editandoHoraValor = '';
+  let editandoHoraErro = '';
 
   function marcacoesDoGrupo(grupo) { return marcacoes.filter(m => (m.grupoVaga || 'principal') === grupo); }
 
@@ -22434,10 +22515,10 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     if (tipo === 'Rastreio' && !String(cfgDraft.subtipoRastreio || '').trim()) { cfgError = 'Por favor, escolha o Tipo de Rastreio.'; render(); return; }
     if (tipo === 'Rastreio' && cfgDraft.subtipoRastreio === 'Outro' && !String(cfgDraft.subtipoRastreioOutro || '').trim()) { cfgError = 'Indica o tipo de rastreio em "Outro".'; render(); return; }
     if (tipo === 'Conselheira' && !String(cfgDraft.marcaConselheira || '').trim()) { cfgError = 'Por favor, preencha a Marca.'; render(); return; }
-    if ((tipo === 'Rastreio' || tipo === 'AFA') && (!/^\d{2}:\d{2}$/.test(String(cfgDraft.horaInicial || '')) || !/^\d{2}:\d{2}$/.test(String(cfgDraft.horaFinal || '')))) {
+    if ((tipo === 'Rastreio' || tipo === 'AFA') && (!horaFormatoValido(String(cfgDraft.horaInicial || '')) || !horaFormatoValido(String(cfgDraft.horaFinal || '')))) {
       cfgError = 'Indica a Hora Inicial e a Hora Final no formato HH:MM.'; render(); return;
     }
-    if (tipo === 'Conselheira' && cfgDraft.miniFaciais && (!/^\d{2}:\d{2}$/.test(String(cfgDraft.miniFaciaisHoraInicial || '')) || !/^\d{2}:\d{2}$/.test(String(cfgDraft.miniFaciaisHoraFinal || '')))) {
+    if (tipo === 'Conselheira' && cfgDraft.miniFaciais && (!horaFormatoValido(String(cfgDraft.miniFaciaisHoraInicial || '')) || !horaFormatoValido(String(cfgDraft.miniFaciaisHoraFinal || '')))) {
       cfgError = 'Indica a Hora Inicial e a Hora Final das Mini-Faciais no formato HH:MM.'; render(); return;
     }
     cfgError = '';
@@ -22745,13 +22826,26 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
   function cancelForm() { showForm = false; formError = ''; render(); }
 
   async function submitForm() {
-    if (!String(formDraft.nomeCliente || '').trim()) { formError = 'Por favor, preencha o Nome do Cliente.'; render(); return; }
-    if (!String(formDraft.contacto || '').trim()) { formError = 'Por favor, preencha o Contacto.'; render(); return; }
-    if (!/^[0-9]{9}$/.test(String(formDraft.contacto || '').trim())) { formError = 'O Contacto deve ter exatamente 9 dígitos numéricos.'; render(); return; }
+    // BUG CORRIGIDO 2026-09-10 (Hugo: "quero que a vaga fique disponível,
+    // não marcada... deveria ser tão simples como editar a hora da
+    // vaga"): Nome/Contacto eram sempre obrigatórios, mesmo num Encaixe
+    // novo — não havia forma de criar só uma vaga livre a uma hora à
+    // parte da grelha automática (só era possível ao abrir o dia). Se os
+    // dois campos ficarem em branco num Encaixe novo, passa a criar
+    // apenas a vaga (sem cliente), tal como qualquer vaga livre da
+    // grelha — continua obrigatório preencher os dois se quiseres
+    // mesmo marcar alguém.
+    const criandoVagaLivre = showForm.encaixe && !showForm.editar
+      && !String(formDraft.nomeCliente || '').trim() && !String(formDraft.contacto || '').trim();
+    if (!criandoVagaLivre) {
+      if (!String(formDraft.nomeCliente || '').trim()) { formError = 'Por favor, preencha o Nome do Cliente.'; render(); return; }
+      if (!String(formDraft.contacto || '').trim()) { formError = 'Por favor, preencha o Contacto.'; render(); return; }
+      if (!/^[0-9]{9}$/.test(String(formDraft.contacto || '').trim())) { formError = 'O Contacto deve ter exatamente 9 dígitos numéricos.'; render(); return; }
+    }
     let hora = showForm.hora;
     if (showForm.encaixe) {
       formDraft.hora = normalizarHora(formDraft.hora);
-      if (!/^\d{2}:\d{2}$/.test(formDraft.hora)) { formError = 'Indica a hora do encaixe no formato HH:MM (ex: 14:10).'; render(); return; }
+      if (!horaFormatoValido(formDraft.hora)) { formError = 'Indica a hora do encaixe no formato HH:MM (ex: 14:10).'; render(); return; }
       hora = formDraft.hora;
       const colide = marcacoesDoGrupo(showForm.grupo).some(m => m.hora === hora && m.id !== showForm.vagaId);
       if (colide) { formError = `ATENÇÃO: já existe uma vaga às ${hora} neste grupo. Escolhe outra hora.`; render(); return; }
@@ -22759,7 +22853,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     formError = '';
     saving = true; render();
     const payload = {
-      eventoId: currentEvento.id, hora, grupoVaga: showForm.grupo, tipoLinha: 'vaga', estado: 'agendada',
+      eventoId: currentEvento.id, hora, grupoVaga: showForm.grupo, tipoLinha: 'vaga', estado: criandoVagaLivre ? '' : 'agendada',
       nomeCliente: formatarNomeUtente(formDraft.nomeCliente), nFicha: formDraft.nFicha || '', contacto: formDraft.contacto || '',
       observacoes: formDraft.observacoes || '', aviso: !!formDraft.aviso, responsavel: currentUserName(),
     };
@@ -22802,6 +22896,53 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       if (ok) { marcacoes = marcacoes.filter(x => x.id !== m.id); if (onSaved) onSaved(); render(); }
       else showDbErrorToast('Não foi possível desbloquear a vaga');
     });
+  }
+  // Remove uma vaga livre criada por Encaixe (sem cliente) — mesmo
+  // mecanismo de desbloquearVaga (apaga o registo todo), só com texto
+  // próprio; pedido explícito 2026-09-10.
+  function removerEncaixeLivre(m) {
+    confirmDialog(`Remover a vaga das ${m.hora} (encaixe, sem cliente)?`, async () => {
+      const ok = await dbDeleteMarcacao(m.id);
+      if (ok) { marcacoes = marcacoes.filter(x => x.id !== m.id); if (onSaved) onSaved(); render(); }
+      else showDbErrorToast('Não foi possível remover a vaga');
+    });
+  }
+  function abrirEdicaoHoraVaga(m) {
+    editandoHoraVagaId = m.id; editandoHoraValor = m.hora; editandoHoraErro = ''; render();
+  }
+  function cancelarEdicaoHoraVaga() {
+    editandoHoraVagaId = null; editandoHoraErro = ''; render();
+  }
+  async function guardarEdicaoHoraVaga(m, grupo) {
+    const novaHora = normalizarHora(editandoHoraValor);
+    if (!horaFormatoValido(novaHora)) { editandoHoraErro = 'Indica a hora no formato HH:MM, entre 00:00 e 23:59 (ex: 15:00).'; render(); return; }
+    if (novaHora === m.hora) { editandoHoraVagaId = null; render(); return; }
+    const colide = marcacoesDoGrupo(grupo).some(m2 => m2.hora === novaHora && m2.id !== m.id);
+    if (colide) { editandoHoraErro = `Já existe uma vaga às ${novaHora} neste grupo. Escolhe outra hora.`; render(); return; }
+    const horaAntiga = m.hora;
+    const updated = await dbUpdateMarcacao(m.id, { hora: novaHora }, m.updatedAt);
+    if (updated) {
+      marcacoes = marcacoes.map(x => x.id === m.id ? updated : x);
+      // BUG CORRIGIDO 2026-09-10 (Hugo: "aquelas vagas já não permitem
+      // edição depois de editadas uma vez a hora"): mover uma vaga da
+      // grelha automática deixava a posição antiga completamente órfã
+      // (sem nenhum registo) — perdia o lápis de Editar Hora e o cadeado
+      // de Bloquear, só voltava a ganhar registo se alguém a marcasse de
+      // novo. Recria automaticamente uma vaga livre vazia na hora
+      // antiga, sempre que era mesmo uma posição da grelha automática e
+      // ninguém a ocupou entretanto — nunca perde estas ações.
+      const slotsPadraoAntigo = slotsDoGrupoDe(m);
+      if (slotsPadraoAntigo.includes(horaAntiga) && !marcacoes.some(x => x.hora === horaAntiga && (x.grupoVaga || 'principal') === grupo)) {
+        const recriada = await dbInsertMarcacao({ eventoId: currentEvento.id, hora: horaAntiga, grupoVaga: grupo, tipoLinha: 'vaga', estado: '', aviso: false });
+        if (recriada) marcacoes = [...marcacoes, recriada];
+      }
+      editandoHoraVagaId = null; editandoHoraErro = '';
+      if (onSaved) onSaved();
+      render();
+    } else {
+      editandoHoraErro = `Não foi possível guardar. ${lastDbError || 'Tenta novamente.'}`;
+      render();
+    }
   }
   function eliminarMarcacao(m) {
     confirmDialog(`Eliminar a marcação de ${m.nomeCliente || 'sem nome'}?`, async () => {
@@ -22952,14 +23093,20 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       estadoSelect.addEventListener('change', () => { formDraft.estado = estadoSelect.value; });
     }
 
-    campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Nome do Cliente *'), nomeInput, attachAvisoNomeUtente(nomeInput)]));
+    campos.push(h('div', { class: 'field span2' }, [h('label', {}, showForm.encaixe && !showForm.editar ? 'Nome do Cliente' : 'Nome do Cliente *'), nomeInput, attachAvisoNomeUtente(nomeInput)]));
     campos.push(h('div', { class: 'field field-xs' }, [h('label', {}, 'Nº Ficha'), fichaInput]));
-    campos.push(h('div', { class: 'field field-sm' }, [h('label', {}, 'Contacto *'), contactoInput]));
+    campos.push(h('div', { class: 'field field-sm' }, [h('label', {}, showForm.encaixe && !showForm.editar ? 'Contacto' : 'Contacto *'), contactoInput]));
     if (estadoSelect) {
       campos.push(h('div', { class: 'field field-sm' }, [h('label', {}, 'Estado *'), estadoSelect]));
     }
     campos.push(h('label', { class: 'checkbox-field' }, [avisoCb, h('span', {}, 'Cliente foi avisado')]));
     campos.push(h('div', { class: 'field span2' }, [h('label', {}, 'Observações'), obsInput]));
+    // Pedido explícito 2026-09-10: deixar claro que dá para criar só a
+    // vaga (sem marcar ninguém), num Encaixe novo — Nome/Contacto deixam
+    // de ser obrigatórios se ficarem os dois em branco (ver submitForm).
+    if (showForm.encaixe && !showForm.editar) {
+      campos.push(h('p', { class: 'field-helper-text span2', style: 'margin:0;' }, 'Deixa Nome e Contacto em branco para criar só a vaga livre a esta hora, sem marcar já ninguém.'));
+    }
 
     const saveBtn = h('button', { class: 'btn btn-primary', onclick: saving ? null : () => requireAuth(submitForm), disabled: saving ? 'disabled' : undefined }, saving ? 'A guardar…' : (showForm.editar ? 'Guardar Alterações' : 'Confirmar Marcação'));
     const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: cancelForm }, 'Cancelar');
@@ -22973,22 +23120,72 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     const doGrupo = marcacoesDoGrupo(grupo);
     const ocupacao = {};
     doGrupo.forEach(m => { ocupacao[m.hora] = m; });
+    // "Editar Hora" (pedido explícito 2026-09-10: "não era mais fácil eu
+    // chegar a essa de 15:15 e alterar para 15?" + "quero que as
+    // marcações fiquem organizadas de forma cronológica se editar para
+    // uma hora diferente") — funciona em QUALQUER linha com registo (m):
+    // vaga livre OU já ocupada por um cliente, na grelha automática OU
+    // num Encaixe. Troca só o campo `hora`; a reordenação cronológica é
+    // automática, não precisa de nenhuma lógica extra — tanto a grelha
+    // (sempre por slotsPadrao) como os Encaixes (ordenarPorHora) como a
+    // junção final dos dois (linhasGrade.concat(linhasEncaixe).sort(...)
+    // mais abaixo) já ordenam sempre pela hora atual de cada registo.
+    function buildLinhaEdicaoHora(m, grupo, sufixo, classeExtra) {
+      const horaInput = h('input', { class: 'input', style: 'width:80px;flex:none;', placeholder: 'HH:MM' });
+      horaInput.value = editandoHoraValor;
+      horaInput.addEventListener('input', () => { editandoHoraValor = horaInput.value; });
+      horaInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') requireAuth(() => guardarEdicaoHoraVaga(m, grupo)); });
+      const guardarBtn = h('button', { class: 'btn btn-primary', style: 'padding:4px 10px;font-size:12px;' }, 'Guardar');
+      guardarBtn.addEventListener('click', () => requireAuth(() => guardarEdicaoHoraVaga(m, grupo)));
+      const cancelarBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Cancelar' }, Icon('x', { size: 13, strokeWidth: 2.4 }));
+      cancelarBtn.addEventListener('click', cancelarEdicaoHoraVaga);
+      const contextoNome = m.nomeCliente ? h('span', { class: 'cell-muted', style: 'font-size:11.5px;' }, `${m.nomeCliente}${sufixo}`) : h('span', { class: 'cell-muted', style: 'font-size:11.5px;' }, `Vaga livre${sufixo}`);
+      const linha = h('div', { class: 'agenda-slot-row agenda-slot-livre agenda-vaga-futura' + classeExtra }, [
+        h('div', { style: 'display:flex;flex-direction:column;gap:2px;' }, [horaInput, contextoNome]),
+        h('div', { class: 'row-actions' }, [guardarBtn, cancelarBtn]),
+      ]);
+      return editandoHoraErro ? h('div', {}, [linha, h('p', { class: 'form-error', style: 'margin:2px 0 0;' }, editandoHoraErro)]) : linha;
+    }
+    function editarHoraBtnPara(m) {
+      const btn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Editar Hora', 'aria-label': 'Editar Hora' }, Icon('pencil', { size: 12, strokeWidth: 2.2 }));
+      btn.addEventListener('click', () => requireAuth(() => abrirEdicaoHoraVaga(m)));
+      return btn;
+    }
+    // Vaga livre (grelha automática OU Encaixe) — mesmo aspeto/ações nos
+    // dois casos; só acrescenta "· Encaixe" e o botão Remover quando é um
+    // Encaixe.
+    function buildLinhaVagaLivre(m, hora, ehEncaixe) {
+      const sufixo = ehEncaixe ? ' · Encaixe' : '';
+      const classeExtra = ehEncaixe ? ' agenda-slot-encaixe' : '';
+      if (isPast) {
+        return h('div', { class: 'agenda-slot-row agenda-vaga-passada' + classeExtra }, [h('span', { class: 'agenda-slot-hora' }, hora + sufixo), h('span', { class: 'agenda-slot-label cell-muted' }, '—')]);
+      }
+      const acoes = [];
+      const bookBtn = h('button', { class: 'btn-fab-sm tone-blue', title: 'Marcar', 'aria-label': 'Marcar' }, Icon('plus', { size: 13, strokeWidth: 2.4 }));
+      bookBtn.addEventListener('click', () => requireAuth(() => abrirNovaMarcacao(grupo, hora, m)));
+      acoes.push(bookBtn);
+      if (m) acoes.push(editarHoraBtnPara(m));
+      if (ehEncaixe) {
+        const removeBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Remover esta vaga', 'aria-label': 'Remover esta vaga' }, Icon('trash', { size: 12, strokeWidth: 2.2 }));
+        removeBtn.addEventListener('click', () => requireAuth(() => removerEncaixeLivre(m)));
+        acoes.push(removeBtn);
+      } else {
+        const blockBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Bloquear vaga', 'aria-label': 'Bloquear vaga' }, Icon('lockClosed', { size: 12, strokeWidth: 2.2 }));
+        blockBtn.addEventListener('click', () => requireAuth(() => bloquearVaga(grupo, hora, m)));
+        acoes.push(blockBtn);
+      }
+      return h('div', { class: 'agenda-slot-row agenda-slot-livre agenda-vaga-futura' + classeExtra }, [
+        h('span', { class: 'agenda-slot-hora' }, hora + sufixo), h('span', { class: 'agenda-slot-label cell-muted' }, 'Vaga livre'),
+        h('div', { class: 'row-actions' }, acoes),
+      ]);
+    }
     const linhasGrade = slotsPadrao.map(hora => {
       const m = ocupacao[hora];
       let node;
-      if (vagaVazia(m)) {
-        if (isPast) {
-          node = h('div', { class: 'agenda-slot-row agenda-vaga-passada' }, [h('span', { class: 'agenda-slot-hora' }, hora), h('span', { class: 'agenda-slot-label cell-muted' }, '—')]);
-        } else {
-          const bookBtn = h('button', { class: 'btn-fab-sm tone-blue', title: 'Marcar', 'aria-label': 'Marcar' }, Icon('plus', { size: 13, strokeWidth: 2.4 }));
-          bookBtn.addEventListener('click', () => requireAuth(() => abrirNovaMarcacao(grupo, hora, m)));
-          const blockBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Bloquear vaga', 'aria-label': 'Bloquear vaga' }, Icon('lockClosed', { size: 12, strokeWidth: 2.2 }));
-          blockBtn.addEventListener('click', () => requireAuth(() => bloquearVaga(grupo, hora, m)));
-          node = h('div', { class: 'agenda-slot-row agenda-slot-livre agenda-vaga-futura' }, [
-            h('span', { class: 'agenda-slot-hora' }, hora), h('span', { class: 'agenda-slot-label cell-muted' }, 'Vaga livre'),
-            h('div', { class: 'row-actions' }, [bookBtn, blockBtn]),
-          ]);
-        }
+      if (m && editandoHoraVagaId === m.id) {
+        node = buildLinhaEdicaoHora(m, grupo, '', '');
+      } else if (vagaVazia(m)) {
+        node = buildLinhaVagaLivre(m, hora, false);
       } else if (m.tipoLinha === 'bloqueado') {
         const acoes = [];
         if (!isPast || isMasterUser()) {
@@ -23007,6 +23204,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
         // explícito 2026-08-08).
         const acoes = [avisoToggleBtn(m)];
         if (m.observacoes && m.observacoes.trim()) acoes.push(obsEyeButton(m.observacoes));
+        if (!isPast) acoes.push(editarHoraBtnPara(m));
         if (!isPast || isMasterUser()) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
         node = h('div', { class: 'agenda-slot-row agenda-slot-ocupado' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : '') }, [
           h('span', { class: 'agenda-slot-hora' }, hora),
@@ -23022,10 +23220,23 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
 
     const encaixes = ordenarPorHora(doGrupo.filter(m => !slotsPadrao.includes(m.hora)));
     const linhasEncaixe = encaixes.map(m => {
+      // Encaixe sem cliente (vaga livre criada fora da grelha automática,
+      // pedido explícito 2026-09-10: "quero que a vaga fique disponível...
+      // deveria ser tão simples como editar a hora da vaga") — mesmo
+      // aspeto/ações de uma vaga livre normal (Marcar/Remover), só com a
+      // etiqueta "· Encaixe" a identificar que está fora do espaçamento
+      // fixo do dia.
+      if (editandoHoraVagaId === m.id) {
+        return { hora: normalizarHora(m.hora), node: buildLinhaEdicaoHora(m, grupo, ' · Encaixe', ' agenda-slot-encaixe') };
+      }
+      if (vagaVazia(m)) {
+        return { hora: normalizarHora(m.hora), node: buildLinhaVagaLivre(m, m.hora, true) };
+      }
       // Lembrete 🔔 direto + olho 👁 (só com observações) + checkbox de
       // seleção (barra flutuante para o resto).
       const acoes = [avisoToggleBtn(m)];
       if (m.observacoes && m.observacoes.trim()) acoes.push(obsEyeButton(m.observacoes));
+      if (!isPast) acoes.push(editarHoraBtnPara(m));
       if (!isPast || isMasterUser()) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
       const node = h('div', { class: 'agenda-slot-row agenda-slot-encaixe' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : '') }, [
         h('span', { class: 'agenda-slot-hora' }, `${m.hora} · Encaixe`),
@@ -43248,7 +43459,7 @@ function entregaBlocoJaComecou(r) {
 // Hora-limite efetiva: usa a Hora Limite Específica se definida, senão o
 // fim do Bloco Horário selecionado.
 function entregaHoraLimiteEfetiva(r) {
-  if (r.horaLimite && /^\d{2}:\d{2}$/.test(r.horaLimite)) return r.horaLimite;
+  if (r.horaLimite && horaFormatoValido(r.horaLimite)) return r.horaLimite;
   return blocoHorarioFimHora(r.blocoHorario);
 }
 function entregaLimiteTimestamp(r) {
