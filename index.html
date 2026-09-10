@@ -22857,6 +22857,17 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       nomeCliente: formatarNomeUtente(formDraft.nomeCliente), nFicha: formDraft.nFicha || '', contacto: formDraft.contacto || '',
       observacoes: formDraft.observacoes || '', aviso: !!formDraft.aviso, responsavel: currentUserName(),
     };
+    // BUG CORRIGIDO 2026-09-10 (Hugo: "se eu edito a hora de uma vaga
+    // existente, a nova deve substituir a anterior e não deve ser
+    // entendida como um encaixe... encaixe é uma adição, aqui é uma
+    // substituição"): só uma vaga criada de raiz por "Nova Linha de
+    // Encaixe" é mesmo um Encaixe — marca-se aqui, na criação, e nunca
+    // mais se mexe neste campo (Editar Hora só grava `hora`, nunca isto).
+    // A grelha usa este campo para decidir se mostra "· Encaixe" +
+    // Remover, ou se trata a vaga como parte normal do dia (Bloquear),
+    // independentemente de a hora atual bater ou não com o espaçamento
+    // automático.
+    if (showForm.encaixe && !showForm.editar) payload.origemEncaixe = true;
     // Edição de uma marcação já existente: grava o Estado escolhido no
     // próprio formulário (ver campo "Estado" mais abaixo) — deixa de ficar
     // sempre preso ao estado com que a marcação foi criada.
@@ -23232,17 +23243,20 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
 
     const encaixes = ordenarPorHora(doGrupo.filter(m => !slotsPadrao.includes(m.hora)));
     const linhasEncaixe = encaixes.map(m => {
-      // Encaixe sem cliente (vaga livre criada fora da grelha automática,
-      // pedido explícito 2026-09-10: "quero que a vaga fique disponível...
-      // deveria ser tão simples como editar a hora da vaga") — mesmo
-      // aspeto/ações de uma vaga livre normal (Marcar/Remover), só com a
-      // etiqueta "· Encaixe" a identificar que está fora do espaçamento
-      // fixo do dia.
+      // BUG CORRIGIDO 2026-09-10 (Hugo: "se eu edito a hora de uma vaga
+      // existente, a nova deve substituir a anterior e não deve ser
+      // entendida como um encaixe... encaixe é uma adição, aqui é uma
+      // substituição"): só mostra "· Encaixe" (e o botão Remover, em vez
+      // de Bloquear) quando a vaga nasceu mesmo de "Nova Linha de
+      // Encaixe" (m.origemEncaixe) — uma vaga só ali por ter tido a hora
+      // editada continua a comportar-se como uma vaga normal do dia.
+      const sufixoEncaixe = m.origemEncaixe ? ' · Encaixe' : '';
+      const classeEncaixe = m.origemEncaixe ? ' agenda-slot-encaixe' : '';
       if (editandoHoraVagaId === m.id) {
-        return { hora: normalizarHora(m.hora), node: buildLinhaEdicaoHora(m, grupo, ' · Encaixe', ' agenda-slot-encaixe') };
+        return { hora: normalizarHora(m.hora), node: buildLinhaEdicaoHora(m, grupo, sufixoEncaixe, classeEncaixe) };
       }
       if (vagaVazia(m)) {
-        return { hora: normalizarHora(m.hora), node: buildLinhaVagaLivre(m, m.hora, true) };
+        return { hora: normalizarHora(m.hora), node: buildLinhaVagaLivre(m, m.hora, !!m.origemEncaixe) };
       }
       // Lembrete 🔔 direto + olho 👁 (só com observações) + checkbox de
       // seleção (barra flutuante para o resto).
@@ -23250,8 +23264,8 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       if (m.observacoes && m.observacoes.trim()) acoes.push(obsEyeButton(m.observacoes));
       if (!isPast) acoes.push(editarHoraBtnPara(m));
       if (!isPast || isMasterUser()) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
-      const node = h('div', { class: 'agenda-slot-row agenda-slot-encaixe' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : '') }, [
-        h('span', { class: 'agenda-slot-hora' }, `${m.hora} · Encaixe`),
+      const node = h('div', { class: 'agenda-slot-row' + classeEncaixe + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : '') }, [
+        h('span', { class: 'agenda-slot-hora' }, `${m.hora}${sufixoEncaixe}`),
         h('span', { class: 'agenda-slot-label cell-strong' }, [
           h('span', { class: 'agenda-slot-nome' }, `${m.nomeCliente || '—'}${estadoSufixoVaga(m)}`),
           m.contacto ? h('span', { class: 'agenda-slot-contacto' }, `📞 ${formatarTelefonePT(m.contacto)}`) : null,
