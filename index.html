@@ -12616,12 +12616,14 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
     const botoesCabecalho = h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;' }, [buildBotaoRotasPedidos()]);
     if (extraButton && !showForm) {
       botoesCabecalho.appendChild(h('button', { class: 'btn btn-secondary', onclick: extraButton.onClick }, extraButton.label));
-      // Download em Excel dos dados totais de Orçamentos Conhecidos — só faz
-      // sentido junto ao botão "Orçamentos Conhecidos" (pedido 2026-09-14).
+      // Download em Excel com TODOS os Pedidos (Manipulados, Ortopedia,
+      // Ervanária, Veterinária, Outros) — junto ao botão "Orçamentos
+      // Conhecidos" (pedido 2026-09-14, corrigido para incluir todos os
+      // Pedidos e não só os Orçamentos Conhecidos).
       if (extraButton.label === 'Orçamentos Conhecidos') {
         botoesCabecalho.appendChild(h('button', {
-          class: 'btn btn-secondary', title: 'Download em Excel dos dados totais de Orçamentos Conhecidos',
-          onclick: exportarOrcamentosConhecidosExcel,
+          class: 'btn btn-secondary', title: 'Download em Excel de todos os Pedidos (Manipulados, Ortopedia, Ervanária, Veterinária, Outros)',
+          onclick: exportarPedidosExcel,
         }, [Icon('download', { size: 14, strokeWidth: 2.2 }), ' Excel']));
       }
     }
@@ -23470,28 +23472,50 @@ function checkOrcamentoRowRequired(d) {
   return missing;
 }
 
-// Download em Excel dos dados totais de Orçamentos Conhecidos — pedido
-// explícito junto ao botão "Orçamentos Conhecidos" (2026-09-14). Reutiliza
-// a mesma biblioteca/mecanismo do Backup Excel (XLSX + dispararDownloadBlob)
-// para consistência e para evitar duplicar a lógica de download.
-function exportarOrcamentosConhecidosExcel() {
+// Converte um registo de Pedidos para uma linha de Excel com os nomes de
+// coluna "amigáveis" do formulário (schema), em vez das chaves internas —
+// datas formatadas e checkboxes como Sim/Não, tal como aparecem na app.
+function registoPedidoParaLinhaExcel(schema, r) {
+  const linha = {};
+  schema.forEach(f => {
+    let v = r[f.name];
+    if (f.type === 'checkbox') v = v ? 'Sim' : 'Não';
+    else if (f.type === 'date') v = v ? formatDate(v) : '';
+    else v = (v === undefined || v === null) ? '' : v;
+    linha[f.label] = v;
+  });
+  return linha;
+}
+// As 5 categorias de Pedidos da app (Ortopedia tem página própria, fora do
+// buildCategoryPage genérico, mas entra aqui na mesma) — cada uma vira uma
+// aba própria no Excel exportado.
+const CATEGORIAS_PEDIDOS_EXCEL = [
+  { key: 'manipulados', schema: manipuladosSchema, aba: 'Pedidos_Manipulados' },
+  { key: 'ortopedia', schema: ortopediaSchema, aba: 'Pedidos_Ortopedia' },
+  { key: 'ervanaria', schema: ervanariaSchema, aba: 'Pedidos_Ervanaria' },
+  { key: 'veterinaria', schema: veterinariaSchema, aba: 'Pedidos_Veterinaria' },
+  { key: 'outros', schema: outrosSchema, aba: 'Pedidos_Outros_Fornec' },
+];
+// Download em Excel de TODA a informação de Pedidos (Manipulados, Ortopedia,
+// Ervanária, Veterinária, Outros Fornecedores) — uma aba por categoria, com
+// todos os campos do formulário. Botão junto a "Orçamentos Conhecidos" em
+// Manipulados (pedido 2026-09-14). Reutiliza a mesma biblioteca/mecanismo
+// do Backup Excel (XLSX + dispararDownloadBlob) para consistência.
+function exportarPedidosExcel() {
   if (!window.XLSX) {
     showToast('Não foi possível gerar o Excel: a biblioteca não carregou (verifique a ligação à internet).', 'error');
     return;
   }
-  const linhas = (STATE.orcamentos || []).map(r => ({
-    Data: formatDate(r.data),
-    Manipulado: r.dosagemCapsulas || '',
-    Guarani: r.precoGuarani || '',
-    'Serpa Pinto': r.precoSerpaPinto || '',
-    'Clérigos': r.precoClerigos || '',
-  }));
-  const ws = XLSX.utils.json_to_sheet(linhas.length ? linhas : [{ aviso: 'Sem orçamentos registados' }]);
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, nomeAbaValido('Orcamentos_Conhecidos'));
+  CATEGORIAS_PEDIDOS_EXCEL.forEach(cat => {
+    const registos = STATE[cat.key] || [];
+    const linhas = registos.map(r => registoPedidoParaLinhaExcel(cat.schema, r));
+    const ws = XLSX.utils.json_to_sheet(linhas.length ? linhas : [{ aviso: 'Sem registos' }]);
+    XLSX.utils.book_append_sheet(wb, ws, nomeAbaValido(cat.aba));
+  });
   const wbArray = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-  dispararDownloadBlob(new Blob([wbArray], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `orcamentos_conhecidos_${todayISO()}.xlsx`);
-  showToast('Excel de Orçamentos Conhecidos descarregado.', 'success');
+  dispararDownloadBlob(new Blob([wbArray], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `pedidos_sigajuncal_${todayISO()}.xlsx`);
+  showToast('Excel com todos os Pedidos (Manipulados, Ortopedia, Ervanária, Veterinária, Outros) descarregado.', 'success');
 }
 function buildOrcamentosPage(container, goTo) {
   let searchQuery = '';
