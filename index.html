@@ -12616,6 +12616,14 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
     const botoesCabecalho = h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;' }, [buildBotaoRotasPedidos()]);
     if (extraButton && !showForm) {
       botoesCabecalho.appendChild(h('button', { class: 'btn btn-secondary', onclick: extraButton.onClick }, extraButton.label));
+      // Download em Excel dos dados totais de Orçamentos Conhecidos — só faz
+      // sentido junto ao botão "Orçamentos Conhecidos" (pedido 2026-09-14).
+      if (extraButton.label === 'Orçamentos Conhecidos') {
+        botoesCabecalho.appendChild(h('button', {
+          class: 'btn btn-secondary', title: 'Download em Excel dos dados totais de Orçamentos Conhecidos',
+          onclick: exportarOrcamentosConhecidosExcel,
+        }, [Icon('download', { size: 14, strokeWidth: 2.2 }), ' Excel']));
+      }
     }
     wrap.appendChild(withBackButton(buildPageHeader(icon, title, subtitle, records().length, botoesCabecalho), goTo, showForm ? cancel : undefined));
     if (showForm) {
@@ -23462,6 +23470,29 @@ function checkOrcamentoRowRequired(d) {
   return missing;
 }
 
+// Download em Excel dos dados totais de Orçamentos Conhecidos — pedido
+// explícito junto ao botão "Orçamentos Conhecidos" (2026-09-14). Reutiliza
+// a mesma biblioteca/mecanismo do Backup Excel (XLSX + dispararDownloadBlob)
+// para consistência e para evitar duplicar a lógica de download.
+function exportarOrcamentosConhecidosExcel() {
+  if (!window.XLSX) {
+    showToast('Não foi possível gerar o Excel: a biblioteca não carregou (verifique a ligação à internet).', 'error');
+    return;
+  }
+  const linhas = (STATE.orcamentos || []).map(r => ({
+    Data: formatDate(r.data),
+    Manipulado: r.dosagemCapsulas || '',
+    Guarani: r.precoGuarani || '',
+    'Serpa Pinto': r.precoSerpaPinto || '',
+    'Clérigos': r.precoClerigos || '',
+  }));
+  const ws = XLSX.utils.json_to_sheet(linhas.length ? linhas : [{ aviso: 'Sem orçamentos registados' }]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, nomeAbaValido('Orcamentos_Conhecidos'));
+  const wbArray = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  dispararDownloadBlob(new Blob([wbArray], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `orcamentos_conhecidos_${todayISO()}.xlsx`);
+  showToast('Excel de Orçamentos Conhecidos descarregado.', 'success');
+}
 function buildOrcamentosPage(container, goTo) {
   let searchQuery = '';
   let editingOrcId = null; // null | 'new' | id
