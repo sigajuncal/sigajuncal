@@ -8380,6 +8380,10 @@ const TABLES = {
   escalaHorasExtraReivindicacoes: 'escala_horas_extra_reivindicacoes',
   escalaDiasOperacionaisEspeciais: 'escala_dias_operacionais_especiais',
   clientesHabituais: 'clientes_habituais',
+  // Fichas de clientes da Análise Facial Avançada — pedido explícito
+  // 2026-09-15 (Hugo, com base no formulário em papel "Avaliação de pele —
+  // SMART MIRROR"), para organização e pesquisa futura. Ver afaFichaSchema.
+  afaFichas: 'afa_fichas_clientes',
 };
 
 // LAZY LOADING — 19 tabelas menos usadas, adiadas até ao módulo respetivo
@@ -8405,6 +8409,7 @@ const LAZY_TABLE_KEYS = [
   'reclamacoes', 'mapa48h',
   'vacinacaoMarcacoes', 'vacinacaoEncomendas', 'vacinacaoListaEspera', 'vacinacaoResponsaveis', 'vacinacaoQuebras',
   'recolhas', 'consumiveis', 'tarefas', 'mapaTarefas', 'formacoes',
+  'afaFichas',
 ];
 // Tabelas lazy que cada página do router precisa de ter carregadas antes
 // de se construir — ver garantirTabelasCarregadas() chamado em render().
@@ -8434,6 +8439,7 @@ const PAGINA_TABELAS_LAZY = {
   tarefas: ['tarefas'],
   'mapa-tarefas': ['mapaTarefas'],
   formacoes: ['formacoes'],
+  'afa-fichas': ['afaFichas'],
 };
 
 function camelToSnake(s) { return s.replace(/[A-Z]/g, m => '_' + m.toLowerCase()); }
@@ -9888,6 +9894,7 @@ const STATE = {
   usuarios: [],
   empresasParceiras: [],
   clientesHabituais: [],
+  afaFichas: [],
   validades: [],
   financeiro: [],
   // Modo "Com Trocas" vs "Sem Trocas" (pedido explícito de Hugo,
@@ -12025,6 +12032,7 @@ const PAGINA_PAI = {
   eventos: 'hub-agendas', mapa48h: 'hub-agendas', vacinacao: 'hub-agendas',
   'eventos-rastreio': 'eventos', 'eventos-conselheira': 'eventos', 'eventos-dia-especial': 'eventos',
   'agenda-afa': 'hub-agendas', // AFA: card próprio no hub de Agendas, não passa pelo hub "Eventos"
+  'afa-fichas': 'agenda-afa', // Fichas de Clientes da AFA — geridas a partir da própria página da AFA
 
   // Documentos
   'hub-documentos': 'home',
@@ -23526,7 +23534,16 @@ function buildEventoTipoPage(container, goTo, tipo) {
     const subtitulo = ehDiaEspecial
       ? 'Iniciativas e campanhas da farmácia (não sujeito a marcações de utentes).'
       : 'Calendário mensal — clique num dia para configurar ou consultar vagas.';
+    // Botão "Fichas de Clientes" — só na AFA (pedido explícito 2026-09-15,
+    // Hugo: base de dados de utentes com a avaliação de pele completa, para
+    // organização e pesquisa futura — ver afaFichaSchema/buildAfaFichasPage).
+    const acoesHeader = tipo === 'AFA'
+      ? h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;' }, [
+          h('button', { class: 'btn btn-secondary', onclick: () => goTo('afa-fichas') }, [Icon('users', { size: 14, strokeWidth: 2.2 }), ' Fichas de Clientes']),
+        ])
+      : null;
     wrap.appendChild(withBackButton(buildPageHeader(tipoInfo.icon, tipoInfo.nome, subtitulo, undefined), goTo));
+    if (acoesHeader) wrap.appendChild(acoesHeader);
     wrap.appendChild(buildEventoCalendarioCarrossel(tipo, onDayClick));
     // Bloco de Notas deste tipo de Evento — mesmo padrão já usado em cada
     // Agenda de prestador (ver buildAgendaPage): partilhado por toda a
@@ -23545,8 +23562,215 @@ function buildEventoTipoPage(container, goTo, tipo) {
   rerender();
 }
 
-/* ---- Hub inicial de Eventos: 2 cartões (Rastreios / Dias de
-   Conselheira) ---- */
+/* =================================================================
+   AFA — FICHAS DE CLIENTES (Avaliação de pele / Smart Mirror)
+   Base de dados de utentes da Análise Facial Avançada, para organização e
+   pesquisa futura (pedido explícito 2026-09-15, Hugo, a partir do
+   formulário em papel "Avaliação de pele — SMART MIRROR"). Página própria
+   (afa-fichas), acedida a partir do botão "Fichas de Clientes" na página
+   da AFA — ver buildEventoTipoPage. Schema simples e plano (sem o sistema
+   de Pedidos/Estado/Rota) — cada campo do papel vira um campo aqui,
+   agrupado só visualmente por secção (ver AFA_FICHA_SECOES).
+================================================================= */
+const AFA_FREQUENCIA_OPCOES = ['Diariamente', 'Pontualmente', 'Raramente', 'Nunca'];
+const AFA_OLEOSIDADE_OPCOES = ['Excesso (tendência acneica)', 'Défice (pele seca)', 'Equilibrada'];
+const afaFichaSchema = [
+  // Identificação
+  { name: 'numFicha', label: '🔎 Nº de Ficha', type: 'text', size: 'xs', maxLength: 6, placeholder: 'Nº Ficha' },
+  { name: 'nome', label: 'Nome', type: 'text', col: 2, obrigatorio: true },
+  { name: 'contacto', label: 'Contacto', type: 'text', size: 'sm', maxLength: 11, inputmode: 'numeric', pattern: '[0-9]{9}', digitsOnly: true, phone: true, placeholder: '9 dígitos' },
+  { name: 'idade', label: 'Idade', type: 'text', size: 'xs' },
+  { name: 'dataAvaliacao', label: 'Data da Avaliação', type: 'date', size: 'xs' },
+  { name: 'responsavel', label: 'Responsável pela Avaliação', type: 'text', size: 'sm' },
+  // Condições de saúde
+  { name: 'alergias', label: 'Alergias', type: 'textarea', col: 2, secao: 'Condições de saúde' },
+  { name: 'medicamentos', label: 'Medicamentos de toma diária', type: 'textarea', col: 2, secao: 'Condições de saúde' },
+  { name: 'problemasSaude', label: 'Problemas de saúde (diabetes; problemas na tiroide)', type: 'textarea', col: 2, secao: 'Condições de saúde' },
+  { name: 'cirurgiasRecentes', label: 'Cirurgias recentes', type: 'textarea', col: 2, secao: 'Condições de saúde' },
+  // Estilo de vida
+  { name: 'aguaLitros', label: 'Ingestão diária de água (nº litros)', type: 'text', size: 'sm', secao: 'Estilo de vida' },
+  { name: 'qualidadeSonoHoras', label: 'Qualidade do sono (nº horas)', type: 'text', size: 'sm', secao: 'Estilo de vida' },
+  { name: 'consumoAcucarLacticinios', label: 'Consumo de açúcar e lacticínios', type: 'select', options: AFA_FREQUENCIA_OPCOES, size: 'sm', secao: 'Estilo de vida' },
+  { name: 'consumoAlcoolTabaco', label: 'Consumo de álcool e tabaco', type: 'select', options: AFA_FREQUENCIA_OPCOES, size: 'sm', secao: 'Estilo de vida' },
+  { name: 'exposicaoSolar', label: 'Exposição solar', type: 'select', options: AFA_FREQUENCIA_OPCOES, size: 'sm', secao: 'Estilo de vida' },
+  // Rotina de cuidados atuais
+  { name: 'limpeza', label: 'Limpeza', type: 'text', col: 2, secao: 'Rotina de cuidados atuais' },
+  { name: 'hidratacaoRotina', label: 'Hidratação', type: 'textarea', col: 2, secao: 'Rotina de cuidados atuais' },
+  { name: 'cuidadosEspecificos', label: 'Cuidados específicos', type: 'textarea', col: 2, secao: 'Rotina de cuidados atuais' },
+  { name: 'protecaoSolar', label: 'Proteção solar', type: 'text', col: 2, secao: 'Rotina de cuidados atuais' },
+  // Diagnóstico e avaliação clínica
+  { name: 'oleosidadeDistribuicao', label: 'Oleosidade — Distribuição', type: 'select', options: AFA_OLEOSIDADE_OPCOES, size: 'sm', secao: 'Diagnóstico e avaliação clínica' },
+  { name: 'oleosidadeAconselhamento', label: 'Oleosidade — Aconselhamento', type: 'textarea', col: 2, secao: 'Diagnóstico e avaliação clínica' },
+  { name: 'hidratacaoDiagAconselhamento', label: 'Hidratação — Aconselhamento', type: 'textarea', col: 2, secao: 'Diagnóstico e avaliação clínica' },
+  { name: 'funcaoBarreiraIrregular', label: 'Função Barreira — Pele irregular/sensível', type: 'checkbox', secao: 'Diagnóstico e avaliação clínica' },
+  { name: 'funcaoBarreiraIrritacao', label: 'Função Barreira — Tendência a irritação', type: 'checkbox', secao: 'Diagnóstico e avaliação clínica' },
+  { name: 'funcaoBarreiraAconselhamento', label: 'Função Barreira — Aconselhamento', type: 'textarea', col: 2, secao: 'Diagnóstico e avaliação clínica' },
+  { name: 'porosTamanhoDensidade', label: 'Poros — Tamanho e densidade', type: 'text', col: 2, secao: 'Diagnóstico e avaliação clínica' },
+  { name: 'porosAconselhamento', label: 'Poros — Aconselhamento', type: 'textarea', col: 2, secao: 'Diagnóstico e avaliação clínica' },
+  { name: 'acnePorfirinasAconselhamento', label: 'Acne/Porfirinas (UV) — Aconselhamento', type: 'textarea', col: 2, secao: 'Diagnóstico e avaliação clínica' },
+  { name: 'pigmentacaoVisiveis', label: 'Pigmentação — Manchas visíveis', type: 'checkbox', secao: 'Diagnóstico e avaliação clínica' },
+  { name: 'pigmentacaoSubcutaneas', label: 'Pigmentação — Manchas subcutâneas', type: 'checkbox', secao: 'Diagnóstico e avaliação clínica' },
+  { name: 'pigmentacaoAconselhamento', label: 'Pigmentação — Aconselhamento', type: 'textarea', col: 2, secao: 'Diagnóstico e avaliação clínica' },
+  { name: 'vascularizacaoRosacea', label: 'Vascularização/Pigmentação — Rosácea/sensibilidade', type: 'checkbox', secao: 'Diagnóstico e avaliação clínica' },
+  { name: 'vascularizacaoAconselhamento', label: 'Vascularização/Pigmentação — Aconselhamento (evitar álcool e fragrâncias)', type: 'textarea', col: 2, secao: 'Diagnóstico e avaliação clínica' },
+  { name: 'rugasTexturaDistribuicao', label: 'Rugas e Textura — Profundidade e distribuição', type: 'text', col: 2, secao: 'Diagnóstico e avaliação clínica' },
+  { name: 'rugasTexturaAconselhamento', label: 'Rugas e Textura — Aconselhamento', type: 'textarea', col: 2, secao: 'Diagnóstico e avaliação clínica' },
+  { name: 'danoUvAconselhamento', label: 'Dano UV — Aconselhamento (envelhecimento oculto)', type: 'textarea', col: 2, secao: 'Diagnóstico e avaliação clínica' },
+];
+// Secções, pela ordem em que aparecem no formulário em papel — os campos
+// sem `secao` (Identificação) vêm sempre primeiro, sem cabeçalho de secção.
+const AFA_FICHA_SECOES = ['Condições de saúde', 'Estilo de vida', 'Rotina de cuidados atuais', 'Diagnóstico e avaliação clínica'];
+function afaFichaCamposDaSecao(secao) { return afaFichaSchema.filter(f => f.secao === secao); }
+function afaFichaCamposIdentificacao() { return afaFichaSchema.filter(f => !f.secao); }
+function afaFichaEmptyDraft() {
+  const obj = emptyRecord(afaFichaSchema);
+  obj.dataAvaliacao = todayISO();
+  obj.responsavel = currentUserName();
+  return obj;
+}
+// Um único campo de input/textarea/select/checkbox, a partir do schema
+// acima — mais simples do que o sistema de Pedidos (sem Estado/Rota/
+// validação de obrigatoriedade genérica), já que aqui só "Nome" é
+// obrigatório.
+function buildAfaFichaCampo(f, draft, rerenderForm) {
+  if (f.name === 'numFicha') {
+    return buildNumFichaCategoriaField(f, draft, rerenderForm, (encontrado) => { draft._fichaClienteCarregada = encontrado; });
+  }
+  let control;
+  if (f.type === 'textarea') {
+    control = h('textarea', { class: 'textarea', rows: f.rows || '3', maxlength: f.maxLength ? String(f.maxLength) : undefined });
+    control.value = draft[f.name] || '';
+    control.addEventListener('input', () => { draft[f.name] = control.value; });
+  } else if (f.type === 'select') {
+    control = h('select', { class: 'select' }, [h('option', { value: '' }, '—'), ...f.options.map(o => h('option', { value: o, selected: draft[f.name] === o ? 'selected' : undefined }, o))]);
+    control.value = draft[f.name] || '';
+    control.addEventListener('change', () => { draft[f.name] = control.value; });
+  } else if (f.type === 'checkbox') {
+    const cb = h('input', { type: 'checkbox', checked: !!draft[f.name] });
+    cb.addEventListener('change', () => { draft[f.name] = cb.checked; });
+    return h('label', { class: 'checkbox-field' + (f.col === 2 ? ' span2' : '') }, [cb, h('span', {}, f.label)]);
+  } else {
+    control = h('input', { class: 'input', type: 'text', maxlength: f.maxLength ? String(f.maxLength) : undefined, inputmode: f.inputmode, placeholder: f.placeholder });
+    control.value = draft[f.name] || '';
+    control.addEventListener('input', () => {
+      let v = control.value;
+      if (f.digitsOnly) { v = v.replace(/\D/g, '').slice(0, f.maxLength ? Number(f.maxLength) : undefined); if (v !== control.value) control.value = v; }
+      draft[f.name] = v;
+    });
+  }
+  return h('div', { class: 'field' + (f.col === 2 ? ' span2' : (f.size ? ' field-' + f.size : '')) }, [h('label', {}, f.label), control]);
+}
+function afaFichaResumoTexto(r) {
+  const partes = [r.idade ? `${r.idade} anos` : null, r.numFicha ? `Nº Ficha ${r.numFicha}` : null].filter(Boolean);
+  return partes.join(' · ') || '—';
+}
+function buildAfaFichasPage(container, goTo) {
+  let searchQuery = '';
+  let showForm = false; // false | { editingId, draft }
+  let formError = '';
+  let saving = false;
+
+  function records() {
+    const lista = STATE.afaFichas || [];
+    const q = normalizarTexto(searchQuery.trim());
+    if (!q) return lista;
+    return lista.filter(r => normalizarTexto(`${r.nome || ''} ${r.contacto || ''} ${r.numFicha || ''}`).includes(q));
+  }
+  function rerender() { clear(container); container.appendChild(build()); }
+
+  function openNew() {
+    showForm = { editingId: null, draft: afaFichaEmptyDraft() };
+    formError = '';
+    rerender();
+  }
+  function openEdit(r) {
+    showForm = { editingId: r.id, draft: Object.assign({}, r) };
+    formError = '';
+    rerender();
+  }
+  function cancelForm() { showForm = false; formError = ''; rerender(); }
+
+  async function submit() {
+    const draft = showForm.draft;
+    if (!String(draft.nome || '').trim()) { formError = 'Por favor, preencha o Nome.'; rerender(); return; }
+    saving = true; rerender();
+    const payload = {};
+    afaFichaSchema.forEach(f => { payload[f.name] = draft[f.name]; });
+    const resultado = showForm.editingId
+      ? await dbUpdate('afaFichas', showForm.editingId, payload)
+      : await dbInsert('afaFichas', payload);
+    saving = false;
+    if (!resultado) { formError = `Não foi possível guardar. ${lastDbError || 'Verifica a ligação e tenta novamente.'}`; rerender(); return; }
+    STATE.afaFichas = showForm.editingId
+      ? STATE.afaFichas.map(x => x.id === resultado.id ? resultado : x)
+      : [resultado, ...STATE.afaFichas];
+    showForm = false;
+    showToast('Ficha guardada.', 'success');
+    rerender();
+  }
+  function eliminarFicha(r) {
+    confirmDialog(`Eliminar a ficha de ${r.nome || 'sem nome'}? Esta ação não pode ser desfeita.`, async () => {
+      const ok = await dbDelete('afaFichas', r.id);
+      if (ok) { STATE.afaFichas = STATE.afaFichas.filter(x => x.id !== r.id); rerender(); }
+      else showDbErrorToast('Não foi possível eliminar a ficha');
+    }, { danger: true, confirmLabel: 'Eliminar' });
+  }
+
+  function buildFormSecao(titulo, campos, draft) {
+    if (!campos.length) return null;
+    return h('div', { class: 'card card-pad', style: 'margin-bottom:14px;' }, [
+      titulo ? h('h3', { class: 'dash-card-title', style: 'margin-bottom:10px;' }, titulo) : null,
+      h('div', { class: 'form-grid' }, campos.map(f => buildAfaFichaCampo(f, draft, rerender))),
+    ].filter(Boolean));
+  }
+  function buildForm() {
+    const draft = showForm.draft;
+    const wrap = h('div', { class: 'animate-in' });
+    wrap.appendChild(withCustomBackButton(buildPageHeader('users', showForm.editingId ? 'Editar Ficha' : 'Nova Ficha', 'Avaliação de pele — SMART MIRROR.', undefined), cancelForm));
+    wrap.appendChild(buildFormSecao(null, afaFichaCamposIdentificacao(), draft));
+    AFA_FICHA_SECOES.forEach(secao => { const el = buildFormSecao(secao, afaFichaCamposDaSecao(secao), draft); if (el) wrap.appendChild(el); });
+    if (formError) wrap.appendChild(h('p', { class: 'form-error' }, formError));
+    const saveBtn = h('button', { class: 'btn btn-primary', onclick: saving ? null : () => requireAuth(submit), disabled: saving ? 'disabled' : undefined }, saving ? 'A guardar…' : 'Guardar Ficha');
+    const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: cancelForm }, 'Cancelar');
+    wrap.appendChild(h('div', { class: 'form-actions' }, [saveBtn, cancelBtn]));
+    return wrap;
+  }
+
+  function buildLista() {
+    const wrap = h('div', { class: 'animate-in' });
+    wrap.appendChild(withBackButton(buildPageHeader('users', 'Fichas de Clientes', 'Base de dados de utentes da Análise Facial Avançada — avaliação de pele completa.', (STATE.afaFichas || []).length), goTo));
+    const searchInput = h('input', { class: 'search-input', type: 'text', placeholder: 'Pesquisar por nome, contacto ou nº de ficha…' });
+    searchInput.value = searchQuery;
+    const onSearch = debounce(() => { searchQuery = searchInput.value; rerender(); }, 250);
+    searchInput.addEventListener('input', onSearch);
+    wrap.appendChild(searchInput);
+    const lista = records();
+    if (!lista.length) {
+      wrap.appendChild(EmptyState(searchQuery.trim() ? 'Nenhuma ficha encontrada para essa pesquisa.' : 'Ainda não há nenhuma ficha registada — cria a primeira abaixo.'));
+    } else {
+      wrap.appendChild(h('div', { class: 'agenda-slots-list' }, lista.map(r => {
+        const editBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Editar', 'aria-label': 'Editar' }, Icon('pencil', { size: 13, strokeWidth: 2.2 }));
+        editBtn.addEventListener('click', () => requireAuth(() => openEdit(r)));
+        const delBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Eliminar', 'aria-label': 'Eliminar' }, Icon('trash', { size: 13, strokeWidth: 2.2 }));
+        delBtn.addEventListener('click', () => requireAuth(() => eliminarFicha(r)));
+        return h('div', { class: 'agenda-slot-row agenda-slot-ocupado' }, [
+          h('span', { class: 'agenda-slot-label cell-strong' }, [
+            h('span', { class: 'agenda-slot-nome' }, r.nome || '—'),
+            h('span', { class: 'cell-muted', style: 'font-size:11.5px;display:block;' }, afaFichaResumoTexto(r)),
+          ]),
+          h('div', { class: 'row-actions' }, [editBtn, delBtn]),
+        ]);
+      })));
+    }
+    wrap.appendChild(h('button', { class: 'btn btn-primary', style: 'margin-top:14px;width:auto;', onclick: () => requireAuth(openNew) }, [Icon('plus', { size: 14 }), ' Nova Ficha']));
+    return wrap;
+  }
+
+  function build() { return showForm ? buildForm() : buildLista(); }
+  container.appendChild(build());
+}
+
+
 function buildEventosPage(container, goTo) {
   clear(container);
   const wrap = h('div', { class: 'animate-in' });
@@ -47150,6 +47374,7 @@ function renderInterno(ehTransicaoDePagina) {
       case 'eventos-conselheira': buildEventoTipoPage(pageContainer, goTo, 'Conselheira'); break;
       case 'eventos-dia-especial': buildEventoTipoPage(pageContainer, goTo, 'DiaEspecial'); break;
       case 'agenda-afa': buildEventoTipoPage(pageContainer, goTo, 'AFA'); break;
+      case 'afa-fichas': if (tabelasProntas) buildAfaFichasPage(pageContainer, goTo); else pageContainer.appendChild(CarregandoState('A carregar Fichas de Clientes…')); break;
       case 'mapa48h': if (tabelasProntas) buildMapa48hPage(pageContainer, goTo); else pageContainer.appendChild(CarregandoState('A carregar Mapa 48h…')); break;
       case 'vacinacao': if (tabelasProntas) buildVacinacaoPage(pageContainer, goTo); else pageContainer.appendChild(CarregandoState('A carregar Vacinação…')); break;
       case 'mapa-tarefas': if (tabelasProntas) buildMapaTarefasPage(pageContainer, goTo); else pageContainer.appendChild(CarregandoState('A carregar Mapa de Tarefas…')); break;
