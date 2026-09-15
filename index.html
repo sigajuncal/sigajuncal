@@ -6781,19 +6781,19 @@ function buildMonthCalendar(year, month, posicao, onDayClick, prestadorKey, cale
     // evento/serviço desse dia, quando existir), só a sigla F/C/N/P junto
     // ao número do dia.
     const feriadoNome = feriadosDoMes.get(dateISO);
-    // Dia "puro de evento" — todos os itens desse dia são eventos (nunca
-    // uma agenda/consulta): já não tem cor de destaque nenhuma (pedido
-    // explícito 2026-08-18) — só o ícone do próprio tipo de evento
-    // (estetoscópio/etiqueta/guarda-chuva) substitui o número do dia, ver
+    // Dia com PELO MENOS 1 evento — mostra sempre o ícone do tipo de evento a
+    // substituir o número do dia (nunca uma cor de fundo), MESMO que esse
+    // dia também tenha uma agenda de serviço normal (dia misto). Corrigido
+    // 2026-09-15 (Hugo: "AFA deve ter ícone... e não cor, o mesmo para
+    // quando existem outros eventos e serviços de agenda — eventos devem
+    // manter ícone e serviços de agenda a cor respetiva"): antes, um dia
+    // misto (evento + agenda) perdia o ícone e ficava só com a(s) cor(es)
+    // do(s) serviço(s) de agenda, como se não houvesse evento nenhum. Ver
     // .cal-cell-evento-neutro (CSS) e eventoIconName(). Mapa 48H e
-    // Vacinação NUNCA entram aqui — calendarioItensDoDia só alimenta
-    // "itens" com Eventos (Rastreio/Conselheira/DiaEspecial) e Agendas de
-    // serviço; a Vacinação é filtrada explicitamente lá, e o Mapa 48H
-    // nunca teve marcações neste calendário partilhado. Um dia MISTO
-    // (evento + agenda no mesmo dia) mantém o comportamento de sempre —
-    // cada serviço com a sua própria cor, sem ícone de evento.
-    const soEvento = itens.length > 0 && itens.every(it => it.tipo === 'evento');
-    const eventoIconDoDia = soEvento ? eventoIconName((itens.find(it => it.evento) || {}).evento || {}) : null;
+    // Vacinação continuam nunca a entrar aqui (calendarioItensDoDia só
+    // alimenta "itens" com Eventos e Agendas de serviço).
+    const temEvento = itens.some(it => it.tipo === 'evento');
+    const eventoIconDoDia = temEvento ? eventoIconName((itens.find(it => it.evento) || {}).evento || {}) : null;
     const isToday = dateISO === todayStr;
     const isPast = dateISO < todayStr;
     // Nas páginas de Agenda/Evento (onDayClick fornecido) qualquer dia
@@ -6807,13 +6807,14 @@ function buildMonthCalendar(year, month, posicao, onDayClick, prestadorKey, cale
       class: 'cal-cell'
         + (isToday ? ' cal-cell-today' : '')
         + (cores.length ? ' cal-cell-marcado' : '')
-        + (soEvento ? ' cal-cell-evento-neutro' : '')
+        + (temEvento ? ' cal-cell-evento-neutro' : '')
         + (isPast ? ' cal-cell-passado' : '')
         + (temAcao ? ' cal-cell-clicavel' : ''),
-      // Dia puro de evento: já não tem "background" nenhum (nem inline
-      // nem de classe) — fica com o fundo neutro por omissão da própria
-      // .cal-cell, só o ícone é que muda.
-      style: soEvento ? '' : calendarioCellStyle(cores),
+      // Dia com evento: já não tem "background" nenhum (nem inline nem de
+      // classe) — fica com o fundo neutro por omissão da própria .cal-cell,
+      // só o ícone é que muda, mesmo que também haja agenda(s) de serviço
+      // nesse dia (essas mantêm-se identificáveis só na tooltip/lista).
+      style: temEvento ? '' : calendarioCellStyle(cores),
       // Tooltip explícito "Evento: <nome>" para itens de evento — nunca
       // deixa dúvidas ao operador de que aquele dia é um Evento Especial
       // (ex: Eclipse Solar) e não uma consulta/agenda de serviço normal.
@@ -6823,7 +6824,7 @@ function buildMonthCalendar(year, month, posicao, onDayClick, prestadorKey, cale
         itens.length ? itens.map(it => it.tipo === 'evento' ? `Evento: ${it.label}` : it.label).join(' + ') : null,
         feriadoNome ? `Feriado: ${feriadoNome}` : null,
       ].filter(Boolean).join(' · ') || undefined,
-    }, soEvento ? Icon(eventoIconDoDia, { size: 14, strokeWidth: 2.3 }) : (feriadoNome ? escalaFeriadoSigla(feriadoNome) : String(d)));
+    }, temEvento ? Icon(eventoIconDoDia, { size: 14, strokeWidth: 2.3 }) : (feriadoNome ? escalaFeriadoSigla(feriadoNome) : String(d)));
     if (onDayClick) {
       // Bloqueio de agendamento no passado: dias já passados não abrem a
       // grelha de horários — só ficam visíveis para consulta de histórico.
@@ -22194,6 +22195,27 @@ function eventoGerarSlots(horaInicio, horaFim, intervaloMin) {
   }
   return slots;
 }
+// Lista de horas MANUAIS/irregulares para as Mini-Faciais (pedido explícito
+// 2026-09-15, Hugo: "de manhã a Conselheira vem às 10:15, 11:15, etc., mas
+// à tarde é à hora certa" — um único par Hora Inicial+Intervalo nunca
+// consegue representar isto). Aceita as horas separadas por vírgula, ponto
+// e vírgula ou uma por linha; tolera espaços a mais; ignora entradas
+// inválidas; devolve sempre ordenado cronologicamente e sem duplicados.
+function parseHorasManuais(texto) {
+  const vistas = new Set();
+  return String(texto || '')
+    .split(/[,;\n]+/)
+    .map(s => normalizarHora(s.trim()))
+    .filter(s => horaFormatoValido(s) && !vistas.has(s) && vistas.add(s))
+    .sort((a, b) => a.localeCompare(b));
+}
+// Slots das Mini-Faciais de um Dia de Conselheira: lista manual quando
+// definida (miniFaciaisHorasManual não vazio — modo "horas irregulares"),
+// caso contrário a fórmula regular de sempre (Hora Inicial+Final+Intervalo).
+function eventoSlotsMiniFaciais(ev) {
+  if (ev && ev.miniFaciaisHorasManual && String(ev.miniFaciaisHorasManual).trim()) return parseHorasManuais(ev.miniFaciaisHorasManual);
+  return eventoGerarSlots(ev && ev.miniFaciaisHoraInicial, ev && ev.miniFaciaisHoraFinal, ev && ev.miniFaciaisIntervaloMin);
+}
 
 // Contagem de dias de evento (por tipo) num dado mês/ano — usada no badge
 // por baixo do cabeçalho de cada mês na vista de calendário do Eventos.
@@ -22483,6 +22505,10 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     subtipoRastreio: '', subtipoRastreioOutro: '',
     marcaConselheira: '', campanha: '',
     miniFaciais: false, miniFaciaisHoraInicial: '09:00', miniFaciaisHoraFinal: '18:00', miniFaciaisIntervaloMin: '20',
+    // Horas irregulares das Mini-Faciais (pedido explícito 2026-09-15) — ver
+    // parseHorasManuais/eventoSlotsMiniFaciais: quando ativo, substitui por
+    // completo Hora Inicial/Final/Intervalo das Mini-Faciais.
+    miniFaciaisModoManual: false, miniFaciaisHorasManual: '',
     // Responsável pelo Dia (só AFA, pedido explícito 2026-09-08: "pode ser
     // uma de três colegas... dropdown mas permite escrever outra") — nunca
     // confundir com `responsavel` (quem ABRIU o dia, definido sozinho em
@@ -22529,7 +22555,10 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     if ((tipo === 'Rastreio' || tipo === 'AFA') && (!horaFormatoValido(String(cfgDraft.horaInicial || '')) || !horaFormatoValido(String(cfgDraft.horaFinal || '')))) {
       cfgError = 'Indica a Hora Inicial e a Hora Final no formato HH:MM.'; render(); return;
     }
-    if (tipo === 'Conselheira' && cfgDraft.miniFaciais && (!horaFormatoValido(String(cfgDraft.miniFaciaisHoraInicial || '')) || !horaFormatoValido(String(cfgDraft.miniFaciaisHoraFinal || '')))) {
+    if (tipo === 'Conselheira' && cfgDraft.miniFaciais && cfgDraft.miniFaciaisModoManual && !parseHorasManuais(cfgDraft.miniFaciaisHorasManual).length) {
+      cfgError = 'Indica pelo menos uma hora válida nas Mini-Faciais (ex: 10:15, 11:15, 14:00).'; render(); return;
+    }
+    if (tipo === 'Conselheira' && cfgDraft.miniFaciais && !cfgDraft.miniFaciaisModoManual && (!horaFormatoValido(String(cfgDraft.miniFaciaisHoraInicial || '')) || !horaFormatoValido(String(cfgDraft.miniFaciaisHoraFinal || '')))) {
       cfgError = 'Indica a Hora Inicial e a Hora Final das Mini-Faciais no formato HH:MM.'; render(); return;
     }
     cfgError = '';
@@ -22549,9 +22578,22 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       payload.campanha = cfgDraft.campanha || '';
       payload.miniFaciais = !!cfgDraft.miniFaciais;
       if (cfgDraft.miniFaciais) {
-        payload.miniFaciaisHoraInicial = cfgDraft.miniFaciaisHoraInicial;
-        payload.miniFaciaisHoraFinal = cfgDraft.miniFaciaisHoraFinal;
-        payload.miniFaciaisIntervaloMin = parseInt(cfgDraft.miniFaciaisIntervaloMin, 10) || 20;
+        // Modo "horas irregulares" (2026-09-15): grava a lista manual e
+        // limpa Hora Inicial/Final/Intervalo (deixam de ter efeito); modo
+        // regular grava os 3 campos de sempre e limpa a lista manual —
+        // nunca os dois ao mesmo tempo, para nunca haver ambiguidade sobre
+        // qual está mesmo em vigor (ver eventoSlotsMiniFaciais).
+        if (cfgDraft.miniFaciaisModoManual) {
+          payload.miniFaciaisHorasManual = parseHorasManuais(cfgDraft.miniFaciaisHorasManual).join(',');
+          payload.miniFaciaisHoraInicial = '';
+          payload.miniFaciaisHoraFinal = '';
+          payload.miniFaciaisIntervaloMin = null;
+        } else {
+          payload.miniFaciaisHoraInicial = cfgDraft.miniFaciaisHoraInicial;
+          payload.miniFaciaisHoraFinal = cfgDraft.miniFaciaisHoraFinal;
+          payload.miniFaciaisIntervaloMin = parseInt(cfgDraft.miniFaciaisIntervaloMin, 10) || 20;
+          payload.miniFaciaisHorasManual = '';
+        }
       }
     }
 
@@ -22568,7 +22610,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       STATE.eventos = STATE.eventos.map(e => e.id === created.id ? created : e);
       currentEvento = created;
       if (miniFaciaisJustEnabled) {
-        const slotsMini = eventoGerarSlots(payload.miniFaciaisHoraInicial, payload.miniFaciaisHoraFinal, payload.miniFaciaisIntervaloMin);
+        const slotsMini = eventoSlotsMiniFaciais(payload);
         const rows = slotsMini.map(hora => ({
           eventoId: created.id, hora, grupoVaga: 'mini_facial', tipoLinha: 'vaga', estado: '', aviso: false,
           nomeCliente: '', nFicha: '', contacto: '', observacoes: '', responsavel: currentUserName(),
@@ -22593,7 +22635,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       }));
     }
     if (payload.miniFaciais) {
-      const slotsMini = eventoGerarSlots(payload.miniFaciaisHoraInicial, payload.miniFaciaisHoraFinal, payload.miniFaciaisIntervaloMin);
+      const slotsMini = eventoSlotsMiniFaciais(payload);
       slotsMini.forEach(hora => rows.push({
         eventoId: created.id, hora, grupoVaga: 'mini_facial', tipoLinha: 'vaga', estado: '', aviso: false,
         nomeCliente: '', nFicha: '', contacto: '', observacoes: '', responsavel: currentUserName(),
@@ -22622,6 +22664,8 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       miniFaciaisHoraInicial: currentEvento.miniFaciaisHoraInicial || '09:00',
       miniFaciaisHoraFinal: currentEvento.miniFaciaisHoraFinal || '18:00',
       miniFaciaisIntervaloMin: currentEvento.miniFaciaisIntervaloMin || '20',
+      miniFaciaisModoManual: !!(currentEvento.miniFaciaisHorasManual && String(currentEvento.miniFaciaisHorasManual).trim()),
+      miniFaciaisHorasManual: currentEvento.miniFaciaisHorasManual || '',
       responsavelDia: currentEvento.responsavelDia || '',
     };
     cfgError = '';
@@ -22688,18 +22732,39 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       // aplicam-se exclusivamente à gestão das vagas de Mini-Faciais (não há
       // um segundo conjunto de horários para os Dias de Conselheira em si).
       if (cfgDraft.miniFaciais) {
-        const miniInicialInput = h('input', { class: 'input', placeholder: 'Ex: 09:00' });
-        miniInicialInput.value = cfgDraft.miniFaciaisHoraInicial;
-        miniInicialInput.addEventListener('input', () => { cfgDraft.miniFaciaisHoraInicial = miniInicialInput.value; });
-        const miniFinalInput = h('input', { class: 'input', placeholder: 'Ex: 18:00' });
-        miniFinalInput.value = cfgDraft.miniFaciaisHoraFinal;
-        miniFinalInput.addEventListener('input', () => { cfgDraft.miniFaciaisHoraFinal = miniFinalInput.value; });
-        const miniIntervaloSelect = h('select', { class: 'select' }, INTERVALOS_VAGA_MIN.map(n => h('option', { value: String(n), selected: String(cfgDraft.miniFaciaisIntervaloMin) === String(n) ? 'selected' : undefined }, `${n} min`)));
-        miniIntervaloSelect.value = String(cfgDraft.miniFaciaisIntervaloMin);
-        miniIntervaloSelect.addEventListener('change', () => { cfgDraft.miniFaciaisIntervaloMin = miniIntervaloSelect.value; });
-        campos.push(h('div', { class: 'field field-xs' }, [h('label', {}, 'Hora Inicial'), miniInicialInput]));
-        campos.push(h('div', { class: 'field field-xs' }, [h('label', {}, 'Hora Final'), miniFinalInput]));
-        campos.push(h('div', { class: 'field field-xs' }, [h('label', {}, 'Intervalo entre Vagas'), miniIntervaloSelect]));
+        // Modo "horas irregulares" (pedido explícito 2026-09-15: "de manhã
+        // a Conselheira vem às 10:15, 11:15, etc., mas à tarde é à hora
+        // certa") — Hora Inicial+Intervalo nunca representa isto, por isso
+        // alterna para uma lista de horas escritas à mão em vez da fórmula
+        // regular. Nunca os dois modos ativos ao mesmo tempo (ver
+        // eventoSlotsMiniFaciais/submitCfg).
+        const modoManualCb = h('input', { type: 'checkbox', checked: !!cfgDraft.miniFaciaisModoManual });
+        modoManualCb.addEventListener('change', () => { cfgDraft.miniFaciaisModoManual = modoManualCb.checked; render(); });
+        campos.push(h('label', { class: 'checkbox-field span2' }, [modoManualCb, h('span', {}, 'Horas irregulares (nem todas com o mesmo intervalo)')]));
+
+        if (cfgDraft.miniFaciaisModoManual) {
+          const horasManualInput = h('textarea', { class: 'textarea span2', rows: '2', placeholder: 'Ex: 10:15, 11:15, 12:15, 14:00, 15:00, 16:00, 17:00' });
+          horasManualInput.value = cfgDraft.miniFaciaisHorasManual;
+          horasManualInput.addEventListener('input', () => { cfgDraft.miniFaciaisHorasManual = horasManualInput.value; });
+          campos.push(h('div', { class: 'field span2' }, [
+            h('label', {}, 'Horas das Mini-Faciais (separadas por vírgula)'),
+            horasManualInput,
+            h('p', { class: 'field-helper-text', style: 'margin:4px 0 0;' }, 'Escreve cada hora no formato HH:MM, separadas por vírgula — podem ter intervalos diferentes entre si.'),
+          ]));
+        } else {
+          const miniInicialInput = h('input', { class: 'input', placeholder: 'Ex: 09:00' });
+          miniInicialInput.value = cfgDraft.miniFaciaisHoraInicial;
+          miniInicialInput.addEventListener('input', () => { cfgDraft.miniFaciaisHoraInicial = miniInicialInput.value; });
+          const miniFinalInput = h('input', { class: 'input', placeholder: 'Ex: 18:00' });
+          miniFinalInput.value = cfgDraft.miniFaciaisHoraFinal;
+          miniFinalInput.addEventListener('input', () => { cfgDraft.miniFaciaisHoraFinal = miniFinalInput.value; });
+          const miniIntervaloSelect = h('select', { class: 'select' }, INTERVALOS_VAGA_MIN.map(n => h('option', { value: String(n), selected: String(cfgDraft.miniFaciaisIntervaloMin) === String(n) ? 'selected' : undefined }, `${n} min`)));
+          miniIntervaloSelect.value = String(cfgDraft.miniFaciaisIntervaloMin);
+          miniIntervaloSelect.addEventListener('change', () => { cfgDraft.miniFaciaisIntervaloMin = miniIntervaloSelect.value; });
+          campos.push(h('div', { class: 'field field-xs' }, [h('label', {}, 'Hora Inicial'), miniInicialInput]));
+          campos.push(h('div', { class: 'field field-xs' }, [h('label', {}, 'Hora Final'), miniFinalInput]));
+          campos.push(h('div', { class: 'field field-xs' }, [h('label', {}, 'Intervalo entre Vagas'), miniIntervaloSelect]));
+        }
       }
     }
 
@@ -22726,7 +22791,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
   // próprio evento.
   function slotsDoGrupoDe(m) {
     if (!currentEvento) return [];
-    if (m.grupoVaga === 'mini_facial') return eventoGerarSlots(currentEvento.miniFaciaisHoraInicial, currentEvento.miniFaciaisHoraFinal, currentEvento.miniFaciaisIntervaloMin);
+    if (m.grupoVaga === 'mini_facial') return eventoSlotsMiniFaciais(currentEvento);
     if (currentEvento.tipoEvento === 'Rastreio' || currentEvento.tipoEvento === 'AFA') return eventoGerarSlots(currentEvento.horaInicial, currentEvento.horaFinal, currentEvento.intervaloMin);
     return [];
   }
@@ -23352,7 +23417,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     }
 
     if (currentEvento.tipoEvento === 'Conselheira' && currentEvento.miniFaciais) {
-      const slotsMini = eventoGerarSlots(currentEvento.miniFaciaisHoraInicial, currentEvento.miniFaciaisHoraFinal, currentEvento.miniFaciaisIntervaloMin);
+      const slotsMini = eventoSlotsMiniFaciais(currentEvento);
       bodyEl.appendChild(buildVagasGrupo('mini_facial', 'Mini-Faciais', slotsMini));
     } else if (currentEvento.tipoEvento === 'Conselheira') {
       bodyEl.appendChild(EmptyState('Este Dia de Conselheira não tem Mini-Faciais nem vagas de agendamento associadas.'));
