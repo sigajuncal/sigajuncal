@@ -22697,17 +22697,41 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     }
 
     if (editingEvento) {
-      const miniFaciaisJustEnabled = !!payload.miniFaciais && !currentEvento.miniFaciais;
       STATE.eventos = STATE.eventos.map(e => e.id === created.id ? created : e);
       currentEvento = created;
-      if (miniFaciaisJustEnabled) {
-        const slotsMini = eventoSlotsMiniFaciais(payload);
-        const rows = slotsMini.map(hora => ({
+      // Reconcilia a grelha de vagas com a configuração de horário que
+      // acabou de ser guardada (Hora Inicial/Final/Intervalo ou Horas
+      // Irregulares) — insere uma vaga vazia para qualquer hora NOVA que
+      // ainda não tenha registo (ex: mudar a Hora Inicial para mais cedo,
+      // acrescentar uma hora à lista de "Horas irregulares", ou ativar as
+      // Mini-Faciais agora pela 1ª vez). BUG CORRIGIDO 2026-09-15 (Hugo:
+      // "a primeira vaga [09:00] não tem ícone de lápis como as
+      // restantes"): sem isto, uma hora nova só existia na grelha "em
+      // teoria" (calculada ao vivo a partir da configuração, ver
+      // eventoGerarSlots/eventoSlotsMiniFaciais), nunca como registo real
+      // — aparecia como "Vaga livre" mas sem o lápis de Editar Hora nem o
+      // cadeado de Bloquear, que só existem em registos reais (ver `m` em
+      // buildLinhaVagaLivre). Substitui o antigo caso especial só para
+      // "Mini-Faciais ativadas agora" — este cobre esse caso na mesma
+      // (a lista de horas existentes fica vazia) e qualquer edição
+      // posterior à primeira.
+      const rowsNovas = [];
+      if (tipo === 'Rastreio' || tipo === 'AFA') {
+        const slotsAlvo = eventoGerarSlots(payload.horaInicial, payload.horaFinal, payload.intervaloMin);
+        const existentes = new Set(marcacoes.filter(m => (m.grupoVaga || 'principal') === 'principal').map(m => m.hora));
+        slotsAlvo.filter(hora => !existentes.has(hora)).forEach(hora => rowsNovas.push({
+          eventoId: created.id, hora, grupoVaga: 'principal', tipoLinha: 'vaga', estado: '', aviso: false,
+          nomeCliente: '', nFicha: '', contacto: '', observacoes: '', responsavel: currentUserName(),
+        }));
+      } else if (tipo === 'Conselheira' && payload.miniFaciais) {
+        const slotsAlvo = eventoSlotsMiniFaciais(payload);
+        const existentes = new Set(marcacoes.filter(m => m.grupoVaga === 'mini_facial').map(m => m.hora));
+        slotsAlvo.filter(hora => !existentes.has(hora)).forEach(hora => rowsNovas.push({
           eventoId: created.id, hora, grupoVaga: 'mini_facial', tipoLinha: 'vaga', estado: '', aviso: false,
           nomeCliente: '', nFicha: '', contacto: '', observacoes: '', responsavel: currentUserName(),
         }));
-        if (rows.length) await dbInsertMarcacoesBulk(rows);
       }
+      if (rowsNovas.length) await dbInsertMarcacoesBulk(rowsNovas);
       editingEvento = false;
       cfgSaving = false;
       if (onSaved) onSaved();
