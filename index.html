@@ -6605,8 +6605,34 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
 
 function calendarioItensDoDia(dateISO, restringirPorPerfil) {
   const itens = [];
+  // BUG CORRIGIDO 2026-09-15 (Hugo: "Conselheira · Sesderma" a aparecer
+  // DUAS VEZES no popup de "vários serviços/eventos" do mesmo dia): o
+  // resto da app (buildEventoMonthCalendar, ao clicar num dia) só permite
+  // UM evento por tipo em cada dia (usa sempre `.find()`, nunca
+  // `.filter()`) — se por qualquer motivo existir mais do que uma linha
+  // de eventos_lista para o mesmo tipo+data (ex: uma órfã de um duplo
+  // clique/duplo submit antigo), este calendário PARTILHADO mostrava-as
+  // todas, ao contrário de qualquer outro sítio da app. `tiposVistos`
+  // garante o mesmo limite de "1 por tipo" aqui também — mantém sempre a
+  // primeira (mais recente, já que STATE.eventos vem sempre com o mais
+  // recente à frente), igual ao que `.find()` já escolhia nos outros
+  // calendários.
+  const tiposVistos = new Set();
   (STATE.eventos || []).filter(ev => ev.dataEvento === dateISO).forEach(ev => {
-    itens.push({ label: eventoLabel(ev), cor: COR_EVENTOS_RASTREIOS, tipo: 'evento', evento: ev, horaInicio: '00:00' });
+    if (tiposVistos.has(ev.tipoEvento)) return;
+    tiposVistos.add(ev.tipoEvento);
+    // Cor do próprio tipo de evento (EVENTO_TIPOS) — corrigido 2026-09-15
+    // (Hugo: "consistência na cor, roxo não faz sentido"): antes usava
+    // sempre a mesma cor "cósmica" fixa (COR_EVENTOS_RASTREIOS) para
+    // QUALQUER evento, o que destoava do calendário próprio de cada tipo
+    // (ex: AFA a vermelho — ver buildEventoMonthCalendar/EVENTO_TIPOS). A
+    // cor só entra mesmo no fundo da célula quando o dia também tem uma
+    // Agenda de serviço (ver `cores` em buildMonthCalendar, que já
+    // exclui eventos do fundo em riscas) — aqui serve principalmente para
+    // a bolinha do popup "vários serviços/eventos" ficar coerente com a
+    // cor do próprio tipo em vez de uma cor genérica.
+    const tipoInfo = EVENTO_TIPOS.find(t => t.key === ev.tipoEvento);
+    itens.push({ label: eventoLabel(ev), cor: (tipoInfo && tipoInfo.cor) || COR_EVENTOS_RASTREIOS, tipo: 'evento', evento: ev, horaInicio: '00:00' });
   });
   (STATE.agendaMarcacoes || []).forEach(m => {
     if (m.data !== dateISO || m.tipoLinha === 'bloqueado') return;
@@ -23382,7 +23408,15 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       return { hora, node };
     });
 
-    const encaixes = ordenarPorHora(doGrupo.filter(m => !slotsPadrao.includes(m.hora)));
+    // BUG CORRIGIDO 2026-09-15 (Hugo: "se essas horas nem estão nas horas
+    // que defini, porque hão de aparecer como indisponíveis? nem deviam
+    // aparecer"): uma vaga BLOQUEADA cuja hora já não está na grelha
+    // oficial (slotsPadrao) não está a proteger posição nenhuma real — é
+    // só lixo deixado por uma configuração anterior (ex: antes de mudar
+    // para "Horas irregulares"). Fica de fora da lista por completo, nunca
+    // aparece nem como "Indisponível" — só um encaixe genuíno (marcação
+    // real ou "Nova Linha de Encaixe") faz sentido mostrar fora da grelha.
+    const encaixes = ordenarPorHora(doGrupo.filter(m => !slotsPadrao.includes(m.hora) && m.tipoLinha !== 'bloqueado'));
     const linhasEncaixe = encaixes.map(m => {
       // BUG CORRIGIDO 2026-09-10 (Hugo: "se eu edito a hora de uma vaga
       // existente, a nova deve substituir a anterior e não deve ser
