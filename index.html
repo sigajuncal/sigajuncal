@@ -6688,6 +6688,15 @@ function abrirEscolhaDiaCalendario(itens, dateISO, goTo) {
   function onKeydown(e) { if (e.key === 'Escape') close(); }
   document.addEventListener('keydown', onKeydown);
   let temVagasEstimadas = false;
+  // Vagas de um Evento com grelha própria (Rastreio/Conselheira/AFA) — ao
+  // contrário da Agenda (sempre em STATE.agendaMarcacoes), as marcações de
+  // um evento só se carregam ao abrir esse dia (ver dbFetchMarcacoes), por
+  // isso a contagem entra aqui de forma assíncrona (mesmo mecanismo já
+  // usado no cartão "Próximo Evento" da Home — dbFetchMarcacaoCounts),
+  // preenchendo um placeholder já visível de imediato (pedido explícito
+  // 2026-09-15, Hugo: "devia contabilizar vagas tal como aparece no
+  // serviço de Podologia"). Dias Especiais nunca têm vagas — ficam de fora.
+  const vagasElPorEventoId = {};
   const opcoes = itens.map(item => {
     const janela = item.tipo === 'agenda' && item.prestadorKey ? janelaServicoNoDia(item.prestadorKey, dateISO) : null;
     const vagas = item.tipo === 'agenda' && item.prestadorKey ? agendaVagasLivresDia(item.prestadorKey, dateISO) : null;
@@ -6696,7 +6705,12 @@ function abrirEscolhaDiaCalendario(itens, dateISO, goTo) {
     if (janela) detalhe.push(`${janela.inicioStr} – ${janela.fimStr}`);
     else if (item.tipo === 'agenda') detalhe.push('Sem marcações agendadas');
     const detalheEl = detalhe.length ? h('span', { class: 'cal-escolha-horario' }, detalhe.join(' · ')) : null;
-    const vagasEl = vagas !== null ? h('span', { class: 'cal-escolha-vagas' }, `${vagas} vaga${vagas === 1 ? '' : 's'} livre${vagas === 1 ? '' : 's'} *`) : null;
+    let vagasEl = vagas !== null ? h('span', { class: 'cal-escolha-vagas' }, `${vagas} vaga${vagas === 1 ? '' : 's'} livre${vagas === 1 ? '' : 's'} *`) : null;
+    if (item.tipo === 'evento' && item.evento && item.evento.tipoEvento !== 'DiaEspecial') {
+      vagasEl = h('span', { class: 'cal-escolha-vagas' }, '');
+      vagasElPorEventoId[item.evento.id] = vagasEl;
+      temVagasEstimadas = true;
+    }
     const btn = h('button', { class: 'cal-escolha-item', type: 'button' }, [
       h('span', { class: 'cal-escolha-dot', style: `background:${item.cor};` }),
       h('div', { class: 'cal-escolha-info' }, [
@@ -6708,6 +6722,17 @@ function abrirEscolhaDiaCalendario(itens, dateISO, goTo) {
     btn.addEventListener('click', () => { close(); abrirItemCalendarioDashboard(item, dateISO, goTo); });
     return btn;
   });
+  if (Object.keys(vagasElPorEventoId).length) {
+    dbFetchMarcacaoCounts().then(counts => {
+      Object.keys(vagasElPorEventoId).forEach(id => {
+        const c = counts[id];
+        const span = vagasElPorEventoId[id];
+        if (!c || !c.total || !span) return; // sem grelha gerada (ex: Conselheira sem Mini-Faciais) — fica sem texto
+        const livres = Math.max(0, c.total - c.preenchidas);
+        span.textContent = `${livres} vaga${livres === 1 ? '' : 's'} livre${livres === 1 ? '' : 's'} *`;
+      });
+    });
+  }
   const panel = h('div', { class: 'modal-panel', style: 'max-width:400px;' }, [
     h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;' }, [
       h('p', { class: 'modal-title', style: 'margin:0;' }, formatDate(dateISO)),
