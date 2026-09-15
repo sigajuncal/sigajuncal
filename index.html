@@ -6782,16 +6782,18 @@ function buildMonthCalendar(year, month, posicao, onDayClick, prestadorKey, cale
     // ao número do dia.
     const feriadoNome = feriadosDoMes.get(dateISO);
     // Dia com PELO MENOS 1 evento — mostra sempre o ícone do tipo de evento a
-    // substituir o número do dia (nunca uma cor de fundo), MESMO que esse
-    // dia também tenha uma agenda de serviço normal (dia misto). Corrigido
-    // 2026-09-15 (Hugo: "AFA deve ter ícone... e não cor, o mesmo para
-    // quando existem outros eventos e serviços de agenda — eventos devem
-    // manter ícone e serviços de agenda a cor respetiva"): antes, um dia
-    // misto (evento + agenda) perdia o ícone e ficava só com a(s) cor(es)
-    // do(s) serviço(s) de agenda, como se não houvesse evento nenhum. Ver
-    // .cal-cell-evento-neutro (CSS) e eventoIconName(). Mapa 48H e
-    // Vacinação continuam nunca a entrar aqui (calendarioItensDoDia só
-    // alimenta "itens" com Eventos e Agendas de serviço).
+    // substituir o número do dia. Corrigido 2026-09-15 (Hugo: "AFA deve ter
+    // ícone... eventos devem manter ícone e serviços de agenda a cor
+    // respetiva" + depois "não falta ali a cor verde?"): o ícone passa a
+    // aparecer em QUALQUER dia com evento (mesmo misto com agenda), mas o
+    // FUNDO colorido em riscas de um dia misto mantém-se exatamente como
+    // sempre (cada serviço de agenda com a sua cor, incluindo a cor
+    // "cósmica" roxa do próprio evento) — só um dia 100% de evento (sem
+    // nenhuma agenda) fica neutro/sem cor (ver .cal-cell-evento-neutro e
+    // COR_EVENTOS_RASTREIOS). Mapa 48H e Vacinação continuam nunca a entrar
+    // aqui (calendarioItensDoDia só alimenta "itens" com Eventos e Agendas
+    // de serviço).
+    const soEvento = itens.length > 0 && itens.every(it => it.tipo === 'evento');
     const temEvento = itens.some(it => it.tipo === 'evento');
     const eventoIconDoDia = temEvento ? eventoIconName((itens.find(it => it.evento) || {}).evento || {}) : null;
     const isToday = dateISO === todayStr;
@@ -6807,14 +6809,15 @@ function buildMonthCalendar(year, month, posicao, onDayClick, prestadorKey, cale
       class: 'cal-cell'
         + (isToday ? ' cal-cell-today' : '')
         + (cores.length ? ' cal-cell-marcado' : '')
-        + (temEvento ? ' cal-cell-evento-neutro' : '')
+        + (soEvento ? ' cal-cell-evento-neutro' : '')
         + (isPast ? ' cal-cell-passado' : '')
         + (temAcao ? ' cal-cell-clicavel' : ''),
-      // Dia com evento: já não tem "background" nenhum (nem inline nem de
-      // classe) — fica com o fundo neutro por omissão da própria .cal-cell,
-      // só o ícone é que muda, mesmo que também haja agenda(s) de serviço
-      // nesse dia (essas mantêm-se identificáveis só na tooltip/lista).
-      style: temEvento ? '' : calendarioCellStyle(cores),
+      // Dia 100% de evento (sem nenhuma agenda): sem "background" nenhum
+      // (nem inline nem de classe) — fica com o fundo neutro por omissão da
+      // própria .cal-cell, só o ícone é que muda. Dia misto (evento +
+      // agenda): mantém sempre as riscas coloridas de sempre, com o ícone
+      // do evento a substituir só o número por cima.
+      style: soEvento ? '' : calendarioCellStyle(cores),
       // Tooltip explícito "Evento: <nome>" para itens de evento — nunca
       // deixa dúvidas ao operador de que aquele dia é um Evento Especial
       // (ex: Eclipse Solar) e não uma consulta/agenda de serviço normal.
@@ -14519,9 +14522,25 @@ async function descartarUltimaNotificacao(item) {
   // desaparecer de imediato ao clique (sem esperar pela rede) — a chamada ao
   // Supabase é que garante que a marcação sobrevive e chega aos outros
   // dispositivos (via Realtime, igual ao resto da Gaveta).
+  const anterior = (STATE.gavetaRecados || []).find(r => r.id === item.r.id);
   STATE.gavetaRecados = (STATE.gavetaRecados || []).map(r => r.id === item.r.id ? Object.assign({}, r, { [campo]: true }) : r);
   const updated = await dbMarcarNotifHomeVista(item.r.id, campo);
-  if (updated) STATE.gavetaRecados = (STATE.gavetaRecados || []).map(r => r.id === updated.id ? updated : r);
+  if (updated) {
+    STATE.gavetaRecados = (STATE.gavetaRecados || []).map(r => r.id === updated.id ? updated : r);
+    return;
+  }
+  // BUG CORRIGIDO 2026-09-15 (Hugo: "se já as li não deveriam voltar a
+  // aparecer... muitas vezes abro o Siga num PC diferente e lá está de novo
+  // as notificações"): se a gravação no Supabase falhar (rede, RLS, coluna
+  // em falta), a atualização otimista acima ficava "por marcar como vista"
+  // só NESTE dispositivo/sessão, sem nunca chegar à base de dados — noutro
+  // PC (ou depois de recarregar a página) a notificação reaparecia sempre,
+  // porque nada tinha ficado realmente gravado. Desfaz o otimismo e avisa,
+  // em vez de fingir sucesso: mantém sempre este widget fiel ao que está
+  // mesmo na base de dados.
+  if (anterior) STATE.gavetaRecados = (STATE.gavetaRecados || []).map(r => r.id === item.r.id ? anterior : r);
+  showDbErrorToast('Não foi possível marcar a notificação como vista');
+  renderOuAdiarSeOcupado();
 }
 // Notificação mais recente relevante para o utilizador — usada pelo widget
 // discreto "Última Notificação" que substituiu o botão antigo da Gaveta
@@ -21899,12 +21918,17 @@ const EVENTO_TIPOS = [
   // AFA_AGENDA_CARD acima) mas fica de fora do hub "Eventos" (grid de
   // buildEventosPage filtra EVENTO_TIPOS_HUB_EXCLUIDOS) — só se acede pelo
   // card próprio no hub de Agendas, ao lado de Prima Corpus.
-  // AFA fica sem cor própria (pedido explícito 2026-09-08, "no calendário
-  // não tem nenhuma cor, é um ícone a substituir o número do dia, como os
-  // eventos") — ver EVENTO_TIPOS (sem campo `cor`) e buildEventoMonthCalendar,
-  // que trata este tipo como "neutro" (mesma classe .cal-cell-evento-neutro
-  // já usada no calendário partilhado das Agendas).
-  { key: 'AFA', pageKey: 'agenda-afa', nome: 'Análise Facial Avançada', icon: 'faceStar' },
+  // AFA passou a ter cor própria neste calendário dedicado (pedido
+  // explícito 2026-09-15: "uma cor a identificar os dias em que estão
+  // abertas vagas, em vez do ícone... uma cor que não esteja a uso ainda")
+  // — vermelho, a única cor da paleta de Agendas/Eventos ainda não usada
+  // por nenhum serviço/tipo (ver lista de cores junto a SERVICOS_CALENDARIO
+  // e aos outros EVENTO_TIPOS). Isto é só para ESTE calendário dedicado à
+  // AFA — o calendário PARTILHADO (Página Inicial/Agendas) continua a usar
+  // sempre o ícone (rosto+estrela) a substituir o número, nunca uma cor,
+  // para nunca se confundir com nenhuma agenda de serviço (ver
+  // buildMonthCalendar/eventoIconName).
+  { key: 'AFA', pageKey: 'agenda-afa', nome: 'Análise Facial Avançada', icon: 'faceStar', cor: '#ef4444' },
 ];
 const EVENTO_TIPOS_HUB_EXCLUIDOS = ['AFA'];
 const SUBTIPOS_RASTREIO = ['Auditivo', 'Cardiovascular', 'Glicémia', 'Outro'];
@@ -22243,20 +22267,20 @@ function buildEventoMonthCalendar(tipo, year, month, posicao, onDayClick) {
     const ev = (STATE.eventos || []).find(e => e.tipoEvento === tipo && e.dataEvento === dateISO);
     const isToday = dateISO === todayStr;
     const isPast = dateISO < todayStr;
-    // AFA: sem cor própria — dia configurado fica "neutro", com o ícone
-    // (rosto+estrela) a substituir o número do dia, em vez do preenchimento
-    // sólido usado pelos restantes tipos de evento (Rastreio/Conselheira/
-    // DiaEspecial, que mantêm o comportamento de sempre).
-    const ehNeutro = tipo === 'AFA' && !!ev;
+    // Este calendário dedicado a cada tipo de evento usa sempre cor sólida
+    // (tipoInfo.cor) para os dias configurados — incluindo a AFA desde
+    // 2026-09-15 (antes ficava "neutra", só com o ícone rosto+estrela a
+    // substituir o número; ver EVENTO_TIPOS). O calendário PARTILHADO
+    // (Página Inicial/Agendas) continua à parte, sempre com o ícone, nunca
+    // uma cor — ver buildMonthCalendar.
     const cell = h('div', {
       class: 'cal-cell'
         + (isToday ? ' cal-cell-today' : '')
-        + (ev && !ehNeutro ? ' cal-cell-marcado' : '')
-        + (ehNeutro ? ' cal-cell-evento-neutro' : '')
+        + (ev ? ' cal-cell-marcado' : '')
         + (isPast ? ' cal-cell-passado' : ' cal-cell-clicavel'),
-      style: (ev && !ehNeutro) ? `background:${tipoInfo.cor};` : '',
+      style: ev ? `background:${tipoInfo.cor};` : '',
       title: ev ? eventoLabel(ev) : undefined,
-    }, ehNeutro ? Icon(tipoInfo.icon, { size: 14, strokeWidth: 2.3 }) : String(d));
+    }, String(d));
     cell.addEventListener('click', (e) => { e.stopPropagation(); onDayClick(dateISO, isPast, ev || null); });
     cells.push(cell);
   }
