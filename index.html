@@ -1393,9 +1393,15 @@
      atualizarLinhaTemporalMarcador, chamado por um setInterval global,
      puro cálculo local, sem pedir nada ao Supabase. */
   .linha-temporal-card{display:flex;flex-direction:column;height:100%;}
-  .linha-temporal-track{position:relative;height:34px;background:var(--pharm-100);border-radius:8px;margin:6px 0 8px;}
-  .linha-temporal-pausa{position:absolute;top:0;bottom:0;background:repeating-linear-gradient(45deg,#e2e8f0,#e2e8f0 6px,#cbd5e1 6px,#cbd5e1 12px);border-radius:6px;opacity:.8;}
-  .linha-temporal-tarefa{position:absolute;top:50%;transform:translate(-50%,-50%);width:22px;height:22px;border-radius:50%;background:#fff;border:2px solid var(--pharm-500);display:flex;align-items:center;justify-content:center;font-size:11px;box-shadow:0 1px 3px rgba(0,0,0,.15);z-index:2;cursor:default;}
+  .linha-temporal-track{position:relative;height:34px;background:var(--pharm-100);border-radius:8px;margin:6px 0 8px;overflow:hidden;}
+  /* Preenchimento "água" do tempo já decorrido (pedido explícito
+     2026-09-17) — fica sempre por baixo de tudo (z-index:0), a largura é
+     atualizada em conjunto com o marcador (ver atualizarLinhaTemporalMarcador).
+     overflow:hidden na própria track garante que a ponta arredondada da
+     direita nunca sai da barra quando chega aos 100%. */
+  .linha-temporal-preenchido{position:absolute;top:0;bottom:0;left:0;z-index:0;background:linear-gradient(90deg,#7dd3fc,#0ea5e9);transition:width 1s linear;}
+  .linha-temporal-pausa{position:absolute;top:0;bottom:0;background:repeating-linear-gradient(45deg,#e2e8f0,#e2e8f0 6px,#cbd5e1 6px,#cbd5e1 12px);border-radius:6px;opacity:.8;cursor:pointer;z-index:1;}
+  .linha-temporal-tarefa{position:absolute;top:50%;transform:translate(-50%,-50%);width:22px;height:22px;border-radius:50%;background:#fff;border:2px solid var(--pharm-500);display:flex;align-items:center;justify-content:center;font-size:11px;box-shadow:0 1px 3px rgba(0,0,0,.15);z-index:2;cursor:pointer;}
   .linha-temporal-marcador{position:absolute;top:-4px;bottom:-4px;width:3px;background:#dc2626;border-radius:2px;transform:translateX(-50%);z-index:3;box-shadow:0 0 0 3px rgba(220,38,38,.18);transition:left 1s linear;}
   .linha-temporal-marcador-fora{background:#94a3b8;box-shadow:0 0 0 3px rgba(148,163,184,.18);}
   .linha-temporal-horas{display:flex;justify-content:space-between;font-size:12px;font-weight:700;color:var(--pharm-600);}
@@ -48762,6 +48768,10 @@ function atualizarLinhaTemporalMarcador() {
   const pct = Math.max(0, Math.min(100, ((agoraMin - inicioMin) / (fimMin - inicioMin)) * 100));
   marcador.style.left = `${pct}%`;
   marcador.classList.toggle('linha-temporal-marcador-fora', agoraMin < inicioMin || agoraMin > fimMin);
+  // Preenchimento "água" (tempo já passado) — mesma % do marcador, muda
+  // com ele ao mesmo ritmo (ver buildLinhaTemporalDiaWidget para a criação).
+  const preenchido = document.getElementById('linha-temporal-preenchido');
+  if (preenchido) preenchido.style.width = `${pct}%`;
 }
 function buildLinhaTemporalDiaWidget() {
   const meuDia = escalaMeuDiaHoje();
@@ -48776,25 +48786,45 @@ function buildLinhaTemporalDiaWidget() {
   const totalMin = Math.max(1, fimMin - inicioMin);
   const pctDe = (horaStr, ehFim) => Math.max(0, Math.min(100, ((escalaMinutosAbsolutos(horaStr, ehFim) - inicioMin) / totalMin) * 100));
   const track = h('div', { class: 'linha-temporal-track' });
-  // Pausa/Almoço — intervalo (não só um ponto), só quando definida.
+  // Preenchimento "água" do tempo já decorrido — pedido explícito
+  // 2026-09-17 ("preenche a barra... como se fosse água, mas que distinga
+  // claramente o tempo já passado e o que ainda falta"): fundo da própria
+  // .linha-temporal-track já é o "por preencher"; isto entra por baixo de
+  // tudo (z-index:0 — nunca tapa pausa/tarefas/marcador) e a LARGURA vai
+  // sendo atualizada pelo mesmo tick que move o marcador (ver
+  // atualizarLinhaTemporalMarcador), sempre à mesma percentagem dele.
+  const agoraInicial = new Date();
+  const agoraMinInicial = escalaMinutosAbsolutos(`${pad2(agoraInicial.getHours())}:${pad2(agoraInicial.getMinutes())}`, false);
+  const pctAgora = Math.max(0, Math.min(100, ((agoraMinInicial - inicioMin) / totalMin) * 100));
+  track.appendChild(h('div', { id: 'linha-temporal-preenchido', class: 'linha-temporal-preenchido', style: `width:${pctAgora}%;` }));
+  // Pausa/Almoço — intervalo (não só um ponto), só quando definida. Toque/
+  // clique mostra a mesma informação do hover (title) num toast — em
+  // ecrãs táteis não há "hover", por isso o toque tem de bastar sozinho
+  // (pedido explícito 2026-09-17).
   if (dia.pausaInicio && dia.pausaFim) {
     const p1 = pctDe(dia.pausaInicio, false), p2 = pctDe(dia.pausaFim, true);
-    track.appendChild(h('div', { class: 'linha-temporal-pausa', style: `left:${p1}%;width:${Math.max(0, p2 - p1)}%;`, title: `Pausa/Almoço: ${dia.pausaInicio} – ${dia.pausaFim}` }));
+    const textoPausa = `Pausa/Almoço: ${dia.pausaInicio} – ${dia.pausaFim}`;
+    const elPausa = h('div', { class: 'linha-temporal-pausa', style: `left:${p1}%;width:${Math.max(0, p2 - p1)}%;`, title: textoPausa });
+    elPausa.addEventListener('click', () => showToast(textoPausa, 'info'));
+    track.appendChild(elPausa);
   }
-  // Tarefas/Cargos Especiais — um marcador no início de cada uma.
+  // Tarefas/Cargos Especiais — um marcador no início de cada uma; mesmo
+  // toque/clique + toast que a Pausa acima.
   tarefas.forEach(t => {
     if (!t.inicio) return;
     const tarefaInfo = escalaTarefaInfo(t.tipo);
-    track.appendChild(h('div', {
+    const textoTarefa = `${escalaTarefaTextoItem(t)} · ${t.inicio}${t.fim ? ' – ' + t.fim : ''}`;
+    const elTarefa = h('div', {
       class: 'linha-temporal-tarefa', style: `left:${pctDe(t.inicio, false)}%;`,
-      title: `${escalaTarefaTextoItem(t)} · ${t.inicio}${t.fim ? ' – ' + t.fim : ''}`,
-    }, tarefaInfo ? tarefaInfo.icon : '★'));
+      title: textoTarefa,
+    }, tarefaInfo ? tarefaInfo.icon : '★');
+    elTarefa.addEventListener('click', () => showToast(textoTarefa, 'info'));
+    track.appendChild(elTarefa);
   });
   // Marcador "agora" — posição inicial calculada já aqui (não espera pelo
   // 1º tick do setInterval global), que depois o mantém a deslizar sozinho.
   const agora = new Date();
   const agoraMin = escalaMinutosAbsolutos(`${pad2(agora.getHours())}:${pad2(agora.getMinutes())}`, false);
-  const pctAgora = Math.max(0, Math.min(100, ((agoraMin - inicioMin) / totalMin) * 100));
   track.appendChild(h('div', {
     id: 'linha-temporal-marcador',
     class: 'linha-temporal-marcador' + (agoraMin < inicioMin || agoraMin > fimMin ? ' linha-temporal-marcador-fora' : ''),
