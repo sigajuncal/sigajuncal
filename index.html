@@ -23141,9 +23141,9 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       if (!/^[0-9]{9}$/.test(String(formDraft.contacto || '').trim())) { formError = 'O Contacto deve ter exatamente 9 dígitos numéricos.'; render(); return; }
     }
     let hora = showForm.hora;
-    if (showForm.encaixe) {
+    if (showForm.encaixe || showForm.editar) {
       formDraft.hora = normalizarHora(formDraft.hora);
-      if (!horaFormatoValido(formDraft.hora)) { formError = 'Indica a hora do encaixe no formato HH:MM (ex: 14:10).'; render(); return; }
+      if (!horaFormatoValido(formDraft.hora)) { formError = 'Indica a hora no formato HH:MM (ex: 14:10).'; render(); return; }
       hora = formDraft.hora;
       const colide = marcacoesDoGrupo(showForm.grupo).some(m => m.hora === hora && m.id !== showForm.vagaId);
       if (colide) { formError = `ATENÇÃO: já existe uma vaga às ${hora} neste grupo. Escolhe outra hora.`; render(); return; }
@@ -23177,7 +23177,20 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       : await dbInsertMarcacao(payload);
     saving = false;
     if (created) {
+      const horaAntiga = showForm.hora;
       marcacoes = showForm.vagaId ? marcacoes.map(x => x.id === created.id ? created : x) : [...marcacoes, created];
+      // Mesma proteção de guardarEdicaoHoraVaga (Editar Hora avulso, agora
+      // só usado em vagas livres): mudar a hora de uma marcação que estava
+      // numa posição fixa da grelha automática deixava essa posição órfã
+      // (sem registo nenhum) — recria-a vazia, para nunca perder o lápis/
+      // cadeado dessa vaga nem "encolher" a grelha.
+      if (showForm.editar && horaAntiga && horaAntiga !== hora) {
+        const slotsPadraoAntigo = slotsDoGrupoDe(created);
+        if (slotsPadraoAntigo.includes(horaAntiga) && !marcacoes.some(x => x.hora === horaAntiga && (x.grupoVaga || 'principal') === showForm.grupo)) {
+          const recriada = await dbInsertMarcacao({ eventoId: currentEvento.id, hora: horaAntiga, grupoVaga: showForm.grupo, tipoLinha: 'vaga', estado: '', aviso: false });
+          if (recriada) marcacoes = [...marcacoes, recriada];
+        }
+      }
       showForm = false;
       if (onSaved) onSaved();
       render();
@@ -23384,11 +23397,22 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     obsInput.addEventListener('input', () => { formDraft.observacoes = obsInput.value; });
 
     const campos = [];
-    if (showForm.encaixe) {
+    // MELHORADO 2026-09-18 (pedido explícito: "não era preferível ter o
+    // botão normal de editar em baixo e abrindo o formulário ter campo
+    // para alterar a hora? era menos redundante e mais intuitivo"): antes
+    // só aparecia aqui em Encaixe novo — para editar uma marcação normal
+    // da grelha só dava para mudar a hora pelo lápis avulso "Editar Hora"
+    // em cada linha (ver editarHoraBtnPara), separado do formulário
+    // completo (Nome/Ficha/Contacto/Estado/Observações). Agora este campo
+    // aparece sempre que se está a EDITAR algo já existente (grelha ou
+    // Encaixe), reunindo tudo num único sítio — o lápis avulso deixou de
+    // aparecer nas marcações já ocupadas (continua a existir só nas vagas
+    // livres, que não têm nenhum formulário próprio para abrir).
+    if (showForm.encaixe || showForm.editar) {
       const horaInput = h('input', { class: 'input', placeholder: 'Hora (ex: 14:10)' });
       horaInput.value = formDraft.hora || '';
       horaInput.addEventListener('input', () => { formDraft.hora = horaInput.value; });
-      campos.push(h('div', { class: 'field field-xs' }, [h('label', {}, 'Hora'), horaInput]));
+      campos.push(h('div', { class: 'field field-xs' }, [h('label', {}, 'Hora *'), horaInput]));
     }
     const avisoCb = h('input', { type: 'checkbox', checked: !!formDraft.aviso });
     avisoCb.addEventListener('change', () => { formDraft.aviso = avisoCb.checked; });
@@ -23426,9 +23450,11 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     // com a hora e o grupo (Mini-Faciais, quando aplicável).
     const nomeGrupo = showForm.grupo === 'mini_facial' ? ' · Mini-Faciais' : '';
     const children = [];
-    if (!showForm.encaixe) {
-      // Só nas vagas normais da grelha — no Encaixe já existe o campo
-      // "Hora" editável e bem visível em cima, dizia a mesma coisa.
+    if (!showForm.encaixe && !showForm.editar) {
+      // Só ao CRIAR uma marcação nova numa vaga fixa da grelha — aí a hora
+      // não é editável (é a da própria vaga clicada), por isso mostra-se
+      // como texto fixo. Em edição (grelha ou Encaixe) a hora já vem como
+      // campo próprio acima ("Hora *"), nunca os dois em simultâneo.
       children.push(h('p', { class: 'cell-strong', style: 'margin:0 0 12px;font-size:14px;' }, `🕐 Vaga das ${showForm.hora}${nomeGrupo}`));
     }
     children.push(h('div', { class: 'form-grid' }, campos));
@@ -23525,7 +23551,6 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
         // explícito 2026-08-08).
         const acoes = [avisoToggleBtn(m)];
         if (m.observacoes && m.observacoes.trim()) acoes.push(obsEyeButton(m.observacoes));
-        if (!isPast) acoes.push(editarHoraBtnPara(m));
         if (!isPast || isMasterUser()) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
         node = h('div', { class: 'agenda-slot-row agenda-slot-ocupado' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : '') }, [
           h('span', { class: 'agenda-slot-hora' }, hora),
@@ -23568,7 +23593,6 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       // seleção (barra flutuante para o resto).
       const acoes = [avisoToggleBtn(m)];
       if (m.observacoes && m.observacoes.trim()) acoes.push(obsEyeButton(m.observacoes));
-      if (!isPast) acoes.push(editarHoraBtnPara(m));
       if (!isPast || isMasterUser()) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
       const node = h('div', { class: 'agenda-slot-row' + classeEncaixe + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : '') }, [
         h('span', { class: 'agenda-slot-hora' }, `${m.hora}${sufixoEncaixe}`),
