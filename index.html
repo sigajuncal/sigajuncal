@@ -3716,23 +3716,20 @@
   .ent-stats-secao-titulo{font-size:14px;font-weight:800;color:var(--pharm-800);margin:0 0 10px;}
   .ent-stats-scroll{overflow:auto;border:1px solid var(--pharm-100);border-radius:12px;max-height:340px;}
   .ent-stats-scroll.curta{max-height:250px;}
-  .ent-stats-scroll.alta{max-height:520px;}
   .ent-stats-tabela{width:100%;border-collapse:collapse;font-size:12.5px;}
   .ent-stats-tabela th{position:sticky;top:0;z-index:1;background:#fff;text-align:left;font-size:10.5px;text-transform:uppercase;
     letter-spacing:.04em;color:var(--pharm-500);padding:8px 10px;border-bottom:1px solid var(--pharm-100);white-space:nowrap;}
   .ent-stats-tabela td{padding:7px 10px;border-bottom:1px solid var(--pharm-50);color:var(--pharm-800);}
   .ent-stats-tabela .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
   .ent-stats-tabela td.forte{font-weight:800;}
-  .ent-stats-bar-wrap{min-width:140px;height:8px;background:var(--pharm-100);border-radius:999px;overflow:hidden;}
-  .ent-stats-bar{height:100%;background:#ea580c;border-radius:999px;}
-  .ent-stats-aviso-km{color:#b45309;cursor:help;margin-left:4px;}
-  .ent-stats-grafico{display:flex;align-items:stretch;gap:4px;height:210px;padding-top:4px;}
+  .ent-stats-grafico{display:flex;align-items:stretch;gap:4px;height:236px;padding-top:28px;box-sizing:border-box;}
   .ent-stats-col{flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:stretch;}
-  .ent-stats-col-val{font-size:10px;font-weight:700;color:var(--pharm-600);text-align:center;height:14px;white-space:nowrap;overflow:visible;}
   .ent-stats-col-barra-wrap{flex:1;display:flex;align-items:flex-end;}
-  .ent-stats-col-barra{width:100%;border-radius:4px 4px 0 0;}
-  .ent-stats-col-rot{position:relative;height:16px;margin-top:4px;font-size:9.5px;color:var(--pharm-500);}
-  .ent-stats-col-rot > span{position:absolute;left:50%;transform:translateX(-50%);white-space:nowrap;}
+  .ent-stats-col-barra{position:relative;width:100%;border-radius:4px 4px 0 0;}
+  .ent-stats-col-val{position:absolute;left:50%;bottom:100%;transform:translateX(-50%);margin-bottom:4px;
+    font-size:10px;font-weight:700;line-height:1;color:var(--pharm-700);white-space:nowrap;pointer-events:none;}
+  .ent-stats-col-rot{position:relative;height:16px;margin-top:5px;font-size:9.5px;line-height:1;color:var(--pharm-500);}
+  .ent-stats-col-rot > span{position:absolute;top:0;left:50%;transform:translateX(-50%);white-space:nowrap;}
   .ent-stats-nota{font-size:11.5px;color:var(--pharm-500);line-height:1.55;margin:6px 0 0;}
   /* Modal de marcações diárias (Agendas/Eventos, todos os prestadores):
      passa a layout em coluna — cabeçalho (título+ações) e barra final
@@ -45463,16 +45460,65 @@ function entregasStatsKm(r) {
 function entregasStatsEhEmpresa(r) {
   return r.tipoDestinatario === 'Empresa Parceira' || !!r.entregaEmpresaParceira;
 }
-// A Localidade vem escrita de várias formas ("São Félix da Marinha", "São
-// Félix da Marinha, Vila Nova de Gaia", "Guetim, Espinho"...) — para as
-// estatísticas conta só a parte antes da 1ª vírgula, e a comparação já
-// ignora maiúsculas/acentos (ver normalizarTexto em calcularEstatisticasEntregas).
+// A Localidade vem escrita de muitas formas ("São Félix da Marinha", "SFM",
+// "4500 Espinho", "Arcozelo VNG", "Anta / Guetim"...) — para a contagem das
+// estatísticas tudo isto tem de cair no MESMO sítio (pedido de Hugo,
+// 2026-09-19: "corrigir agora e para o futuro"). Não altera nada do que está
+// gravado nas entregas (a Localidade também serve para imprimir a folha e
+// para calcular os km): só decide como as estatísticas as agrupam, por isso
+// vale para o histórico todo e para tudo o que for registado daqui em diante.
+// Passos: 1) só a parte antes da 1ª vírgula; 2) tira códigos postais e notas
+// entre parênteses; 3) tira "Freguesia de"/"União das Freguesias de"; 4) tira
+// o concelho no fim (VNG / Vila Nova de Gaia / Gaia) quando sobra outro nome;
+// 5) procura na tabela abaixo; 6) o que não estiver lá fica tal como está,
+// só com maiúsculas arrumadas. Para juntar uma variante nova, basta acrescentar
+// uma linha aqui: [nome final, [variantes...]] (as variantes comparam-se sem
+// acentos, maiúsculas nem pontuação: "S. Félix" = "s felix").
+const ENTREGAS_LOCALIDADES_ALIAS = [
+  ['São Félix da Marinha', ['sfm', 's felix da marinha', 'sao felix da marinha', 'felix da marinha']],
+  // União de freguesias: Anta e Guetim contam como uma só (também "Anta" e
+  // "Guetim" isoladas).
+  ['Anta e Guetim', ['anta', 'guetim', 'anta e guetim', 'anta guetim', 'guetim e anta', 'guetim anta']],
+  ['Vila Nova de Gaia', ['vila nova de gaia', 'gaia', 'vng', 'v n gaia', 'v n g']],
+  ['Espinho', ['espinho']],
+  ['Esmoriz', ['esmoriz']],
+  ['Arcozelo', ['arcozelo']],
+  ['Serzedo', ['serzedo']],
+];
+function entregasStatsChaveLocalidade(txt) {
+  return normalizarTexto(txt).replace(/[^a-z0-9]+/g, ' ').trim();
+}
+const ENTREGAS_LOCALIDADES_MAPA = (() => {
+  const mapa = new Map();
+  ENTREGAS_LOCALIDADES_ALIAS.forEach(([nome, variantes]) => {
+    mapa.set(entregasStatsChaveLocalidade(nome), nome);
+    variantes.forEach(v => mapa.set(entregasStatsChaveLocalidade(v), nome));
+  });
+  return mapa;
+})();
+function entregasStatsMaiusculasPT(txt) {
+  const pequenas = ['de', 'da', 'do', 'das', 'dos', 'e'];
+  return String(txt).toLowerCase().split(/\s+/).filter(Boolean)
+    .map((p, i) => (i > 0 && pequenas.includes(p)) ? p : p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
+}
+function entregasStatsLimparLocalidade(bruto) {
+  let t = String(bruto || '').split(',')[0];
+  t = t.replace(/\([^)]*\)/g, ' ').replace(/\b\d{4}(?:\s*-\s*\d{3})?\b/g, ' ');
+  t = t.replace(/^\s*(?:uni[aã]o\s+das\s+freguesias\s+de|freguesia\s+de)\s+/i, ' ');
+  t = t.replace(/[\s\-–]+$/, '').replace(/^[\s\-–]+/, '').replace(/\s+/g, ' ').trim();
+  if (!entregasStatsChaveLocalidade(t)) return '';
+  const direto = ENTREGAS_LOCALIDADES_MAPA.get(entregasStatsChaveLocalidade(t));
+  if (direto) return direto;
+  const semConcelho = t.replace(/[\s\-–]+(?:v\.?\s?n\.?\s?g\.?|vila\s+nova\s+de\s+gaia|gaia)\s*$/i, '').trim();
+  if (entregasStatsChaveLocalidade(semConcelho)) t = semConcelho;
+  return ENTREGAS_LOCALIDADES_MAPA.get(entregasStatsChaveLocalidade(t)) || entregasStatsMaiusculasPT(t);
+}
 function entregasStatsLocalidade(r) {
-  let loc = String(r.localidade || '').split(',')[0].trim();
+  let loc = entregasStatsLimparLocalidade(r.localidade);
   if (!loc) {
     const empId = r.enderecoEmpresaParceiraId || r.empresaParceiraId;
     const emp = empId ? (STATE.empresasParceiras || []).find(e => String(e.id) === String(empId)) : null;
-    if (emp) loc = String(emp.localidade || '').split(',')[0].trim();
+    if (emp) loc = entregasStatsLimparLocalidade(emp.localidade);
   }
   return loc;
 }
@@ -45556,6 +45602,27 @@ function podeVerEstatisticasEntregas() { return souDirecaoHorariosGlobal(); }
 // atualização em segundo plano (ver nota em render()); em variáveis locais
 // perdiam-se e a vista voltava ao início sozinha.
 let entregasStatsContexto = { periodo: 'tudo', agrupar: 'mes', idaVolta: false, mostrarSemKm: false };
+// Decide, para a largura atual de cada coluna, o que cabe: os valores por cima
+// das colunas só aparecem se TODOS couberem sem tocar no vizinho; as datas por
+// baixo aparecem de k em k colunas (k mínimo que evita sobreposição). Usa
+// visibility (não display) para conseguir medir sempre a largura natural.
+function ajustarRotulosGrafico(grafico) {
+  const cols = [...grafico.children];
+  if (!cols.length) return;
+  const larguraCol = cols[0].getBoundingClientRect().width + 4; // + gap
+  if (!(larguraCol > 0)) return;
+  const valores = grafico.querySelectorAll('.ent-stats-col-val');
+  valores.forEach(v => { v.style.visibility = 'hidden'; });
+  let maxVal = 0;
+  valores.forEach(v => { maxVal = Math.max(maxVal, v.offsetWidth); });
+  const valoresCabem = maxVal + 4 <= larguraCol;
+  valores.forEach(v => { v.style.visibility = valoresCabem ? 'visible' : 'hidden'; });
+  const rots = cols.map(c => c.querySelector('.ent-stats-col-rot > span'));
+  let maxRot = 0;
+  rots.forEach(r => { if (r) { r.style.visibility = 'hidden'; maxRot = Math.max(maxRot, r.offsetWidth); } });
+  const passo = Math.max(1, Math.ceil((maxRot + 8) / larguraCol));
+  rots.forEach((r, i) => { if (r) r.style.visibility = (i % passo === 0) ? 'visible' : 'hidden'; });
+}
 // Página completa "Estatísticas de Entregas" (pedido de Hugo 2026-09-19: "devia
 // abrir uma página completa e não uma pequena janela, quase como o módulo
 // Financeiro") — aberta pelo botão "Estatísticas" das Entregas (Juncal).
@@ -45590,22 +45657,35 @@ function buildEntregasEstatisticasPage(container, goTo) {
     return formatDate(chave).slice(0, 5);
   }
   // Gráfico de colunas, do mais antigo para o mais recente (à direita).
-  function graficoColunas(grupos, valorFn, cor, formatar) {
+  // Os números (valor acima de cada coluna e datas por baixo) NUNCA podem
+  // sobrepor-se às colunas nem uns aos outros, qualquer que seja o zoom/largura
+  // (Hugo, 2026-09-19): o valor está posicionado em absoluto logo POR CIMA do
+  // topo da própria coluna (nunca numa faixa de altura fixa — que a coluna mais
+  // alta invadia quando o texto crescia) e o gráfico reserva folga por cima
+  // para o valor da coluna mais alta; e ajustarRotulosGrafico() esconde os
+  // valores (ou salta datas) sempre que a largura de cada coluna não chega
+  // para o texto — volta a mostrá-los sozinho quando há espaço. O valor
+  // completo fica sempre no tooltip da coluna.
+  function graficoColunas(grupos, valorFn, cor, formatarRotulo, formatarTooltip) {
     const limite = ctx.agrupar === 'dia' ? 45 : (ctx.agrupar === 'semana' ? 40 : 36);
     const vis = grupos.slice().sort((a, b) => a.chave.localeCompare(b.chave)).slice(-limite);
     const max = Math.max(...vis.map(valorFn), 0);
-    const passo = Math.max(1, Math.ceil(vis.length / 12));
-    const mostrarValor = vis.length <= 14;
-    const colunas = vis.map((g, i) => {
+    const colunas = vis.map((g) => {
       const v = valorFn(g);
-      return h('div', { class: 'ent-stats-col', title: `${entregasStatsRotulo(g.chave, ctx.agrupar)} · ${formatar(v)}` }, [
-        mostrarValor ? h('span', { class: 'ent-stats-col-val' }, v ? formatar(v) : '') : null,
-        h('div', { class: 'ent-stats-col-barra-wrap' }, h('div', { class: 'ent-stats-col-barra', style: `height:${max ? Math.max(v ? 2 : 0, Math.round((v / max) * 100)) : 0}%;background:${cor};` })),
-        h('span', { class: 'ent-stats-col-rot' }, i % passo === 0 ? h('span', {}, rotuloCurto(g.chave)) : null),
+      const barra = h('div', { class: 'ent-stats-col-barra', style: `height:${max ? Math.max(v ? 2 : 0, Math.round((v / max) * 100)) : 0}%;background:${cor};` },
+        v ? h('span', { class: 'ent-stats-col-val' }, formatarRotulo(v)) : null);
+      return h('div', { class: 'ent-stats-col', title: `${entregasStatsRotulo(g.chave, ctx.agrupar)} · ${formatarTooltip(v)}` }, [
+        h('div', { class: 'ent-stats-col-barra-wrap' }, barra),
+        h('div', { class: 'ent-stats-col-rot' }, h('span', {}, rotuloCurto(g.chave))),
       ]);
     });
+    const grafico = h('div', { class: 'ent-stats-grafico' }, colunas);
+    if (typeof ResizeObserver === 'function') {
+      const obs = new ResizeObserver(() => { if (!grafico.isConnected) { obs.disconnect(); return; } ajustarRotulosGrafico(grafico); });
+      obs.observe(grafico);
+    }
     return h('div', {}, [
-      h('div', { class: 'ent-stats-grafico' }, colunas),
+      grafico,
       grupos.length > limite ? h('p', { class: 'field-helper-text', style: 'margin:6px 0 0;' }, `A mostrar os ${limite} mais recentes de ${grupos.length}.`) : null,
     ]);
   }
@@ -45677,33 +45757,12 @@ function buildEntregasEstatisticasPage(container, goTo) {
     // ---- gráficos ----
     const tituloPeriodo = ctx.agrupar === 'dia' ? 'dia' : (ctx.agrupar === 'semana' ? 'semana' : 'mês');
     wrap.appendChild(h('div', { class: 'ent-stats-duo' }, [
-      cartao(`Entregas por ${tituloPeriodo}`, graficoColunas(s.grupos, g => g.n, '#ea580c', v => entregasStatsFmt(v, 0))),
+      cartao(`Entregas por ${tituloPeriodo}`, graficoColunas(s.grupos, g => g.n, '#ea580c', v => entregasStatsFmt(v, 0), v => `${entregasStatsFmt(v, 0)} entregas`)),
       cartao(`Km por ${tituloPeriodo}`, h('div', {}, [
-        graficoColunas(s.grupos, g => g.km, '#2563eb', v => entregasStatsFmt(v, 0) + ' km'),
+        graficoColunas(s.grupos, g => g.km, '#2563eb', v => entregasStatsFmt(v, 0), v => `${entregasStatsFmt(v, 1)} km`),
         faltam ? h('p', { class: 'field-helper-text', style: 'margin:6px 0 0;' }, 'Períodos com entregas sem km aparecem incompletos.') : null,
       ])),
     ]));
-
-    // ---- série detalhada ----
-    const maxBarra = Math.max(...s.grupos.map(g => (s.totalKm > 0 ? g.km : g.n)), 0) || 1;
-    const linhasSerie = s.grupos.map(g => {
-      const valorBarra = s.totalKm > 0 ? g.km : g.n;
-      const incompleto = g.comKm < g.n;
-      return h('tr', {}, [
-        h('td', { class: 'forte' }, entregasStatsRotulo(g.chave, ctx.agrupar)),
-        h('td', { class: 'num' }, entregasStatsFmt(g.n, 0)),
-        h('td', { class: 'num' }, entregasStatsFmt(g.dom, 0)),
-        h('td', { class: 'num' }, entregasStatsFmt(g.emp, 0)),
-        h('td', { class: 'num forte' }, g.comKm ? [entregasStatsFmt(g.km, 1), incompleto ? h('span', { class: 'ent-stats-aviso-km', title: `${g.n - g.comKm} de ${g.n} entregas sem km — total incompleto` }, '⚠') : null] : [h('span', { class: 'ent-stats-aviso-km', title: 'Nenhuma entrega com km' }, '—')]),
-        h('td', { class: 'num' }, g.comKm ? entregasStatsFmt(g.km / g.comKm, 1) : '—'),
-        h('td', {}, h('div', { class: 'ent-stats-bar-wrap' }, h('div', { class: 'ent-stats-bar', style: `width:${(s.totalKm > 0 && !g.comKm) ? 0 : Math.max(2, Math.round((valorBarra / maxBarra) * 100))}%;` }))),
-      ]);
-    });
-    wrap.appendChild(cartao(`Detalhe por ${tituloPeriodo}`, tabela([
-      { texto: ctx.agrupar === 'dia' ? 'Dia' : (ctx.agrupar === 'semana' ? 'Semana' : 'Mês') },
-      { texto: 'Entregas', num: true }, { texto: 'Domicílio', num: true }, { texto: 'Empresas', num: true },
-      { texto: 'Km total', num: true }, { texto: 'Km/entrega', num: true }, { texto: s.totalKm > 0 ? 'Km' : 'Entregas' },
-    ], linhasSerie, 'alta')));
 
     // ---- quadros de apoio ----
     const linhasSemana = s.semana.map(d => h('tr', {}, [
