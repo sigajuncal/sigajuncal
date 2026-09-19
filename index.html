@@ -1410,6 +1410,45 @@
      overflow:hidden na própria track garante que a ponta arredondada da
      direita nunca sai da barra quando chega aos 100%. */
   .linha-temporal-preenchido{position:absolute;top:0;bottom:0;left:0;z-index:0;background:linear-gradient(90deg,#7dd3fc,#0ea5e9);transition:width 1s linear;}
+  /* ÁGUA ANIMADA (2026-09-19, pedido explícito de Hugo: "algo que lembre mais
+     água... mais visualmente dinâmico, desde que não gaste egress"). Só CSS +
+     SVG embutido (data URI): nunca pede nada à rede nem ao Supabase, por isso
+     Egress = 0. Todas as animações usam transform/opacity (compostas pela
+     GPU, praticamente sem custo) e nenhuma corre fora desta barra. Camadas
+     (REVISTO 2026-09-19, Hugo: só há movimento onde já há água; o marcador
+     vermelho saiu, ficou só a ondulação):
+       · no tempo já decorrido: só bolhas a fluir da esquerda para a direita;
+       · a frente do preenchimento tem uma borda ondulada a subir (a "superfície"),
+         sem mais nada a assinalar o "agora";
+     A parte que ainda não tem água fica completamente parada.
+     A fase de cada animação sai do relógio (ver `fase` em
+     buildLinhaTemporalDiaWidget) para não "saltar" quando a Página Inicial é
+     redesenhada em segundo plano. Respeita prefers-reduced-motion. */
+  /* REVISTO 2026-09-19 (2ª): sem linhas onduladas nem brilho; só bolhas dentro
+     da água, a fluir da ESQUERDA para a DIREITA (o sentido do tempo), como se
+     viessem do fundo. Cada bolha percorre uma distância fixa (--dx, px) e
+     oscila um pouco na vertical (--dy); a máscara faz as bolhas surgirem
+     suavemente junto ao início e dissolverem-se ao chegar ao limite "agora". */
+  .lt-agua-corpo{position:absolute;inset:0;overflow:hidden;
+    -webkit-mask-image:linear-gradient(90deg,transparent 0,#000 18px,#000 calc(100% - 30px),transparent 100%);
+    mask-image:linear-gradient(90deg,transparent 0,#000 18px,#000 calc(100% - 30px),transparent 100%);}
+  .lt-bolha{position:absolute;border-radius:50%;pointer-events:none;box-sizing:border-box;opacity:0;
+    background:rgba(255,255,255,.55);border:1px solid rgba(255,255,255,.85);
+    animation:ltBolhaFluxo ease-in-out infinite;will-change:transform,opacity;}
+  @keyframes ltBolhaFluxo{
+    0%{transform:translate(0,0) scale(.5);opacity:0;}
+    15%{opacity:.95;}
+    50%{transform:translate(calc(var(--dx) * .5),var(--dy)) scale(1);}
+    85%{opacity:.95;}
+    100%{transform:translate(var(--dx),0) scale(.85);opacity:0;}}
+  .lt-borda{position:absolute;top:0;bottom:0;right:-9px;width:10px;overflow:hidden;pointer-events:none;}
+  .lt-borda-onda{position:absolute;left:0;top:0;width:100%;height:calc(100% + 24px);
+    background-repeat:repeat-y;background-size:10px 24px;will-change:transform;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='24' viewBox='0 0 10 24'%3E%3Cpath d='M0 0 L5 0 Q9 6 5 12 Q1 18 5 24 L0 24 Z' fill='%230ea5e9'/%3E%3C/svg%3E");
+    animation:ltBordaY linear infinite;}
+  @keyframes ltBordaY{to{transform:translateY(-24px);}}
+  .linha-temporal-preenchido.lt-sem-borda .lt-borda{display:none;}
+  .linha-temporal-preenchido.lt-vazio .lt-agua-corpo *{animation-play-state:paused;}
   /* Marca de hora certa — só um traço muito ténue (pedido explícito
      2026-09-17), nunca compete visualmente com o preenchimento/pausa/
      tarefas/marcador por cima (z-index mais baixo de todos). */
@@ -1431,9 +1470,22 @@
      mais do que 1 nível em simultâneo (ver buildLinhaTemporalDiaWidget). */
   .linha-temporal-tarefa-periodo{position:absolute;height:0;z-index:2;cursor:pointer;}
   .linha-temporal-tarefa-linha{position:absolute;left:0;right:0;top:0;height:3px;transform:translateY(-50%);background:var(--pharm-500);border-radius:2px;}
-  .linha-temporal-tarefa-icone{position:absolute;left:50%;top:0;transform:translate(-50%,-50%);width:16px;height:16px;border-radius:50%;background:#fff;border:2px solid var(--pharm-500);display:flex;align-items:center;justify-content:center;font-size:9px;line-height:1;box-shadow:0 1px 2px rgba(0,0,0,.15);}
-  .linha-temporal-marcador{position:absolute;top:-4px;bottom:-4px;width:3px;background:#dc2626;border-radius:2px;transform:translateX(-50%);z-index:3;box-shadow:0 0 0 3px rgba(220,38,38,.18);transition:left 1s linear;}
-  .linha-temporal-marcador-fora{background:#94a3b8;box-shadow:0 0 0 3px rgba(148,163,184,.18);}
+  /* Ícone da tarefa SEM círculo (2026-09-19, pedido de Hugo: com o zoom da
+     página o emoji descentrava-se/deformava-se dentro do círculo de 16px): só
+     o emoji, centrado na linha, com um pequeno halo branco para se ler bem
+     por cima da água e da própria linha. Tamanho em px, por isso acompanha
+     o zoom como o resto do texto. */
+  .linha-temporal-tarefa-icone{position:absolute;left:50%;top:0;transform:translate(-50%,-50%);display:block;
+    font-size:14px;line-height:1;white-space:nowrap;
+    filter:drop-shadow(0 0 1.5px rgba(255,255,255,.95)) drop-shadow(0 0 3px rgba(255,255,255,.7));}
+  /* Sem barra vermelha (2026-09-19, pedido de Hugo): o elemento continua a existir só para marcar o limite "agora" e desenhar a ondulação. */
+  .linha-temporal-marcador{position:absolute;top:-4px;bottom:-4px;width:3px;background:transparent;transform:translateX(-50%);z-index:3;transition:left 1s linear;pointer-events:none;}
+  .linha-temporal-marcador-fora{display:none;}
+  /* Sem anel/bola no limite "agora" (2026-09-19, pedido de Hugo): a borda ondulada da água já mostra até onde vai o turno. */
+  @media (prefers-reduced-motion:reduce){
+    .lt-borda-onda{animation:none !important;}
+    .lt-bolha{display:none;}
+  }
   .linha-temporal-horas{display:flex;justify-content:space-between;font-size:12px;font-weight:700;color:var(--pharm-600);}
 
   /* "Em Curso Agora" + "Tem X tarefas para hoje" + "Tarefas de Hoje da
@@ -1927,13 +1979,14 @@
      sempre para uma linha própria, por baixo, nunca colado ao texto. */
   .escala-cell-conteudo{display:flex;flex-direction:column;align-items:flex-start;gap:3px;}
   /* Ícones compactos de tarefa (Vista em Tabela — escalaTarefaIconesCompactos)
-     — só o emoji, num pequeno badge redondo; o texto completo (tipo +
+     — só o emoji (sem badge); o texto completo (tipo +
      intervalo) só aparece no tooltip flutuante ao passar o rato/focar/
      clicar, para não sobrecarregar uma grelha com 7 colunas de dias. */
   .escala-tarefa-icones-wrap{display:inline-flex;gap:3px;flex-wrap:wrap;}
-  .escala-tarefa-icone{display:inline-flex;align-items:center;justify-content:center;
-    width:19px;height:19px;border-radius:999px;font-size:11px;line-height:1;
-    background:#fef3c7;border:1px solid #fde68a;cursor:default;flex-shrink:0;}
+  /* Sem círculo/badge (2026-09-19, pedido de Hugo — o emoji deformava-se
+     dentro do círculo conforme o zoom): só o emoji, com o tamanho em px. A
+     identificação do tipo de tarefa continua a ser o próprio emoji + tooltip. */
+  .escala-tarefa-icone{display:inline-block;font-size:14px;line-height:1;padding:1px 1px;cursor:default;flex-shrink:0;}
   .escala-tarefa-pill{display:inline-flex;align-items:center;gap:3px;padding:1px 7px;border-radius:999px;
     background:#fef3c7;color:#92400e;border:1px solid #fde68a;font-size:10px;font-weight:700;white-space:nowrap;}
   /* Variantes de estado (só no dia de hoje — ver escalaTarefaPill/
@@ -2080,10 +2133,20 @@
        title (toque longo/tooltip). Nunca afeta a Vista em Tabela da
        "Escala da Equipa" — essa usa os seus próprios ícones compactos
        (.escala-tarefa-icone), sem relação nenhuma com esta pill. */
+    /* 2026-09-19 (pedido de Hugo): sem círculo à volta do ícone — o emoji
+       deformava-se conforme o zoom. O estado (a decorrer / em breve), que era
+       dado pela cor do círculo, passa a ser dado pelo próprio emoji: a decorrer
+       pulsa com um brilho vermelho, em breve tem um brilho amarelo. */
     .escala-pessoal-tarefas .escala-tarefa-pill{
       display:inline-flex;align-items:center;justify-content:center;
-      width:22px;height:22px;padding:0;gap:0;font-size:12px;}
+      padding:1px 2px;gap:0;font-size:16px;line-height:1;
+      background:none !important;border:0 !important;animation:none !important;}
     .escala-pessoal-tarefas .escala-tarefa-pill-label{display:none;}
+    .escala-pessoal-tarefas .escala-tarefa-pill-decorrer .escala-tarefa-pill-icone{
+      filter:drop-shadow(0 0 3px rgba(220,38,38,.85));animation:escalaIconePulso 1.4s ease-in-out infinite;}
+    .escala-pessoal-tarefas .escala-tarefa-pill-brevemente .escala-tarefa-pill-icone{
+      filter:drop-shadow(0 0 3px rgba(234,179,8,.95)) drop-shadow(0 0 1px rgba(234,179,8,.9));}
+    @keyframes escalaIconePulso{0%,100%{transform:scale(1);opacity:1;}50%{transform:scale(1.22);opacity:.7;}}
   }
   .escala-cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;}
   .calendario-anual-grid{display:grid;grid-template-columns:1fr;gap:12px;}
@@ -29732,9 +29795,7 @@ function escalaTarefaIconesCompactos(dia) {
     const texto = escalaTarefaTextoItem(t);
     if (!info || !texto) return null;
     const intervalo = (t.inicio && t.fim) ? ` ${t.inicio}-${t.fim}` : '';
-    const cor = info.cor;
-    const style = cor ? `background:${cor.bg};color:${cor.text};border-color:${cor.border};` : undefined;
-    const icone = h('span', { class: 'escala-tarefa-icone', style, tabIndex: '0' }, info.icon || '•');
+    const icone = h('span', { class: 'escala-tarefa-icone', tabIndex: '0' }, info.icon || '•');
     const tooltipTexto = texto + intervalo;
     icone.addEventListener('mouseenter', () => mostrarTooltipFlutuante(icone, tooltipTexto));
     icone.addEventListener('mouseleave', esconderTooltipFlutuante);
@@ -49731,7 +49792,11 @@ function atualizarLinhaTemporalMarcador() {
   // Preenchimento "água" (tempo já passado) — mesma % do marcador, muda
   // com ele ao mesmo ritmo (ver buildLinhaTemporalDiaWidget para a criação).
   const preenchido = document.getElementById('linha-temporal-preenchido');
-  if (preenchido) preenchido.style.width = `${pct}%`;
+  if (preenchido) {
+    preenchido.style.width = `${pct}%`;
+    preenchido.classList.toggle('lt-sem-borda', pct <= 0.2 || pct >= 100); // sem "superfície" quando vazio/cheio
+    preenchido.classList.toggle('lt-vazio', pct <= 0.2); // ainda sem água: animações em pausa
+  }
 }
 function buildLinhaTemporalDiaWidget() {
   const meuDia = escalaMeuDiaHoje();
@@ -49761,7 +49826,20 @@ function buildLinhaTemporalDiaWidget() {
   const agoraInicial = new Date();
   const agoraMinInicial = escalaMinutosAbsolutos(`${pad2(agoraInicial.getHours())}:${pad2(agoraInicial.getMinutes())}`, false);
   const pctAgora = Math.max(0, Math.min(100, ((agoraMinInicial - inicioMin) / totalMin) * 100));
-  track.appendChild(h('div', { id: 'linha-temporal-preenchido', class: 'linha-temporal-preenchido', style: `width:${pctAgora}%;` }));
+  // Água animada (ver CSS "ÁGUA ANIMADA"): cada camada leva duração e fase
+  // próprias, com a fase tirada do relógio — assim, se a Página Inicial for
+  // redesenhada em segundo plano, as ondas continuam de onde estavam em vez de
+  // recomeçarem (o "salto" que se via).
+  const fase = (seg) => `animation-duration:${seg}s;animation-delay:-${((Date.now() / 1000) % seg).toFixed(2)}s;`;
+  track.appendChild(h('div', { id: 'linha-temporal-preenchido', class: 'linha-temporal-preenchido' + ((pctAgora <= 0.2 || pctAgora >= 100) ? ' lt-sem-borda' : '') + (pctAgora <= 0.2 ? ' lt-vazio' : ''), style: `width:${pctAgora}%;` }, [
+    h('div', { class: 'lt-agua-corpo', 'aria-hidden': 'true' },
+      // [início %, altura %, diâmetro px, duração s, distância px, oscilação px] — só bolhas, a fluir da esquerda para a direita
+      [[2, 50, 4, 8, 100, -3], [9, 25, 3, 10, 120, 3], [16, 72, 5, 9, 90, -4], [24, 40, 3, 11, 130, 3],
+       [33, 62, 4, 8.5, 110, -3], [41, 20, 5, 10.5, 100, 4], [50, 78, 3, 9.5, 120, -3], [58, 45, 4, 8.8, 95, 3],
+       [67, 30, 3, 11.5, 125, -4], [75, 68, 5, 9.2, 105, 3], [84, 52, 4, 10.2, 90, -3], [92, 22, 3, 8.2, 115, 4]]
+        .map(([x, y, d, seg, dx, dy]) => h('span', { class: 'lt-bolha', style: `left:${x}%;top:${y}%;width:${d}px;height:${d}px;--dx:${dx}px;--dy:${dy}px;` + fase(seg) }))),
+    h('div', { class: 'lt-borda', 'aria-hidden': 'true' }, h('span', { class: 'lt-borda-onda', style: fase(2.6) })),
+  ]));
   // Marcas de hora certa — só um separador muito ténue, sem números nem
   // texto nenhum (pedido explícito 2026-09-17: "distinguir horas certas,
   // mas muito ténue"), começa na 1ª hora certa depois da Entrada e para
