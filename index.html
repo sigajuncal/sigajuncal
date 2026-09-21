@@ -51422,6 +51422,61 @@ async function startApp() {
   // ficar visível — cobre o caso de mensagens recebidas em segundo plano.
   atualizarIndicadoresChat();
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { pararPiscarTitulo(); atualizarIndicadoresChat(); atualizarSaudacaoMobileHorarios(); } });
+  // ---- Listas com scroll ajustadas ao ecrã (2026-09-21, pedido de Hugo) ----
+  // Antes, a tabela com scroll tinha uma altura "à vista" (calc(100vh - 280px)) que não contava com o que está por
+  // cima dela (cabeçalho, separadores, filtros...) — por isso, em muitas páginas o fim da lista ficava fora do ecrã
+  // e era preciso fazer PRIMEIRO scroll à página inteira para só depois poder usar o scroll da lista. Agora, em
+  // ecrãs de computador, a altura da lista (.table-wrap) é medida a cada mudança para ela terminar mesmo no fundo
+  // do ecrã: a página deixa de precisar de scroll e só a lista tem. Regras: só quando a lista é a ÚNICA da página
+  // (fora de janelas modais) e é o último bloco (nada relevante por baixo — senão o resto ficava "espremido");
+  // deixa por baixo o espaço da barra de ações flutuante (se existir) ou da assinatura/relógio; nunca fica com menos
+  // de 220px. No telemóvel/tablet (<900px) mantém as regras de sempre.
+  const LISTA_SCROLL_ALTURA_MIN = 220;
+  function ajustarListaComScrollAoEcra() {
+    const pagina = document.querySelector('.page-container');
+    if (!pagina) return;
+    const restaurar = (lista) => {
+      if (lista && lista.dataset.fitAtivo) { lista.style.maxHeight = lista.dataset.fitOrig || ''; delete lista.dataset.fitAtivo; delete lista.dataset.fitOrig; }
+      if (pagina.dataset.fitPad) { pagina.style.paddingBottom = ''; delete pagina.dataset.fitPad; }
+    };
+    const listas = [...pagina.querySelectorAll('.table-wrap')]
+      .filter(el => !el.closest('.modal-overlay, .modal-panel, .gaveta-fullscreen-panel') && el.getBoundingClientRect().height > 0);
+    pagina.querySelectorAll('.table-wrap[data-fit-ativo]').forEach(el => { if (!listas.includes(el) || listas.length !== 1) restaurar(el); });
+    if (window.innerWidth < 900 || listas.length !== 1) { if (!listas.length) restaurar(null); return; }
+    const lista = listas[0];
+    // Fim do conteúdo da página (ignora elementos fixos/absolutos, como a barra de ações flutuante).
+    let fim = 0;
+    [...pagina.children].forEach(c => {
+      const pos = getComputedStyle(c).position;
+      if (pos === 'fixed' || pos === 'absolute') return;
+      const r = c.getBoundingClientRect();
+      if (r.height > 0) fim = Math.max(fim, r.bottom);
+    });
+    const r = lista.getBoundingClientRect();
+    if (fim - r.bottom > 140) { restaurar(lista); return; }   // há bastante conteúdo por baixo: não mexer
+    if (!lista.dataset.fitAtivo) { lista.dataset.fitAtivo = '1'; lista.dataset.fitOrig = lista.style.maxHeight || ''; }
+    const reserva = document.querySelector('.bottom-action-bar') ? 96 : 56;
+    if (pagina.style.paddingBottom !== `${reserva}px`) { pagina.style.paddingBottom = `${reserva}px`; pagina.dataset.fitPad = '1'; }
+    const delta = window.innerHeight - (fim + window.scrollY + reserva);
+    const novo = Math.max(LISTA_SCROLL_ALTURA_MIN, Math.floor(r.height + delta));
+    if (Math.abs(novo - (parseFloat(lista.style.maxHeight) || 0)) < 2) return;
+    lista.style.maxHeight = `${novo}px`;
+  }
+  (function instalarAjusteListasComScroll() {
+    let rafId = 0;
+    const agendar = () => { if (rafId) return; rafId = requestAnimationFrame(() => { rafId = 0; try { ajustarListaComScrollAoEcra(); } catch (e) { /* nunca partir a app por causa disto */ } }); };
+    window.addEventListener('resize', agendar);
+    if (typeof ResizeObserver === 'function' && typeof MutationObserver === 'function') {
+      const ro = new ResizeObserver(agendar);
+      let paginaObservada = null;
+      new MutationObserver(() => {
+        const p = document.querySelector('.page-container');
+        if (p && p !== paginaObservada) { ro.disconnect(); ro.observe(p); if (p.firstElementChild) ro.observe(p.firstElementChild); paginaObservada = p; }
+        agendar();
+      }).observe(document.body, { childList: true, subtree: true });
+    }
+    agendar();
+  })();
   // Temporizadores de Hora Limite das Entregas — só existem badges quando a
   // vista de Pendentes está visível; o querySelectorAll é barato quando não há nenhum.
   setInterval(atualizarTodosEntregaTimerBadges, 20000);
