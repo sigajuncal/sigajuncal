@@ -2580,6 +2580,18 @@
      a janela for demasiado estreita para os 56px mínimos por coluna,
      .escala-vertical-wrap continua com overflow-x:auto (nunca hidden) —
      scroll horizontal em vez de cortar/esconder qualquer coluna. */
+  /* Telemóvel/tablet (2026-09-21, pedido de Hugo: "barras escusam de ser tão largas e exigir tanto scroll lateral"):
+     as colunas tinham 88px de largura mínima — bem mais do que o conteúdo precisa. O mais largo que uma coluna leva é
+     uma hora "08:00" (~32px a 10px) dentro do bloco + 1px de margem de cada lado, por isso 44px chegam: passam a caber
+     ~7 colunas no ecrã em vez de ~3,5, e o scroll lateral é bem menor. Continua a esticar (flex:1) quando há poucas. */
+  @media (max-width:1023px){
+    .escala-vertical-colunas{flex-wrap:nowrap;gap:2px;}
+    .escala-vertical-coluna{min-width:44px;flex:1 1 0;padding:0 1px;}
+    .escala-vertical-coluna-titulo{padding:0 1px 12px;font-size:10px;}
+    .escala-vertical-bloco{left:1px;right:1px;font-size:10px;}
+    .escala-vertical-bloco-horas{padding:3px 0;}
+    .escala-vertical-coluna-totais{flex:0 0 40px;min-width:40px;}
+  }
   @media (min-width:1024px){
     .escala-vertical-colunas{flex-wrap:nowrap;gap:3px;}
     .escala-vertical-coluna{min-width:56px;flex:1 1 0;}
@@ -50431,7 +50443,8 @@ function desenharGarrafaLinhaTemporal(track, tracoEl, brilhoEl, anelEl, svgEl, t
   // Tamanho dos ícones (2026-09-21, pedido de Hugo: "mais pequenos, sobretudo no telemóvel, e mais centrados"):
   // 18px no computador, 15px em barras estreitas (telemóvel); o passo entre ícones de tarefas sobrepostas
   // acompanha o tamanho.
-  const TAM_BASE = W < 520 ? 15 : 18;
+  const MOVEL = W < 520;   // barra estreita (telemóvel)
+  const TAM_BASE = MOVEL ? 12 : 18;
   const PASSO_ICONE = TAM_BASE + 10;   // separação vertical entre ícones de tarefas sobrepostas
   const iconesPorPosicionar = [];
   rotulos.forEach(r => {
@@ -50447,7 +50460,14 @@ function desenharGarrafaLinhaTemporal(track, tracoEl, brilhoEl, anelEl, svgEl, t
     // senão tapava o ícone dos rótulos que vão até ao fim do turno.
     const x0v = Math.max(0, x0), x1v = Math.max(x0v + 6, Math.min(x1, Wt - 12));
     // Centro VERTICAL = meio da garrafa (antes ficava ~13px acima, a fugir às horas de baixo — que não incomodam).
-    iconesPorPosicionar.push({ r, x0v, x1v, cxDes: (x0v + x1v) / 2 + b / 2, cyDes: H / 2 + (r.linha - (nFaixas - 1) / 2) * PASSO_ICONE });
+    const cyDes = H / 2 + (r.linha - (nFaixas - 1) / 2) * PASSO_ICONE;
+    // Centro HORIZONTAL exato do rótulo À ALTURA do ícone: as duas arestas são o mesmo arco, por isso, a essa altura,
+    // ambas estão deslocadas 4*b*t*(1-t) para a direita. Se o rótulo começa com o turno, a aresta esquerda visível é a
+    // própria parede do fundo (x=0); se vai até ao fim, a direita pára antes do aro do gargalo.
+    const desvio = 4 * b * (cyDes / H) * (1 - cyDes / H);
+    const esq = x0 <= 0 ? 0 : x0 + desvio;
+    const dir = Math.min(x1 + desvio, Wt - 12);
+    iconesPorPosicionar.push({ r, x0v, x1v, cxDes: (esq + Math.max(dir, esq + 6)) / 2, cyDes });
   });
   // ÍCONES (2026-09-21, pedido de Hugo): o ícone fica ao CENTRO da parte visível do rótulo (não só do corpo). Se aí
   // não couber (o ombro desce e o gargalo é estreito), primeiro desvia-se para a ESQUERDA, passo a passo, até caber
@@ -50461,7 +50481,7 @@ function desenharGarrafaLinhaTemporal(track, tracoEl, brilhoEl, anelEl, svgEl, t
     // todos os tamanhos — ex.: várias tarefas sobrepostas no ombro/gargalo, sobretudo em ecrã estreito): pode sair da
     // faixa e empilha-se em degraus curtos, com ícones mais pequenos, dentro do espaço que a garrafa tem ali.
     for (const modo of ['estrito', 'livre']) {
-      for (const s of (modo === 'estrito' ? [TAM_BASE, TAM_BASE - 3, TAM_BASE - 5] : [TAM_BASE - 5, TAM_BASE - 7])) {
+      for (const s of (modo === 'estrito' ? (MOVEL ? [12, 10.5, 9] : [18, 15, 13]) : (MOVEL ? [9, 8] : [13, 11]))) {
         const xMin = ic.x0v + s * 0.6 + 4, xMax = ic.x1v - s * 0.6 - 4;
         const inicio = xMin > xMax ? (ic.x0v + ic.x1v) / 2 : Math.min(ic.cxDes, xMax);
         const fim = xMin > xMax ? inicio : xMin;
@@ -50481,7 +50501,7 @@ function desenharGarrafaLinhaTemporal(track, tracoEl, brilhoEl, anelEl, svgEl, t
       if (esc) break;
     }
     if (!esc) {   // último recurso: onde estava previsto, no tamanho mínimo
-      const sMin = Math.max(11, TAM_BASE - 7);
+      const sMin = MOVEL ? 9 : 11;
       const [ymin, ymax] = limitesIcone(ic.cxDes, sMin);
       esc = { cx: ic.cxDes, cy: ymin <= ymax ? Math.max(ymin, Math.min(ymax, ic.cyDes)) : ic.cyDes, s: sMin };
     }
