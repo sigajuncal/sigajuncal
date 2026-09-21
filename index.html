@@ -50397,6 +50397,38 @@ function atualizarLinhaTemporalMarcador() {
 // conta (a água ainda se vê nele); só a tampa, opaca e fora da barra, não conta. A água chega ao fim do gargalo no
 // fim do turno; um rótulo que começa com o turno envolve também o fundo da garrafa, e um que vai até ao fim do
 // turno estende-se por todo o gargalo.
+// Desvio real de um emoji dentro do seu "quadrado de caráter" (2026-09-21) — ver nota acima, no ponto onde é
+// usado. Pinta o emoji num <canvas> (sempre rasteriza a cores verdadeiras, ao contrário do getBBox de SVG) e lê que
+// pixels ficaram pintados, para saber quanto o desenho está deslocado do centro geométrico. Devolve {dx, dy} como
+// FRAÇÃO do tamanho de letra (para se aplicar a qualquer font-size final, sem repetir a medição). Uma só medição
+// por emoji (guardada em cache) — nunca lê pixels a mais no resto da app.
+const EMOJI_DESVIO_CACHE = {};
+function medirDesvioEmoji(emoji, elementoReferencia) {
+  if (EMOJI_DESVIO_CACHE[emoji]) return EMOJI_DESVIO_CACHE[emoji];
+  let desvio = { dx: 0, dy: 0 };
+  try {
+    const SIZE = 64;
+    const canvas = document.createElement('canvas');
+    canvas.width = SIZE; canvas.height = SIZE;
+    const ctx = canvas.getContext('2d');
+    const familia = elementoReferencia ? getComputedStyle(elementoReferencia).fontFamily : 'sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = `${Math.round(SIZE * 0.72)}px ${familia}`;
+    ctx.fillText(emoji, SIZE / 2, SIZE / 2);
+    const dados = ctx.getImageData(0, 0, SIZE, SIZE).data;
+    let minX = SIZE, maxX = -1, minY = SIZE, maxY = -1;
+    for (let y = 0; y < SIZE; y++) {
+      for (let x = 0; x < SIZE; x++) {
+        if (dados[(y * SIZE + x) * 4 + 3] > 10) { if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
+      }
+    }
+    if (maxX >= minX && maxY >= minY) {
+      desvio = { dx: (SIZE / 2 - (minX + maxX) / 2) / SIZE, dy: (SIZE / 2 - (minY + maxY) / 2) / SIZE };
+    }
+  } catch (e) { /* canvas indisponível — fica sem correção, nunca parte a app */ }
+  EMOJI_DESVIO_CACHE[emoji] = desvio;
+  return desvio;
+}
 function desenharGarrafaLinhaTemporal(track, tracoEl, brilhoEl, anelEl, svgEl, tampaEl, clipPathEl, rotulos, aguaSvg, marcas, horasEl) {
   const W = track.clientWidth, H = track.clientHeight;
   if (!(W > 120) || !(H > 60)) return;
@@ -50509,20 +50541,17 @@ function desenharGarrafaLinhaTemporal(track, tracoEl, brilhoEl, anelEl, svgEl, t
       esc = { cx: ic.cxDes, cy: ymin <= ymax ? Math.max(ymin, Math.min(ymax, ic.cyDes)) : ic.cyDes, s: sMin };
     }
     colocados.push({ x: esc.cx, y: esc.cy, s: esc.s });
-    ic.r.icone.setAttribute('x', esc.cx); ic.r.icone.setAttribute('y', esc.cy);
     ic.r.icone.style.fontSize = `${esc.s}px`;
-    // CORRIGIDO 2026-09-21 (Hugo: "e agora a caixa?" — o 📦 continuava visivelmente à esquerda do centro mesmo com
-    // o cálculo já corrigido para a ⭐): a matemática está certa, mas o PRÓPRIO GLIFO do emoji não é sempre desenhado
-    // a meio da sua caixa de texto — o desenho de alguns emojis (📦 é um caso claro) tem folga a mais de um lado. Aqui
-    // mede-se a caixa REAL do que foi desenhado (getBBox, já depois de aplicar posição e tamanho) e corrige-se o
-    // deslocamento — funciona para qualquer emoji, sem precisar de afinar cada um à mão.
-    try {
-      const caixa = ic.r.icone.getBBox();
-      if (caixa.width > 0 && caixa.height > 0) {
-        const dx = esc.cx - (caixa.x + caixa.width / 2), dy = esc.cy - (caixa.y + caixa.height / 2);
-        if (Math.abs(dx) > 0.3 || Math.abs(dy) > 0.3) { ic.r.icone.setAttribute('x', esc.cx + dx); ic.r.icone.setAttribute('y', esc.cy + dy); }
-      }
-    } catch (e) { /* getBBox pode falhar antes do 1º layout — fica na posição nominal */ }
+    // CORRIGIDO 2026-09-21, 2ª tentativa (Hugo confirmou: no telemóvel real "tudo igual" — o getBBox() não fez
+    // diferença nenhuma): o Chrome do telemóvel não mede a geometria real dos emoji A CORES no getBBox() de um
+    // <text> em SVG (só dá as métricas normais do tipo de letra, iguais para qualquer caráter) — por isso a
+    // correção nunca tinha nada para corrigir. Agora mede-se o emoji a sério, pintando-o num <canvas> (SEMPRE
+    // rasteriza a cores reais, em qualquer browser) e lendo que pixels ficaram pintados — dá o desvio verdadeiro
+    // do desenho dentro do quadrado do caráter, funciona para qualquer emoji, e o resultado fica em cache (só se
+    // mede cada emoji uma vez). O ✏️ visível de --lt-rotulo-icone é a mesma família tipográfica usada aqui.
+    const desvioEmoji = medirDesvioEmoji(ic.r.icone.textContent, ic.r.icone);
+    ic.r.icone.setAttribute('x', esc.cx + desvioEmoji.dx * esc.s);
+    ic.r.icone.setAttribute('y', esc.cy + desvioEmoji.dy * esc.s);
   });
   brilhoEl.setAttribute('d', `M ${R + 12} 10 H ${Math.max(R + 36, xs - 34)}`);
   anelEl.setAttribute('d', `M ${W - 9} ${ny1 - 3} V ${ny2 + 3}`);   // aro do gargalo, mesmo sítio onde entra a tampa
