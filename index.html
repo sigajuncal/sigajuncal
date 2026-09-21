@@ -1432,7 +1432,8 @@
   /* Rótulos de tarefa que abraçam a garrafa (SVG, ver desenharGarrafaLinhaTemporal): só o ícone; o resto no tooltip. */
   .lt-rotulo{cursor:pointer;outline:none;}
   .lt-rotulo-forma{stroke:rgba(30,64,175,.42);stroke-width:1.5;pointer-events:all;}
-  .lt-rotulo-icone{font-size:16px;text-anchor:middle;dominant-baseline:central;pointer-events:none;}
+  .lt-rotulo-icone{font-size:21px;text-anchor:middle;dominant-baseline:central;pointer-events:none;}
+  .lt-rotulo-pausa .lt-rotulo-forma{stroke:rgba(100,116,139,.5);opacity:.9;}
   .linha-temporal-horas-dentro{position:absolute;left:18px;right:2px;bottom:10px;z-index:7;pointer-events:none;
     color:var(--pharm-700);font-weight:800;}
   /* Ilustração de descanso (versão reduzida do telemóvel, 2026-09-19): ocupa
@@ -1447,7 +1448,9 @@
      atualizada em conjunto com o marcador (ver atualizarLinhaTemporalMarcador).
      overflow:hidden na própria track garante que a ponta arredondada da
      direita nunca sai da barra quando chega aos 100%. */
-  .linha-temporal-preenchido{position:absolute;top:0;bottom:0;left:0;z-index:0;background:linear-gradient(90deg,#7dd3fc,#0ea5e9);transition:width 1s linear;}
+  .linha-temporal-preenchido{position:absolute;top:0;bottom:0;left:0;z-index:0;background:none;transition:width 1s linear;} /* só guarda as bolhas: a água em si é SVG (.lt-agua-svg) */
+  .lt-agua-svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none;z-index:0;}
+  .lt-marca-hora{fill:none;stroke:rgba(15,23,42,.14);stroke-width:1.2;}
   /* ÁGUA ANIMADA (2026-09-19, pedido explícito de Hugo: "algo que lembre mais
      água... mais visualmente dinâmico, desde que não gaste egress"). Só CSS +
      SVG embutido (data URI): nunca pede nada à rede nem ao Supabase, por isso
@@ -50165,6 +50168,36 @@ function atualizarMeuDiaMobileHorarios() {
   clear(caixa);
   caixa.appendChild(buildLinhaTemporalDiaWidget({ ilustracaoDescanso: true }));
 }
+// CURVATURA ÚNICA (2026-09-21, pedido de Hugo: "linhas das horas e linha da água também curvas... que faça sentido"):
+// todas as arestas que atravessam a garrafa (rótulos das tarefas, pausa, marcas de hora e frente da água) são
+// o MESMO arco — como as secções transversais de um cilindro vistas de lado — com esta saliência (px) a meio da
+// altura, sempre para o mesmo lado.
+const LT_CURVATURA = 8;
+// Água do "O Meu Dia" em SVG (por baixo das bolhas): do início da barra até à frente da água, que é o arco comum
+// (ver LT_CURVATURA) com uma ondulação suave a subir (SMIL, 2,6s — 6 quadros com a fase a avançar). O gradiente vai
+// do azul claro ao azul forte até à frente. Chamada ao desenhar/redimensionar e a cada tick do marcador.
+function desenharAguaLinhaTemporal(svg, W, H) {
+  const pai = svg.parentElement;
+  W = W || (pai && pai.clientWidth); H = H || (pai && pai.clientHeight);
+  if (!(W > 0) || !(H > 0)) return;
+  const forma = svg.querySelector('.lt-agua-forma'), anim = svg.querySelector('animate'), grad = svg.querySelector('linearGradient');
+  const pct = Math.max(0, Math.min(100, parseFloat(svg.dataset.pct) || 0));
+  if (pct <= 0.2) { forma.setAttribute('d', ''); if (anim) anim.setAttribute('values', ''); return; }
+  const xf = (pct / 100) * (parseFloat(svg.dataset.xt) || W);   // o eixo do tempo acaba no fim do gargalo (ver desenharGarrafaLinhaTemporal)
+  const B = LT_CURVATURA, A = 2.2, LAMBDA = 24, PASSO = 3;
+  const ondular = pct < 99.9;
+  const frente = (y, fase) => xf + 4 * B * (y / H) * (1 - y / H) + (ondular ? A * Math.sin((2 * Math.PI * y) / LAMBDA - fase) : 0);
+  const quadro = (fase) => {
+    let d = 'M -12 0 ';
+    for (let y = 0; y < H; y += PASSO) d += `L ${frente(y, fase).toFixed(1)} ${y.toFixed(1)} `;
+    return d + `L ${frente(H, fase).toFixed(1)} ${H.toFixed(1)} L -12 ${H.toFixed(1)} Z`;
+  };
+  const quadros = Array.from({ length: 6 }, (_, k) => quadro((k * 2 * Math.PI) / 6));
+  forma.setAttribute('d', quadros[0]);
+  const semMovimento = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (anim) anim.setAttribute('values', (!ondular || semMovimento) ? '' : quadros.concat(quadros[0]).join(';'));
+  if (grad) grad.setAttribute('x2', String(Math.max(xf + B, 2)));
+}
 function atualizarLinhaTemporalMarcador() {
   const marcador = document.getElementById('linha-temporal-marcador');
   if (!marcador) return; // não está na página atual — nada a fazer
@@ -50178,6 +50211,8 @@ function atualizarLinhaTemporalMarcador() {
   marcador.classList.toggle('linha-temporal-marcador-fora', agoraMin < inicioMin || agoraMin > fimMin);
   // Preenchimento "água" (tempo já passado) — mesma % do marcador, muda
   // com ele ao mesmo ritmo (ver buildLinhaTemporalDiaWidget para a criação).
+  const aguaSvg = document.querySelector('.lt-agua-svg');
+  if (aguaSvg) { aguaSvg.dataset.pct = String(pct); desenharAguaLinhaTemporal(aguaSvg); }
   const preenchido = document.getElementById('linha-temporal-preenchido');
   if (preenchido) {
     preenchido.style.width = `${pct}%`;
@@ -50190,7 +50225,11 @@ function atualizarLinhaTemporalMarcador() {
 // a água/rótulos (clip-path) e desenha o contorno. (3ª versão: a 2ª parecia uma garrafa de vinho e a 3ª tinha
 // uma cintura a meio que ficava feia — 2026-09-21.) As marcas de hora ajustam-se aqui ao espaço REAL da garrafa
 // em cada x (corpo, ombro ou gargalo), para nunca saírem do desenho.
-function desenharGarrafaLinhaTemporal(track, tracoEl, brilhoEl, anelEl, svgEl, tampaEl, clipPathEl, rotulos) {
+// EIXO DO TEMPO (2026-09-21, pedido de Hugo): o turno vai do fundo da garrafa até ao FIM DO GARGALO — o gargalo
+// conta (a água ainda se vê nele); só a tampa, opaca e fora da barra, não conta. A água chega ao fim do gargalo no
+// fim do turno; um rótulo que começa com o turno envolve também o fundo da garrafa, e um que vai até ao fim do
+// turno estende-se por todo o gargalo.
+function desenharGarrafaLinhaTemporal(track, tracoEl, brilhoEl, anelEl, svgEl, tampaEl, clipPathEl, rotulos, aguaSvg, marcas, horasEl) {
   const W = track.clientWidth, H = track.clientHeight;
   if (!(W > 120) || !(H > 60)) return;
   const R = Math.min(28, H * 0.22);
@@ -50201,6 +50240,7 @@ function desenharGarrafaLinhaTemporal(track, tracoEl, brilhoEl, anelEl, svgEl, t
   const om = Math.max(34, Math.min(84, W * 0.09));
   const xs = Math.max(R + 40, xn - om);
   const os = xn - xs;
+  const Wt = W;   // largura do eixo do tempo (fundo → fim do gargalo)
   const d = `M ${R} 0 H ${xs} C ${xs + os * 0.6} 0 ${xn - os * 0.35} ${ny1} ${xn} ${ny1} H ${W} V ${ny2} H ${xn}`
     + ` C ${xn - os * 0.35} ${ny2} ${xs + os * 0.6} ${H} ${xs} ${H} H ${R}`
     + ` A ${R} ${R} 0 0 1 0 ${H - R} V ${R} A ${R} ${R} 0 0 1 ${R} 0 Z`;
@@ -50209,24 +50249,6 @@ function desenharGarrafaLinhaTemporal(track, tracoEl, brilhoEl, anelEl, svgEl, t
   svgEl.setAttribute('viewBox', `0 0 ${W} ${H}`);
   tracoEl.setAttribute('d', d);
   clipPathEl.setAttribute('d', d);
-  // Rótulos das tarefas: faixa de cima a baixo com as duas arestas curvas (arcos para o mesmo lado — como um
-  // rótulo a dar a volta a um cilindro visto de lado). O ícone fica ao centro da parte do rótulo que está no
-  // corpo (ou no meio, se o rótulo estiver todo no ombro/gargalo); com tarefas sobrepostas os ícones separam-se.
-  const nFaixas = rotulos.reduce((m, r) => Math.max(m, r.linha + 1), 1);
-  rotulos.forEach(r => {
-    const x0 = (r.pInicio / 100) * W, x1 = (r.pFim / 100) * W;
-    const largura = Math.max(6, x1 - x0);
-    const b = Math.min(9, Math.max(4, largura * 0.16));
-    r.forma.setAttribute('d', `M ${x0} 0 L ${x0 + largura} 0 Q ${x0 + largura + 2 * b} ${H / 2} ${x0 + largura} ${H} L ${x0} ${H} Q ${x0 + 2 * b} ${H / 2} ${x0} 0 Z`);
-    const fimNoCorpo = Math.min(x0 + largura, xs);
-    const noCorpo = fimNoCorpo - x0 >= 24;
-    const cx = noCorpo ? (x0 + fimNoCorpo) / 2 + b / 2 : (x0 + Math.min(x0 + largura, W)) / 2 + b / 2;
-    const cy = noCorpo ? (H - 24) / 2 + (r.linha - (nFaixas - 1) / 2) * 24 : H / 2;
-    r.icone.setAttribute('x', cx); r.icone.setAttribute('y', cy);
-  });
-  brilhoEl.setAttribute('d', `M ${R + 12} 10 H ${Math.max(R + 36, xs - 34)}`);
-  anelEl.setAttribute('d', `M ${W - 9} ${ny1 - 3} V ${ny2 + 3}`);   // aro do gargalo, mesmo sítio onde entra a tampa
-  tampaEl.style.height = `${alturaGargalo + 10}px`;
   // Altura do ombro (distância ao topo) num dado x — amostra da curva de Bézier do ombro.
   const topoDoOmbro = (x) => {
     let xa = xs, ya = 0;
@@ -50239,15 +50261,90 @@ function desenharGarrafaLinhaTemporal(track, tracoEl, brilhoEl, anelEl, svgEl, t
     }
     return ny1;
   };
-  track.querySelectorAll('.linha-temporal-hora-marca').forEach(marca => {
-    const x = (parseFloat(marca.style.left) / 100) * W;
+  // Espaço vertical LIVRE da garrafa num dado x (o ombro desce, o gargalo é estreito) e limites do centro de um
+  // ícone de tamanho s com uma margem de 6px — usado para o ícone nunca tocar nas paredes da garrafa.
+  const topoLocal = (x) => (x <= xs ? 0 : (x <= xn ? topoDoOmbro(x) : ny1));
+  const limitesIcone = (cx, s) => {
+    const se = s * 1.2;   // o glifo do emoji é maior do que o font-size (sobra ~20%)
+    const topo = topoLocal(cx + se / 2);
+    return [topo + 6 + se / 2, Math.min(H - topo - 6 - se / 2, H - 36 - se / 2)];
+  };
+  // Rótulos das tarefas: faixa de cima a baixo com as duas arestas curvas (arcos para o mesmo lado — como um
+  // rótulo a dar a volta a um cilindro visto de lado).
+  const nFaixas = rotulos.reduce((m, r) => (r.icone ? Math.max(m, r.linha + 1) : m), 1);
+  const PASSO_ICONE = 28;   // separação vertical entre ícones de tarefas sobrepostas
+  const iconesPorPosicionar = [];
+  rotulos.forEach(r => {
+    let x0 = (r.pInicio / 100) * Wt, x1 = (r.pFim / 100) * Wt;
+    if (r.pInicio <= 0.5) x0 = -40;    // começa com o turno: passa por trás do fundo arredondado e envolve-o
+    if (r.pFim >= 99.5) x1 = Wt;       // vai até ao fim do turno: estende-se por todo o gargalo
+    if (x1 - x0 < 6) x1 = x0 + 6;
+    const largura = x1 - x0;
+    const b = LT_CURVATURA;
+    r.forma.setAttribute('d', `M ${x0} 0 L ${x0 + largura} 0 Q ${x0 + largura + 2 * b} ${H / 2} ${x0 + largura} ${H} L ${x0} ${H} Q ${x0 + 2 * b} ${H / 2} ${x0} 0 Z`);
+    if (!r.icone) return;   // a pausa não tem ícone
+    const x0v = Math.max(0, x0), x1v = Math.min(x1, Wt);          // parte VISÍVEL do rótulo (o resto está fora da garrafa)
+    iconesPorPosicionar.push({ r, x0v, x1v, cxDes: (x0v + x1v) / 2 + b / 2, cyDes: (H - 26) / 2 + (r.linha - (nFaixas - 1) / 2) * PASSO_ICONE });
+  });
+  // ÍCONES (2026-09-21, pedido de Hugo): o ícone fica ao CENTRO da parte visível do rótulo (não só do corpo). Se aí
+  // não couber (o ombro desce e o gargalo é estreito), primeiro desvia-se para a ESQUERDA, passo a passo, até caber
+  // sem tocar nas paredes e sem ficar em cima de outro ícone (tarefas sobrepostas); só se não houver sítio em
+  // lado nenhum é que REDUZ de tamanho (21 → 18 → 15px).
+  const colocados = [];
+  iconesPorPosicionar.sort((a, c) => a.cxDes - c.cxDes).forEach(ic => {
+    const livre = (cx, cy, s) => colocados.every(c => Math.abs(c.x - cx) >= ((s + c.s) / 2) * 1.2 + 2 || Math.abs(c.y - cy) >= ((s + c.s) / 2) * 1.2 + 2);
+    let esc = null;
+    // 1º passe (estrito): o ícone tem de ficar na sua faixa (±8px); 2º passe (livre, só se o estrito falhar em
+    // todos os tamanhos — ex.: várias tarefas sobrepostas no ombro/gargalo, sobretudo em ecrã estreito): pode sair da
+    // faixa e empilha-se em degraus curtos, com ícones mais pequenos, dentro do espaço que a garrafa tem ali.
+    for (const modo of ['estrito', 'livre']) {
+      for (const s of (modo === 'estrito' ? [21, 18, 15] : [15, 13])) {
+        const xMin = ic.x0v + s * 0.6 + 4, xMax = ic.x1v - s * 0.6 - 4;
+        const inicio = xMin > xMax ? (ic.x0v + ic.x1v) / 2 : Math.min(ic.cxDes, xMax);
+        const fim = xMin > xMax ? inicio : xMin;
+        const passo = modo === 'estrito' ? PASSO_ICONE : s + 4;
+        for (let cx = inicio; cx >= fim - 0.01 && !esc; cx -= 4) {
+          const [ymin, ymax] = limitesIcone(cx, s);
+          if (ymin > ymax) continue;
+          const cy0 = Math.max(ymin, Math.min(ymax, ic.cyDes));
+          if (modo === 'estrito' && Math.abs(cy0 - ic.cyDes) > 8) continue;   // aqui já não cabe na sua faixa: tenta mais à esquerda
+          for (const k of [0, 1, -1, 2, -2, 3, -3]) {
+            const cy = cy0 + k * passo;
+            if (cy >= ymin && cy <= ymax && livre(cx, cy, s)) { esc = { cx, cy, s }; break; }
+          }
+        }
+        if (esc) break;
+      }
+      if (esc) break;
+    }
+    if (!esc) {   // último recurso: onde estava previsto, no tamanho mínimo
+      const [ymin, ymax] = limitesIcone(ic.cxDes, 15);
+      esc = { cx: ic.cxDes, cy: ymin <= ymax ? Math.max(ymin, Math.min(ymax, ic.cyDes)) : ic.cyDes, s: 15 };
+    }
+    colocados.push({ x: esc.cx, y: esc.cy, s: esc.s });
+    ic.r.icone.setAttribute('x', esc.cx); ic.r.icone.setAttribute('y', esc.cy);
+    ic.r.icone.style.fontSize = `${esc.s}px`;
+  });
+  brilhoEl.setAttribute('d', `M ${R + 12} 10 H ${Math.max(R + 36, xs - 34)}`);
+  anelEl.setAttribute('d', `M ${W - 9} ${ny1 - 3} V ${ny2 + 3}`);   // aro do gargalo, mesmo sítio onde entra a tampa
+  tampaEl.style.height = `${alturaGargalo + 10}px`;
+  // Marcas de hora: ARCOS iguais aos das arestas dos rótulos, e só dentro do espaço REAL da garrafa em cada x.
+  marcas.forEach(m => {
+    const x = (m.pct / 100) * Wt;
     let topo = 0, fundo = H;
     if (x > xn) { topo = ny1; fundo = ny2; } else if (x > xs) { topo = topoDoOmbro(x); fundo = H - topo; }
     const t = Math.max(18, topo + 9), b = Math.min(H - 40, fundo - 9);
-    if (b - t < 14) { marca.style.display = 'none'; return; }
-    marca.style.display = '';
-    marca.style.top = `${t}px`; marca.style.bottom = 'auto'; marca.style.height = `${b - t}px`;
+    if (b - t < 14) { m.el.setAttribute('d', ''); return; }
+    let dd = '';
+    for (let y = t; y < b; y += 6) dd += `${dd ? 'L' : 'M'} ${(x + 4 * LT_CURVATURA * (y / H) * (1 - y / H)).toFixed(1)} ${y.toFixed(1)} `;
+    dd += `L ${(x + 4 * LT_CURVATURA * (b / H) * (1 - b / H)).toFixed(1)} ${b.toFixed(1)}`;
+    m.el.setAttribute('d', dd);
   });
+  aguaSvg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  aguaSvg.dataset.xt = String(Wt);
+  desenharAguaLinhaTemporal(aguaSvg, W, H);
+  // A hora de Saída fica no fim do gargalo (onde o turno acaba), não debaixo da tampa.
+  if (horasEl) horasEl.style.right = `${Math.max(2, W - Wt + 30 - 4)}px`;
 }
 function buildLinhaTemporalDiaWidget(opcoes) {
   const meuDia = escalaMeuDiaHoje();
@@ -50288,6 +50385,33 @@ function buildLinhaTemporalDiaWidget(opcoes) {
   // redesenhada em segundo plano, as ondas continuam de onde estavam em vez de
   // recomeçarem (o "salto" que se via).
   const fase = (seg) => `animation-duration:${seg}s;animation-delay:-${((Date.now() / 1000) % seg).toFixed(2)}s;`;
+  // Água + marcas de hora em SVG (ver desenharAguaLinhaTemporal / desenharGarrafaLinhaTemporal); ficam por baixo das
+  // bolhas (o preenchimento HTML só guarda as bolhas). Marcas de hora certa: separadores muito ténues, sem texto,
+  // da 1ª hora certa depois da Entrada à última antes da Saída (pedido de 2026-09-17), agora em arco.
+  const NSAGUA = 'http://www.w3.org/2000/svg';
+  const aguaSvg = document.createElementNS(NSAGUA, 'svg');
+  aguaSvg.setAttribute('class', 'lt-agua-svg'); aguaSvg.setAttribute('aria-hidden', 'true');
+  aguaSvg.dataset.pct = String(pctAgora);
+  const uidAgua = `lta${Date.now() % 1000000}${Math.floor(Math.random() * 1000)}`;
+  const defsAgua = document.createElementNS(NSAGUA, 'defs');
+  const gradAgua = document.createElementNS(NSAGUA, 'linearGradient');
+  gradAgua.setAttribute('id', uidAgua); gradAgua.setAttribute('gradientUnits', 'userSpaceOnUse');
+  gradAgua.setAttribute('x1', '0'); gradAgua.setAttribute('y1', '0'); gradAgua.setAttribute('x2', '200'); gradAgua.setAttribute('y2', '0');
+  [['0', '#7dd3fc'], ['1', '#0ea5e9']].forEach(([off, cor]) => { const st = document.createElementNS(NSAGUA, 'stop'); st.setAttribute('offset', off); st.setAttribute('stop-color', cor); gradAgua.appendChild(st); });
+  defsAgua.appendChild(gradAgua); aguaSvg.appendChild(defsAgua);
+  const formaAgua = document.createElementNS(NSAGUA, 'path'); formaAgua.setAttribute('class', 'lt-agua-forma'); formaAgua.setAttribute('fill', `url(#${uidAgua})`);
+  const animAgua = document.createElementNS(NSAGUA, 'animate');
+  animAgua.setAttribute('attributeName', 'd'); animAgua.setAttribute('dur', '2.6s'); animAgua.setAttribute('repeatCount', 'indefinite');
+  animAgua.setAttribute('calcMode', 'linear'); animAgua.setAttribute('begin', `-${((Date.now() / 1000) % 2.6).toFixed(2)}s`);   // fase tirada do relógio (sem "saltos" ao redesenhar)
+  formaAgua.appendChild(animAgua); aguaSvg.appendChild(formaAgua);
+  const marcasEls = [];
+  for (let m = Math.ceil(inicioMin / 60) * 60; m < fimMin; m += 60) {
+    if (m <= inicioMin) continue;
+    const el = document.createElementNS(NSAGUA, 'path'); el.setAttribute('class', 'lt-marca-hora');
+    aguaSvg.appendChild(el);
+    marcasEls.push({ pct: ((m - inicioMin) / totalMin) * 100, el });
+  }
+  track.appendChild(aguaSvg);
   track.appendChild(h('div', { id: 'linha-temporal-preenchido', class: 'linha-temporal-preenchido' + ((pctAgora <= 0.2 || pctAgora >= 100) ? ' lt-sem-borda' : '') + (pctAgora <= 0.2 ? ' lt-vazio' : ''), style: `width:${pctAgora}%;` }, [
     h('div', { class: 'lt-agua-corpo', 'aria-hidden': 'true' },
       // [início %, altura %, diâmetro px, duração s, distância px, oscilação px] — só bolhas, a fluir da esquerda para a direita
@@ -50295,27 +50419,16 @@ function buildLinhaTemporalDiaWidget(opcoes) {
        [33, 62, 4, 8.5, 110, -3], [41, 20, 5, 10.5, 100, 4], [50, 78, 3, 9.5, 120, -3], [58, 45, 4, 8.8, 95, 3],
        [67, 30, 3, 11.5, 125, -4], [75, 68, 5, 9.2, 105, 3], [84, 52, 4, 10.2, 90, -3], [92, 22, 3, 8.2, 115, 4]]
         .map(([x, y, d, seg, dx, dy]) => h('span', { class: 'lt-bolha', style: `left:${x}%;top:${y}%;width:${d}px;height:${d}px;--dx:${dx}px;--dy:${dy}px;` + fase(seg) }))),
-    h('div', { class: 'lt-borda', 'aria-hidden': 'true' }, h('span', { class: 'lt-borda-onda', style: fase(2.6) })),
   ]));
-  // Marcas de hora certa — só um separador muito ténue, sem números nem
-  // texto nenhum (pedido explícito 2026-09-17: "distinguir horas certas,
-  // mas muito ténue"), começa na 1ª hora certa depois da Entrada e para
-  // na última antes da Saída (a própria Entrada/Saída já têm o texto nos
-  // extremos, não precisam de mais uma marca em cima).
-  for (let m = Math.ceil(inicioMin / 60) * 60; m < fimMin; m += 60) {
-    if (m <= inicioMin) continue;
-    track.appendChild(h('div', { class: 'linha-temporal-hora-marca', style: `left:${((m - inicioMin) / totalMin) * 100}%;` }));
-  }
   // Pausa/Almoço — intervalo (não só um ponto), só quando definida. Toque/
   // clique mostra a mesma informação do hover (title) num toast — em
   // ecrãs táteis não há "hover", por isso o toque tem de bastar sozinho
   // (pedido explícito 2026-09-17).
+  // REDESENHADO 2026-09-21 (Hugo: "a pausa também ser rótulo curvado"): a pausa é agora um rótulo que abraça a
+  // garrafa, tal como as tarefas (ver mais abaixo, onde o SVG é criado), mantendo as riscas diagonais cinzentas.
+  let pausaDados = null;
   if (dia.pausaInicio && dia.pausaFim) {
-    const p1 = pctDe(dia.pausaInicio, false), p2 = pctDe(dia.pausaFim, true);
-    const textoPausa = `Pausa/Almoço: ${dia.pausaInicio} – ${dia.pausaFim}`;
-    const elPausa = h('div', { class: 'linha-temporal-pausa', style: `left:${p1}%;width:${Math.max(0, p2 - p1)}%;`, tabIndex: '0' });
-    instalarTooltipContaHoras(elPausa, textoPausa);
-    track.appendChild(elPausa);
+    pausaDados = { pInicio: pctDe(dia.pausaInicio, false), pFim: pctDe(dia.pausaFim, true), texto: `Pausa/Almoço: ${dia.pausaInicio} – ${dia.pausaFim}` };
   }
   // Tarefas/Cargos Especiais — REFEITO 2026-09-18 (pedido explícito: "não
   // gosto das chavetas... fica péssimo e ocupa imenso espaço vertical...
@@ -50358,7 +50471,7 @@ function buildLinhaTemporalDiaWidget(opcoes) {
   // desenharGarrafaLinhaTemporal (ver mais abaixo, onde o SVG é criado). Tarefas SOBREPOSTAS ficam a
   // sobrepor-se (a transparência mostra a zona comum) e os ícones separam-se na vertical.
   if (totalLinhasTarefas > 3) {
-    card.style.minHeight = `${Math.max(140, (totalLinhasTarefas - 1) * 24 + 116)}px`;
+    card.style.minHeight = `${Math.max(140, (totalLinhasTarefas - 1) * 28 + 124)}px`;
   }
   // Marcador "agora" — posição inicial calculada já aqui (não espera pelo
   // 1º tick do setInterval global), que depois o mantém a deslizar sozinho.
@@ -50388,16 +50501,32 @@ function buildLinhaTemporalDiaWidget(opcoes) {
   [['0', '0.10'], ['0.5', '0.46'], ['1', '0.10']].forEach(([off, op]) => {
     const st = document.createElementNS(NS, 'stop'); st.setAttribute('offset', off); st.setAttribute('stop-color', '#ffffff'); st.setAttribute('stop-opacity', op); grad.appendChild(st);
   });
-  defs.appendChild(clipEl); defs.appendChild(grad); contornoSvg.appendChild(defs);
+  // Riscas diagonais da pausa (as mesmas cores de sempre).
+  const padrao = document.createElementNS(NS, 'pattern');
+  padrao.setAttribute('id', `${uid}p`); padrao.setAttribute('width', '12'); padrao.setAttribute('height', '12');
+  padrao.setAttribute('patternUnits', 'userSpaceOnUse'); padrao.setAttribute('patternTransform', 'rotate(45)');
+  const fundoPadrao = document.createElementNS(NS, 'rect'); fundoPadrao.setAttribute('width', '12'); fundoPadrao.setAttribute('height', '12'); fundoPadrao.setAttribute('fill', '#e2e8f0');
+  const riscaPadrao = document.createElementNS(NS, 'rect'); riscaPadrao.setAttribute('width', '6'); riscaPadrao.setAttribute('height', '12'); riscaPadrao.setAttribute('fill', '#cbd5e1');
+  padrao.appendChild(fundoPadrao); padrao.appendChild(riscaPadrao);
+  defs.appendChild(clipEl); defs.appendChild(grad); defs.appendChild(padrao); contornoSvg.appendChild(defs);
   const grupoRotulos = document.createElementNS(NS, 'g'); grupoRotulos.setAttribute('clip-path', `url(#${uid}c)`);
-  const rotulosEls = periodosTarefas.map(p => {
+  const rotulosEls = [];
+  if (pausaDados) {
+    const g = document.createElementNS(NS, 'g'); g.setAttribute('class', 'lt-rotulo lt-rotulo-pausa'); g.setAttribute('tabindex', '0');
+    const forma = document.createElementNS(NS, 'path'); forma.setAttribute('class', 'lt-rotulo-forma'); forma.setAttribute('fill', `url(#${uid}p)`);
+    g.appendChild(forma);
+    instalarTooltipContaHoras(g, pausaDados.texto);
+    grupoRotulos.appendChild(g);
+    rotulosEls.push({ pInicio: pausaDados.pInicio, pFim: pausaDados.pFim, linha: 0, forma, icone: null });
+  }
+  periodosTarefas.forEach(p => {
     const g = document.createElementNS(NS, 'g'); g.setAttribute('class', 'lt-rotulo'); g.setAttribute('tabindex', '0');
     const forma = document.createElementNS(NS, 'path'); forma.setAttribute('class', 'lt-rotulo-forma'); forma.setAttribute('fill', `url(#${uid}g)`);
     const icone = document.createElementNS(NS, 'text'); icone.setAttribute('class', 'lt-rotulo-icone'); icone.textContent = p.icon;
     g.appendChild(forma); g.appendChild(icone);
     instalarTooltipContaHoras(g, p.texto);
     grupoRotulos.appendChild(g);
-    return { pInicio: p.pInicio, pFim: p.pFim, linha: p.linha, forma, icone };
+    rotulosEls.push({ pInicio: p.pInicio, pFim: p.pFim, linha: p.linha, forma, icone });
   });
   contornoSvg.appendChild(grupoRotulos);
   const tracoContorno = document.createElementNS(NS, 'path'); tracoContorno.setAttribute('class', 'lt-garrafa-traco');
@@ -50407,11 +50536,12 @@ function buildLinhaTemporalDiaWidget(opcoes) {
   const tampaEl = h('div', { class: 'lt-tampa', 'aria-hidden': 'true' });
   card.appendChild(contornoSvg);
   card.appendChild(tampaEl);
-  card.appendChild(h('div', { class: 'linha-temporal-horas linha-temporal-horas-dentro' }, [h('span', {}, dia.entrada), h('span', {}, dia.saida)]));
+  const horasEl = h('div', { class: 'linha-temporal-horas linha-temporal-horas-dentro' }, [h('span', {}, dia.entrada), h('span', {}, dia.saida)]);
+  card.appendChild(horasEl);
   if (typeof ResizeObserver === 'function') {
     const obs = new ResizeObserver(() => {
       if (!card.isConnected) { obs.disconnect(); return; }
-      desenharGarrafaLinhaTemporal(track, tracoContorno, brilhoContorno, anelContorno, contornoSvg, tampaEl, clipPathEl, rotulosEls);
+      desenharGarrafaLinhaTemporal(track, tracoContorno, brilhoContorno, anelContorno, contornoSvg, tampaEl, clipPathEl, rotulosEls, aguaSvg, marcasEls, horasEl);
     });
     obs.observe(track);
   }
