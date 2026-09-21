@@ -6882,7 +6882,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     if (porAbrir) {
       bodyEl.appendChild(h('div', { class: 'agenda-dia-por-abrir' }, [
         Icon('lockClosed', { size: 15, strokeWidth: 2.3 }),
-        h('span', {}, [h('strong', {}, 'Dia por abrir. '), 'As vagas ficam bloqueadas até o dia ser aberto (botão «Abrir Dia», no topo). A abertura de novos dias requer confirmação do prestador.']),
+        h('span', {}, [h('strong', {}, 'Dia por abrir. '), 'As vagas ficam bloqueadas até abrires o dia — usa o botão «Abrir Dia», no topo.']),
       ]));
       linhas.forEach(n => {
         if (!n || !n.classList || !n.classList.contains('agenda-slot-livre')) return;
@@ -8253,7 +8253,7 @@ function buildAgendaPage(container, goTo, prestadorKey) {
     ]);
     wrap.appendChild(h('div', { style: 'display:flex;' }, [badgeCorAgenda]));
     wrap.appendChild(h('p', { class: 'agenda-info-aviso' },
-      'Marcar apenas nos dias com cor aberta. Abertura de novos dias requer confirmação do prestador.',
+      'Marcar apenas nos dias com cor aberta. Para marcar num dia por abrir, abre-o primeiro («Abrir Dia»).',
     ));
     wrap.appendChild(buildCalendarioCarrossel(onDayClick, prestadorKey));
     // Bloco de Notas da Agenda — partilhado por toda a equipa que gere
@@ -51638,9 +51638,46 @@ async function startApp() {
     if (Math.abs(novo - (parseFloat(lista.style.maxHeight) || 0)) < 2) return;
     lista.style.maxHeight = `${novo}px`;
   }
+  // ---- Tabelas que cabem no ecrã (2026-09-21, pedido de Hugo: em monitores mais pequenos a última coluna dos
+  // Pedidos — "Cotações" — ficava cortada: "1/3 RECEI…", "APROVADO" sem o valor, cabeçalho "COTAÇ") ----
+  // As colunas de TEXTO LONGO (Nome do Cliente, Produto/Manipulado, Morada... = .cell-truncate) têm um limite de
+  // largura fixo (240px ou o que cada tabela definir), e a soma das colunas podia passar a largura do ecrã, deixando
+  // scroll horizontal e a última coluna escondida. Agora, em ecrãs de computador, se uma tabela transborda na
+  // horizontal, esses limites vão sendo reduzidos por degraus (90% → 40%) até ela caber — nunca mais do que o
+  // necessário, e sempre a recalcular do zero quando o ecrã muda. O que está cortado continua legível no tooltip
+  // (hover) e no clique. As etiquetas de Cotações (.badge-cotacao) NUNCA são encurtadas por isto: são a informação
+  // que faltava ver. Se mesmo a 40% não couber, mantém-se o scroll horizontal (último recurso).
+  function ajustarTruncagemDasTabelas() {
+    if (window.innerWidth < 900) return;
+    document.querySelectorAll('.table-wrap').forEach(wrap => {
+      if (!(wrap.clientWidth > 0)) return;
+      const cels = [...wrap.querySelectorAll('.cell-truncate')].filter(el => !el.classList.contains('badge-cotacao'));
+      if (!cels.length) return;
+      const tabela = wrap.querySelector('table');
+      const assinatura = () => `${wrap.clientWidth}|${cels.length}|${tabela ? tabela.offsetWidth : 0}`;
+      if (wrap.dataset.truncAss === assinatura()) return;   // nada mudou desde o último ajuste
+      cels.forEach(el => {
+        if (el.dataset.maxWOrig !== undefined) return;
+        const mw = getComputedStyle(el).maxWidth;
+        el.dataset.maxWInline = el.style.maxWidth || '';
+        el.dataset.maxWOrig = /px$/.test(mw) ? String(parseFloat(mw)) : '';   // só limites em px (não mexe em 100%/none)
+      });
+      const aplicar = (f) => cels.forEach(el => {
+        const o = parseFloat(el.dataset.maxWOrig);
+        if (isNaN(o)) return;
+        el.style.maxWidth = f >= 1 ? el.dataset.maxWInline : `${Math.max(64, Math.round(o * f))}px`;
+      });
+      const transborda = () => wrap.scrollWidth > wrap.clientWidth + 1;
+      aplicar(1);
+      if (transborda()) {
+        for (const f of [0.9, 0.8, 0.7, 0.6, 0.5, 0.4]) { aplicar(f); if (!transborda()) break; }
+      }
+      wrap.dataset.truncAss = assinatura();
+    });
+  }
   (function instalarAjusteListasComScroll() {
     let rafId = 0;
-    const agendar = () => { if (rafId) return; rafId = requestAnimationFrame(() => { rafId = 0; try { ajustarListaComScrollAoEcra(); } catch (e) { /* nunca partir a app por causa disto */ } }); };
+    const agendar = () => { if (rafId) return; rafId = requestAnimationFrame(() => { rafId = 0; try { ajustarListaComScrollAoEcra(); ajustarTruncagemDasTabelas(); } catch (e) { /* nunca partir a app por causa disto */ } }); };
     window.addEventListener('resize', agendar);
     if (typeof ResizeObserver === 'function' && typeof MutationObserver === 'function') {
       const ro = new ResizeObserver(agendar);
