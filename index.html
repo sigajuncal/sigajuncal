@@ -15329,6 +15329,25 @@ function abrirModalGaveta(abrirThreadInicial) {
   // alternarValidacaoNotaEquipa) — antes, validar um pedido de "Atribuição
   // de Tarefa" por aqui deixava sempre a tarefa por agendar, mesmo quando
   // a validação em Horários teria conseguido atribuí-la sozinha.
+  // CORRIGIDO 2026-09-22 (Hugo: "bug novamente de notificação" — cartão de
+  // Aprovar/Rejeitar ficava para sempre na Gaveta, mesmo depois de o pedido já
+  // ter sido validado, inflacionando o contador de "Pendentes"): um pedido de
+  // "Pedidos e Registos da Semana" pode ter uma tarefa pendente na Gaveta de
+  // CADA elemento da Direção (Hugo E Paulo, um registo por pessoa — ver
+  // notificarDirecaoPedidoEspecial). Três sítios diferentes decidem o mesmo
+  // pedido (Aprovar/Rejeitar na Gaveta; Validar/Não Validar direto em
+  // Horários>Pedidos), mas só tratavam o recado de QUEM clicou — nunca a
+  // cópia da outra pessoa da Direção, nem NENHUMA cópia quando a decisão vinha
+  // de Horários. Esta função marca TODAS as tarefas ainda pendentes desse
+  // pedido como tratadas, seja qual for o caminho usado para decidir — chamada
+  // pelos 3 sítios.
+  async function marcarTratadasTarefasNotaEquipa(notaId) {
+    const alvos = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_notas_semana' &&
+      String(r.referenciaId) === String(notaId) && (r.tipo || 'mensagem') === 'tarefa' && !r.tratado);
+    if (!alvos.length) return;
+    const resultados = await Promise.all(alvos.map(r => dbMarcarRecadoTratado(r.id)));
+    resultados.forEach(updated => { if (updated) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === updated.id ? updated : x); });
+  }
   async function marcarNotaEquipaVistaViaGaveta(r) {
     // souDirecaoHorariosGlobal (2026-08-24) em vez de isMasterUser() —
     // reforço no lado da gravação da mesma regra já aplicada ao botão.
@@ -15361,8 +15380,7 @@ function abrirModalGaveta(abrirThreadInicial) {
     const updatedNota = await dbUpdate('escalaNotasSemana', r.referenciaId, patch);
     if (!updatedNota) { showDbErrorToast('Não foi possível validar a nota'); return; }
     STATE.escalaNotasSemana = (STATE.escalaNotasSemana || []).map(n => n.id === r.referenciaId ? updatedNota : n);
-    const updatedRecado = await dbMarcarRecadoTratado(r.id);
-    if (updatedRecado) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === r.id ? updatedRecado : x);
+    await marcarTratadasTarefasNotaEquipa(r.referenciaId);
     await notificarAutorNotaValidada(updatedNota, true);
     showToast('Pedido validado pela Direção.', 'success');
     render();
@@ -15380,8 +15398,7 @@ function abrirModalGaveta(abrirThreadInicial) {
     const updatedNota = await dbUpdate('escalaNotasSemana', r.referenciaId, patch);
     if (!updatedNota) { showDbErrorToast('Não foi possível rejeitar o pedido'); return; }
     STATE.escalaNotasSemana = (STATE.escalaNotasSemana || []).map(n => n.id === r.referenciaId ? updatedNota : n);
-    const updatedRecado = await dbMarcarRecadoTratado(r.id);
-    if (updatedRecado) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === r.id ? updatedRecado : x);
+    await marcarTratadasTarefasNotaEquipa(r.referenciaId);
     await notificarAutorNotaValidada(updatedNota, false, 'rejeitado');
     showToast('Pedido rejeitado.', 'success');
     render();
@@ -34794,6 +34811,10 @@ function buildHorariosPage(container, goTo) {
     const updated = await dbUpdate('escalaNotasSemana', nota.id, patch);
     if (updated) {
       STATE.escalaNotasSemana = STATE.escalaNotasSemana.map(n => n.id === nota.id ? updated : n);
+      // Decisão tomada (validou OU rejeitou explicitamente) = as tarefas pendentes na Gaveta de toda a Direção
+      // para este pedido deixam de fazer sentido. Só NÃO se mexe quando é uma simples ANULAÇÃO de uma validação
+      // anterior (motivo indefinido, novoEstado=false) — aí não havia nenhuma tarefa pendente para tratar.
+      if (novoEstado || motivo === 'rejeitado') await marcarTratadasTarefasNotaEquipa(nota.id);
       await notificarAutorNotaValidada(updated, novoEstado, motivo);
     }
     else escalaShowErro('Não foi possível atualizar a validação');
