@@ -2734,10 +2734,17 @@
   @media (min-width:1280px){
     /* 2026-09-21 (Hugo): a fila NUNCA passa para a linha de baixo em monitores de computador mais pequenos — fica
        sempre numa só linha, à largura fixada (a do calendário), e o tamanho do texto/ícones/espaços acompanha a
-       largura REAL da fila (container queries, ver --stat-esc mais abaixo) para tudo continuar legível. */
+       largura REAL da fila (container queries, ver --stat-esc mais abaixo) para tudo continuar legível.
+       CORRIGIDO 2026-09-22 (Hugo: em monitores muito largos, com o calendário a mostrar 5 meses, a fila ficava mais
+       curta do que o calendário — só os 2 cartões rotativos cresciam (flex-grow) para ocupar o espaço a mais, e
+       paravam ao chegar ao seu limite de 340/360px, sobrando espaço por preencher): agora os 5 cartões crescem
+       TODOS (flex-grow:1 em todos), cada um com o seu próprio limite — os 3 simples (Entregas, Erros, Prémios) até
+       300px, os 2 rotativos até 340/360px como já estava — antes de repartir a folga toda pelos rotativos. A soma
+       dos 5 limites (≈1540px) cobre com folga até o calendário de 5 meses mais largo, por isso a fila acaba sempre
+       exatamente onde acaba o calendário, sem espaço vazio à direita nem em ecrãs muito largos. */
     .stat-grid-dashboard{display:flex;flex-wrap:nowrap;justify-content:flex-start;align-items:stretch;width:100%;
       container-type:inline-size;container-name:statgrid;}
-    .stat-grid-dashboard > .stat-card{flex:0 1 auto;width:auto;min-width:0;--stat-esc:1;
+    .stat-grid-dashboard > .stat-card{flex:1 1 auto;width:auto;min-width:0;max-width:calc(300px * var(--stat-esc));--stat-esc:1;
       padding:calc(18px * var(--stat-esc)) calc(20px * var(--stat-esc));gap:calc(14px * var(--stat-esc));}
     .stat-grid-dashboard > .stat-card.entregas-badge-card{padding-right:calc(36px * var(--stat-esc));} /* folga para o LED de alerta */
     /* Cartões rotativos (Próximo Evento / Próximo Serviço de Agenda): sem largura fixa — partem de 280/300px,
@@ -3326,6 +3333,17 @@
   .quick-item.tone-yellow:hover{background:#fef9c3;border-color:#facc15;}
   .quick-item.tone-yellow .icon-wrap{color:#a16207;}
 
+  /* Personalização do fundo (2026-09-22) */
+  .personalizacao-grid{display:flex;flex-wrap:wrap;gap:14px;}
+  .personalizacao-swatch{display:flex;flex-direction:column;align-items:center;gap:8px;background:none;border:none;
+    cursor:pointer;padding:8px;border-radius:14px;width:104px;}
+  .personalizacao-swatch:hover{background:var(--pharm-50);}
+  .personalizacao-preview{display:flex;align-items:center;justify-content:center;width:64px;height:64px;
+    border-radius:16px;border:1.5px solid var(--pharm-200);box-shadow:inset 0 0 0 1px rgba(255,255,255,.5);}
+  .personalizacao-swatch.ativo .personalizacao-preview{border-color:var(--pharm-600);box-shadow:0 0 0 3px rgba(37,99,235,.18);}
+  .personalizacao-check{display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;
+    background:var(--pharm-600);color:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);}
+  .personalizacao-nome{font-size:12px;font-weight:700;color:var(--pharm-700);text-align:center;line-height:1.3;}
   /* Calendário Mensal Visual */
   .cal-pair{display:grid;grid-template-columns:1fr;gap:14px;max-width:620px;}
   @media (min-width:640px){.cal-pair{grid-template-columns:1fr 1fr;}}
@@ -4644,6 +4662,7 @@ const NAV_SECTIONS = [
   { title: 'Definições', items: [
     { key: 'definicoes', label: 'Utilizadores', icon: 'users' },
     { key: 'seguranca', label: 'Segurança', icon: 'lockClosed' },
+    { key: 'personalizacao', label: 'Personalização', icon: 'droplet' },
     { key: 'sobre', label: 'Sobre', icon: 'info' },
   ] },
 ];
@@ -26891,6 +26910,17 @@ function isEnfermeiro() { return !!activeUser && activeUser.perfilNivel === 'Enf
 // vê e só acede ao módulo Entregas — mas fixo na Farmácia Boa Nova, sem
 // nunca ver nem interagir com dados da Juncal.
 function isBoaNovaOperador() { return !!activeUser && activeUser.perfilNivel === 'Farmácia Boa Nova'; }
+// Personalização do fundo da app (2026-09-22, pedido de Hugo): qualquer colaborador da farmácia ou do Quadro, e
+// Prestadores de Serviço SEM agenda própria — ficam de fora a Estafeta, a Farmácia Boa Nova (postos fixos
+// partilhados por várias pessoas, nunca "de alguém") e os Prestadores de Serviço COM agenda (ex: Dra. Tatiana
+// Prata, Marco Gomes — identificados por terem prestadorKey preenchido).
+function podePersonalizarFundo(u) {
+  u = u || activeUser;
+  if (!u) return false;
+  if (u.perfilNivel === 'Estafeta' || u.perfilNivel === 'Farmácia Boa Nova') return false;
+  if (u.perfilNivel === 'Prestador de Serviço' && u.prestadorKey) return false;
+  return true;
+}
 // Deteção de "telemóvel", para a versão reduzida da app (pedido explícito
 // 2026-09-17) — SEMPRE por sistema operativo (Android/iOS via
 // user-agent), nunca por largura de ecrã. Nota conhecida e aceite: um
@@ -27110,6 +27140,52 @@ function buildSobrePage(container, goTo) {
   container.appendChild(wrap);
 }
 
+function buildPersonalizacaoPage(container, goTo) {
+  if (!podePersonalizarFundo()) { goTo('hub-definicoes'); return; }
+
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
+
+  function idAtual() {
+    if (activeUser.fundoAppId) return activeUser.fundoAppId;
+    try { return window.localStorage.getItem('sigajuncal_fundo_' + activeUser.id) || 'padrao'; } catch (e) { return 'padrao'; }
+  }
+
+  function escolher(id) {
+    if (id === idAtual()) return;
+    guardarTemaFundoApp(id);
+    rerender();
+  }
+
+  function buildSwatch(tema, atual) {
+    const ativo = tema.id === atual;
+    const previewStyle = `background-color:${tema.cor};` + (tema.padraoSvg ? `background-image:url("${tema.padraoSvg}");background-size:${Math.round(tema.tamanho / 2)}px ${Math.round(tema.tamanho / 2)}px;` : '');
+    return h('button', { class: 'personalizacao-swatch' + (ativo ? ' ativo' : ''), type: 'button', onclick: () => escolher(tema.id) }, [
+      h('span', { class: 'personalizacao-preview', style: previewStyle }, ativo ? h('span', { class: 'personalizacao-check' }, Icon('check', { size: 16, strokeWidth: 3 })) : null),
+      h('span', { class: 'personalizacao-nome' }, tema.nome),
+    ]);
+  }
+
+  function build() {
+    const wrap = h('div', { class: 'animate-in' });
+    wrap.appendChild(withBackButton(buildPageHeader('droplet', 'Personalização', 'Escolhe a cor ou o padrão de fundo da aplicação — fica guardado só para ti, neste utilizador.', undefined), goTo));
+    const atual = idAtual();
+    const cores = FUNDO_APP_OPCOES.filter(t => !t.padraoSvg);
+    const padroes = FUNDO_APP_OPCOES.filter(t => t.padraoSvg);
+    wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:18px;' }, [
+      h('h3', { class: 'dash-card-title', style: 'margin-bottom:12px;' }, 'Cores'),
+      h('div', { class: 'personalizacao-grid' }, cores.map(t => buildSwatch(t, atual))),
+    ]));
+    wrap.appendChild(h('div', { class: 'card card-pad' }, [
+      h('h3', { class: 'dash-card-title', style: 'margin-bottom:4px;' }, 'Padrões sazonais'),
+      h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, 'Um traço bem discreto, alusivo à quadra — nunca atrapalha a leitura do resto da aplicação.'),
+      h('div', { class: 'personalizacao-grid' }, padroes.map(t => buildSwatch(t, atual))),
+    ]));
+    wrap.appendChild(h('p', { class: 'field-helper-text', style: 'margin-top:16px;' },
+      'A escolha aplica-se de imediato e fica guardada para a tua conta — a próxima pessoa a entrar neste aparelho não a vê; ao voltares a entrar, encontras sempre a tua.'));
+    return wrap;
+  }
+  rerender();
+}
 function buildDefinicoesPage(container, goTo) {
   let selectedIds = new Set();
   let showForm = false, editingId = null, draft = {}, formError = '', saving = false;
@@ -48457,7 +48533,7 @@ const SECTOR_HUB_TIERS = {
     { label: 'Outros', keys: ['historico-mensagens'] },
   ],
   'Definições': [
-    { label: 'Principal', keys: ['definicoes', 'seguranca'] },
+    { label: 'Principal', keys: ['definicoes', 'seguranca', 'personalizacao'] },
     { label: 'Informação', keys: ['sobre'] },
   ],
 };
@@ -48480,7 +48556,9 @@ function buildSectorHubPage(container, goTo, sectionTitle, icon) {
     const itemByKey = {};
     section.items.forEach(it => { itemByKey[it.key] = it; });
     tiers.forEach(tier => {
-      const items = tier.keys.map(k => itemByKey[k]).filter(Boolean);
+      // "Personalização" só aparece a quem tem permissão (ver podePersonalizarFundo) — Estafeta, Farmácia Boa
+      // Nova e Prestadores de Serviço com agenda própria nem chegam a ver o cartão.
+      const items = tier.keys.filter(k => k !== 'personalizacao' || podePersonalizarFundo()).map(k => itemByKey[k]).filter(Boolean);
       if (!items.length) return;
       wrap.appendChild(h('div', { class: 'quick-grid hub-tier-row' }, items.map(buildCard)));
     });
@@ -49315,6 +49393,11 @@ function renderInterno(ehTransicaoDePagina) {
   if (STATE.page === 'entregas-estatisticas' && !podeVerEstatisticasEntregas()) {
     STATE.page = 'entregas';
   }
+  // Personalização do fundo: rede de segurança do router (ver podePersonalizarFundo) — o cartão já nem aparece a
+  // quem não pode, mas protege também quem chegasse aqui por STATE.page direto.
+  if (STATE.page === 'personalizacao' && !podePersonalizarFundo()) {
+    STATE.page = 'hub-definicoes';
+  }
   if (STATE.page === 'horarios' && (isEstafeta() || isPrestadorServico() || isBoaNovaOperador())) {
     STATE.page = 'home';
   }
@@ -49369,6 +49452,7 @@ function renderInterno(ehTransicaoDePagina) {
       case 'definicoes': buildDefinicoesPage(pageContainer, goTo); break;
       case 'seguranca': buildSegurancaPage(pageContainer, goTo); break;
       case 'sobre': buildSobrePage(pageContainer, goTo); break;
+      case 'personalizacao': buildPersonalizacaoPage(pageContainer, goTo); break;
       case 'hub-pedidos': if (tabelasProntas) buildPedidosHubPage(pageContainer, STATE.consultaPreset, goTo); else pageContainer.appendChild(CarregandoState('A carregar Pedidos…')); STATE.consultaPreset = null; break;
       case 'hub-stocks': buildSectorHubPage(pageContainer, goTo, 'Stocks', 'package'); break;
       case 'hub-gestao': buildSectorHubPage(pageContainer, goTo, 'Gestão', 'briefcase'); break;
@@ -49533,6 +49617,7 @@ function restaurarSessaoPersistente() {
     return false;
   }
   activeUser = { id: u.id, username: u.username, nomeCompleto: u.nomeCompleto || u.username, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', prestadorKey: u.prestadorKey || '', estatutoColaborador: u.estatutoColaborador || '' };
+  aplicarFundoAppPadrao(); // Estafeta/Boa Nova nunca personalizam (ver podePersonalizarFundo) — fundo neutro sempre
   iniciarPresenca();
   registarLeituraMensagemDoDiaSeNecessario();
   return true;
@@ -50859,6 +50944,67 @@ function buildUtilizadoresOnlineBadge() {
 /* =================================================================
    UTILIZADOR ATIVO / IDENTIFICAÇÃO POR POSTO / BLOQUEIO POR INATIVIDADE
 ================================================================= */
+// =====================================================================
+// PERSONALIZAÇÃO DO FUNDO DA APP (2026-09-22, pedido explícito de Hugo)
+// =====================================================================
+// Cores discretas + 4 padrões sazonais (traço muito subtil, cor única, ladrilho grande — nunca interferem com a
+// leitura do conteúdo por cima). Tudo SVG embutido (data URI): nada vem da rede, Egress zero.
+function fundoAppPadraoSvg(tracos, cor) {
+  return `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E${tracos.replace(/#/g, '%23').replace(/'/g, '%27')}%3C/svg%3E`;
+}
+const FUNDO_APP_OPCOES = [
+  { id: 'padrao', nome: 'Azul-claro (padrão)', cor: '#f0f7fb' },
+  { id: 'lilas', nome: 'Lilás suave', cor: '#f5f2fb' },
+  { id: 'menta', nome: 'Verde-menta', cor: '#eef8f3' },
+  { id: 'pessego', nome: 'Pêssego suave', cor: '#fdf3ec' },
+  { id: 'areia', nome: 'Areia', cor: '#faf6ec' },
+  { id: 'rosa', nome: 'Rosa suave', cor: '#fdf1f3' },
+  { id: 'cinza', nome: 'Cinza-azulado', cor: '#eef1f4' },
+  { id: 'oliva', nome: 'Verde-oliva suave', cor: '#f5f6ee' },
+  // Padrões sazonais — traço com opacidade baixa (.35-.4), 1 cor só, ladrilho de 120px.
+  { id: 'natal', nome: 'Natal', cor: '#eef4f8', tamanho: 100, padraoSvg: fundoAppPadraoSvg(
+    "<g fill='none' stroke='#9fb9d6' stroke-width='1.7' stroke-linecap='round' opacity='.4'><path d='M20 4V36M6 20H34M9.5 9.5L30.5 30.5M30.5 9.5L9.5 30.5'/><path d='M78 58V82M66 70H90M69.5 61.5L86.5 78.5M86.5 61.5L69.5 78.5' transform='scale(.6)' transform-origin='78 70'/></g>") },
+  { id: 'pascoa', nome: 'Páscoa', cor: '#fbf6ef', tamanho: 110, padraoSvg: fundoAppPadraoSvg(
+    "<g fill='none' stroke='#e2a8c2' stroke-width='1.7' opacity='.42'><ellipse cx='24' cy='26' rx='12' ry='16'/><ellipse cx='84' cy='80' rx='8' ry='11' transform='rotate(20 84 80)'/></g>") },
+  { id: 'verao', nome: 'Verão', cor: '#eef9fa', tamanho: 90, padraoSvg: fundoAppPadraoSvg(
+    "<g fill='none' stroke='#8ec7ce' stroke-width='1.7' stroke-linecap='round' opacity='.4'><path d='M0 25q7.5-8 15 0t15 0t15 0t15 0t15 0t15 0'/><path d='M0 65q7.5-8 15 0t15 0t15 0t15 0t15 0t15 0'/></g>") },
+  { id: 'outono', nome: 'Outono', cor: '#faf3ea', tamanho: 110, padraoSvg: fundoAppPadraoSvg(
+    "<g fill='none' stroke='#c99a63' stroke-width='1.7' stroke-linejoin='round' stroke-linecap='round' opacity='.42'><path d='M22 6C34 14 34 32 22 44C10 32 10 14 22 6Z M22 8V42M22 20L15 15M22 20L29 15M22 30L14 27M22 30L30 27'/><path d='M80 60C89 66 89 79 80 88C71 79 71 66 80 60Z M80 62V86M80 71L75 67M80 71L85 67' transform='scale(.7)' transform-origin='80 74'/></g>") },
+];
+function fundoAppTema(id) { return FUNDO_APP_OPCOES.find(t => t.id === id) || FUNDO_APP_OPCOES[0]; }
+function aplicarTemaFundoApp(id) {
+  const tema = fundoAppTema(id);
+  document.body.style.backgroundColor = tema.cor;
+  if (tema.padraoSvg) {
+    document.body.style.backgroundImage = `url("${tema.padraoSvg}")`;
+    document.body.style.backgroundRepeat = 'repeat';
+    document.body.style.backgroundSize = `${tema.tamanho}px ${tema.tamanho}px`;
+  } else {
+    document.body.style.backgroundImage = 'none';
+  }
+}
+// Aplica o fundo guardado para ESTE utilizador (o campo do servidor, ou — enquanto essa coluna não existir no
+// Supabase — a última escolha guardada neste aparelho) assim que a sessão arranca.
+function aplicarFundoAppDoUtilizador(u) {
+  if (!u || !podePersonalizarFundo(u)) { aplicarTemaFundoApp('padrao'); return; }
+  let id = u.fundoAppId || '';
+  if (!id) { try { id = window.localStorage.getItem('sigajuncal_fundo_' + u.id) || ''; } catch (e) { /* ignora */ } }
+  aplicarTemaFundoApp(id || 'padrao');
+}
+// Termo de sessão (manual ou por inatividade): repõe o fundo neutro — a pessoa seguinte a usar este aparelho não
+// deve ver a escolha de quem saiu antes sequer de entrar com as suas próprias credenciais.
+function aplicarFundoAppPadrao() { aplicarTemaFundoApp('padrao'); }
+// Guarda a escolha (aplica-se já, sem esperar pela resposta do servidor): fica registada para este utilizador em
+// qualquer aparelho assim que a coluna existir no Supabase (fundo_app_id, texto, na tabela usuarios); até lá, ou se
+// a rede falhar, fica pelo menos guardada neste aparelho (localStorage), sem perder a escolha ao voltar a entrar.
+async function guardarTemaFundoApp(id) {
+  if (!activeUser) return;
+  aplicarTemaFundoApp(id);
+  activeUser.fundoAppId = id;
+  try { window.localStorage.setItem('sigajuncal_fundo_' + activeUser.id, id); } catch (e) { /* ignora */ }
+  const updated = await dbUpdate('usuarios', activeUser.id, { fundoAppId: id });
+  if (updated) STATE.usuarios = (STATE.usuarios || []).map(u => (u.id === activeUser.id ? updated : u));
+}
 let activeUser = null; // { id, username, nomeCompleto } — guardado só em memória, nunca persistido
 // PIN do utilizador com sessão iniciada — guardado só em memória (nunca em
 // localStorage/sessionStorage), usado exclusivamente para autenticar as
@@ -51173,8 +51319,9 @@ function showUserLoginScreen(onSuccess, opts) {
   }
 
   async function concluirLogin(u, preservarEcra) {
-    activeUser = { id: u.id, username: u.username, nomeCompleto: u.nomeCompleto || u.username, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', prestadorKey: u.prestadorKey || '', estatutoColaborador: u.estatutoColaborador || '' };
+    activeUser = { id: u.id, username: u.username, nomeCompleto: u.nomeCompleto || u.username, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', fundoAppId: u.fundoAppId || '', prestadorKey: u.prestadorKey || '', estatutoColaborador: u.estatutoColaborador || '' };
     activeUserPin = u.pin || null;
+    aplicarFundoAppDoUtilizador(activeUser);
     // Herdar do modo convidado o que já tinha sido lido antes do login —
     // evita que o badge reconte mensagens já vistas no ecrã anterior.
     herdarChatLastReadDoConvidado();
@@ -51478,6 +51625,7 @@ function clearSessionSilently() {
   propagarChatLastReadParaConvidado();
   activeUser = null;
   activeUserPin = null;
+  aplicarFundoAppPadrao(); // sessão terminada (inatividade) — fundo neutro até à próxima pessoa entrar
   STATE.financeiro = [];
   STATE.objetivosMensais = [];
   pararPresenca();
@@ -51504,6 +51652,7 @@ function manualLogout() {
   if (activeUser) propagarChatLastReadParaConvidado();
   activeUser = null;
   activeUserPin = null;
+  aplicarFundoAppPadrao(); // sessão terminada — fundo neutro até à próxima pessoa entrar
   STATE.financeiro = [];
   STATE.objetivosMensais = [];
   limparSessaoPersistente();
@@ -51711,6 +51860,37 @@ async function startApp() {
   // necessário, e sempre a recalcular do zero quando o ecrã muda. O que está cortado continua legível no tooltip
   // (hover) e no clique. As etiquetas de Cotações (.badge-cotacao) NUNCA são encurtadas por isto: são a informação
   // que faltava ver. Se mesmo a 40% não couber, mantém-se o scroll horizontal (último recurso).
+  // ---- Larguras de coluna estáveis entre filtros da mesma tabela (2026-09-22, pedido de Hugo) ----
+  // Em tabelas com "chips" de filtro (Pendentes / Em Orçamento / Por Levantar / Resolvidos, e afins nas Agendas,
+  // Stocks, etc.), ao mudar de filtro os títulos das colunas deslocavam-se ligeiramente: a largura de cada coluna
+  // (table-layout:auto) ajusta-se ao conteúdo das linhas VISÍVEIS nesse filtro — "João" é mais estreito que
+  // "A. Seixas", "—" mais estreito que "€57.95". Aqui guarda-se, por tabela (identificada pelos títulos das
+  // colunas — a "impressão digital" da tabela, que não muda ao mudar de filtro), a maior largura já vista em cada
+  // coluna, e aplica-se sempre essa largura como mínimo: a partir do momento em que se veem os dados mais largos
+  // (o filtro "sem filtro" já os mostra logo à partida, por incluir tudo), os cabeçalhos deixam de saltar ao trocar
+  // de filtro — só o conteúdo muda. As colunas de texto livre (Nome, Manipulado/Produto, Morada...) ficam de fora:
+  // essas já têm o seu próprio limite de largura (CSS) e mecanismo de encolher em ecrãs pequenos
+  // (ajustarTruncagemDasTabelas, a seguir), que isto não deve atrapalhar.
+  const LARGURA_COLUNAS_CACHE = {};
+  function estabilizarLargurasColunasTabelas() {
+    if (window.innerWidth < 900) return;   // no telemóvel as tabelas já têm scroll horizontal próprio
+    document.querySelectorAll('.table-wrap').forEach(wrap => {
+      const tabela = wrap.querySelector('table');
+      if (!tabela || !tabela.tHead || !tabela.tHead.rows.length) return;
+      const ths = [...tabela.tHead.rows[0].cells];
+      if (ths.length < 2) return;
+      const chave = ths.map(th => th.textContent.trim()).join('|');
+      if (!chave) return;
+      const linhas = tabela.tBodies.length ? [...tabela.tBodies[0].rows] : [];
+      // Coluna "livre" = nenhuma linha tem ali um texto truncável (fica de fora desta estabilização).
+      const colunaLivre = ths.map((_, i) => !linhas.some(tr => { const td = tr.cells[i]; return td && td.querySelector('.cell-truncate:not(.badge-cotacao)'); }));
+      const atuais = ths.map(th => th.getBoundingClientRect().width);
+      let guardadas = LARGURA_COLUNAS_CACHE[chave];
+      if (!guardadas) { LARGURA_COLUNAS_CACHE[chave] = guardadas = atuais.slice(); }
+      else { atuais.forEach((w, i) => { if (colunaLivre[i] && w > guardadas[i] + 0.5) guardadas[i] = w; }); }
+      ths.forEach((th, i) => { if (colunaLivre[i] && guardadas[i]) th.style.minWidth = `${Math.ceil(guardadas[i])}px`; });
+    });
+  }
   function ajustarTruncagemDasTabelas() {
     if (window.innerWidth < 900) return;
     document.querySelectorAll('.table-wrap').forEach(wrap => {
@@ -51741,7 +51921,7 @@ async function startApp() {
   }
   (function instalarAjusteListasComScroll() {
     let rafId = 0;
-    const agendar = () => { if (rafId) return; rafId = requestAnimationFrame(() => { rafId = 0; try { ajustarListaComScrollAoEcra(); ajustarTruncagemDasTabelas(); } catch (e) { /* nunca partir a app por causa disto */ } }); };
+    const agendar = () => { if (rafId) return; rafId = requestAnimationFrame(() => { rafId = 0; try { ajustarListaComScrollAoEcra(); estabilizarLargurasColunasTabelas(); ajustarTruncagemDasTabelas(); } catch (e) { /* nunca partir a app por causa disto */ } }); };
     window.addEventListener('resize', agendar);
     if (typeof ResizeObserver === 'function' && typeof MutationObserver === 'function') {
       const ro = new ResizeObserver(agendar);
