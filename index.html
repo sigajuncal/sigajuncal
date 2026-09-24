@@ -5573,8 +5573,22 @@ function vacinacaoContarPeriodo(campanha, desde, ate) {
 // submitMarcacao — sem isto, marcar alguém a partir da própria Lista de
 // Espera dispararia sempre um falso aviso "já está na Lista de Espera",
 // porque a pessoa só sai de lá DEPOIS de a marcação ser gravada com sucesso).
+// BUG CORRIGIDO 2026-09-24 (Hugo: "não sabia o nº de utente da senhora,
+// coloquei 000000000 e surgiu aviso a dizer que a pessoa já estava gravada"):
+// um Nº de Utente de preenchimento (000000000, 999999999, 123456789…) é usado
+// por várias pessoas diferentes quando o número verdadeiro não se sabe — nunca
+// pode servir para concluir que duas pessoas são a mesma. Só um número real
+// (9 dígitos, não todos iguais, não sequência óbvia) entra na comparação; os
+// restantes caem no reforço Nome+Contacto, como um registo sem número.
+function vacinacaoNumeroUtenteComparavel(valor) {
+  const n = String(valor || '').replace(/\s+/g, '').trim();
+  if (!/^\d{9}$/.test(n)) return '';
+  if (/^(\d)\1{8}$/.test(n)) return '';
+  if (n === '123456789' || n === '987654321') return '';
+  return n;
+}
 function vacinacaoBuscarDuplicados(campanhaIdAtual, dados, excluirMarcacaoId, excluirEsperaId) {
-  const numero = String(dados.numeroUtente || '').trim();
+  const numero = vacinacaoNumeroUtenteComparavel(dados.numeroUtente);
   const nome = normalizarTexto(dados.nome).trim();
   const contacto = String(dados.contacto || '').trim();
   // Só conta como duplicado se houver pelo menos uma vacina em COMUM entre
@@ -5585,7 +5599,7 @@ function vacinacaoBuscarDuplicados(campanhaIdAtual, dados, excluirMarcacaoId, ex
   const bateCerto = (r) => {
     const mesmaVacina = (dados.gripe && r.gripe) || (dados.covid && r.covid);
     if (!mesmaVacina) return false;
-    if (numero && r.numeroUtente && String(r.numeroUtente).trim() === numero) return true;
+    if (numero && vacinacaoNumeroUtenteComparavel(r.numeroUtente) === numero) return true;
     if (nome && contacto && normalizarTexto(r.nome).trim() === nome && String(r.contacto || '').trim() === contacto) return true;
     return false;
   };
@@ -7122,7 +7136,7 @@ function abrirEscolhaDiaCalendario(itens, dateISO, goTo) {
         const c = counts[id];
         const span = vagasElPorEventoId[id];
         if (!c || !c.total || !span) return; // sem grelha gerada (ex: Conselheira sem Mini-Faciais) — fica sem texto
-        const livres = Math.max(0, c.total - c.preenchidas);
+        const livres = c.livres;
         span.textContent = `${livres} vaga${livres === 1 ? '' : 's'} livre${livres === 1 ? '' : 's'} *`;
       });
     });
@@ -8978,8 +8992,18 @@ function recordToRow(record) {
   return out;
 }
 
+// Marca, por tabela, se a ÚLTIMA leitura completa falhou (true) ou correu bem
+// (false) — dbFetchAll devolve sempre [] quando falha (nunca rejeita), o que
+// é indistinguível de uma tabela realmente vazia; garantirTabelasCarregadas
+// precisa de saber a diferença (ver nota lá, BUG CORRIGIDO 2026-09-24).
+const DB_FETCH_ALL_FALHOU = {};
 async function dbFetchAll(listKey) {
-  if (!sb) { lastDbError = 'Cliente Supabase indisponível.'; return []; }
+  const resultado = await dbFetchAllInterno(listKey);
+  DB_FETCH_ALL_FALHOU[listKey] = resultado === null;
+  return resultado || [];
+}
+async function dbFetchAllInterno(listKey) {
+  if (!sb) { lastDbError = 'Cliente Supabase indisponível.'; return null; }
   const ordenarPor = listKey === 'usuarios' ? 'nome_completo' : 'id';
   const ascending = listKey === 'usuarios';
   try {
@@ -9021,7 +9045,7 @@ async function dbFetchAll(listKey) {
         }
       }
       if (erroDeRede(error)) marcarConexao(false);
-      lastDbError = error.message; console.error(`[Supabase] erro ao ler ${listKey}:`, error.message); return [];
+      lastDbError = error.message; console.error(`[Supabase] erro ao ler ${listKey}:`, error.message); return null;
     }
     marcarConexao(true);
     return sanitizarSupabase(data || []).map(rowToRecord);
@@ -9038,7 +9062,7 @@ async function dbFetchAll(listKey) {
       }
     }
     if (erroDeRede(e)) marcarConexao(false);
-    lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error(`[Supabase] erro de rede ao ler ${listKey}:`, formatarErroSeguro(e)); return [];
+    lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error(`[Supabase] erro de rede ao ler ${listKey}:`, formatarErroSeguro(e)); return null;
   }
 }
 // CRIADO 2026-08-30 (pedido explícito de Hugo: reduzir mais o Egress
@@ -9521,8 +9545,115 @@ function recadosNaoVistosDoUtilizador() {
   // mesmo em registos antigos gravados antes desta correção (que só
   // tinham tratado=true, sem notifVistaRecebida) — daí o `&& !r.tratado`
   // acrescentado aqui, e não só a confiar em notifVistaRecebida sozinho.
+  // ALTERADO 2026-09-24 (Hugo: "se eu já as vi a todas, mesmo que não tenha
+  // tomado ação, não deveria aparecer no botão da gaveta de recados"): o
+  // número da sidebar é só "coisa NOVA por ver" — mensagens E tarefas saem
+  // daqui assim que forem vistas (notifVistaRecebida, marcado ao abrir a
+  // Gaveta — ver marcarGavetaComoVista), mesmo sem ação nenhuma tomada. O
+  // que continua por decidir vive no separador "Pendentes" e nos números
+  // vermelhos de cada conversa, dentro da Gaveta.
   return (STATE.gavetaRecados || []).filter(r => String(r.destinatarioId) === String(activeUser.id) &&
-    ((r.tipo || 'mensagem') === 'tarefa' ? (!r.tratado && !r.notifVistaRecebida) : !r.tratado));
+    !r.tratado && !r.notifVistaRecebida);
+}
+// Abrir a Gaveta = ver o que lá está. Marca como vistos (notif_vista_recebida,
+// nunca tratado — decidir continua a ser outra coisa) todos os recados
+// recebidos ainda por ver, numa única escrita ao Supabase (Egress mínimo).
+// Chamado ao abrir a Gaveta e a cada redesenho da lista (o que acabou de
+// aparecer no ecrã também foi visto). Evita repetir ids já a caminho.
+const GAVETA_VISTOS_EM_CURSO = new Set();
+async function marcarGavetaComoVista() {
+  if (!utilizadorAtualTemGaveta() || !sb) return;
+  const alvos = (STATE.gavetaRecados || []).filter(r => String(r.destinatarioId) === String(activeUser.id) &&
+    !r.tratado && !r.notifVistaRecebida && !GAVETA_VISTOS_EM_CURSO.has(r.id));
+  if (!alvos.length) return;
+  const ids = alvos.map(r => r.id);
+  ids.forEach(id => GAVETA_VISTOS_EM_CURSO.add(id));
+  const idsSet = new Set(ids);
+  // Otimista: o número da sidebar apaga-se já, sem esperar pela rede.
+  STATE.gavetaRecados = (STATE.gavetaRecados || []).map(r => idsSet.has(r.id) ? Object.assign({}, r, { notifVistaRecebida: true }) : r);
+  renderOuAdiarSeOcupado();
+  let ok = false;
+  try {
+    const { error } = await comAutoLimpezaDeColunas('gavetaRecados', recordToRow({ notifVistaRecebida: true }),
+      (row) => sb.from('gaveta_recados').update(row).in('id', ids));
+    if (error) lastDbError = error.message; else ok = true;
+  } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; }
+  ids.forEach(id => GAVETA_VISTOS_EM_CURSO.delete(id));
+  if (ok) return;
+  // Mesmo princípio de descartarUltimaNotificacao: nunca fingir sucesso —
+  // se não ficou gravado, volta atrás e avisa (senão reapareceria noutro PC).
+  STATE.gavetaRecados = (STATE.gavetaRecados || []).map(r => idsSet.has(r.id) ? Object.assign({}, r, { notifVistaRecebida: false }) : r);
+  showDbErrorToast('Não foi possível marcar as notificações como vistas');
+  renderOuAdiarSeOcupado();
+}
+// Um mesmo pedido pode ter uma tarefa na Gaveta de CADA elemento da Direção
+// (Hugo E Paulo). MOVIDO para fora de abrirModalGaveta 2026-09-24: vivia
+// dentro dessa função, mas alternarValidacaoNotaEquipa (Horários > Pedidos)
+// também a chama — lá dava ReferenceError, por isso validar/rejeitar em
+// Horários nunca tratava a tarefa na Gaveta (nem avisava o autor), e o
+// pedido continuava "Pendente" nas conversas de Hugo e Paulo. Marca TODAS as
+// tarefas ainda pendentes desse pedido como tratadas, seja qual for o
+// caminho usado para decidir (Gaveta ou Pedidos).
+async function marcarTratadasTarefasNotaEquipa(notaId) {
+  const alvos = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_notas_semana' &&
+    String(r.referenciaId) === String(notaId) && (r.tipo || 'mensagem') === 'tarefa' && !r.tratado);
+  if (!alvos.length) return;
+  const resultados = await Promise.all(alvos.map(r => dbMarcarRecadoTratado(r.id)));
+  resultados.forEach(updated => { if (updated) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === updated.id ? updated : x); });
+}
+// CRIADO 2026-09-24 (Hugo: "se eu ou Paulo tivermos tomado uma ação, essa
+// notificação deveria desaparecer da conversa"): rede de segurança para
+// tarefas da Direção que ficaram "Pendentes" apesar de o pedido a que se
+// referem JÁ estar decidido — casos antigos (antes das correções), decisões
+// tomadas por outro caminho, ou pedidos entretanto eliminados. Cartões assim
+// nem sequer mostravam botões (o pedido já não estava pendente), por isso
+// ficavam presos para sempre em "Pendentes". Olha para o estado REAL do
+// pedido e trata só o que já não precisa de ação nenhuma:
+//   - Pedidos e Registos da Semana: validado pela Direção, ou eliminado;
+//   - Pedidos Especiais: já aprovado/rejeitado, ou eliminado;
+//   - Horas Extra: já validada/invalidada, desistida, ou eliminada.
+// Só tarefas dirigidas à Direção — nunca os avisos de resultado enviados ao
+// colaborador ("A Direção validou a sua hora extra…"), esses têm de chegar.
+// "Eliminado" só conta quando a tabela está mesmo carregada (nunca tratar
+// tudo por engano numa leitura falhada).
+async function reconciliarTarefasGavetaJaDecididas() {
+  const direcaoIds = new Set(escalaUsuariosDirecao().map(u => String(u.id)));
+  if (!direcaoIds.size) return false;
+  const notas = STATE.escalaNotasSemana || [];
+  const pedidos = STATE.escalaPedidosEspeciais || [];
+  const reivs = STATE.escalaHorasExtraReivindicacoes || [];
+  const jaDecidida = (r) => {
+    if (r.referenciaTabela === 'escala_notas_semana') {
+      const nota = notas.find(n => String(n.id) === String(r.referenciaId));
+      if (!nota) return notas.length > 0;
+      return !!nota.validadoDirecao;
+    }
+    if (r.referenciaTabela === 'escala_pedidos_especiais') {
+      const pedido = pedidos.find(p => String(p.id) === String(r.referenciaId));
+      if (!pedido) return pedidos.length > 0;
+      return (pedido.estado || 'pendente') !== 'pendente';
+    }
+    if (r.referenciaTabela === 'escala_horas_extra_reivindicacoes') {
+      const rv = reivs.find(x => String(x.id) === String(r.referenciaId));
+      if (!rv) return reivs.length > 0;
+      return (rv.estado || 'pendente') !== 'pendente' || rv.ativo === false;
+    }
+    return false;
+  };
+  const alvos = (STATE.gavetaRecados || []).filter(r => (r.tipo || 'mensagem') === 'tarefa' && !r.tratado && r.referenciaId &&
+    direcaoIds.has(String(r.destinatarioId)) && !/^A Direção /.test(String(r.mensagem || '')) && jaDecidida(r));
+  if (!alvos.length) return false;
+  const agora = new Date().toISOString();
+  const idsAlvo = new Set(alvos.map(r => r.id));
+  const anteriores = new Map(alvos.map(r => [r.id, r]));
+  STATE.gavetaRecados = (STATE.gavetaRecados || []).map(r => idsAlvo.has(r.id) ? Object.assign({}, r, { tratado: true, tratadoEm: r.tratadoEm || agora, notifVistaRecebida: true }) : r);
+  const resultados = await Promise.all(alvos.map(r => dbMarcarRecadoTratado(r.id)));
+  resultados.forEach((updated, i) => {
+    const id = alvos[i].id;
+    STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === id ? (updated || anteriores.get(id)) : x);
+  });
+  renderOuAdiarSeOcupado();
+  return true;
 }
 // Lembrete periódico de Tarefas pendentes na Gaveta — distinto do aviso
 // imediato ao chegar uma tarefa nova (esse já existe em setupRealtime, no
@@ -10222,15 +10353,47 @@ async function dbInsertMarcacoesBulk(rows) {
 async function dbFetchMarcacaoCounts() {
   if (!sb) return {};
   try {
-    const { data, error } = await sb.from('eventos_marcacoes').select('evento_id, nome_cliente, tipo_linha').eq('eliminado', false);
+    const { data, error } = await sb.from('eventos_marcacoes').select('evento_id, nome_cliente, contacto, tipo_linha, estado, hora, grupo_vaga').eq('eliminado', false);
     if (error) { console.error('[Supabase] erro ao contar marcações:', error.message); return {}; }
+    // ALTERADO 2026-09-24 (Hugo: "vagas não batem certo no cartão da página
+    // inicial... estavam mesmo 5 marcações"): o cartão mostrava
+    // "(preenchidas/total vagas)" — "5/17 vagas" lia-se como 5 vagas, quando
+    // eram 5 MARCAÇÕES de 17 linhas. Passa a haver contagens explícitas:
+    //   - livres: linhas sem cliente (vaga livre, da grelha ou de encaixe);
+    //   - marcadas: com cliente e não cancelada/faltou (uma cancelada fica
+    //     riscada na grelha e continua a ocupar a linha, por isso também não
+    //     conta como livre — mesmo critério de temMarcacoesAtivas).
+    // Vagas livres contadas EXATAMENTE como a grelha as mostra (2026-09-24):
+    // só nos grupos que o evento desenha, 1 por hora (vagas vazias repetidas
+    // na mesma hora contam 1 vez) e nunca numa hora já ocupada por cliente.
     const counts = {};
+    const temClienteRow = (row) => !!(String(row.nome_cliente || '').trim() || String(row.contacto || '').trim());
+    const ocupadasPorEvento = {};
+    (data || []).forEach(row => {
+      if (row.tipo_linha === 'bloqueado') return;
+      if (!temClienteRow(row)) return;
+      (ocupadasPorEvento[row.evento_id] || (ocupadasPorEvento[row.evento_id] = new Set())).add(`${row.grupo_vaga || 'principal'}|${row.hora}`);
+    });
+    const livresVistas = {};
     (data || []).forEach(row => {
       if (row.tipo_linha === 'bloqueado') return; // intervalos/almoço não contam para a ocupação
       const id = row.evento_id;
-      if (!counts[id]) counts[id] = { total: 0, preenchidas: 0 };
+      if (!counts[id]) counts[id] = { total: 0, preenchidas: 0, marcadas: 0, livres: 0 };
       counts[id].total += 1;
-      if (row.nome_cliente && String(row.nome_cliente).trim()) counts[id].preenchidas += 1;
+      if (!temClienteRow(row)) {
+        const ev = (STATE.eventos || []).find(e => String(e.id) === String(id));
+        const grupo = row.grupo_vaga || 'principal';
+        if (ev && !eventoGruposDesenhados(ev).includes(grupo)) return;
+        const chave = `${grupo}|${row.hora}`;
+        if (ocupadasPorEvento[id] && ocupadasPorEvento[id].has(chave)) return;
+        const vistas = livresVistas[id] || (livresVistas[id] = new Set());
+        if (vistas.has(chave)) return;
+        vistas.add(chave);
+        counts[id].livres += 1;
+        return;
+      }
+      counts[id].preenchidas += 1;
+      if (!['cancelada', 'cancelado', 'faltou'].includes(row.estado)) counts[id].marcadas += 1;
     });
     return counts;
   } catch (e) { console.error('[Supabase] erro de rede ao contar marcações:', formatarErroSeguro(e)); return {}; }
@@ -15341,13 +15504,8 @@ function abrirModalGaveta(abrirThreadInicial) {
   // de Horários. Esta função marca TODAS as tarefas ainda pendentes desse
   // pedido como tratadas, seja qual for o caminho usado para decidir — chamada
   // pelos 3 sítios.
-  async function marcarTratadasTarefasNotaEquipa(notaId) {
-    const alvos = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_notas_semana' &&
-      String(r.referenciaId) === String(notaId) && (r.tipo || 'mensagem') === 'tarefa' && !r.tratado);
-    if (!alvos.length) return;
-    const resultados = await Promise.all(alvos.map(r => dbMarcarRecadoTratado(r.id)));
-    resultados.forEach(updated => { if (updated) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === updated.id ? updated : x); });
-  }
+  // marcarTratadasTarefasNotaEquipa passou a viver fora desta função (ver
+  // nota junto à sua definição, perto de recadosNaoVistosDoUtilizador).
   async function marcarNotaEquipaVistaViaGaveta(r) {
     // souDirecaoHorariosGlobal (2026-08-24) em vez de isMasterUser() —
     // reforço no lado da gravação da mesma regra já aplicada ao botão.
@@ -15912,6 +16070,9 @@ function abrirModalGaveta(abrirThreadInicial) {
       threadComId ? buildThreadView() : buildMainColVazia(),
     ]);
     bodyEl.appendChild(layout);
+    // O que está no ecrã foi visto — o número da sidebar deixa de contar
+    // (continua em "Pendentes" enquanto houver ação por tomar).
+    marcarGavetaComoVista();
   }
   // Scroll automático para a última mensagem (pedido explícito
   // 2026-08-14) — antes, abrir uma conversa (ou enviar uma mensagem
@@ -15967,6 +16128,10 @@ function abrirModalGaveta(abrirThreadInicial) {
   ]);
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
+  // Tarefas de pedidos que já foram decididos (por mim, pelo Paulo, na
+  // Gaveta ou em Pedidos) saem logo de "Pendentes" — a atualização local é
+  // imediata (antes do 1º desenho); se alguma gravação falhar, repõe-se.
+  reconciliarTarefasGavetaJaDecididas().then(mudou => { if (mudou && overlay.isConnected) render(); });
   if (abrirThreadInicial) abrirThread(abrirThreadInicial);
   else render();
 }
@@ -16226,7 +16391,10 @@ function buildHomepage(container, goTo) {
     dbFetchMarcacaoCounts().then(counts => {
       const c = counts[ev.id];
       const span = vagasSpans[ev.id];
-      if (c && c.total > 0 && span) span.textContent = ` · (${c.preenchidas}/${c.total} vagas)`;
+      if (!c || !(c.total > 0) || !span) return;
+      const txtMarcadas = `${c.marcadas} marcaç${c.marcadas === 1 ? 'ão' : 'ões'}`;
+      const txtLivres = c.livres > 0 ? `${c.livres} vaga${c.livres === 1 ? '' : 's'} livre${c.livres === 1 ? '' : 's'}` : 'sem vagas livres';
+      span.textContent = ` · (${txtMarcadas} · ${txtLivres})`;
     });
   });
 
@@ -22857,6 +23025,15 @@ function parseHorasManuais(texto) {
 // Slots das Mini-Faciais de um Dia de Conselheira: lista manual quando
 // definida (miniFaciaisHorasManual não vazio — modo "horas irregulares"),
 // caso contrário a fórmula regular de sempre (Hora Inicial+Final+Intervalo).
+// Grupos de vagas que a grelha do dia desenha para cada tipo de evento —
+// usada pela grelha (renderInternoEventoDia) e pela contagem de vagas livres
+// (dbFetchMarcacaoCounts), para as duas nunca divergirem.
+function eventoGruposDesenhados(ev) {
+  if (!ev) return [];
+  if (ev.tipoEvento === 'Rastreio' || ev.tipoEvento === 'AFA') return ['principal'];
+  if (ev.tipoEvento === 'Conselheira') return ev.miniFaciais ? ['mini_facial'] : [];
+  return ['principal', 'mini_facial'];
+}
 function eventoSlotsMiniFaciais(ev) {
   if (ev && ev.miniFaciaisHorasManual && String(ev.miniFaciaisHorasManual).trim()) return parseHorasManuais(ev.miniFaciaisHorasManual);
   return eventoGerarSlots(ev && ev.miniFaciaisHoraInicial, ev && ev.miniFaciaisHoraFinal, ev && ev.miniFaciaisIntervaloMin);
@@ -23910,10 +24087,38 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     return h('div', { class: 'card card-pad' }, children);
   }
 
-  function buildVagasGrupo(grupo, titulo, slotsPadrao) {
-    const doGrupo = marcacoesDoGrupo(grupo);
+  // BUG CORRIGIDO 2026-09-24 (Magda/Hugo: "na Conselheira só aparecem 3
+  // marcações, mas estavam 5" — o cartão da Página Inicial contava 5): havia
+  // dois sítios onde uma marcação REAL podia ficar invisível na grelha:
+  //   1) duas linhas na MESMA hora do mesmo grupo (ex: uma vaga livre e uma
+  //      marcação, criadas em simultâneo por duas pessoas) — `ocupacao[hora]`
+  //      ficava só com a última, e se essa fosse a vaga vazia, a marcação
+  //      desaparecia do ecrã (continuando gravada);
+  //   2) marcações de um grupo que o tipo de evento não desenha (ex: grupo
+  //      "principal"/sem grupo num Dia de Conselheira, que só mostra
+  //      Mini-Faciais) — nunca apareciam em lado nenhum.
+  // Agora: na mesma hora ganha sempre a linha com cliente (as outras com
+  // cliente aparecem logo a seguir, como linhas extra — nunca se perdem);
+  // e marcações de grupos não desenhados aparecem numa secção própria
+  // ("Outras marcações deste dia", ver renderInternoEventoDia).
+  // apenasComCliente: só usado nessa secção — vagas vazias órfãs não
+  // interessam a ninguém (nem contam como livres, ver dbFetchMarcacaoCounts).
+  function buildVagasGrupo(grupo, titulo, slotsPadrao, apenasComCliente) {
+    const doGrupo = apenasComCliente
+      ? marcacoesDoGrupo(grupo).filter(m => m.tipoLinha !== 'bloqueado' && !vagaVazia(m))
+      : marcacoesDoGrupo(grupo);
+    const prioridadeLinha = (m) => (m.tipoLinha !== 'bloqueado' && !vagaVazia(m)) ? 2 : (m.tipoLinha === 'bloqueado' ? 1 : 0);
     const ocupacao = {};
-    doGrupo.forEach(m => { ocupacao[m.hora] = m; });
+    const duplicadasComCliente = [];
+    doGrupo.forEach(m => {
+      const atual = ocupacao[m.hora];
+      if (!atual || prioridadeLinha(m) > prioridadeLinha(atual)) {
+        if (atual && prioridadeLinha(atual) === 2) duplicadasComCliente.push(atual);
+        ocupacao[m.hora] = m;
+      } else if (prioridadeLinha(m) === 2) {
+        duplicadasComCliente.push(m);
+      }
+    });
     // "Editar Hora" (pedido explícito 2026-09-10: "não era mais fácil eu
     // chegar a essa de 15:15 e alterar para 15?" + "quero que as
     // marcações fiquem organizadas de forma cronológica se editar para
@@ -24019,7 +24224,9 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     // para "Horas irregulares"). Fica de fora da lista por completo, nunca
     // aparece nem como "Indisponível" — só um encaixe genuíno (marcação
     // real ou "Nova Linha de Encaixe") faz sentido mostrar fora da grelha.
-    const encaixes = ordenarPorHora(doGrupo.filter(m => !slotsPadrao.includes(m.hora) && m.tipoLinha !== 'bloqueado'));
+    const foraDaGrelha = doGrupo.filter(m => !slotsPadrao.includes(m.hora) && m.tipoLinha !== 'bloqueado');
+    const idsForaDaGrelha = new Set(foraDaGrelha.map(m => m.id));
+    const encaixes = ordenarPorHora(foraDaGrelha.concat(duplicadasComCliente.filter(m => !idsForaDaGrelha.has(m.id))));
     const linhasEncaixe = encaixes.map(m => {
       // BUG CORRIGIDO 2026-09-10 (Hugo: "se eu edito a hora de uma vaga
       // existente, a nova deve substituir a anterior e não deve ser
@@ -24060,7 +24267,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       .map(item => item.node);
 
     const children = [h('h3', { class: 'dash-card-title' }, titulo), h('div', { class: 'agenda-slots-list' }, linhas)];
-    if (!isPast) {
+    if (!isPast && !apenasComCliente) {
       const encaixeBtn = h('button', { class: 'btn btn-secondary', style: 'margin-top:10px;width:auto;', onclick: () => requireAuth(() => abrirEncaixe(grupo)) }, [Icon('plus', { size: 14 }), ' Nova Linha de Encaixe']);
       children.push(encaixeBtn);
     }
@@ -24123,6 +24330,13 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     } else if (currentEvento.tipoEvento === 'Conselheira') {
       bodyEl.appendChild(EmptyState('Este Dia de Conselheira não tem Mini-Faciais nem vagas de agendamento associadas.'));
     }
+    // Marcações (com cliente) gravadas num grupo que este tipo de evento não
+    // desenha — ver nota em buildVagasGrupo. Nunca ficam escondidas.
+    const gruposDesenhados = eventoGruposDesenhados(currentEvento);
+    const gruposOrfaos = [...new Set(marcacoes
+      .filter(m => m.tipoLinha !== 'bloqueado' && !vagaVazia(m) && !gruposDesenhados.includes(m.grupoVaga || 'principal'))
+      .map(m => m.grupoVaga || 'principal'))];
+    gruposOrfaos.forEach(g => bodyEl.appendChild(buildVagasGrupo(g, 'Outras marcações deste dia', [], true)));
     // Imprimir/Download PDF na barra final fixa (fora da área com scroll,
     // ver .agenda-dia-footer) — sempre visível, mesmo em dias passados
     // (consulta/impressão do histórico), sem depender do scroll das vagas.
@@ -49971,13 +50185,53 @@ const canaisRealtimeAtivos = {};
 // são raras de abrir, não compensa a complexidade extra da otimização já
 // usada nas ~38 tabelas eager.
 const tabelasLazyEmCarregamento = {};
+// BUG CORRIGIDO 2026-09-24 (Hugo: "gravei na Lista de Espera e apareceu
+// SÓ a entrada dela; fechei e abri a app e já apareciam todas"): a leitura
+// de uma tabela lazy que falhasse (rede instável, timeout) devolvia [] e a
+// tabela ficava marcada como "carregada" na mesma — para o resto da sessão
+// o módulo mostrava-se vazio (e a deteção de duplicados comparava contra
+// dados errados), sem nenhum aviso. A única linha que aparecia era a que se
+// acabava de gravar (entra no STATE localmente + Realtime). Agora: até 3
+// tentativas seguidas; se mesmo assim falhar, avisa e continua a tentar em
+// segundo plano (a cada 20s) até conseguir, redesenhando a página sozinha.
+const TABELAS_LAZY_COM_FALHA = new Set();
+async function lerTabelaLazyComTentativas(k, tentativas) {
+  for (let i = 0; i < tentativas; i++) {
+    let dados = null;
+    try { dados = await dbFetchAll(k); } catch (e) { DB_FETCH_ALL_FALHOU[k] = true; }
+    if (!DB_FETCH_ALL_FALHOU[k]) return dados || [];
+    if (i < tentativas - 1) await new Promise(res => setTimeout(res, 1500 * (i + 1)));
+  }
+  return null;
+}
+function agendarReleituraTabelaLazy(k, restantes) {
+  if (restantes <= 0) return;
+  setTimeout(async () => {
+    const dados = await lerTabelaLazyComTentativas(k, 1);
+    if (dados === null) { agendarReleituraTabelaLazy(k, restantes - 1); return; }
+    STATE[k] = sanitizarSupabase(dados);
+    TABELAS_LAZY_COM_FALHA.delete(k);
+    if (!TABELAS_LAZY_COM_FALHA.size) showToast('Ligação recuperada — dados atualizados.', 'success');
+    renderOuAdiarSeOcupado();
+  }, 20000);
+}
 function garantirTabelasCarregadas(keys) {
   const emFalta = keys.filter(k => !STATE.tabelasLazyCarregadas.has(k) && !tabelasLazyEmCarregamento[k]);
   emFalta.forEach(k => {
     tabelasLazyEmCarregamento[k] = true;
     (async () => {
       try {
-        STATE[k] = sanitizarSupabase(await dbFetchAll(k));
+        const dados = await lerTabelaLazyComTentativas(k, 3);
+        if (dados !== null) {
+          STATE[k] = sanitizarSupabase(dados);
+        } else {
+          // Nunca apaga o que já houvesse em memória; a página abre, mas
+          // com aviso claro e releitura automática em segundo plano.
+          STATE[k] = STATE[k] || [];
+          if (!TABELAS_LAZY_COM_FALHA.size) showToast('Não foi possível carregar todos os dados deste módulo (ligação instável). A tentar de novo automaticamente…', 'error');
+          TABELAS_LAZY_COM_FALHA.add(k);
+          agendarReleituraTabelaLazy(k, 30);
+        }
       } catch (e) {
         console.error(`[SigaJuncal] erro ao carregar tabela lazy ${k}:`, formatarErroSeguro(e));
         STATE[k] = STATE[k] || [];
