@@ -9616,6 +9616,28 @@ async function marcarTratadasTarefasNotaEquipa(notaId) {
 // colaborador ("A Direção validou a sua hora extra…"), esses têm de chegar.
 // "Eliminado" só conta quando a tabela está mesmo carregada (nunca tratar
 // tudo por engano numa leitura falhada).
+// CRIADO 2026-09-24 (Hugo: "cria botão para tarefas para concluir, ou seja
+// envia directamente para concluídos sem tomar ação aprovar ou rejeitar"):
+// para pedidos que já não precisam de decisão na app (tratado de viva voz,
+// data já passou, pedido sem efeito...). Passa a tarefa para "Concluídas" —
+// a de quem clicou E a cópia do outro elemento da Direção para o mesmo pedido
+// (mesmo princípio de sempre: se um de nós tratou, sai dos dois). NUNCA mexe
+// no pedido em si (continua pendente em Horários > Pedidos, onde se pode
+// sempre decidir mais tarde) nem avisa o colaborador (não houve decisão).
+async function concluirTarefaSemDecisao(r) {
+  const direcaoIds = new Set(escalaUsuariosDirecao().map(u => String(u.id)));
+  const alvos = (STATE.gavetaRecados || []).filter(x => (x.tipo || 'mensagem') === 'tarefa' && !x.tratado && (
+    x.id === r.id || (r.referenciaTabela && x.referenciaTabela === r.referenciaTabela && String(x.referenciaId) === String(r.referenciaId) &&
+      direcaoIds.has(String(x.destinatarioId)) && !/^A Direção /.test(String(x.mensagem || '')))
+  ));
+  if (!alvos.length) return true;
+  const resultados = await Promise.all(alvos.map(x => dbMarcarRecadoTratado(x.id)));
+  resultados.forEach(updated => { if (updated) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === updated.id ? updated : x); });
+  const ok = resultados.every(Boolean);
+  if (!ok) showDbErrorToast('Não foi possível concluir a tarefa');
+  renderOuAdiarSeOcupado();
+  return ok;
+}
 async function reconciliarTarefasGavetaJaDecididas() {
   const direcaoIds = new Set(escalaUsuariosDirecao().map(u => String(u.id)));
   if (!direcaoIds.size) return false;
@@ -15478,6 +15500,13 @@ function abrirModalGaveta(abrirThreadInicial) {
     render();
   }
   async function marcarTarefaConcluida(r) {
+    // O visto verde da lista de conversas numa tarefa de pedido (Pedidos da
+    // Semana/Especiais/Horas Extra) faz o mesmo que "Concluir sem decidir":
+    // sai também da Gaveta da outra pessoa da Direção (2026-09-24).
+    if (['escala_notas_semana', 'escala_pedidos_especiais', 'escala_horas_extra_reivindicacoes'].includes(r.referenciaTabela)) {
+      if (await concluirTarefaSemDecisao(r)) render();
+      return;
+    }
     const updated = await dbMarcarRecadoTratado(r.id);
     if (updated) { STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === r.id ? updated : x); render(); }
     else showDbErrorToast('Não foi possível marcar a tarefa como concluída');
@@ -15978,6 +16007,23 @@ function abrirModalGaveta(abrirThreadInicial) {
               invalidarBtn.addEventListener('click', () => requireAuth(() => decidirHorasExtraReivindicacaoViaGaveta(r, 'invalidado', render)));
               acoes.push(validarBtn, invalidarBtn);
             }
+          }
+          // "Concluir sem decidir" (2026-09-24, pedido de Hugo) — só em
+          // tarefas com decisão própria (Aprovar/Rejeitar, Validar/Invalidar),
+          // só para a Direção, e também quando o pedido já não mostra botões
+          // (ex: decidido fora da app) — nunca mais fica preso em Pendentes.
+          if (temDecisaoPropria && !souEuRemetente && !concluida && souDirecaoHorariosGlobal()) {
+            const concluirSemDecisaoBtn = h('button', {
+              class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;',
+              title: 'Passa para Concluídas (para ti e para a outra pessoa da Direção) sem aprovar nem rejeitar — o pedido fica como está em Horários > Pedidos.',
+            }, '📥 Concluir sem decidir');
+            concluirSemDecisaoBtn.addEventListener('click', () => requireAuth(() => {
+              confirmDialog('Esta tarefa passa para Concluídas, para ti e para a outra pessoa da Direção, sem aprovar nem rejeitar o pedido. O pedido continua como está em Horários > Pedidos e o colaborador não é avisado. Continuar?', async () => {
+                const ok = await concluirTarefaSemDecisao(r);
+                if (ok) { showToast('Tarefa passada para Concluídas.', 'success'); render(); }
+              }, { confirmLabel: 'Concluir sem decidir' });
+            }));
+            acoes.push(concluirSemDecisaoBtn);
           }
           return h('div', { class: 'gaveta-bolha-linha' + (souEuRemetente ? ' gaveta-bolha-minha' : '') }, [
             h('div', { class: 'gaveta-tarefa-card' + (concluida ? ' concluida' : '') }, [
@@ -23446,18 +23492,32 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       // "Mini-Faciais ativadas agora" — este cobre esse caso na mesma
       // (a lista de horas existentes fica vazia) e qualquer edição
       // posterior à primeira.
+      // BUG CORRIGIDO 2026-09-24 (Hugo/Magda: "só aparecem 3 marcações" —
+      // confirmado no Supabase: a 15/09 às 09:15 cada hora das Mini-Faciais da
+      // Conselheira de 24/09 ganhou uma 2.ª vaga vazia, por cima de marcações
+      // que já lá estavam): as horas "já existentes" eram lidas só da lista
+      // em memória desta janela, que podia estar vazia/desatualizada nesse
+      // momento — todas as horas pareciam "novas" e eram inseridas de novo.
+      // Agora junta a lista em memória com uma leitura fresca da base de
+      // dados (se a leitura falhar, a lista em memória continua a proteger),
+      // e compara sempre com a hora normalizada.
+      const lidasAgora = await dbFetchMarcacoes(created.id);
+      const todasConhecidas = marcacoes.concat(lidasAgora || []);
+      const horasExistentesDoGrupo = (grupo) => new Set(todasConhecidas
+        .filter(m => (m.grupoVaga || 'principal') === grupo)
+        .map(m => normalizarHora(m.hora)));
       const rowsNovas = [];
       if (tipo === 'Rastreio' || tipo === 'AFA') {
         const slotsAlvo = eventoGerarSlots(payload.horaInicial, payload.horaFinal, payload.intervaloMin);
-        const existentes = new Set(marcacoes.filter(m => (m.grupoVaga || 'principal') === 'principal').map(m => m.hora));
-        slotsAlvo.filter(hora => !existentes.has(hora)).forEach(hora => rowsNovas.push({
+        const existentes = horasExistentesDoGrupo('principal');
+        slotsAlvo.filter(hora => !existentes.has(normalizarHora(hora))).forEach(hora => rowsNovas.push({
           eventoId: created.id, hora, grupoVaga: 'principal', tipoLinha: 'vaga', estado: '', aviso: false,
           nomeCliente: '', nFicha: '', contacto: '', observacoes: '', responsavel: currentUserName(),
         }));
       } else if (tipo === 'Conselheira' && payload.miniFaciais) {
         const slotsAlvo = eventoSlotsMiniFaciais(payload);
-        const existentes = new Set(marcacoes.filter(m => m.grupoVaga === 'mini_facial').map(m => m.hora));
-        slotsAlvo.filter(hora => !existentes.has(hora)).forEach(hora => rowsNovas.push({
+        const existentes = horasExistentesDoGrupo('mini_facial');
+        slotsAlvo.filter(hora => !existentes.has(normalizarHora(hora))).forEach(hora => rowsNovas.push({
           eventoId: created.id, hora, grupoVaga: 'mini_facial', tipoLinha: 'vaga', estado: '', aviso: false,
           nomeCliente: '', nFicha: '', contacto: '', observacoes: '', responsavel: currentUserName(),
         }));
