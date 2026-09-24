@@ -7221,7 +7221,7 @@ function abrirEscolhaDiaCalendario(itens, dateISO, goTo) {
     return btn;
   });
   if (Object.keys(vagasElPorEventoId).length) {
-    dbFetchMarcacaoCounts().then(counts => {
+    dbFetchMarcacaoCounts(Object.keys(vagasElPorEventoId)).then(counts => {
       Object.keys(vagasElPorEventoId).forEach(id => {
         const c = counts[id];
         const span = vagasElPorEventoId[id];
@@ -10468,10 +10468,24 @@ async function dbInsertMarcacoesBulk(rows) {
 }
 
 /* ---- Contagem de marcações (vagas) por evento ---- */
-async function dbFetchMarcacaoCounts() {
+// Egress (2026-09-24): antes descarregava as marcações de TODOS os eventos de sempre, a cada desenho da Página
+// Inicial (e uma vez por cada evento do cartão). Agora só pede os eventos que estão mesmo no ecrã (eventoIds),
+// numa única chamada partilhada, e reaproveita o resultado durante 1 minuto.
+const CONTAGENS_MARCACOES_CACHE = new Map(); // chave (ids ordenados) -> { em, promessa }
+function dbFetchMarcacaoCounts(eventoIds) {
+  const ids = [...new Set((eventoIds || []).filter(x => x !== null && x !== undefined).map(String))].sort();
+  if (!ids.length) return Promise.resolve({});
+  const chave = ids.join(',');
+  const guardado = CONTAGENS_MARCACOES_CACHE.get(chave);
+  if (guardado && Date.now() - guardado.em < 60000) return guardado.promessa;
+  const promessa = dbFetchMarcacaoCountsDoServidor(ids);
+  CONTAGENS_MARCACOES_CACHE.set(chave, { em: Date.now(), promessa });
+  return promessa;
+}
+async function dbFetchMarcacaoCountsDoServidor(ids) {
   if (!sb) return {};
   try {
-    const { data, error } = await sb.from('eventos_marcacoes').select('evento_id, nome_cliente, contacto, tipo_linha, estado, hora, grupo_vaga').eq('eliminado', false);
+    const { data, error } = await sb.from('eventos_marcacoes').select('evento_id, nome_cliente, contacto, tipo_linha, estado, hora, grupo_vaga').eq('eliminado', false).in('evento_id', ids);
     if (error) { console.error('[Supabase] erro ao contar marcações:', error.message); return {}; }
     // ALTERADO 2026-09-24 (Hugo: "vagas não batem certo no cartão da página
     // inicial... estavam mesmo 5 marcações"): o cartão mostrava
@@ -16563,8 +16577,7 @@ function buildHomepage(container, goTo) {
       };
     }),
   });
-  itensEventoFinal.forEach(ev => {
-    dbFetchMarcacaoCounts().then(counts => {
+  dbFetchMarcacaoCounts(itensEventoFinal.map(ev => ev.id)).then(counts => { itensEventoFinal.forEach(ev => {
       const c = counts[ev.id];
       const span = vagasSpans[ev.id];
       if (!c || !(c.total > 0) || !span) return;
