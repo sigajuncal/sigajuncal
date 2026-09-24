@@ -9660,6 +9660,12 @@ async function reconciliarTarefasGavetaJaDecididas() {
       if (!rv) return reivs.length > 0;
       return (rv.estado || 'pendente') !== 'pendente' || rv.ativo === false;
     }
+    if (r.referenciaTabela === 'ponto_registos') {
+      const picagens = STATE.pontoRegistos || [];
+      const reg = picagens.find(x => String(x.id) === String(r.referenciaId));
+      if (!reg) return picagens.length > 0;
+      return !!reg.eliminado || reg.estado !== 'pendente';
+    }
     return false;
   };
   const alvos = (STATE.gavetaRecados || []).filter(r => (r.tipo || 'mensagem') === 'tarefa' && !r.tratado && r.referenciaId &&
@@ -15507,6 +15513,9 @@ function abrirModalGaveta(abrirThreadInicial) {
       if (await concluirTarefaSemDecisao(r)) render();
       return;
     }
+    // Picagem de ponto: nunca se conclui sem decidir — o visto abre a
+    // conversa, onde estão Aprovar/Rejeitar.
+    if (r.referenciaTabela === 'ponto_registos') { abrirThread(r.remetenteId); return; }
     const updated = await dbMarcarRecadoTratado(r.id);
     if (updated) { STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === r.id ? updated : x); render(); }
     else showDbErrorToast('Não foi possível marcar a tarefa como concluída');
@@ -15953,7 +15962,7 @@ function abrirModalGaveta(abrirThreadInicial) {
           // confundia (2 ações diferentes para a mesma decisão, uma das
           // quais nunca decide nada a sério). Fica só para tarefas/pedidos
           // ad-hoc enviados diretamente entre colegas, sem tabela própria.
-          const REFERENCIAS_COM_DECISAO_PROPRIA = ['escala_notas_semana', 'escala_pedidos_especiais', 'escala_horas_extra_reivindicacoes'];
+          const REFERENCIAS_COM_DECISAO_PROPRIA = ['escala_notas_semana', 'escala_pedidos_especiais', 'escala_horas_extra_reivindicacoes', 'ponto_registos'];
           const temDecisaoPropria = REFERENCIAS_COM_DECISAO_PROPRIA.includes(r.referenciaTabela);
           if (!souEuRemetente && !concluida && !temDecisaoPropria) {
             const confirmarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;' }, '✓ Confirmar Conclusão');
@@ -16008,11 +16017,42 @@ function abrirModalGaveta(abrirThreadInicial) {
               acoes.push(validarBtn, invalidarBtn);
             }
           }
+          // Picagem de Ponto pendente (Ponto v2, 2026-09-24): Aprovar /
+          // Aprovar e associar este telemóvel (só quando é um telemóvel novo
+          // da própria pessoa — nunca o de outra) / Rejeitar. Nunca aparece a
+          // quem picou (a picagem é sempre validada pela outra pessoa da Direção).
+          if (r.referenciaTabela === 'ponto_registos' && !souEuRemetente && !concluida && souDirecaoHorariosGlobal()) {
+            const regPonto = (STATE.pontoRegistos || []).find(x => String(x.id) === String(r.referenciaId));
+            if (regPonto && pontoRegistoEhPendente(regPonto) && String(regPonto.utilizadorId) !== String(activeUser.id)) {
+              const motivosPonto = pontoMotivosLista(regPonto);
+              const podeAssociar = motivosPonto.includes('aparelho_novo') && !motivosPonto.includes('aparelho_de_outro') && regPonto.dispositivoTipo === 'telemovel';
+              const decidir = (decisao, textoOk) => requireAuth(async () => {
+                const reg = await decidirPicagemPonto(regPonto.id, decisao);
+                if (!reg) { showDbErrorToast('Não foi possível decidir a picagem'); return; }
+                showToast(reg.jaDecidida ? 'Esta picagem já tinha sido decidida.' : textoOk, 'success');
+                render();
+              });
+              if (podeAssociar) {
+                const associarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;', title: 'Aprova esta picagem e passa a reconhecer este telemóvel como o dela/dele (o anterior deixa de contar).' }, '📱 Aprovar e associar este telemóvel');
+                associarBtn.addEventListener('click', () => decidir('aprovar_associar', 'Picagem aprovada e telemóvel associado.'));
+                acoes.push(associarBtn);
+              }
+              const aprovarPontoBtn = h('button', { class: podeAssociar ? 'btn btn-secondary' : 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;' }, podeAssociar ? '✅ Aprovar só esta picagem' : '✅ Aprovar');
+              aprovarPontoBtn.addEventListener('click', () => decidir('aprovar', 'Picagem aprovada.'));
+              const rejeitarPontoBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;' }, '❌ Rejeitar');
+              rejeitarPontoBtn.addEventListener('click', () => requireAuth(() => {
+                confirmDialog('Rejeitar esta picagem? Não conta para o horário cumprido e a pessoa é avisada.', () => decidir('rejeitar', 'Picagem rejeitada.'), { danger: true, confirmLabel: 'Rejeitar' });
+              }));
+              acoes.push(aprovarPontoBtn, rejeitarPontoBtn);
+            }
+          }
           // "Concluir sem decidir" (2026-09-24, pedido de Hugo) — só em
           // tarefas com decisão própria (Aprovar/Rejeitar, Validar/Invalidar),
           // só para a Direção, e também quando o pedido já não mostra botões
           // (ex: decidido fora da app) — nunca mais fica preso em Pendentes.
-          if (temDecisaoPropria && !souEuRemetente && !concluida && souDirecaoHorariosGlobal()) {
+          // Picagens de ponto ficam de fora: têm sempre de ser aprovadas ou
+          // rejeitadas (senão nunca contariam para o horário cumprido).
+          if (temDecisaoPropria && r.referenciaTabela !== 'ponto_registos' && !souEuRemetente && !concluida && souDirecaoHorariosGlobal()) {
             const concluirSemDecisaoBtn = h('button', {
               class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;',
               title: 'Passa para Concluídas (para ti e para a outra pessoa da Direção) sem aprovar nem rejeitar — o pedido fica como está em Horários > Pedidos.',
@@ -29780,7 +29820,9 @@ function escalaCorHorasTrabalhadas(horas) {
 }
 function buildRodapeHorasDia(horas, tooltip) {
   const conteudo = horas > 0
-    ? h('span', { class: 'escala-vertical-horas-chip', style: `color:${escalaCorHorasTrabalhadas(horas)};` }, escalaFormatarHoras(horas).replace(/h$/, ''))
+    // Decimal (2026-09-24, Hugo: "em vez de 7,30 deveria dizer 7,5 para
+    // representar 7 horas e meia") — 7,5 = 7h30, 7,25 = 7h15.
+    ? h('span', { class: 'escala-vertical-horas-chip', style: `color:${escalaCorHorasTrabalhadas(horas)};` }, escalaFormatarHorasDecimal(horas).replace(/h$/, ''))
     : h('span', { class: 'escala-vertical-horas-vazio' }, '—');
   const rodape = h('div', { class: 'escala-vertical-coluna-rodape' }, conteudo);
   if (tooltip) instalarTooltipContaHoras(rodape, tooltip);
@@ -34122,16 +34164,15 @@ function buildHorariosPage(container, goTo) {
     const registosAtuais = pontoRegistosDoDia(colaboradorId, dataISO);
     const entradaAtual = registosAtuais.find(r => r.tipo === 'entrada' && !r.eliminado);
     const saidaAtual = registosAtuais.find(r => r.tipo === 'saida' && !r.eliminado);
+    // Ponto v2 (2026-09-24): a correção passa SEMPRE pela função segura do
+    // servidor (rpc_ponto_corrigir) — a app deixou de poder gravar picagens
+    // diretamente. Só Hugo/Paulo, e nunca o próprio ponto (valida o outro).
+    // Uma picagem pendente corrigida aqui fica aprovada e sai da Gaveta.
     async function upsertTipo(tipo, horaValor, registoAtual) {
       if (!horaValor) return true; // vazio = não mexe (nunca apaga uma picagem já feita)
-      if (registoAtual) {
-        const updated = await dbUpdate('pontoRegistos', registoAtual.id, { horaReal: horaValor, confirmadoManualmente: true, confirmadoPor: currentUserName() });
-        if (updated) { STATE.pontoRegistos = STATE.pontoRegistos.map(x => x.id === updated.id ? updated : x); return true; }
-        return false;
-      }
-      const created = await dbInsert('pontoRegistos', { utilizadorId: colaboradorId, data: dataISO, tipo, horaReal: horaValor, confirmadoManualmente: true, confirmadoPor: currentUserName() });
-      if (created) { STATE.pontoRegistos = [created, ...STATE.pontoRegistos]; return true; }
-      return false;
+      if (registoAtual && registoAtual.horaReal === horaValor && !pontoRegistoEhPendente(registoAtual)) return true; // nada mudou
+      const reg = await pontoCorrigirManual(colaboradorId, dataISO, tipo, horaValor);
+      return !!reg;
     }
     const okEntrada = await upsertTipo('entrada', entradaValor, entradaAtual);
     const okSaida = await upsertTipo('saida', saidaValor, saidaAtual);
@@ -37124,7 +37165,15 @@ function buildHorariosPage(container, goTo) {
       if (codigoDoDia) { temAlgumaPosicaoNaSemana = true; diasResolvidos[d.key] = semana.dados[codigoDoDia].dias[d.key] || { tipo: 'folga' }; }
       else diasResolvidos[d.key] = { tipo: 'folga' };
     });
-    if (!temAlgumaPosicaoNaSemana) return EmptyState('Não está atribuído a nenhuma posição nesta semana.');
+    // Ponto v2: quem não tem posição nesta semana (ex: veio cobrir uma
+    // troca) tem de conseguir picar na mesma — o cartão aparece por cima do
+    // aviso, sempre que esta é a semana de hoje.
+    if (!temAlgumaPosicaoNaSemana) {
+      const hojeNaSemana = ESCALA_DIAS.some(d => escalaDataDoDia(semana.semanaInicio, d.key) === todayISO());
+      const pontoSemPosicao = hojeNaSemana ? buildPontoWidget(rerender, null) : null;
+      const avisoSemPosicao = EmptyState('Não está atribuído a nenhuma posição nesta semana.');
+      return pontoSemPosicao ? h('div', { style: 'display:flex;flex-direction:column;gap:16px;' }, [pontoSemPosicao, avisoSemPosicao]) : avisoSemPosicao;
+    }
     const wrap = h('div', { style: 'display:flex;flex-direction:column;gap:16px;' });
     // Picar Ponto só faz sentido a ver a semana que contém HOJE — noutra
     // semana (a navegar para trás/à frente) não há "hoje" nenhum para
@@ -37523,14 +37572,23 @@ function buildHorariosPage(container, goTo) {
           const entradaReal = registosDia.find(r => r.tipo === 'entrada' && !r.eliminado);
           const saidaReal = registosDia.find(r => r.tipo === 'saida' && !r.eliminado);
           const obsDia = pontoObservacaoDoDia(colaboradorId, dataISO);
+          // Ponto v2: uma picagem ainda POR VALIDAR aparece com ⏳ e não
+          // entra na Diferença até a Direção a aprovar (na Gaveta, ou
+          // corrigindo aqui mesmo).
+          const horaComMarca = (r) => r ? `${r.horaReal}${pontoRegistoEhPendente(r) ? ' ⏳' : ''}` : '?';
           const cumpridoTexto = (entradaReal || saidaReal)
-            ? `${entradaReal ? entradaReal.horaReal : '?'} – ${saidaReal ? saidaReal.horaReal : '?'}`
+            ? `${horaComMarca(entradaReal)} – ${horaComMarca(saidaReal)}`
             : '—';
-          const diferencaBadges = pontoDiferencaBadges(dia, entradaReal ? entradaReal.horaReal : null, saidaReal ? saidaReal.horaReal : null);
+          const entradaContavel = entradaReal && !pontoRegistoEhPendente(entradaReal) ? entradaReal.horaReal : null;
+          const saidaContavel = saidaReal && !pontoRegistoEhPendente(saidaReal) ? saidaReal.horaReal : null;
+          const diferencaBadges = pontoDiferencaBadges(dia, entradaContavel, saidaContavel);
+          if ((entradaReal && pontoRegistoEhPendente(entradaReal)) || (saidaReal && pontoRegistoEhPendente(saidaReal))) {
+            diferencaBadges.push(h('span', { class: 'badge badge-orange', title: [entradaReal, saidaReal].filter(pontoRegistoEhPendente).map(pontoMotivosTexto).join(' | ') }, '⏳ por validar'));
+          }
           const podeEditarPonto = podeGerirBancoHorasEHE();
           const cellClass = 'escala-mes-col-corrigivel' + (podeEditarPonto ? ' escala-cell-editavel' : '');
           const aoClicarCelula = podeEditarPonto ? () => requireAuth(() => { abrirEdicaoPonto(dataISO, colaboradorId); rerender(); }) : undefined;
-          const tdCumprido = h('td', { class: cellClass }, cumpridoTexto);
+          const tdCumprido = h('td', { class: cellClass, title: [entradaReal, saidaReal].filter(Boolean).map(r => `${r.tipo === 'entrada' ? 'Entrada' : 'Saída'}: ${r.horaReal}${r.dispositivoDescricao ? ' · ' + r.dispositivoDescricao : ''}${r.distanciaMetros != null ? ' · ~' + r.distanciaMetros + ' m' : ''}${r.confirmadoManualmente ? ' · corrigida por ' + (r.confirmadoPor || 'Direção') : ''}${pontoRegistoEhPendente(r) ? ' · por validar: ' + pontoMotivosTexto(r) : ''}`).join('\n') || undefined }, cumpridoTexto);
           const tdDiferenca = h('td', { class: cellClass }, diferencaBadges.length ? h('div', { style: 'display:flex;flex-direction:column;gap:2px;align-items:center;' }, diferencaBadges) : h('span', { class: 'cell-muted' }, '—'));
           const tdObs = h('td', { class: cellClass }, obsDia && obsDia.observacoes ? obsDia.observacoes : h('span', { class: 'cell-muted' }, '—'));
           if (aoClicarCelula) { tdCumprido.addEventListener('click', aoClicarCelula); tdDiferenca.addEventListener('click', aoClicarCelula); tdObs.addEventListener('click', aoClicarCelula); }
@@ -46134,24 +46192,52 @@ function agendarCalculoDistanciaEntrega(registo) {
   calcularEGravarDistanciaEntrega(registo).catch(e => console.warn('[Distância] erro inesperado:', formatarErroSeguro(e)));
 }
 /* =================================================================
-   PICAGEM DE PONTO POR GEOLOCALIZAÇÃO (planeamento 2026-09-17)
-   Verificação de localização só ao abrir "A Minha Semana" (nunca em
-   segundo plano — impossível numa PWA, ver decisão tomada) — se estiver
-   a ≤200m da farmácia, mostra o botão de picar já ativo, sempre com
-   confirmação manual (1 toque nunca automático). O botão nunca depende
-   da hora do dia coincidir com o horário previsto — só da localização —
-   precisamente para haver sempre uma forma de picar mesmo quando a hora
-   real não bate certo com a planeada (pedido explícito 2026-09-17).
-   Reaproveita origemFarmaciaCoords() (já criado para as Entregas) para a
-   morada da farmácia — nunca duplica essa geocodificação.
+   PICAGEM DE PONTO v2 (2026-09-24, Hugo: "a partir de 1 de outubro quero
+   ter isto funcional") — substitui a v1 de 2026-09-17.
+   Princípios decididos:
+   - A picagem regista o que ACONTECEU; o horário regista o que estava
+     PLANEADO. Só se cruzam na Validação de Horários (Cumprido/Diferença).
+     Nunca depende de haver turno planeado (trocas entre colegas).
+   - Tudo passa por funções seguras no servidor (rpc_picar_ponto,
+     rpc_ponto_decidir, rpc_ponto_corrigir, rpc_ponto_definir_local — ver
+     sigajuncal_ponto_v2.sql): valida utilizador+PIN, usa a hora do
+     SERVIDOR (nunca a do telemóvel) e calcula a distância lá. A app deixa
+     de conseguir gravar picagens diretamente.
+   - Telemóvel pessoal = regra: a ≤200 m, com boa precisão e no aparelho
+     associado à pessoa, fica logo válida. Tudo o resto (PC, aparelho novo,
+     telemóvel de outra pessoa, 200–500 m, localização imprecisa ou
+     indisponível) fica PENDENTE e gera uma tarefa na Gaveta de Hugo/Paulo
+     (nunca de quem picou — a própria picagem é sempre validada pelo outro).
+     Acima de 500 m no telemóvel não é possível picar.
+   - Aparelho = chave aleatória guardada no browser do telemóvel; o 1.º
+     aparelho de cada pessoa associa-se sozinho; a chave pertence ao
+     APARELHO, nunca muda de dono sem a Direção aprovar.
+   - Jornada: uma saída fecha a entrada ainda aberta das últimas 20 h, mesmo
+     depois da meia-noite (a picagem fica no dia em que o turno começou).
 ================================================================= */
 const RAIO_PONTO_METROS = 200;
-// Só entra mesmo em vigor a partir de 1 de outubro de 2026 (pedido
-// explícito 2026-09-17: "coloca o sistema de ponto a contabilizar só a
-// partir de outubro, para já não") — até lá, o botão "Picar Ponto" nem
-// aparece (ver buildPontoWidget); a partir dessa data liga-se sozinho,
-// sem precisar de mexer aqui outra vez.
+const PONTO_LIMITE_ABSOLUTO_METROS = 500;
+const PONTO_PRECISAO_MAX_METROS = 100;
+const PONTO_JORNADA_MAX_HORAS = 20;
+// Em vigor para toda a equipa a partir de 1 de outubro de 2026. Antes
+// disso só a Direção vê o botão (modo de teste, 28–30/09).
 const PONTO_DATA_INICIO = '2026-10-01';
+const PONTO_MOTIVOS_TEXTO = {
+  pc: 'picagem feita num computador',
+  aparelho_novo: 'telemóvel novo (ainda não associado)',
+  aparelho_de_outro: 'telemóvel associado a outra pessoa',
+  fora_raio: `fora dos ${RAIO_PONTO_METROS} m da farmácia`,
+  precisao: 'localização pouco precisa',
+  sem_localizacao: 'sem localização disponível',
+  local_nao_definido: 'localização da farmácia ainda por definir',
+};
+function pontoMotivosLista(registo) {
+  return String((registo && registo.motivoPendente) || '').split(',').map(s => s.trim()).filter(Boolean);
+}
+function pontoMotivosTexto(registo) {
+  return pontoMotivosLista(registo).map(m => PONTO_MOTIVOS_TEXTO[m] || m).join('; ');
+}
+function pontoTipoTexto(tipo) { return tipo === 'saida' ? 'saída' : 'entrada'; }
 function distanciaHaversineMetros(lat1, lon1, lat2, lon2) {
   const R = 6371000;
   const toRad = (d) => d * Math.PI / 180;
@@ -46159,31 +46245,221 @@ function distanciaHaversineMetros(lat1, lon1, lat2, lon2) {
   const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
-function obterLocalizacaoAtual() {
+// Posição atual com precisão (accuracy, em metros). Nunca rejeita: em caso
+// de falha devolve { erro: 'permissao' | 'indisponivel' } — a picagem pode
+// continuar na mesma (fica pendente de validação).
+function obterLocalizacaoAtual(opts) {
+  const fresca = !!(opts && opts.fresca);
   return new Promise((resolve) => {
-    if (!navigator.geolocation) { resolve(null); return; }
+    if (!navigator.geolocation) { resolve({ erro: 'indisponivel' }); return; }
     navigator.geolocation.getCurrentPosition(
-      (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
-      () => resolve(null),
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 },
+      (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude, precisao: pos.coords.accuracy }),
+      (err) => resolve({ erro: err && err.code === 1 ? 'permissao' : 'indisponivel' }),
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: fresca ? 0 : 20000 },
     );
   });
 }
+// Picagens que contam para um dia (jornada): nunca eliminadas nem rejeitadas.
 function pontoRegistosDoDia(utilizadorId, dataISO) {
-  return (STATE.pontoRegistos || []).filter(r => String(r.utilizadorId) === String(utilizadorId) && r.data === dataISO);
+  return (STATE.pontoRegistos || []).filter(r => String(r.utilizadorId) === String(utilizadorId) && r.data === dataISO && !r.eliminado && r.estado !== 'rejeitada');
 }
-// `diaHoje` (opcional) é só CONTEXTO — mostra a Entrada/Saída Previstas ao
-// lado do botão quando existe um turno normal hoje; um dia sem turno
-// (Folga/Férias/Horas Extra sem turno/etc.) continua a permitir picar na
-// mesma, sem essa referência, porque o botão nunca depende do tipo de dia
-// nem da hora — só da localização (ver comentário acima).
+function pontoRegistoEhPendente(r) { return !!r && r.estado === 'pendente'; }
+// ---- Chave do aparelho (ver explicação no topo) ----
+const PONTO_CHAVE_APARELHO_LS = 'sigajuncal_ponto_aparelho';
+function pontoChaveAparelho() {
+  try {
+    let chave = localStorage.getItem(PONTO_CHAVE_APARELHO_LS);
+    if (!chave || chave.length < 16) {
+      chave = (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+        : Array.from({ length: 4 }, () => Math.random().toString(36).slice(2, 10)).join('-');
+      localStorage.setItem(PONTO_CHAVE_APARELHO_LS, chave);
+    }
+    return chave;
+  } catch (e) { return null; }
+}
+// Só para as pessoas reconhecerem o aparelho ("iPhone · Safari") — a
+// identificação faz-se sempre pela chave, nunca por esta descrição.
+function pontoDescricaoAparelho() {
+  const ua = navigator.userAgent || '';
+  let so = 'Aparelho';
+  if (/iPhone|iPod/i.test(ua)) so = 'iPhone';
+  else if (/iPad/i.test(ua)) so = 'iPad';
+  else if (/Android/i.test(ua)) so = 'Android';
+  else if (/Macintosh|Mac OS X/i.test(ua)) so = 'Mac';
+  else if (/Windows/i.test(ua)) so = 'Windows';
+  let nav = 'Browser';
+  if (/Edg\//i.test(ua)) nav = 'Edge';
+  else if (/SamsungBrowser/i.test(ua)) nav = 'Samsung Internet';
+  else if (/CriOS|Chrome\//i.test(ua)) nav = 'Chrome';
+  else if (/FxiOS|Firefox\//i.test(ua)) nav = 'Firefox';
+  else if (/Safari\//i.test(ua)) nav = 'Safari';
+  return `${so} · ${nav}`;
+}
+function pontoEhIOSForaDoEcraPrincipal() {
+  const ua = navigator.userAgent || '';
+  const ios = /iPhone|iPod/i.test(ua);
+  const standalone = window.navigator.standalone === true || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+  return ios && !standalone;
+}
+// ---- Localização da farmácia (tabela ponto_config, 1 linha) ----
+let PONTO_CONFIG_CACHE = null;
+let pontoConfigLidaEm = 0;
+async function pontoCarregarConfig(forcar) {
+  if (!sb) return PONTO_CONFIG_CACHE;
+  if (!forcar && pontoConfigLidaEm && Date.now() - pontoConfigLidaEm < 10 * 60 * 1000) return PONTO_CONFIG_CACHE;
+  try {
+    const { data, error } = await sb.from('ponto_config').select('*').eq('id', 1).maybeSingle();
+    if (error) { console.warn('[Ponto] erro ao ler ponto_config:', error.message); return PONTO_CONFIG_CACHE; }
+    PONTO_CONFIG_CACHE = data ? rowToRecord(data) : null;
+    pontoConfigLidaEm = Date.now();
+  } catch (e) { console.warn('[Ponto] erro de rede ao ler ponto_config:', formatarErroSeguro(e)); }
+  return PONTO_CONFIG_CACHE;
+}
+function pontoConfigDefinida(cfg) {
+  return !!(cfg && cfg.lat !== null && cfg.lat !== undefined && cfg.lng !== null && cfg.lng !== undefined);
+}
+// ---- Jornada atual de uma pessoa (mesma regra do servidor) ----
+function pontoJornadaAtual(utilizadorId) {
+  const hoje = todayISO();
+  const agora = Date.now();
+  const meus = (STATE.pontoRegistos || []).filter(r => String(r.utilizadorId) === String(utilizadorId) && !r.eliminado && r.estado !== 'rejeitada');
+  const momento = (r) => { const t = new Date(r.registadoEm || r.createdAt || 0).getTime(); return Number.isFinite(t) ? t : 0; };
+  const aberta = meus
+    .filter(r => r.tipo === 'entrada' && agora - momento(r) < PONTO_JORNADA_MAX_HORAS * 3600 * 1000
+      && !meus.some(s => s.tipo === 'saida' && s.data === r.data))
+    .sort((a, b) => momento(b) - momento(a))[0];
+  if (aberta) return { data: aberta.data, entrada: aberta, saida: null };
+  return {
+    data: hoje,
+    entrada: meus.find(r => r.tipo === 'entrada' && r.data === hoje) || null,
+    saida: meus.find(r => r.tipo === 'saida' && r.data === hoje) || null,
+  };
+}
+function pontoGuardarRegistoNoState(registoBruto) {
+  if (!registoBruto) return null;
+  const reg = sanitizarSupabase(rowToRecord(registoBruto));
+  const lista = STATE.pontoRegistos || [];
+  STATE.pontoRegistos = lista.some(x => String(x.id) === String(reg.id))
+    ? lista.map(x => String(x.id) === String(reg.id) ? Object.assign({}, x, reg) : x)
+    : [reg, ...lista];
+  return reg;
+}
+// ---- Chamadas às funções seguras do servidor ----
+async function pontoChamarRpc(nome, params) {
+  if (!sb) { lastDbError = 'Cliente Supabase indisponível.'; return null; }
+  if (!activeUser || !activeUserPin) { lastDbError = 'Sessão inválida — inicie sessão novamente.'; return null; }
+  try {
+    const { data, error } = await comTimeoutSupabase(sb.rpc(nome, Object.assign({ p_username: activeUser.username, p_pin: activeUserPin }, params)), 25000);
+    if (error) {
+      if (erroDeRede(error)) marcarConexao(false);
+      lastDbError = /function .* does not exist|Could not find the function/i.test(error.message || '')
+        ? 'Falta correr o SQL da picagem de ponto (sigajuncal_ponto_v2.sql) no Supabase.'
+        : error.message;
+      console.error(`[Ponto] erro em ${nome}:`, error.message);
+      return null;
+    }
+    marcarConexao(true);
+    if (!data || data.ok === false) { lastDbError = (data && data.erro) || 'Operação recusada.'; return null; }
+    return data;
+  } catch (e) {
+    if (erroDeRede(e)) marcarConexao(false);
+    lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.';
+    console.error(`[Ponto] erro de rede em ${nome}:`, formatarErroSeguro(e));
+    return null;
+  }
+}
+async function pontoPicar(tipo, loc) {
+  const temLoc = loc && typeof loc.lat === 'number' && typeof loc.lon === 'number';
+  return pontoChamarRpc('rpc_picar_ponto', {
+    p_tipo: tipo,
+    p_lat: temLoc ? loc.lat : null,
+    p_lng: temLoc ? loc.lon : null,
+    p_precisao: temLoc && typeof loc.precisao === 'number' ? loc.precisao : null,
+    p_chave: pontoChaveAparelho(),
+    p_descricao: pontoDescricaoAparelho(),
+    p_telemovel: dispositivoMobileNativo(),
+  });
+}
+async function pontoDefinirLocalFarmacia(loc) {
+  const res = await pontoChamarRpc('rpc_ponto_definir_local', { p_lat: loc.lat, p_lng: loc.lon, p_precisao: loc.precisao });
+  if (res && res.config) { PONTO_CONFIG_CACHE = rowToRecord(res.config); pontoConfigLidaEm = Date.now(); }
+  return res;
+}
+async function pontoCorrigirManual(utilizadorId, dataISO, tipo, hora) {
+  const res = await pontoChamarRpc('rpc_ponto_corrigir', { p_utilizador_id: Number(utilizadorId), p_data: dataISO, p_tipo: tipo, p_hora: hora });
+  if (!res) return null;
+  const reg = pontoGuardarRegistoNoState(res.registo);
+  // Uma picagem pendente corrigida à mão fica aprovada — a tarefa na Gaveta
+  // de Hugo/Paulo deixa de fazer sentido.
+  if (reg) await marcarTratadasTarefasReferencia('ponto_registos', reg.id);
+  return reg;
+}
+// Tarefas da Gaveta ligadas a um registo (qualquer tabela) — marca todas
+// como tratadas (de Hugo E de Paulo), seja qual for o caminho de decisão.
+async function marcarTratadasTarefasReferencia(tabela, referenciaId) {
+  const alvos = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === tabela &&
+    String(r.referenciaId) === String(referenciaId) && (r.tipo || 'mensagem') === 'tarefa' && !r.tratado);
+  if (!alvos.length) return;
+  const resultados = await Promise.all(alvos.map(r => dbMarcarRecadoTratado(r.id)));
+  resultados.forEach(updated => { if (updated) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === updated.id ? updated : x); });
+}
+// Aviso à Direção (tarefa na Gaveta) quando uma picagem fica pendente —
+// nunca a quem picou, mesmo que seja Hugo ou Paulo (valida sempre o outro).
+async function pontoNotificarDirecaoPendente(res, reg) {
+  const destinatarios = escalaUsuariosDirecao().filter(u => String(u.id) !== String(activeUser.id));
+  if (!destinatarios.length || !reg) return;
+  const nome = activeUser.nomeCompleto || activeUser.username;
+  const motivos = pontoMotivosLista(reg);
+  const linhas = [`${nome} picou a ${pontoTipoTexto(reg.tipo)} às ${reg.horaReal} (${formatDate(reg.data)}) — pendente de validação: ${pontoMotivosTexto(reg)}.`];
+  if (motivos.includes('aparelho_de_outro')) linhas.push(`⚠️ Picagem feita a partir do telemóvel associado a ${res.dono_nome || 'outra pessoa'}.`);
+  if (motivos.includes('aparelho_novo')) {
+    const uso = res.aparelho_anterior_uso ? `, última utilização a ${formatDate(String(res.aparelho_anterior_uso).slice(0, 10))}` : '';
+    linhas.push(`Aparelho: ${reg.dispositivoDescricao || '—'}.${res.aparelho_anterior ? ` Aparelho anterior: ${res.aparelho_anterior}${uso}.` : ''}`);
+  } else if (reg.dispositivoDescricao && !motivos.includes('aparelho_de_outro')) {
+    linhas.push(`Aparelho: ${reg.dispositivoDescricao}.`);
+  }
+  if (reg.distanciaMetros !== null && reg.distanciaMetros !== undefined) {
+    linhas.push(`Distância à farmácia: ~${reg.distanciaMetros} m${reg.precisaoMetros ? ` (precisão ±${reg.precisaoMetros} m)` : ''}.`);
+  }
+  const mensagem = linhas.join('\n');
+  const criados = await Promise.all(destinatarios.map(u => dbInsertRecado({
+    remetenteId: activeUser.id, destinatarioId: u.id, mensagem, tratado: false, tipo: 'tarefa',
+    referenciaTabela: 'ponto_registos', referenciaId: reg.id,
+  })));
+  const novos = criados.filter(Boolean);
+  if (novos.length) STATE.gavetaRecados = [...novos, ...(STATE.gavetaRecados || [])];
+}
+// Decisão da Direção (Gaveta): 'aprovar' | 'aprovar_associar' | 'rejeitar'.
+async function decidirPicagemPonto(registoId, decisao) {
+  if (!souDirecaoHorariosGlobal()) { lastDbError = 'Só a Direção (Hugo Cunha / Paulo Freitas) pode validar picagens.'; return null; }
+  const res = await pontoChamarRpc('rpc_ponto_decidir', { p_registo_id: Number(registoId), p_decisao: decisao });
+  if (!res) return null;
+  const reg = pontoGuardarRegistoNoState(res.registo);
+  if (!reg) return null;
+  await marcarTratadasTarefasReferencia('ponto_registos', reg.id);
+  if (!res.ja_decidida && String(reg.utilizadorId) !== String(activeUser.id)) {
+    const quando = `${pontoTipoTexto(reg.tipo)} de ${formatDate(reg.data)} às ${reg.horaReal}`;
+    const mensagem = reg.estado === 'rejeitada'
+      ? `A tua picagem (${quando}) foi rejeitada pela Direção. Se foi engano, fala com o Hugo ou o Paulo.`
+      : `A tua picagem (${quando}) foi validada pela Direção.${res.aparelho_associado ? ' Este telemóvel ficou associado a ti — as próximas picagens nele passam a contar logo.' : ''}`;
+    const criado = await dbInsertRecado({
+      remetenteId: activeUser.id, destinatarioId: reg.utilizadorId, mensagem, tratado: false, tipo: 'mensagem',
+      referenciaTabela: 'ponto_registos', referenciaId: reg.id,
+    });
+    if (criado) STATE.gavetaRecados = [criado, ...(STATE.gavetaRecados || [])];
+  }
+  return Object.assign({ jaDecidida: !!res.ja_decidida }, reg);
+}
+// ---- Cartão "Picar Ponto" (A Minha Semana) ----
+// `diaHoje` (opcional) é só CONTEXTO — mostra a Entrada/Saída previstas; o
+// botão nunca depende de haver turno nem da hora do dia.
 function buildPontoWidget(rerender, diaHoje) {
   if (!activeUser) return null;
-  const hojeISO = dateToISO(new Date());
-  if (hojeISO < PONTO_DATA_INICIO) return null;
-  const registosHoje = pontoRegistosDoDia(activeUser.id, hojeISO);
-  const entradaFeita = registosHoje.find(r => r.tipo === 'entrada' && !r.eliminado);
-  const saidaFeita = registosHoje.find(r => r.tipo === 'saida' && !r.eliminado);
+  const hojeISO = todayISO();
+  const modoTeste = hojeISO < PONTO_DATA_INICIO;
+  if (modoTeste && !souDirecaoHorariosGlobal()) return null;
+  const ehTelemovel = dispositivoMobileNativo();
+  const jornada = pontoJornadaAtual(activeUser.id);
   const previstoTexto = (diaHoje && diaHoje.tipo === 'normal' && diaHoje.entrada && diaHoje.saida)
     ? `Previsto hoje: ${diaHoje.entrada} – ${diaHoje.saida}` : null;
   const card = h('div', { class: 'card card-pad ponto-card', style: 'margin-bottom:16px;max-width:780px;' }, [
@@ -46192,47 +46468,106 @@ function buildPontoWidget(rerender, diaHoje) {
       previstoTexto ? h('span', { class: 'cell-muted', style: 'font-size:12px;' }, previstoTexto) : null,
     ].filter(Boolean)),
   ]);
-  if (entradaFeita && saidaFeita) {
-    card.appendChild(h('p', { class: 'cell-muted', style: 'margin:0;' }, `✅ Ponto de hoje completo — Entrada ${entradaFeita.horaReal} · Saída ${saidaFeita.horaReal}`));
+  if (modoTeste) card.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;color:#b45309;' }, `🧪 Modo de teste — até ${formatDate('2026-09-30')} só a Direção vê este cartão. Para toda a equipa a partir de ${formatDate(PONTO_DATA_INICIO)}.`));
+  const linhaPicagem = (r) => h('p', { style: 'margin:0 0 4px;font-size:13px;' }, [
+    `${r.tipo === 'entrada' ? '🟢 Entrada' : '🔴 Saída'} às ${r.horaReal}`,
+    r.data !== hojeISO ? ` (${formatDate(r.data)})` : '',
+    pontoRegistoEhPendente(r) ? h('span', { class: 'badge badge-orange', style: 'margin-left:6px;', title: pontoMotivosTexto(r) }, '⏳ por validar') : null,
+  ]);
+  if (jornada.entrada) card.appendChild(linhaPicagem(jornada.entrada));
+  if (jornada.saida) card.appendChild(linhaPicagem(jornada.saida));
+  if (jornada.entrada && jornada.saida) {
+    card.appendChild(h('p', { class: 'cell-muted', style: 'margin:6px 0 0;' }, '✅ Ponto de hoje completo.'));
     return card;
   }
+  if (!jornada.entrada && jornada.saida) {
+    card.appendChild(h('p', { class: 'cell-muted', style: 'margin:6px 0 0;' }, 'Saída registada sem entrada — fala com o Hugo ou o Paulo para corrigirem a entrada.'));
+    return card;
+  }
+  const acaoTipo = jornada.entrada ? 'saida' : 'entrada';
+  const rotuloBtn = acaoTipo === 'entrada' ? 'Picar Entrada' : 'Picar Saída';
   const statusEl = h('p', { class: 'cell-muted', style: 'margin:0 0 10px;' }, 'A obter localização…');
-  const acaoTipo = entradaFeita ? 'saida' : 'entrada';
-  const btn = h('button', { class: 'btn btn-primary', disabled: 'disabled' }, acaoTipo === 'entrada' ? 'Picar Entrada' : 'Picar Saída');
-  if (entradaFeita) card.appendChild(h('p', { class: 'cell-muted', style: 'margin:0 0 6px;' }, `Entrada já picada às ${entradaFeita.horaReal}.`));
+  const btn = h('button', { class: 'btn btn-primary', disabled: 'disabled' }, rotuloBtn);
+  const acoesEl = h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;' }, [btn]);
   card.appendChild(statusEl);
-  card.appendChild(btn);
-  obterLocalizacaoAtual().then(async (loc) => {
-    if (!loc) { statusEl.textContent = 'Não foi possível obter a localização — verifica as permissões de localização do telemóvel/browser.'; return; }
-    const origem = await origemFarmaciaCoords('Juncal');
-    if (!origem) { statusEl.textContent = 'Não foi possível confirmar a localização da farmácia.'; return; }
-    const distancia = distanciaHaversineMetros(loc.lat, loc.lon, origem.lat, origem.lon);
-    if (distancia <= RAIO_PONTO_METROS) {
-      statusEl.textContent = `📍 Estás perto da farmácia (~${Math.round(distancia)}m).`;
-      btn.removeAttribute('disabled');
-      btn.addEventListener('click', () => requireAuth(async () => {
-        btn.setAttribute('disabled', 'disabled');
-        btn.textContent = 'A registar…';
-        const payload = {
-          utilizadorId: activeUser.id, data: hojeISO, tipo: acaoTipo,
-          horaReal: `${pad2(new Date().getHours())}:${pad2(new Date().getMinutes())}`,
-          distanciaMetros: Math.round(distancia), confirmadoManualmente: false,
-        };
-        const created = await dbInsert('pontoRegistos', payload);
-        if (created) {
-          STATE.pontoRegistos = [created, ...(STATE.pontoRegistos || [])];
-          showToast(acaoTipo === 'entrada' ? 'Entrada picada.' : 'Saída picada.', 'success');
-          rerender();
-        } else {
-          showDbErrorToast('Não foi possível picar o ponto');
-          btn.removeAttribute('disabled');
-          btn.textContent = acaoTipo === 'entrada' ? 'Picar Entrada' : 'Picar Saída';
-        }
-      }));
+  card.appendChild(acoesEl);
+  if (!ehTelemovel) card.appendChild(h('p', { class: 'field-helper-text', style: 'margin:8px 0 0;' }, 'Estás num computador: a picagem fica registada à hora certa, mas só conta depois de validada pela Direção. Sempre que possível, pica no teu telemóvel.'));
+  if (pontoEhIOSForaDoEcraPrincipal()) card.appendChild(h('p', { class: 'field-helper-text', style: 'margin:8px 0 0;' }, 'Dica: adiciona o SigaJuncal ao ecrã principal (Partilhar → "Adicionar ao ecrã principal"). Assim o iPhone nunca \"esquece\" este telemóvel, mesmo depois de férias.'));
+  let locAtual = null;
+  let aPicar = false;
+  (async () => {
+    const [cfg, loc] = await Promise.all([pontoCarregarConfig(), obterLocalizacaoAtual()]);
+    locAtual = loc;
+    const temLoc = loc && typeof loc.lat === 'number';
+    const cfgOk = pontoConfigDefinida(cfg);
+    const distancia = (temLoc && cfgOk) ? distanciaHaversineMetros(loc.lat, loc.lon, cfg.lat, cfg.lng) : null;
+    const raio = (cfg && cfg.raioMetros) || RAIO_PONTO_METROS;
+    const limite = (cfg && cfg.limiteAbsolutoMetros) || PONTO_LIMITE_ABSOLUTO_METROS;
+    const precisaoMax = (cfg && cfg.precisaoMaxMetros) || PONTO_PRECISAO_MAX_METROS;
+    let bloqueado = false;
+    if (!ehTelemovel) {
+      statusEl.textContent = 'A picagem ficará pendente de validação da Direção.';
+    } else if (!cfgOk) {
+      statusEl.textContent = 'A localização da farmácia ainda não foi definida — a picagem fica pendente de validação.';
+    } else if (!temLoc) {
+      statusEl.textContent = loc && loc.erro === 'permissao'
+        ? 'Sem permissão de localização — ativa-a para este site nas definições do telemóvel. Podes picar na mesma, mas fica pendente de validação.'
+        : 'Não foi possível obter a localização. Podes picar na mesma, mas fica pendente de validação.';
+    } else if (distancia > limite) {
+      bloqueado = true;
+      statusEl.textContent = `Estás a ~${Math.round(distancia)} m da farmácia — só é possível picar a menos de ${limite} m.`;
+    } else if (distancia > raio) {
+      statusEl.textContent = `Estás a ~${Math.round(distancia)} m (fora dos ${raio} m) — a picagem fica pendente de validação.`;
+    } else if (typeof loc.precisao === 'number' && loc.precisao > precisaoMax) {
+      statusEl.textContent = `Localização pouco precisa (±${Math.round(loc.precisao)} m) — a picagem fica pendente de validação. Se puderes, espera uns segundos e volta a abrir esta página.`;
     } else {
-      statusEl.textContent = `Estás a ~${Math.round(distancia)}m da farmácia — tens de estar a menos de ${RAIO_PONTO_METROS}m para picar o ponto.`;
+      statusEl.textContent = `📍 Estás perto da farmácia (~${Math.round(distancia)} m).`;
     }
-  });
+    if (!bloqueado) btn.removeAttribute('disabled');
+    // Direção: fixar a localização da farmácia a partir do próprio
+    // telemóvel, estando lá (junto à porta). Só aparece enquanto não estiver
+    // definida — para mudar depois, ver o SQL (ponto_config).
+    if (souDirecaoHorariosGlobal() && !cfgOk && ehTelemovel) {
+      const definirBtn = h('button', { class: 'btn btn-secondary', type: 'button' }, '📍 Definir a localização da farmácia aqui');
+      definirBtn.addEventListener('click', () => requireAuth(() => {
+        confirmDialog('Confirma que estás DENTRO ou à porta da Farmácia do Juncal? Esta posição passa a ser o centro do raio de 200 m para toda a equipa.', async () => {
+          definirBtn.setAttribute('disabled', 'disabled'); definirBtn.textContent = 'A obter localização precisa…';
+          const locFresca = await obterLocalizacaoAtual({ fresca: true });
+          if (!locFresca || typeof locFresca.lat !== 'number') { showToast('Não foi possível obter a localização.', 'error'); rerender(); return; }
+          const res = await pontoDefinirLocalFarmacia(locFresca);
+          if (res) showToast('Localização da farmácia definida.', 'success');
+          else showDbErrorToast('Não foi possível definir a localização');
+          rerender();
+        }, { confirmLabel: 'Sim, estou na farmácia' });
+      }));
+      acoesEl.appendChild(definirBtn);
+    }
+  })();
+  btn.addEventListener('click', () => requireAuth(async () => {
+    if (aPicar) return;
+    aPicar = true;
+    btn.setAttribute('disabled', 'disabled');
+    btn.textContent = 'A registar…';
+    // Posição fresca no momento do toque (a do carregamento pode ter minutos).
+    const locFresca = ehTelemovel ? await obterLocalizacaoAtual({ fresca: true }) : locAtual;
+    const res = await pontoPicar(acaoTipo, (locFresca && typeof locFresca.lat === 'number') ? locFresca : locAtual);
+    aPicar = false;
+    if (!res) {
+      showToast(lastDbError || 'Não foi possível registar a picagem.', 'error');
+      btn.removeAttribute('disabled'); btn.textContent = rotuloBtn;
+      return;
+    }
+    const reg = pontoGuardarRegistoNoState(res.registo);
+    if (res.duplicado) {
+      showToast(`Já tinhas picado a ${pontoTipoTexto(reg.tipo)} às ${reg.horaReal}.`, 'info');
+    } else if (pontoRegistoEhPendente(reg)) {
+      await pontoNotificarDirecaoPendente(res, reg);
+      showToast(`${reg.tipo === 'entrada' ? 'Entrada' : 'Saída'} registada às ${reg.horaReal} — pendente de validação da Direção (${pontoMotivosTexto(reg)}).`, 'info');
+    } else {
+      showToast(`${reg.tipo === 'entrada' ? 'Entrada' : 'Saída'} registada às ${reg.horaReal}.${res.aparelho_associado ? ' Este telemóvel ficou associado a ti.' : ''}`, 'success');
+    }
+    rerender();
+  }));
   return card;
 }
 /* =================================================================
