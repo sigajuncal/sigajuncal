@@ -105,6 +105,9 @@
   @keyframes fadeSlide{from{opacity:.6;transform:translateY(3px);}to{opacity:1;transform:translateY(0);}}
   .animate-in{animation:none!important;opacity:1!important;transform:none!important;}
   button{font-family:inherit;}
+  /* Números com largura fixa em toda a app (2026-09-24, v1.1): horas, valores, contagens e totais deixam de
+     "dançar" entre linhas e colunas — cada algarismo ocupa sempre a mesma largura. */
+  body{font-variant-numeric:tabular-nums;}
   h1,h2,h3,p{margin:0;}
 
   .app-shell{display:flex;min-height:100vh;}
@@ -976,6 +979,8 @@
   .back-btn-label{display:none;}
 
   /* Buttons */
+  .icone-texto{display:inline-flex;align-items:center;gap:6px;vertical-align:middle;}
+  .icone-texto-titulo{gap:8px;}
   .btn{display:inline-flex;align-items:center;gap:6px;padding:10px 16px;border-radius:10px;font-weight:700;
     font-size:13.5px;border:1px solid transparent;cursor:pointer;transition:.15s;white-space:nowrap;}
   .btn-primary{background:#059669;color:#fff;font-weight:700;box-shadow:0 1px 2px rgba(0,0,0,.06);transition:background-color .15s ease;}
@@ -4315,6 +4320,23 @@ function clear(el) { closePopover(); while (el.firstChild) el.removeChild(el.fir
 // recuperável e regista o erro na consola (com o número de linha),
 // para a próxima vez ser possível corrigir a causa exata em vez de só
 // a esconder.
+// Guarda, em cada caixa de pesquisa (.search-input), os ouvintes que lhe foram ligados — para
+// restaurarPesquisaAtiva os poder transferir quando a página se redesenha (ver comScrollPreservado).
+// Só toca em <input class="search-input">; tudo o resto funciona exatamente como sempre.
+(function registarOuvintesDasPesquisas() {
+  const adicionarOriginal = EventTarget.prototype.addEventListener;
+  const removerOriginal = EventTarget.prototype.removeEventListener;
+  EventTarget.prototype.addEventListener = function (tipo, fn, opts) {
+    if (this instanceof HTMLInputElement && this.classList && this.classList.contains('search-input')) {
+      (this.__ouvintesPesquisa || (this.__ouvintesPesquisa = [])).push([tipo, fn, opts]);
+    }
+    return adicionarOriginal.call(this, tipo, fn, opts);
+  };
+  EventTarget.prototype.removeEventListener = function (tipo, fn, opts) {
+    if (this.__ouvintesPesquisa) this.__ouvintesPesquisa = this.__ouvintesPesquisa.filter(([t, f]) => !(t === tipo && f === fn));
+    return removerOriginal.call(this, tipo, fn, opts);
+  };
+})();
 function construirComRedeDeSeguranca(build) {
   try {
     return build();
@@ -4373,9 +4395,61 @@ function restaurarPosicoesScroll(estado, raiz) {
   });
   if (estado.janelaY || estado.janelaX) window.scrollTo(estado.janelaX, estado.janelaY);
 }
+// ---- Caixa de pesquisa nunca perde o cursor (2026-09-24, Hugo: "vou escrevendo o nome da pessoa e paro e quero
+// continuar a escrever e já não permite") ----
+// Várias páginas redesenham-se por completo quando a pesquisa muda — a caixa de pesquisa era recriada de raiz e o
+// cursor ficava na caixa antiga (já fora do ecrã): o que se escrevia a seguir perdia-se. Agora, sempre que um
+// redesenho acontece com o cursor numa caixa de pesquisa (.search-input), a caixa ORIGINAL (a que tem o foco, o
+// cursor e, no telemóvel, o teclado aberto) volta a ser colocada no sítio da nova, com os "ouvintes" da nova — o
+// comportamento da página fica exatamente o da versão nova, só que sem nunca interromper a escrita.
+function capturarPesquisaAtiva() {
+  const el = document.activeElement;
+  if (!el || el.tagName !== 'INPUT' || !el.classList || !el.classList.contains('search-input')) return null;
+  const mesmas = [...document.querySelectorAll('input.search-input')].filter(x => x.placeholder === el.placeholder);
+  let inicio = null, fim = null;
+  try { inicio = el.selectionStart; fim = el.selectionEnd; } catch (e) { /* alguns tipos não têm seleção */ }
+  return { el, placeholder: el.placeholder, indice: Math.max(0, mesmas.indexOf(el)), inicio, fim };
+}
+// A caixa ORIGINAL fica no ecrã (cursor, seleção e teclado do telemóvel intactos) e passa a encaminhar o que se
+// escreve para a caixa da versão nova da página — que é a que o código da página conhece e lê (searchInput.value).
+function instalarEncaminhamentoPesquisa(antiga) {
+  if (antiga.__encaminhaPesquisa) return;
+  // Os ouvintes originais da caixa antiga pertencem a uma versão já substituída da página — saem todos.
+  (antiga.__ouvintesPesquisa || []).slice().forEach(([t, f, o]) => antiga.removeEventListener(t, f, o));
+  antiga.__encaminhaPesquisa = true;
+  ['input', 'change', 'search', 'keydown', 'keyup'].forEach(tipo => {
+    antiga.addEventListener(tipo, (e) => {
+      const alvo = antiga.__alvoPesquisa;
+      if (!alvo || alvo === antiga) return;
+      if (tipo === 'input' || tipo === 'change' || tipo === 'search') alvo.value = antiga.value;
+      const copia = tipo.startsWith('key')
+        ? new window.KeyboardEvent(tipo, { key: e.key, code: e.code, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey })
+        : new Event(tipo);
+      alvo.dispatchEvent(copia);
+    });
+  });
+}
+function restaurarPesquisaAtiva(info) {
+  if (!info || info.el.isConnected) return; // a caixa não foi recriada — nada a fazer
+  const candidatas = [...document.querySelectorAll('input.search-input')].filter(x => x.placeholder === info.placeholder);
+  const nova = candidatas[info.indice] || candidatas[0];
+  if (!nova || nova === info.el) return;
+  const antiga = info.el;
+  instalarEncaminhamentoPesquisa(antiga);
+  antiga.__alvoPesquisa = nova;
+  antiga.className = nova.className;
+  const estilo = nova.getAttribute('style');
+  if (estilo !== null) antiga.setAttribute('style', estilo); else antiga.removeAttribute('style');
+  nova.replaceWith(antiga);
+  try { antiga.focus({ preventScroll: true }); } catch (e) { antiga.focus(); }
+  try { if (info.inicio !== null && info.inicio !== undefined) antiga.setSelectionRange(info.inicio, info.fim); } catch (e) { /* ignora */ }
+  // Escreveu-se mais alguma coisa entretanto? A página nova fica a par.
+  if (antiga.value !== nova.value) { nova.value = antiga.value; nova.dispatchEvent(new Event('input')); }
+}
 function comScrollPreservado(fn, raiz) {
   const estado = capturarPosicoesScroll(raiz);
-  try { fn(); } finally { restaurarPosicoesScroll(estado, raiz); }
+  const pesquisa = capturarPesquisaAtiva();
+  try { fn(); } finally { restaurarPosicoesScroll(estado, raiz); restaurarPesquisaAtiva(pesquisa); }
 }
 
 /* =================================================================
@@ -4415,6 +4489,11 @@ const ICONS = {
   inbox: '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
   checkcircle: '<circle cx="12" cy="12" r="9"/><path d="m9 12 2 2 4-4"/>',
   plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+  // Personalização (2026-09-24, Hugo: "deve ser um balde de tinta e pincel, algo que remeta para arte").
+  smartphone: '<rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/>',
+  scanFace: '<path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M8.5 14.5s1.3 1.5 3.5 1.5 3.5-1.5 3.5-1.5"/><path d="M9 9.5h.01M15 9.5h.01"/>',
+  calendarX: '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><path d="M9.5 14l5 5M14.5 14l-5 5"/>',
+  paintBucket: '<path d="M2.4 11.4h11.4v8a1.9 1.9 0 0 1-1.9 1.9H4.3a1.9 1.9 0 0 1-1.9-1.9Z"/><path d="M2.4 14.4c.9.8 1.8.8 2.6 0 .6 1.7 1.7 1.7 2.4 0 .8 1.2 1.8 1.2 2.6 0 .6.9 1.6 1 2.6.3"/><g transform="translate(14.6 6.9) rotate(45)"><path d="M0 -8.4V-4.6"/><rect x="-1.9" y="-4.6" width="3.8" height="2.8" rx=".6"/><path d="M-2.1 -1.8h4.2v2c0 1.6-1 2.9-2.1 3.6-1.1-.7-2.1-2-2.1-3.6Z"/></g>',
   trash: '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-.9 14a2 2 0 0 1-2 1.9H7.9a2 2 0 0 1-2-1.9L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
   eye: '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>',
   eyeOff: '<path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M2 2l20 20"/>',
@@ -4481,6 +4560,17 @@ const ICONS = {
   // Gráfico de barras — botão "Estatísticas" das Entregas (2026-09-19).
   barChart: '<path d="M3 3v18h18"/><path d="M8 17v-5"/><path d="M13 17V7"/><path d="M18 17v-8"/>',
 };
+// Ícone de traço + texto, alinhados (2026-09-24, pedido de Hugo: ícones coerentes em toda a app — nos botões e
+// títulos usa-se sempre o mesmo estilo de traço, nunca emojis). tom 'nao' = vermelho (Rejeitar/Cancelar/Remover),
+// 'ok' = verde; sem tom herda a cor do próprio botão/título.
+function iconeTexto(nome, texto, opts) {
+  opts = opts || {};
+  const cor = opts.tom === 'nao' ? 'color:#dc2626;' : (opts.tom === 'ok' ? 'color:#059669;' : '');
+  return h('span', { class: 'icone-texto' + (opts.titulo ? ' icone-texto-titulo' : '') }, [
+    Icon(nome, { size: opts.size || (opts.titulo ? 17 : 14), strokeWidth: opts.strokeWidth || (opts.titulo ? 2.1 : 2.4), style: cor }),
+    h('span', {}, texto),
+  ]);
+}
 function Icon(name, opts) {
   opts = opts || {};
   const size = opts.size || 18;
@@ -4662,7 +4752,7 @@ const NAV_SECTIONS = [
   { title: 'Definições', items: [
     { key: 'definicoes', label: 'Utilizadores', icon: 'users' },
     { key: 'seguranca', label: 'Segurança', icon: 'lockClosed' },
-    { key: 'personalizacao', label: 'Personalização', icon: 'droplet' },
+    { key: 'personalizacao', label: 'Personalização', icon: 'paintBucket' },
     { key: 'sobre', label: 'Sobre', icon: 'info' },
   ] },
 ];
@@ -8240,8 +8330,8 @@ function abrirModalMarcacoesAtrasadas(itensIniciais, prestador, onFechar) {
         voltarBtn.addEventListener('click', () => { perguntandoMotivoIds.delete(m.id); renderLista(); });
         acoesEl = h('div', { style: 'display:flex;gap:8px;' }, [faltouBtn, cancelouBtn, voltarBtn]);
       } else {
-        const concluirBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12.5px;padding:7px 12px;' }, '✓ Concluída');
-        const cancelarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12.5px;padding:7px 12px;color:var(--red);' }, '✕ Cancelada');
+        const concluirBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12.5px;padding:7px 12px;' }, iconeTexto('check', 'Concluída'));
+        const cancelarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12.5px;padding:7px 12px;color:var(--red);' }, iconeTexto('x', 'Cancelada', { tom: 'nao' }));
         concluirBtn.addEventListener('click', () => requireAuth(async () => {
           concluirBtn.disabled = true; cancelarBtn.disabled = true;
           if (await agendaMarcarConcluida(m)) { itens = itens.filter(x => x.id !== m.id); renderLista(); }
@@ -13102,7 +13192,7 @@ function buildOrtopediaPage(container, goTo) {
           onSaved: rerender,
         }));
       }
-      const debouncedRenderResultsOnly = debounce(renderResultsOnly, 180);
+      const debouncedRenderResultsOnly = debounce(renderResultsOnly, 90);
       searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResultsOnly(); });
       renderResultsOnly();
       wrap.appendChild(statGrid);
@@ -13447,7 +13537,7 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
       }
       // Re-render LEVE (só a tabela) a cada tecla — o próprio campo de
       // pesquisa nunca é recriado, por isso o foco/cursor nunca se perde.
-      const debouncedRenderResultsOnly = debounce(renderResultsOnly, 180);
+      const debouncedRenderResultsOnly = debounce(renderResultsOnly, 90);
       searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResultsOnly(); });
       renderResultsOnly();
       wrap.appendChild(statGrid);
@@ -13670,7 +13760,7 @@ function buildSasuEspinhoCard() {
   infoBtn.addEventListener('click', (e) => { e.stopPropagation(); abrirModalInfoSasuEspinho(); });
   return h('div', { class: 'card card-pad sasu-card' }, [
     infoBtn,
-    h('h3', { class: 'dash-card-title', style: 'margin:0 0 6px;' }, '🩺 SASU Espinho (Centro de Saúde)'),
+    h('h3', { class: 'dash-card-title', style: 'margin:0 0 6px;' }, iconeTexto('stethoscope', 'SASU Espinho (Centro de Saúde)', { titulo: true })),
     h('p', { class: 'sasu-horario' }, horarioHoje),
     h('p', { class: 'sasu-contexto' }, contexto),
     h('p', { class: 'sasu-nota' }, 'Serviço para reencaminhamento de utentes que necessitem de consulta/atendimento médico sem urgência hospitalar.'),
@@ -15208,7 +15298,7 @@ function abrirModalLembretesUrgentes() {
   const verTodosBtn = h('button', { class: 'btn btn-secondary', onclick: () => { close(); STATE.navFrom = STATE.page; STATE.page = 'lembretes'; STATE.sidebarOpen = false; render(); } }, 'Ver Todos os Lembretes');
   const closeBtn = h('button', { class: 'btn btn-secondary', onclick: close }, 'Fechar');
   const panel = h('div', { class: 'modal-panel confirm-panel' }, [
-    h('p', { class: 'modal-title', style: 'margin-bottom:12px;' }, '🔔 Lembretes Urgentes'),
+    h('p', { class: 'modal-title', style: 'margin-bottom:12px;' }, iconeTexto('bell', 'Lembretes Urgentes', { titulo: true })),
     linhasWrap,
     h('div', { class: 'form-actions', style: 'margin-top:14px;' }, [verTodosBtn, closeBtn]),
   ]);
@@ -15891,7 +15981,7 @@ function abrirModalGaveta(abrirThreadInicial) {
       resultsEl.appendChild(h('div', {}, itens.length ? itens : [h('p', { class: 'cell-muted', style: 'padding:8px;' }, vazioTexto)]));
     }
     renderListaResultsRef = () => { renderResults(); renderPills(); };
-    const debouncedRenderResults = debounce(renderResults, 180);
+    const debouncedRenderResults = debounce(renderResults, 90);
     searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
     col.appendChild(searchInput);
     col.appendChild(filtrosEl);
@@ -15965,7 +16055,7 @@ function abrirModalGaveta(abrirThreadInicial) {
           const REFERENCIAS_COM_DECISAO_PROPRIA = ['escala_notas_semana', 'escala_pedidos_especiais', 'escala_horas_extra_reivindicacoes', 'ponto_registos'];
           const temDecisaoPropria = REFERENCIAS_COM_DECISAO_PROPRIA.includes(r.referenciaTabela);
           if (!souEuRemetente && !concluida && !temDecisaoPropria) {
-            const confirmarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;' }, '✓ Confirmar Conclusão');
+            const confirmarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;' }, iconeTexto('check', 'Confirmar Conclusão'));
             confirmarBtn.addEventListener('click', () => requireAuth(() => marcarTarefaConcluida(r)));
             acoes.push(confirmarBtn);
           }
@@ -15980,9 +16070,9 @@ function abrirModalGaveta(abrirThreadInicial) {
           // nunca obrigar a sair da Gaveta e ir a Horários>Pedidos só
           // para rejeitar.
           if (r.referenciaTabela === 'escala_notas_semana' && !souEuRemetente && !concluida && souDirecaoHorariosGlobal()) {
-            const aprovarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;' }, '✅ Aprovar');
+            const aprovarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;' }, iconeTexto('check', 'Aprovar'));
             aprovarBtn.addEventListener('click', () => requireAuth(() => marcarNotaEquipaVistaViaGaveta(r)));
-            const rejeitarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;' }, '❌ Rejeitar');
+            const rejeitarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;' }, iconeTexto('x', 'Rejeitar', { tom: 'nao' }));
             rejeitarBtn.addEventListener('click', () => requireAuth(() => marcarNotaEquipaRejeitadaViaGaveta(r)));
             acoes.push(aprovarBtn, rejeitarBtn);
           }
@@ -15995,9 +16085,9 @@ function abrirModalGaveta(abrirThreadInicial) {
           if (r.referenciaTabela === 'escala_pedidos_especiais' && !souEuRemetente && !concluida && souDirecaoHorariosGlobal()) {
             const pedidoRef = (STATE.escalaPedidosEspeciais || []).find(p => p.id === r.referenciaId);
             if (pedidoRef && pedidoRef.estado === 'pendente') {
-              const aprovarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;' }, '✅ Aprovar');
+              const aprovarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;' }, iconeTexto('check', 'Aprovar'));
               aprovarBtn.addEventListener('click', () => requireAuth(() => decidirPedidoEspecialViaGaveta(r, 'aprovado', render)));
-              const rejeitarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;' }, '❌ Rejeitar');
+              const rejeitarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;' }, iconeTexto('x', 'Rejeitar', { tom: 'nao' }));
               rejeitarBtn.addEventListener('click', () => requireAuth(() => decidirPedidoEspecialViaGaveta(r, 'rejeitado', render)));
               acoes.push(aprovarBtn, rejeitarBtn);
             }
@@ -16010,9 +16100,9 @@ function abrirModalGaveta(abrirThreadInicial) {
           if (r.referenciaTabela === 'escala_horas_extra_reivindicacoes' && !souEuRemetente && !concluida && souDirecaoHorariosGlobal()) {
             const reivRef = (STATE.escalaHorasExtraReivindicacoes || []).find(rv => String(rv.id) === String(r.referenciaId));
             if (reivRef && (reivRef.estado || 'pendente') === 'pendente') {
-              const validarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;' }, '✅ Validar');
+              const validarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;' }, iconeTexto('check', 'Validar'));
               validarBtn.addEventListener('click', () => requireAuth(() => decidirHorasExtraReivindicacaoViaGaveta(r, 'validado', render)));
-              const invalidarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;' }, '❌ Invalidar');
+              const invalidarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;' }, iconeTexto('x', 'Invalidar', { tom: 'nao' }));
               invalidarBtn.addEventListener('click', () => requireAuth(() => decidirHorasExtraReivindicacaoViaGaveta(r, 'invalidado', render)));
               acoes.push(validarBtn, invalidarBtn);
             }
@@ -16033,13 +16123,13 @@ function abrirModalGaveta(abrirThreadInicial) {
                 render();
               });
               if (podeAssociar) {
-                const associarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;', title: 'Aprova esta picagem e passa a reconhecer este telemóvel como o dela/dele (o anterior deixa de contar).' }, '📱 Aprovar e associar este telemóvel');
+                const associarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;', title: 'Aprova esta picagem e passa a reconhecer este telemóvel como o dela/dele (o anterior deixa de contar).' }, iconeTexto('smartphone', 'Aprovar e associar este telemóvel'));
                 associarBtn.addEventListener('click', () => decidir('aprovar_associar', 'Picagem aprovada e telemóvel associado.'));
                 acoes.push(associarBtn);
               }
-              const aprovarPontoBtn = h('button', { class: podeAssociar ? 'btn btn-secondary' : 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;' }, podeAssociar ? '✅ Aprovar só esta picagem' : '✅ Aprovar');
+              const aprovarPontoBtn = h('button', { class: podeAssociar ? 'btn btn-secondary' : 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;' }, iconeTexto('check', podeAssociar ? 'Aprovar só esta picagem' : 'Aprovar'));
               aprovarPontoBtn.addEventListener('click', () => decidir('aprovar', 'Picagem aprovada.'));
-              const rejeitarPontoBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;' }, '❌ Rejeitar');
+              const rejeitarPontoBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;' }, iconeTexto('x', 'Rejeitar', { tom: 'nao' }));
               rejeitarPontoBtn.addEventListener('click', () => requireAuth(() => {
                 confirmDialog('Rejeitar esta picagem? Não conta para o horário cumprido e a pessoa é avisada.', () => decidir('rejeitar', 'Picagem rejeitada.'), { danger: true, confirmLabel: 'Rejeitar' });
               }));
@@ -16056,7 +16146,7 @@ function abrirModalGaveta(abrirThreadInicial) {
             const concluirSemDecisaoBtn = h('button', {
               class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;',
               title: 'Passa para Concluídas (para ti e para a outra pessoa da Direção) sem aprovar nem rejeitar — o pedido fica como está em Horários > Pedidos.',
-            }, '📥 Concluir sem decidir');
+            }, iconeTexto('inbox', 'Concluir sem decidir'));
             concluirSemDecisaoBtn.addEventListener('click', () => requireAuth(() => {
               confirmDialog('Esta tarefa passa para Concluídas, para ti e para a outra pessoa da Direção, sem aprovar nem rejeitar o pedido. O pedido continua como está em Horários > Pedidos e o colaborador não é avisado. Continuar?', async () => {
                 const ok = await concluirTarefaSemDecisao(r);
@@ -16068,7 +16158,7 @@ function abrirModalGaveta(abrirThreadInicial) {
           return h('div', { class: 'gaveta-bolha-linha' + (souEuRemetente ? ' gaveta-bolha-minha' : '') }, [
             h('div', { class: 'gaveta-tarefa-card' + (concluida ? ' concluida' : '') }, [
               h('div', { class: 'gaveta-tarefa-card-topo' }, [
-                h('span', {}, concluida ? '✅ Tarefa Concluída' : '📋 Tarefa / Pedido de Ação'),
+                concluida ? iconeTexto('checkcircle', 'Tarefa Concluída', { tom: 'ok' }) : iconeTexto('clipboard', 'Tarefa / Pedido de Ação'),
                 h('span', { class: 'gaveta-tarefa-direcao ' + (souEuRemetente ? 'enviei' : 'paraMim') }, souEuRemetente ? 'Enviei' : 'Para mim'),
               ]),
               h('p', { style: 'margin:0;font-size:13px;white-space:pre-wrap;overflow-wrap:anywhere;' }, r.mensagem || ''),
@@ -16102,8 +16192,8 @@ function abrirModalGaveta(abrirThreadInicial) {
       historico = h('div', { class: 'gaveta-thread-lista' }, itens.length ? itens : [h('p', { class: 'cell-muted' }, 'Ainda sem mensagens nesta conversa.')]);
     }
 
-    const tipoBtnMsg = h('button', { class: 'gaveta-tipo-btn' + (tipoEnvio === 'mensagem' ? ' ativo' : ''), type: 'button' }, '💬 Mensagem Normal');
-    const tipoBtnTarefa = h('button', { class: 'gaveta-tipo-btn' + (tipoEnvio === 'tarefa' ? ' ativo tone-tarefa' : ''), type: 'button' }, '📋 Tarefa / Pedido');
+    const tipoBtnMsg = h('button', { class: 'gaveta-tipo-btn' + (tipoEnvio === 'mensagem' ? ' ativo' : ''), type: 'button' }, iconeTexto('message', 'Mensagem Normal'));
+    const tipoBtnTarefa = h('button', { class: 'gaveta-tipo-btn' + (tipoEnvio === 'tarefa' ? ' ativo tone-tarefa' : ''), type: 'button' }, iconeTexto('clipboard', 'Tarefa / Pedido'));
     tipoBtnMsg.addEventListener('click', () => { tipoEnvio = 'mensagem'; render(); });
     tipoBtnTarefa.addEventListener('click', () => { tipoEnvio = 'tarefa'; render(); });
 
@@ -16207,7 +16297,7 @@ function abrirModalGaveta(abrirThreadInicial) {
   const closeBtn = h('button', { class: 'close-btn', onclick: close }, Icon('x', { size: 16 }));
   const panel = h('div', { class: 'modal-panel gaveta-fullscreen-panel' }, [
     h('div', { class: 'gaveta-header-row' }, [
-      h('p', { class: 'modal-title', style: 'margin:0;' }, '📥 Gaveta de Recados'),
+      h('p', { class: 'modal-title', style: 'margin:0;' }, iconeTexto('inbox', 'Gaveta de Recados', { titulo: true })),
       closeBtn,
     ]),
     bodyEl,
@@ -17120,7 +17210,7 @@ function buildCalculadoraDosesPediatricasModule() {
   }
   const header = h('button', { class: 'posped-main-header', type: 'button' }, [
     h('div', {}, [
-      h('h3', { class: 'dash-card-title', style: 'margin:0 0 4px;' }, '🧮 Calculadora de Doses Pediátricas'),
+      h('h3', { class: 'dash-card-title', style: 'margin:0 0 4px;' }, iconeTexto('calculator', 'Calculadora de Doses Pediátricas', { titulo: true })),
       h('p', { class: 'posped-main-sub' }, 'Apoio à dosagem com base no peso e evidência clínica (Guia ARSLVT/DGS)'),
     ]),
     chevronPrincipal,
@@ -17599,7 +17689,7 @@ function buildErrosPage(container, goTo) {
       clear(resultsContainer);
       resultsContainer.appendChild(buildTable(list, activeTab === 'resolved' ? 'resolved' : 'pending'));
     }
-    const debouncedRenderResults = debounce(renderResults, 180);
+    const debouncedRenderResults = debounce(renderResults, 90);
     searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
 
     const searchCard = h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
@@ -18028,7 +18118,7 @@ function buildValidadesPage(container, goTo) {
       });
       resultsEl.appendChild(h('div', { style: 'display:flex;flex-direction:column;gap:6px;margin-top:14px;' }, linhas));
     }
-    const debouncedRenderResultsOnly = debounce(renderResultsOnly, 180);
+    const debouncedRenderResultsOnly = debounce(renderResultsOnly, 90);
     searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResultsOnly(); });
     renderResultsOnly();
     wrap.appendChild(resultsEl);
@@ -22525,7 +22615,7 @@ function buildLembretesPage(container, goTo, embedded) {
         resultsContainer.appendChild(buildTable(list, 'pending'));
       }
     }
-    const debouncedRenderResults = debounce(renderResults, 180);
+    const debouncedRenderResults = debounce(renderResults, 90);
     searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
 
     const searchCard = h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
@@ -22744,7 +22834,7 @@ function buildReclamacoesPage(container, goTo) {
       clear(resultsContainer);
       resultsContainer.appendChild(buildTable(list, activeTab === 'resolved' ? 'resolved' : 'pending'));
     }
-    const debouncedRenderResults = debounce(renderResults, 180);
+    const debouncedRenderResults = debounce(renderResults, 90);
     searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
 
     const searchCard = h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
@@ -24716,7 +24806,7 @@ function buildAfaFichasPage(container, goTo) {
     wrap.appendChild(withBackButton(buildPageHeader('users', 'Fichas de Clientes', 'Base de dados de utentes da Análise Facial Avançada — avaliação de pele completa.', (STATE.afaFichas || []).length), goTo));
     const searchInput = h('input', { class: 'search-input', type: 'text', placeholder: 'Pesquisar por nome, contacto ou nº de ficha…' });
     searchInput.value = searchQuery;
-    const onSearch = debounce(() => { searchQuery = searchInput.value; rerender(); }, 250);
+    const onSearch = debounce(() => { searchQuery = searchInput.value; rerender(); }, 120);
     searchInput.addEventListener('input', onSearch);
     wrap.appendChild(searchInput);
     const lista = records();
@@ -24970,7 +25060,7 @@ function buildOrcamentosPage(container, goTo) {
       clear(resultsContainer);
       resultsContainer.appendChild(buildTable(list));
     }
-    const debouncedRenderResults = debounce(renderResults, 180);
+    const debouncedRenderResults = debounce(renderResults, 90);
     searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
     wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
       h('div', { class: 'search-row' }, [h('div', { class: 'search-input-wrap' }, [h('span', { class: 'icon' }, Icon('search', { size: 15 })), searchInput])]),
@@ -25146,7 +25236,7 @@ function buildDesafiosPage(container, goTo, embedded) {
     searchInput.value = searchQuery;
     const resultsContainer = h('div', {});
     function renderResults() { clear(resultsContainer); resultsContainer.appendChild(buildTable(visibleDesafios())); }
-    const debouncedRenderResults = debounce(renderResults, 180);
+    const debouncedRenderResults = debounce(renderResults, 90);
     searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
     wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
       h('div', { class: 'search-row' }, [h('div', { class: 'search-input-wrap' }, [h('span', { class: 'icon' }, Icon('search', { size: 15 })), searchInput])]),
@@ -25421,7 +25511,7 @@ function buildObjetivosPage(container, goTo, embedded) {
     searchInput.value = searchQuery;
     const resultsContainer = h('div', {});
     function renderResults() { clear(resultsContainer); resultsContainer.appendChild(buildTable(visibleObjetivos())); }
-    const debouncedRenderResults = debounce(renderResults, 180);
+    const debouncedRenderResults = debounce(renderResults, 90);
     searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
     wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
       h('div', { class: 'search-row' }, [h('div', { class: 'search-input-wrap' }, [h('span', { class: 'icon' }, Icon('search', { size: 15 })), searchInput])]),
@@ -27054,7 +27144,7 @@ function buildHistoricoDocumentosSection(goTo) {
       resultsEl.appendChild(h('div', { class: 'bottom-action-bar' }, [delBtn]));
     }
   }
-  const debouncedRenderResultsOnly = debounce(renderResultsOnly, 180);
+  const debouncedRenderResultsOnly = debounce(renderResultsOnly, 90);
   searchInput.addEventListener('input', () => { query = searchInput.value; debouncedRenderResultsOnly(); });
   filtroSelect.addEventListener('change', () => { filtroTipo = filtroSelect.value; renderResultsOnly(); });
   renderResultsOnly();
@@ -27455,6 +27545,9 @@ async function descarregarBackup(onStatus) {
 /* =================================================================
    SOBRE
 ================================================================= */
+// Versão da app (2026-09-24, Hugo: "a app já está tão mais completa que gostava de chamar versão 1.1").
+const APP_VERSAO = '1.1';
+const APP_VERSAO_DATA = 'setembro de 2026';
 function buildSobrePage(container, goTo) {
   clear(container);
   const wrap = h('div', { class: 'animate-in' });
@@ -27465,7 +27558,7 @@ function buildSobrePage(container, goTo) {
     h('p', { style: 'font-size:14px;line-height:1.7;color:var(--pharm-700);' },
       'A aplicação SigaJuncal foi desenvolvida por Hugo Cunha no mês de Julho de 2026, com o objetivo de otimizar e centralizar todos os processos, fluxos de trabalho e dados da Farmácia Juncal que não podiam ser geridos de forma eficiente através do software principal de gestão de stock e dispensa da farmácia.'),
     h('p', { style: 'font-size:12px;font-weight:700;color:var(--pharm-400);margin-top:18px;' },
-      'Versão 1.0 (Versão Inicial de Lançamento para a Equipa)'),
+      `Versão ${APP_VERSAO} (${APP_VERSAO_DATA})`),
   ]);
   wrap.appendChild(content);
   container.appendChild(wrap);
@@ -27498,7 +27591,7 @@ function buildPersonalizacaoPage(container, goTo) {
 
   function build() {
     const wrap = h('div', { class: 'animate-in' });
-    wrap.appendChild(withBackButton(buildPageHeader('droplet', 'Personalização', 'Escolhe a cor ou o padrão de fundo da aplicação — fica guardado só para ti, neste utilizador.', undefined), goTo));
+    wrap.appendChild(withBackButton(buildPageHeader('paintBucket', 'Personalização', 'Escolhe a cor ou o padrão de fundo da aplicação — fica guardado só para ti, neste utilizador.', undefined), goTo));
     const atual = idAtual();
     const cores = FUNDO_APP_OPCOES.filter(t => !t.padraoSvg);
     const padroes = FUNDO_APP_OPCOES.filter(t => t.padraoSvg);
@@ -33411,7 +33504,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       const segmentos = escalaSegmentosTurnoAbsolutos({ entrada: entradaInput.value, saida: saidaInput.value, pausaInicio: pausaInicioInput.value, pausaFim: pausaFimInput.value });
       todoHorarioWrap.innerHTML = '';
       if (segmentos.length <= 1) {
-        const btn = h('button', { type: 'button', class: 'btn-link edit', style: 'font-size:11.5px;' }, '🕐 Todo o Horário (Entrada–Saída)');
+        const btn = h('button', { type: 'button', class: 'btn-link edit', style: 'font-size:11.5px;' }, iconeTexto('clock', 'Todo o Horário (Entrada–Saída)'));
         btn.addEventListener('click', () => { tarefaInicioInput.value = entradaInput.value; tarefaFimInput.value = saidaInput.value; });
         todoHorarioWrap.appendChild(btn);
       } else {
@@ -35243,11 +35336,11 @@ function buildHorariosPage(container, goTo) {
       } else {
         const aprovarBtn = h('button', {
           type: 'button', class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;',
-        }, '✅ Aprovar');
+        }, iconeTexto('check', 'Aprovar'));
         aprovarBtn.addEventListener('click', () => requireAuth(() => alternarValidacaoNotaEquipa(nota, true)));
         const rejeitarBtn = h('button', {
           type: 'button', class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;',
-        }, '❌ Rejeitar');
+        }, iconeTexto('x', 'Rejeitar', { tom: 'nao' }));
         rejeitarBtn.addEventListener('click', () => requireAuth(() => alternarValidacaoNotaEquipa(nota, false, 'rejeitado')));
         botoes.push(aprovarBtn, rejeitarBtn);
       }
@@ -35276,7 +35369,7 @@ function buildHorariosPage(container, goTo) {
   function buildFeedNotasEquipa(semana) {
     const notas = escalaNotasSemanaDaSemana(semana.semanaInicio);
     const kids = [
-      h('h3', { class: 'dash-card-title', style: 'margin:0 0 2px;' }, '📋 Pedidos e Registos da Semana'),
+      h('h3', { class: 'dash-card-title', style: 'margin:0 0 2px;' }, iconeTexto('clipboard', 'Pedidos e Registos da Semana', { titulo: true })),
       h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, 'Visível a toda a equipa e fica pendente de validação da Direção até ser confirmado. "Atribuição de Tarefa" fica automaticamente no horário assim que validada; os outros tipos ficam só registados (inclusive na versão impressa do horário), sem alterar a grelha sozinhos.'),
     ];
     if (activeUser) {
@@ -35527,12 +35620,12 @@ function buildHorariosPage(container, goTo) {
         ? h('div', { style: 'display:flex;flex-direction:column;gap:10px;max-width:780px;' }, lista.map(buildCartaoPedidoUnificado))
         : h('p', { class: 'field-helper-text', style: 'margin:0;' }, 'Nenhum registo encontrado.'));
     }
-    const debouncedRenderHistorico = debounce(renderHistorico, 180);
+    const debouncedRenderHistorico = debounce(renderHistorico, 90);
     searchInput.addEventListener('input', () => { pedidosSemanaSearch = searchInput.value; debouncedRenderHistorico(); });
     filtroSelect.addEventListener('change', () => { pedidosSemanaFiltroColaborador = filtroSelect.value; renderHistorico(); });
 
     const wrap = h('div', {});
-    wrap.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:0 0 2px;' }, '📋 Pedidos'));
+    wrap.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:0 0 2px;' }, iconeTexto('clipboard', 'Pedidos', { titulo: true })));
     wrap.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 16px;' }, 'Junta "Pedidos e Registos da Semana" (Escala da Equipa) e "Pedidos Especiais" (Férias) de todas as semanas, sem ter de navegar semana a semana — cada cartão mostra sempre a sua etiqueta própria (📋/📌), para nunca confundir os dois tipos. Por ordem cronológica, mais recentes primeiro. Os colaboradores continuam a submeter Pedidos Especiais em Férias, como sempre.'));
 
     // Separador Ativos/Histórico (pedido explícito 2026-08-22, antes as
@@ -36797,7 +36890,7 @@ function buildHorariosPage(container, goTo) {
     const todoHorarioBtn = alvoAtual ? (() => {
       const segmentos = escalaSegmentosTurnoAbsolutos(alvoAtual.dia);
       if (segmentos.length <= 1) {
-        const btn = h('button', { type: 'button', class: 'btn-link edit', style: 'font-size:11.5px;' }, '🕐 Todo o Horário (Entrada–Saída)');
+        const btn = h('button', { type: 'button', class: 'btn-link edit', style: 'font-size:11.5px;' }, iconeTexto('clock', 'Todo o Horário (Entrada–Saída)'));
         btn.addEventListener('click', () => { atribuicaoRapidaDraft.inicio = alvoAtual.dia.entrada; atribuicaoRapidaDraft.fim = alvoAtual.dia.saida; atribuicaoRapidaError = ''; rerender(); });
         return btn;
       }
@@ -36978,7 +37071,7 @@ function buildHorariosPage(container, goTo) {
             // (desistirReivindicacao, ativo:false), só muda a rotulagem.
             const desistirBtn = podeDesistir ? (() => {
               const btn = ehGestor
-                ? h('button', { class: 'btn btn-secondary', style: 'font-size:11.5px;padding:5px 10px;flex-shrink:0;' }, '🗑️ Retirar')
+                ? h('button', { class: 'btn btn-secondary', style: 'font-size:11.5px;padding:5px 10px;flex-shrink:0;' }, iconeTexto('trash', 'Retirar', { tom: 'nao' }))
                 : h('button', { class: 'btn-fab-sm tone-gray', title: 'Desistir/cancelar', 'aria-label': 'Desistir/cancelar' }, Icon('x', { size: 12, strokeWidth: 2.4 }));
               btn.addEventListener('click', () => requireAuth(() => desistirReivindicacao(r, bloco)));
               return btn;
@@ -39503,9 +39596,9 @@ function buildHorariosPage(container, goTo) {
     // com a mesma regra dos restantes pontos de decisão.
     let botoesDecisao = null;
     if (souDirecaoHorariosGlobal() && pedido.estado === 'pendente') {
-      const aprovarBtn = h('button', { class: 'btn btn-primary', style: 'padding:5px 10px;font-size:12px;' }, '✅ Aprovar');
+      const aprovarBtn = h('button', { class: 'btn btn-primary', style: 'padding:5px 10px;font-size:12px;' }, iconeTexto('check', 'Aprovar'));
       aprovarBtn.addEventListener('click', () => requireAuth(async () => { const ok = await decidirPedidoEspecial(pedido, 'aprovado'); if (ok) rerender(); else escalaShowErro('Não foi possível aprovar'); }));
-      const rejeitarBtn = h('button', { class: 'btn btn-secondary', style: 'padding:5px 10px;font-size:12px;' }, '❌ Rejeitar');
+      const rejeitarBtn = h('button', { class: 'btn btn-secondary', style: 'padding:5px 10px;font-size:12px;' }, iconeTexto('x', 'Rejeitar', { tom: 'nao' }));
       rejeitarBtn.addEventListener('click', () => requireAuth(async () => { const ok = await decidirPedidoEspecial(pedido, 'rejeitado'); if (ok) rerender(); else escalaShowErro('Não foi possível rejeitar'); }));
       botoesDecisao = h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;' }, [aprovarBtn, rejeitarBtn]);
     }
@@ -39770,7 +39863,7 @@ function buildHorariosPage(container, goTo) {
     const closeBtn = h('button', { class: 'close-btn', onclick: fecharModalConfiguracoesFerias }, Icon('x', { size: 16 }));
     const panel = h('div', { class: 'modal-panel', style: 'max-width:760px;' }, [
       h('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;' }, [
-        h('p', { class: 'modal-title', style: 'margin:0;' }, '⚙️ Configurações — Férias'),
+        h('p', { class: 'modal-title', style: 'margin:0;' }, iconeTexto('settings', 'Configurações — Férias', { titulo: true })),
         closeBtn,
       ]),
       h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, 'Definições avançadas do módulo Férias — só visível ao Diretor Técnico/Administrador.'),
@@ -39824,12 +39917,12 @@ function buildHorariosPage(container, goTo) {
     // avisos no Gerador) — só passam a ter o seu próprio calendário
     // visual em vez de ficarem misturadas ou em formato de lista.
     const subTabs = [
-      { key: 'quadro', label: '🌴 Férias do Quadro' },
-      { key: 'disponibilidade', label: '🖐️ Disponibilidade' },
-      { key: 'indisponibilidade', label: '📵 Indisponibilidades — Prestadores' },
+      { key: 'quadro', label: 'Férias do Quadro', icon: 'beachUmbrella' },
+      { key: 'disponibilidade', label: 'Disponibilidade', icon: 'hand' },
+      { key: 'indisponibilidade', label: 'Indisponibilidades — Prestadores', icon: 'calendarX' },
     ];
     wrap.appendChild(h('div', { class: 'tabs-row', style: 'margin-bottom:16px;flex-wrap:wrap;' }, subTabs.map(t =>
-      h('button', { class: 'tab-btn tone-purple' + (feriasSubVista === t.key ? ' active' : ''), onclick: () => { feriasSubVista = t.key; rerender(); } }, t.label)
+      h('button', { class: 'tab-btn tone-purple' + (feriasSubVista === t.key ? ' active' : ''), onclick: () => { feriasSubVista = t.key; rerender(); } }, [Icon(t.icon, { size: 14 }), h('span', {}, t.label)])
     )));
 
     if (feriasSubVista === 'disponibilidade') {
@@ -40033,7 +40126,7 @@ function buildHorariosPage(container, goTo) {
         subirBtn.addEventListener('click', () => requireAuth(() => moverPrioridade(item, 'cima')));
         const descerBtn = h('button', { type: 'button', class: 'btn btn-secondary', title: 'Descer uma posição', disabled: (idx === lista.length - 1 || aMover) ? 'disabled' : undefined, style: 'padding:6px 10px;font-size:13px;line-height:1;' }, '▼ Descer');
         descerBtn.addEventListener('click', () => requireAuth(() => moverPrioridade(item, 'baixo')));
-        const delBtn = h('button', { type: 'button', class: 'btn btn-secondary', title: 'Remover da lista', style: 'padding:6px 10px;font-size:13px;line-height:1;color:#b91c1c;border-color:#fecaca;' }, '🗑️ Remover');
+        const delBtn = h('button', { type: 'button', class: 'btn btn-secondary', title: 'Remover da lista', style: 'padding:6px 10px;font-size:13px;line-height:1;color:#b91c1c;border-color:#fecaca;' }, iconeTexto('trash', 'Remover', { tom: 'nao' }));
         delBtn.addEventListener('click', () => requireAuth(() => eliminarPrioridade(item)));
         return h('div', {
           style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 4px;' + (idx > 0 ? 'border-top:1px solid var(--pharm-100);' : ''),
@@ -40577,7 +40670,7 @@ function buildHorariosPage(container, goTo) {
       const listaMostrada = rotacaoEditando && rotacaoRascunho ? rotacaoRascunho : lista;
       const toggleRow = h('div', { style: 'display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap;' });
       if (!rotacaoEditando) {
-        const editarBtn = h('button', { class: 'btn btn-secondary', style: 'padding:8px 14px;font-size:12.5px;' }, '🔒 Editar Rotação');
+        const editarBtn = h('button', { class: 'btn btn-secondary', style: 'padding:8px 14px;font-size:12.5px;' }, iconeTexto('lockClosed', 'Editar Rotação'));
         editarBtn.addEventListener('click', () => requireAuth(() => { rotacaoRascunho = lista.slice(); rotacaoEditando = true; rerender(); }));
         toggleRow.appendChild(editarBtn);
       } else {
@@ -40909,7 +41002,7 @@ function buildHorariosPage(container, goTo) {
       const listaMostrada = rotacaoBEditando && rotacaoBRascunho ? rotacaoBRascunho : lista;
       const toggleRow = h('div', { style: 'display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap;' });
       if (!rotacaoBEditando) {
-        const editarBtn = h('button', { class: 'btn btn-secondary', style: 'padding:8px 14px;font-size:12.5px;' }, '🔒 Editar Rotação');
+        const editarBtn = h('button', { class: 'btn btn-secondary', style: 'padding:8px 14px;font-size:12.5px;' }, iconeTexto('lockClosed', 'Editar Rotação'));
         editarBtn.addEventListener('click', () => requireAuth(() => { rotacaoBRascunho = lista.slice(); rotacaoBEditando = true; rerender(); }));
         toggleRow.appendChild(editarBtn);
       } else {
@@ -42814,7 +42907,7 @@ function buildMapa48hPage(container, goTo) {
     searchInput.value = searchQuery;
     const resultsContainer = h('div', {});
     function renderResults() { clear(resultsContainer); resultsContainer.appendChild(buildTable(visibleMapa48h())); }
-    const debouncedRenderResults = debounce(renderResults, 180);
+    const debouncedRenderResults = debounce(renderResults, 90);
     searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
     wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
       h('div', { class: 'search-row' }, [h('div', { class: 'search-input-wrap' }, [h('span', { class: 'icon' }, Icon('search', { size: 15 })), searchInput])]),
@@ -42947,8 +43040,8 @@ function abrirModalVacinacaoAtrasadas(itensIniciais, onFechar) {
     clear(listaEl);
     if (!itens.length) { fechar(); return; }
     itens.forEach(m => {
-      const administrarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12.5px;padding:7px 12px;' }, '✓ Administrada');
-      const cancelarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12.5px;padding:7px 12px;color:var(--red);' }, '✕ Cancelar');
+      const administrarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12.5px;padding:7px 12px;' }, iconeTexto('check', 'Administrada'));
+      const cancelarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12.5px;padding:7px 12px;color:var(--red);' }, iconeTexto('x', 'Cancelar', { tom: 'nao' }));
       async function aplicar(patch) {
         administrarBtn.disabled = true; cancelarBtn.disabled = true;
         const updated = await dbUpdate('vacinacaoMarcacoes', m.id, patch);
@@ -44502,7 +44595,7 @@ function buildVacinacaoPage(container, goTo) {
     ]));
     const searchInput = h('input', { class: 'search-input', type: 'text', placeholder: 'Pesquisar por nome, contacto ou responsável...' });
     searchInput.value = marcacaoSearch;
-    searchInput.addEventListener('input', debounce(() => { marcacaoSearch = searchInput.value; rerender(); }, 250));
+    searchInput.addEventListener('input', debounce(() => { marcacaoSearch = searchInput.value; rerender(); }, 120));
     wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:14px;' }, searchInput));
 
     const list = marcacoesDaCampanha();
@@ -44729,7 +44822,7 @@ function buildVacinacaoPage(container, goTo) {
     }
     const searchInput = h('input', { class: 'search-input', type: 'text', placeholder: 'Pesquisar por nome ou contacto...' });
     searchInput.value = esperaSearch;
-    searchInput.addEventListener('input', debounce(() => { esperaSearch = searchInput.value; rerender(); }, 250));
+    searchInput.addEventListener('input', debounce(() => { esperaSearch = searchInput.value; rerender(); }, 120));
     // Resumo Gripe/COVID desta lista — o mesmo total que já entra no
     // cálculo de "falta encomendar" em Stock/Encomendas (ver
     // vacinacaoNecessidadeEncomenda), só que visível aqui também, onde
@@ -45647,7 +45740,7 @@ function abrirModalEntregasAtrasadas(itensIniciais, opts) {
     itens.forEach(r => {
       const limite = entregaLimiteTimestamp(r);
       const horasAtraso = limite ? Math.floor((Date.now() - limite.getTime()) / 3600000) : null;
-      const confirmarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12.5px;padding:7px 12px;' }, '✓ Confirmar Entrega');
+      const confirmarBtn = h('button', { class: 'btn btn-primary', style: 'font-size:12.5px;padding:7px 12px;' }, iconeTexto('check', 'Confirmar Entrega'));
       const detalhesBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12.5px;padding:7px 12px;' }, 'Ver Detalhes');
       confirmarBtn.addEventListener('click', () => requireAuth(() => {
         confirmarBtn.disabled = true; detalhesBtn.disabled = true;
@@ -45935,7 +46028,7 @@ function abrirModalNovaEmpresaParceiraRapida(farmaciaAtiva, onCriada) {
   function rerenderPanel() {
     clear(panel);
     panel.appendChild(h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;' }, [
-      h('p', { class: 'modal-title', style: 'margin:0;' }, `➕ Registar Nova Empresa Parceira (${farmaciaAtiva})`),
+      h('p', { class: 'modal-title', style: 'margin:0;' }, iconeTexto('plus', `Registar Nova Empresa Parceira (${farmaciaAtiva})`, { titulo: true })),
       h('button', { class: 'close-btn', onclick: fechar, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
     ]));
     panel.appendChild(buildRecordForm(empresaParceiraSchema, draft, {
@@ -46059,7 +46152,7 @@ function buildEmpresasParceirasPage(container, goTo, farmaciaAtiva) {
       }));
       resultsEl.appendChild(h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', { class: 'pedidos-table' }, [thead, tbody]))));
     }
-    const debouncedRenderResultsOnly = debounce(renderResultsOnly, 180);
+    const debouncedRenderResultsOnly = debounce(renderResultsOnly, 90);
     searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResultsOnly(); });
     renderResultsOnly();
 
@@ -46528,7 +46621,7 @@ function buildPontoWidget(rerender, diaHoje) {
     // telemóvel, estando lá (junto à porta). Só aparece enquanto não estiver
     // definida — para mudar depois, ver o SQL (ponto_config).
     if (souDirecaoHorariosGlobal() && !cfgOk && ehTelemovel) {
-      const definirBtn = h('button', { class: 'btn btn-secondary', type: 'button' }, '📍 Definir a localização da farmácia aqui');
+      const definirBtn = h('button', { class: 'btn btn-secondary', type: 'button' }, iconeTexto('mapPin', 'Definir a localização da farmácia aqui'));
       definirBtn.addEventListener('click', () => requireAuth(() => {
         confirmDialog('Confirma que estás DENTRO ou à porta da Farmácia do Juncal? Esta posição passa a ser o centro do raio de 200 m para toda a equipa.', async () => {
           definirBtn.setAttribute('disabled', 'disabled'); definirBtn.textContent = 'A obter localização precisa…';
@@ -48120,7 +48213,7 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
     searchInput.value = searchQuery;
     const resultsContainer = h('div', {});
     function renderResults() { clear(resultsContainer); resultsContainer.appendChild(buildTable(visibleEntregas())); }
-    const debouncedRenderResults = debounce(renderResults, 180);
+    const debouncedRenderResults = debounce(renderResults, 90);
     searchInput.addEventListener('input', () => { searchQuery = searchInput.value; entregasContextoMemorizado.searchQuery = searchQuery; debouncedRenderResults(); });
     wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
       h('div', { class: 'search-row' }, [h('div', { class: 'search-input-wrap' }, [h('span', { class: 'icon' }, Icon('search', { size: 15 })), searchInput])]),
@@ -48291,7 +48384,7 @@ function buildRecolhasPage(container, goTo) {
     searchInput.value = searchQuery;
     const resultsContainer = h('div', {});
     function renderResults() { clear(resultsContainer); resultsContainer.appendChild(buildTable(visibleRecolhas())); }
-    const debouncedRenderResults = debounce(renderResults, 180);
+    const debouncedRenderResults = debounce(renderResults, 90);
     searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
     wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
       h('div', { class: 'search-row' }, [h('div', { class: 'search-input-wrap' }, [h('span', { class: 'icon' }, Icon('search', { size: 15 })), searchInput])]),
@@ -48424,7 +48517,7 @@ function buildConsumiveisPage(container, goTo) {
     searchInput.value = searchQuery;
     const resultsContainer = h('div', {});
     function renderResults() { clear(resultsContainer); resultsContainer.appendChild(buildTable(visibleConsumiveis())); }
-    const debouncedRenderResults = debounce(renderResults, 180);
+    const debouncedRenderResults = debounce(renderResults, 90);
     searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
     wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
       h('div', { class: 'search-row' }, [h('div', { class: 'search-input-wrap' }, [h('span', { class: 'icon' }, Icon('search', { size: 15 })), searchInput])]),
@@ -49109,7 +49202,7 @@ function buildLixoPage(container, goTo) {
       clear(resultsContainer);
       resultsContainer.appendChild(buildTable(list));
     }
-    const debouncedRenderResults = debounce(renderResults, 180);
+    const debouncedRenderResults = debounce(renderResults, 90);
     searchInput.addEventListener('input', () => { searchQuery = searchInput.value; debouncedRenderResults(); });
 
     const searchCard = h('div', { class: 'card card-pad', style: 'margin-bottom:22px;' }, [
@@ -51619,8 +51712,8 @@ function buildUtilizadoresOnlineBadge() {
 // =====================================================================
 // Cores discretas + 4 padrões sazonais (traço muito subtil, cor única, ladrilho grande — nunca interferem com a
 // leitura do conteúdo por cima). Tudo SVG embutido (data URI): nada vem da rede, Egress zero.
-function fundoAppPadraoSvg(tracos, cor) {
-  return `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E${tracos.replace(/#/g, '%23').replace(/'/g, '%27')}%3C/svg%3E`;
+function fundoAppPadraoSvg(tracos) {
+  return `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' viewBox='0 0 240 240'%3E${tracos.replace(/#/g, '%23').replace(/'/g, '%27').replace(/</g, '%3C').replace(/>/g, '%3E')}%3C/svg%3E`;
 }
 const FUNDO_APP_OPCOES = [
   { id: 'padrao', nome: 'Azul-claro (padrão)', cor: '#f0f7fb' },
@@ -51637,24 +51730,19 @@ const FUNDO_APP_OPCOES = [
   { id: 'rosa', nome: 'Rosa', cor: '#fdf1f3' },
   { id: 'cinza', nome: 'Cinza-azulado', cor: '#eef1f4' },
   { id: 'grafite', nome: 'Grafite', cor: '#f1f1f0' },
-  // Padrões sazonais (2026-09-22, 3ª versão — Hugo: "sazonais estão todos péssimos... melhores, mais suaves e
-  // ténues para não destoar"): a 2ª versão ficava bem numa amostra pequena, mas espalhada pela página inteira
-  // virava "papel de parede" — ladrilho pequeno = o mesmo ícone repetido às dezenas, chapado, demasiado presente.
-  // Agora: 1 SÓ ícone por ladrilho (nunca dois tamanhos a somar densidade), ladrilho bem maior (220px — poucas
-  // repetições, bem espaçadas), traço fino (1.3) e opacidade baixa (.16-.2) — sente-se, não se vê. Cobrem o ano
-  // todo, por ordem.
-  { id: 'inverno', nome: 'Inverno', cor: '#eef2f7', tamanho: 220, padraoSvg: fundoAppPadraoSvg(
-    "<g fill='none' stroke='#8fa9c9' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round' opacity='.2'><path d='M30 14C39 28 39 38 30 50C21 38 21 28 30 14Z M30 50V56'/></g>") },
-  { id: 'pascoa', nome: 'Páscoa', cor: '#fbf6ef', tamanho: 230, padraoSvg: fundoAppPadraoSvg(
-    "<g fill='none' stroke='#dd97b7' stroke-width='1.3' stroke-linecap='round' opacity='.2'><ellipse cx='32' cy='34' rx='14' ry='19'/><path d='M32 15v5M25 21l3 3M39 21l-3 3' stroke-width='1.1'/></g>") },
-  { id: 'primavera', nome: 'Primavera', cor: '#f3faf0', tamanho: 220, padraoSvg: fundoAppPadraoSvg(
-    "<g fill='none' stroke='#8fbd7a' stroke-width='1.3' stroke-linecap='round' opacity='.2'><g stroke='#e39fc0'><ellipse cx='30' cy='21' rx='5' ry='8'/><ellipse cx='30' cy='37' rx='5' ry='8'/><ellipse cx='22' cy='29' rx='8' ry='5'/><ellipse cx='38' cy='29' rx='8' ry='5'/></g><circle cx='30' cy='29' r='2.6' fill='#f6c667' stroke='none'/><path d='M30 46v10'/></g>") },
-  { id: 'verao', nome: 'Verão', cor: '#eef9fa', tamanho: 220, padraoSvg: fundoAppPadraoSvg(
-    "<g fill='none' stroke='#69b3bc' stroke-width='1.3' stroke-linecap='round' opacity='.2'><path d='M8 36q7-7 14 0t14 0t14 0t14 0'/><circle cx='38' cy='16' r='5.5'/><path d='M38 6.5v2.3M38 23.2v2.3M27.5 16h2.3M43.7 16h2.3M30.4 8.4l1.6 1.6M42 22l1.6 1.6M45.6 8.4L44 10M32 22l-1.6 1.6'/></g>") },
-  { id: 'outono', nome: 'Outono', cor: '#faf3ea', tamanho: 220, padraoSvg: fundoAppPadraoSvg(
-    "<g fill='none' stroke='#c1904f' stroke-width='1.3' stroke-linejoin='round' stroke-linecap='round' opacity='.2'><path d='M30 14C42 22 42 40 30 52C18 40 18 22 30 14Z M30 16V50M30 28L23 23M30 28L37 23M30 38L22 35M30 38L38 35'/></g>") },
-  { id: 'natal', nome: 'Natal', cor: '#eef4f8', tamanho: 220, padraoSvg: fundoAppPadraoSvg(
-    "<g fill='none' stroke='#89a8cc' stroke-width='1.3' stroke-linecap='round' opacity='.2'><path d='M30 12V48M12 30H48M17.5 17.5L42.5 42.5M42.5 17.5L17.5 42.5M30 12L26 17M30 12L34 17M30 48L26 43M30 48L34 43M12 30L17 26M12 30L17 34M48 30L43 26M48 30L43 34'/></g>") },
+  // Padrões sazonais — 4.ª versão (2026-09-24, Hugo: "padrões de fundo são horríveis... folha nem parece folha,
+  // floco de neve terrível e mal formatado, melhora tudo de todos"). Redesenhados de raiz, cada um com 2 motivos
+  // por ladrilho (um maior, outro mais pequeno e desencontrado, para não parecer uma grelha): Inverno = floco de
+  // neve a sério (6 braços com ramificações, não 8 riscos), Páscoa = dois ovos decorados, Primavera = flor de 5
+  // pétalas + botão, Verão = sol + ondas, Outono = folha com nervuras + bolota, Natal = azevinho com bagas +
+  // estrela. Traço fino, preenchimentos muito suaves e o conjunto a ~1/3 de opacidade — sente-se, nunca atrapalha
+  // a leitura. Ladrilho 240×240 (viewBox próprio, escala sem perder nitidez).
+  { id: 'inverno', nome: 'Inverno', cor: '#eef2f7', tamanho: 240, padraoSvg: fundoAppPadraoSvg("<g fill='none' stroke='#7f9fc4' color='#7f9fc4' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round' opacity='0.36'><g transform='translate(28 24) rotate(10 39.0 39.0) scale(0.78)'><path transform='rotate(0 50 50)' d='M50 50V12 M50 26L41 18 M50 26L59 18 M50 37L44 32 M50 37L56 32'/><path transform='rotate(60 50 50)' d='M50 50V12 M50 26L41 18 M50 26L59 18 M50 37L44 32 M50 37L56 32'/><path transform='rotate(120 50 50)' d='M50 50V12 M50 26L41 18 M50 26L59 18 M50 37L44 32 M50 37L56 32'/><path transform='rotate(180 50 50)' d='M50 50V12 M50 26L41 18 M50 26L59 18 M50 37L44 32 M50 37L56 32'/><path transform='rotate(240 50 50)' d='M50 50V12 M50 26L41 18 M50 26L59 18 M50 37L44 32 M50 37L56 32'/><path transform='rotate(300 50 50)' d='M50 50V12 M50 26L41 18 M50 26L59 18 M50 37L44 32 M50 37L56 32'/><path d='M50 44L55.2 47L55.2 53L50 56L44.8 53L44.8 47Z'/></g><g transform='translate(146 142) rotate(-8 23.0 23.0) scale(0.46)'><path transform='rotate(0 50 50)' d='M50 50V16 M50 30L42 22 M50 30L58 22'/><path transform='rotate(60 50 50)' d='M50 50V16 M50 30L42 22 M50 30L58 22'/><path transform='rotate(120 50 50)' d='M50 50V16 M50 30L42 22 M50 30L58 22'/><path transform='rotate(180 50 50)' d='M50 50V16 M50 30L42 22 M50 30L58 22'/><path transform='rotate(240 50 50)' d='M50 50V16 M50 30L42 22 M50 30L58 22'/><path transform='rotate(300 50 50)' d='M50 50V16 M50 30L42 22 M50 30L58 22'/><path d='M50 44L55.2 47L55.2 53L50 56L44.8 53L44.8 47Z'/></g></g>") },
+  { id: 'pascoa', nome: 'Páscoa', cor: '#fbf6ef', tamanho: 240, padraoSvg: fundoAppPadraoSvg("<g fill='none' stroke='#d98bb0' color='#d98bb0' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round' opacity='0.32'><g transform='translate(28 24) rotate(-14 39.0 39.0) scale(0.78)'><clipPath id='cpascoa28'><path d='M50 10C67 10 80 40 80 60C80 80 67 92 50 92C33 92 20 80 20 60C20 40 33 10 50 10Z'/></clipPath><path d='M50 10C67 10 80 40 80 60C80 80 67 92 50 92C33 92 20 80 20 60C20 40 33 10 50 10Z' fill='#f7dde9'/><g clip-path='url(#cpascoa28)'><path d='M18 50L21 44L27 56L33 44L39 56L45 44L51 56L57 44L63 56L69 44L75 56L81 44'/><path d='M18 72C24 66 30 66 34 72S44 78 50 72S60 66 66 72S76 78 82 72'/><circle cx='38' cy='33' r='2.4' fill='currentColor' stroke='none'/><circle cx='50' cy='33' r='2.4' fill='currentColor' stroke='none'/><circle cx='62' cy='33' r='2.4' fill='currentColor' stroke='none'/></g></g><g transform='translate(146 142) rotate(16 26.0 26.0) scale(0.52)'><clipPath id='cpascoa146'><path d='M50 10C67 10 80 40 80 60C80 80 67 92 50 92C33 92 20 80 20 60C20 40 33 10 50 10Z'/></clipPath><path d='M50 10C67 10 80 40 80 60C80 80 67 92 50 92C33 92 20 80 20 60C20 40 33 10 50 10Z' fill='#fbe9b4'/><g clip-path='url(#cpascoa146)'><path d='M18 44H82 M18 52H82 M18 70H82'/><circle cx='32' cy='61' r='2.3' fill='currentColor' stroke='none'/><circle cx='41' cy='61' r='2.3' fill='currentColor' stroke='none'/><circle cx='50' cy='61' r='2.3' fill='currentColor' stroke='none'/><circle cx='59' cy='61' r='2.3' fill='currentColor' stroke='none'/><circle cx='68' cy='61' r='2.3' fill='currentColor' stroke='none'/></g></g></g>") },
+  { id: 'primavera', nome: 'Primavera', cor: '#f3faf0', tamanho: 240, padraoSvg: fundoAppPadraoSvg("<g fill='none' stroke='#86b973' color='#86b973' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round' opacity='0.32'><g transform='translate(28 24) rotate(8 39.0 39.0) scale(0.78)'><ellipse cx='50' cy='29' rx='10.5' ry='17' transform='rotate(0 50 50)' fill='#f6dbe7'/><ellipse cx='50' cy='29' rx='10.5' ry='17' transform='rotate(72 50 50)' fill='#f6dbe7'/><ellipse cx='50' cy='29' rx='10.5' ry='17' transform='rotate(144 50 50)' fill='#f6dbe7'/><ellipse cx='50' cy='29' rx='10.5' ry='17' transform='rotate(216 50 50)' fill='#f6dbe7'/><ellipse cx='50' cy='29' rx='10.5' ry='17' transform='rotate(288 50 50)' fill='#f6dbe7'/><circle cx='50' cy='50' r='7.5' fill='#fbe7a8'/><circle cx='50' cy='50' r='2' fill='currentColor' stroke='none'/></g><g transform='translate(146 142) rotate(-16 25.0 25.0) scale(0.5)'><path d='M50 92C50 74 48 60 50 44'/><path d='M50 72C38 62 26 64 20 74C30 82 42 80 50 72Z' fill='#dcefd4'/><path d='M50 72C40 70 31 71 24 74'/><path d='M50 44C42 38 42 24 50 14C58 24 58 38 50 44Z' fill='#f6dbe7'/><path d='M50 44C46 34 47 24 50 18'/></g></g>") },
+  { id: 'verao', nome: 'Verão', cor: '#eef9fa', tamanho: 240, padraoSvg: fundoAppPadraoSvg("<g fill='none' stroke='#5aaab4' color='#5aaab4' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round' opacity='0.32'><g transform='translate(28 24) rotate(0 39.0 39.0) scale(0.78)'><circle cx='50' cy='50' r='15' fill='#fdf0c4'/><path transform='rotate(0 50 50)' d='M50 22V12'/><path transform='rotate(30 50 50)' d='M50 25V17'/><path transform='rotate(60 50 50)' d='M50 22V12'/><path transform='rotate(90 50 50)' d='M50 25V17'/><path transform='rotate(120 50 50)' d='M50 22V12'/><path transform='rotate(150 50 50)' d='M50 25V17'/><path transform='rotate(180 50 50)' d='M50 22V12'/><path transform='rotate(210 50 50)' d='M50 25V17'/><path transform='rotate(240 50 50)' d='M50 22V12'/><path transform='rotate(270 50 50)' d='M50 25V17'/><path transform='rotate(300 50 50)' d='M50 22V12'/><path transform='rotate(330 50 50)' d='M50 25V17'/></g><g transform='translate(146 142) rotate(0 31.0 31.0) scale(0.62)'><path d='M10 44C17 36 24 36 30 44S43 52 50 44S63 36 70 44S83 52 90 44'/><path d='M18 60C25 52 32 52 38 60S51 68 58 60S71 52 78 60'/></g></g>") },
+  { id: 'outono', nome: 'Outono', cor: '#faf3ea', tamanho: 240, padraoSvg: fundoAppPadraoSvg("<g fill='none' stroke='#b9864a' color='#b9864a' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round' opacity='0.32'><g transform='translate(28 24) rotate(-28 39.0 39.0) scale(0.78)'><path d='M50 6C66 18 80 34 78 56C76 74 62 86 50 92C38 86 24 74 22 56C20 34 34 18 50 6Z' fill='#f3dcc0'/><path d='M50 12V98 M50 30C56 27 62 23 66 18 M50 30C44 27 38 23 34 18 M50 46C58 43 66 39 73 33 M50 46C42 43 34 39 27 33 M50 62C58 60 66 56 74 50 M50 62C42 60 34 56 26 50 M50 76C56 75 62 72 67 67 M50 76C44 75 38 72 33 67'/></g><g transform='translate(146 142) rotate(22 25.0 25.0) scale(0.5)'><path d='M34 46C34 70 42 88 50 90C58 88 66 70 66 46Z' fill='#f3dcc0'/><path d='M28 46C28 34 38 28 50 28S72 34 72 46Z' fill='#e8cfae'/><path d='M34 40L40 34M42 44L50 36M52 44L60 36M62 42L67 37' /><path d='M50 28C50 22 53 18 57 16'/></g></g>") },
+  { id: 'natal', nome: 'Natal', cor: '#eef4f8', tamanho: 240, padraoSvg: fundoAppPadraoSvg("<g fill='none' stroke='#6f9a86' color='#6f9a86' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round' opacity='0.36'><g transform='translate(28 24) rotate(-6 39.0 39.0) scale(0.78)'><g transform='rotate(-38 50 52)'><path d='M50 52Q55 49 58 46Q59 42 64 40Q59 37 58 33Q59 29 63 26Q57 24 56 20Q55 15 50 8Q45 15 44 20Q43 24 37 26Q41 29 42 33Q41 37 36 40Q41 42 42 46Q45 49 50 52Z' fill='#dcebe2'/><path d='M50 50V13'/></g><g transform='rotate(38 50 52)'><path d='M50 52Q55 49 58 46Q59 42 64 40Q59 37 58 33Q59 29 63 26Q57 24 56 20Q55 15 50 8Q45 15 44 20Q43 24 37 26Q41 29 42 33Q41 37 36 40Q41 42 42 46Q45 49 50 52Z' fill='#dcebe2'/><path d='M50 50V13'/></g><circle cx='46' cy='56' r='5' fill='#f2c9c9'/><circle cx='55' cy='57' r='5' fill='#f2c9c9'/><circle cx='50' cy='64' r='5' fill='#f2c9c9'/></g><g transform='translate(146 142) rotate(12 22.0 22.0) scale(0.44)'><path d='M50 26 L56.2 41.5 L72.8 42.6 L60 53.2 L64.1 69.4 L50 60.5 L35.9 69.4 L40 53.2 L27.2 42.6 L43.8 41.5Z' fill='#dcebe2'/></g></g>") },
 ];
 function fundoAppTema(id) { return FUNDO_APP_OPCOES.find(t => t.id === id) || FUNDO_APP_OPCOES[0]; }
 // CORRIGIDO 2026-09-22 (Hugo: "não aconteceu nada e já selecionei..."): mexer no style do <body> não fazia
@@ -52107,7 +52195,7 @@ function showUserLoginScreen(onSuccess, opts) {
   // passkey registada — nunca antes da primeira ativação.
   let removerBioBtn = null;
   if (webauthnSuportado() && getCredencialBiometrica()) {
-    const bioBtn = h('button', { class: 'btn btn-secondary login-bio-btn', type: 'button', onclick: tryLoginBiometrico }, '🔓 Entrar com Biometria / Face ID');
+    const bioBtn = h('button', { class: 'btn btn-secondary login-bio-btn', type: 'button', onclick: tryLoginBiometrico }, iconeTexto('scanFace', 'Entrar com Biometria / Face ID'));
     panelKids.push(bioBtn);
     panelKids.push(h('p', { class: 'login-bio-divisor' }, 'ou'));
     // Remover/Desativar a passkey deste dispositivo — só apaga o que está
@@ -52573,7 +52661,7 @@ async function startApp() {
       if (ths.length < 2) return;
       const chave = ths.map(th => th.textContent.trim()).join('|');
       if (!chave) return;
-      const linhas = tabela.tBodies.length ? [...tabela.tBodies[0].rows] : [];
+      const linhas = tabela.tBodies.length ? [...tabela.tBodies[0].rows].slice(0, 60) : [];
       // Coluna "livre" = nenhuma linha tem ali um texto truncável (fica de fora desta estabilização).
       const colunaLivre = ths.map((_, i) => !linhas.some(tr => { const td = tr.cells[i]; return td && td.querySelector('.cell-truncate:not(.badge-cotacao)'); }));
       const atuais = ths.map(th => th.getBoundingClientRect().width);
@@ -52611,9 +52699,30 @@ async function startApp() {
       wrap.dataset.truncAss = assinatura();
     });
   }
+  // Enquanto se escreve numa pesquisa, o ajuste de truncagem das colunas (mede a tabela várias vezes seguidas —
+  // pesado em listas grandes, e era isso que "encravava" a escrita) fica para quando se parar de escrever.
+  let ultimaTeclaPesquisaEm = 0;
+  document.addEventListener('input', (e) => {
+    if (e.target && e.target.classList && e.target.classList.contains('search-input')) ultimaTeclaPesquisaEm = Date.now();
+  }, true);
   (function instalarAjusteListasComScroll() {
     let rafId = 0;
-    const agendar = () => { if (rafId) return; rafId = requestAnimationFrame(() => { rafId = 0; try { ajustarListaComScrollAoEcra(); estabilizarLargurasColunasTabelas(); ajustarTruncagemDasTabelas(); } catch (e) { /* nunca partir a app por causa disto */ } }); };
+    let truncagemAdiada = null;
+    const truncarQuandoParar = () => {
+      if (truncagemAdiada) return;
+      truncagemAdiada = setTimeout(() => {
+        truncagemAdiada = null;
+        if (Date.now() - ultimaTeclaPesquisaEm < 500) { truncarQuandoParar(); return; }
+        try { ajustarTruncagemDasTabelas(); } catch (e) { /* nunca partir a app por causa disto */ }
+      }, 550);
+    };
+    const agendar = () => { if (rafId) return; rafId = requestAnimationFrame(() => {
+      rafId = 0;
+      try {
+        ajustarListaComScrollAoEcra(); estabilizarLargurasColunasTabelas();
+        if (Date.now() - ultimaTeclaPesquisaEm < 500) truncarQuandoParar(); else ajustarTruncagemDasTabelas();
+      } catch (e) { /* nunca partir a app por causa disto */ }
+    }); };
     window.addEventListener('resize', agendar);
     if (typeof ResizeObserver === 'function' && typeof MutationObserver === 'function') {
       const ro = new ResizeObserver(agendar);
