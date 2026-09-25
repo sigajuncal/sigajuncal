@@ -8939,7 +8939,7 @@ const TABLES = {
   agendaMarcacoes: 'agenda_marcacoes',
   agendaDias: 'farmacia_agenda_dias',
   objetivos: 'equipa_objetivos',
-  usuarios: 'usuarios_app',
+  usuarios: 'usuarios_app_publico', // 2026-09-25: vista sem a coluna do PIN (ver sigajuncal_seguranca_pin_ponto.sql)
   empresasParceiras: 'empresas_parceiras',
   validades: 'farmacia_validades',
   financeiro: 'faturacao_diaria',
@@ -8995,6 +8995,10 @@ const TABLES = {
 // antes de criar uma nova; lazy aqui criaria uma campanha DUPLICADA a
 // cada arranque enquanto ninguém abrisse Vacinação nessa sessão. Tabela
 // pequena (1 registo por época/ano) — manter eager não pesa no Egress.
+// Tabelas que a app nunca lê diretamente — só através das funções seguras (RPC) no servidor, que decidem quem
+// pode ver o quê: Financeiro/Objetivos (desde sempre) e, desde 2026-09-25, as picagens de ponto (cada pessoa só
+// recebe as suas; a Direção recebe as de todos — ver pontoSincronizar).
+const TABELAS_SO_VIA_RPC = ['financeiro', 'objetivosMensais', 'pontoRegistos'];
 const LAZY_TABLE_KEYS = [
   'manipulados', 'ortopedia', 'ervanaria', 'outros', 'veterinaria', 'orcamentos',
   'reclamacoes', 'mapa48h',
@@ -9123,7 +9127,13 @@ function recordToRow(record) {
 // precisa de saber a diferença (ver nota lá, BUG CORRIGIDO 2026-09-24).
 const DB_FETCH_ALL_FALHOU = {};
 async function dbFetchAll(listKey) {
-  const resultado = await dbFetchAllInterno(listKey);
+  let resultado = await dbFetchAllInterno(listKey);
+  // Transição segura (2026-09-25): enquanto o SQL de segurança ainda não foi corrido no Supabase, a vista
+  // usuarios_app_publico não existe — a app usa a tabela antiga até lá, sem ninguém ficar sem login.
+  if (resultado === null && listKey === 'usuarios' && TABLES.usuarios === 'usuarios_app_publico' && /usuarios_app_publico/i.test(lastDbError || '')) {
+    TABLES.usuarios = 'usuarios_app';
+    resultado = await dbFetchAllInterno(listKey);
+  }
   DB_FETCH_ALL_FALHOU[listKey] = resultado === null;
   return resultado || [];
 }
@@ -9248,7 +9258,10 @@ async function dbFetchAllInterno(listKey) {
 // qualquer cache já desatualizada de ANTES da correção acima — daqui em
 // diante, com o trigger a funcionar, a sincronização por diferença volta
 // a ser fiável sozinha, sem precisar de mais nenhum bump destes.
-const STATE_CACHE_VERSION = 'v2';
+// v3 (2026-09-25): a cópia local antiga (v2) guardava a tabela de utilizadores COM os PINs — é apagada de todos
+// os aparelhos no arranque (ver abaixo) e a nova já só tem a vista sem PIN.
+const STATE_CACHE_VERSION = 'v3';
+try { localStorage.removeItem('sigajuncal_cache_v2'); localStorage.removeItem('sigajuncal_cache_v1'); } catch (e) { /* ignora */ }
 const STATE_CACHE_KEY = 'sigajuncal_cache_' + STATE_CACHE_VERSION;
 const STATE_CACHE_MAX_IDADE_MS = 24 * 60 * 60 * 1000;
 function lerCacheLocalEstado() {
@@ -9266,7 +9279,7 @@ function guardarCacheLocalEstado() {
     const tabelas = {};
     // Tabelas lazy nunca entram na cache — só participam nela as tabelas
     // eager, exatamente como antes de LAZY_TABLE_KEYS existir (2026-09-03).
-    Object.keys(TABLES).forEach(k => { if (k !== 'financeiro' && k !== 'objetivosMensais' && !LAZY_TABLE_KEYS.includes(k)) tabelas[k] = STATE[k] || []; });
+    Object.keys(TABLES).forEach(k => { if (!TABELAS_SO_VIA_RPC.includes(k) && !LAZY_TABLE_KEYS.includes(k)) tabelas[k] = STATE[k] || []; });
     localStorage.setItem(STATE_CACHE_KEY, JSON.stringify({ version: STATE_CACHE_VERSION, savedAtCliente: Date.now(), tabelas }));
   } catch (e) {
     // Sem espaço, modo privado, ou qualquer outro motivo — sem cache
@@ -9786,9 +9799,8 @@ async function reconciliarTarefasGavetaJaDecididas() {
       return (rv.estado || 'pendente') !== 'pendente' || rv.ativo === false;
     }
     if (r.referenciaTabela === 'ponto_registos') {
-      const picagens = STATE.pontoRegistos || [];
-      const reg = picagens.find(x => String(x.id) === String(r.referenciaId));
-      if (!reg) return picagens.length > 0;
+      const reg = (STATE.pontoRegistos || []).find(x => String(x.id) === String(r.referenciaId));
+      if (!reg) return false; // pode só não estar carregada (as picagens vêm por períodos) — nunca adivinhar
       return !!reg.eliminado || reg.estado !== 'pendente';
     }
     return false;
@@ -10003,7 +10015,7 @@ async function dbInsertUsuarioComLimpeza(payload) {
   const eraUsernameDuplicado = /duplicate key|unique constraint|usuarios_app_username_key/i.test(lastDbError || '');
   if (!eraUsernameDuplicado || !sb || !payload.username) return null;
   try {
-    const { data, error } = await sb.from('usuarios_app').select('id, eliminado').eq('username', payload.username).limit(1);
+    const { data, error } = await sb.from(TABLES.usuarios).select('id, eliminado').eq('username', payload.username).limit(1);
     if (error || !data || !data.length) return null;
     const fantasma = sanitizarSupabase(data)[0];
     // Segurança extra: só apaga automaticamente se o registo encontrado já
@@ -16357,6 +16369,7 @@ function abrirModalGaveta(abrirThreadInicial) {
   // Gaveta ou em Pedidos) saem logo de "Pendentes" — a atualização local é
   // imediata (antes do 1º desenho); se alguma gravação falhar, repõe-se.
   reconciliarTarefasGavetaJaDecididas().then(mudou => { if (mudou && overlay.isConnected) render(); });
+  pontoSincronizar({ minIntervaloMs: 0 }).then(mudou => { if (mudou && overlay.isConnected) render(); });
   if (abrirThreadInicial) abrirThread(abrirThreadInicial);
   else render();
 }
@@ -19876,7 +19889,14 @@ function financeiroGerarBriefing() {
   // feriados já usada em toda a app (Horários/Férias/Agendas).
   const diaSemanaUlt = DIAS_SEMANA_PT_NOME[new Date(ultimo.data + 'T12:00:00').getDay()].toLowerCase();
   const feriadoUlt = escalaFeriadoInfo(ultimo.data);
-  const parteDia = [`No último dia registado (${financeiroDataPorExtenso(ultimo.data)}, ${diaSemanaUlt}${feriadoUlt ? ` — feriado: ${feriadoUlt.nome}` : ''}), a faturação foi de ${financeiroFormatarEuro(ultimo.valor, 2)}`];
+  // Referência ao dia (2026-09-25, Hugo: "não gosto daquele 'nesse dia' porque é inconclusivo, preferia que
+  // dissesse ontem ou anteontem"): Hoje / Ontem / Anteontem quando se aplica; senão, a data por extenso.
+  const diasAtrasUlt = Math.round((new Date(todayISO() + 'T12:00:00') - new Date(ultimo.data + 'T12:00:00')) / 86400000);
+  const quandoUlt = diasAtrasUlt === 0 ? 'Hoje' : diasAtrasUlt === 1 ? 'Ontem' : diasAtrasUlt === 2 ? 'Anteontem' : null;
+  const detalheUlt = `${financeiroDataPorExtenso(ultimo.data)}, ${diaSemanaUlt}${feriadoUlt ? ` — feriado: ${feriadoUlt.nome}` : ''}`;
+  const parteDia = [quandoUlt
+    ? `${quandoUlt} (${detalheUlt}), a faturação foi de ${financeiroFormatarEuro(ultimo.valor, 2)}`
+    : `A ${detalheUlt} — o último dia registado —, a faturação foi de ${financeiroFormatarEuro(ultimo.valor, 2)}`];
   const comparativosDia = [];
   if (compDiaAnt.pct !== null) comparativosDia.push([financeiroSpanVariacao(compDiaAnt.pct), ' do dia anterior']);
   if (compSemanaAnt.pct !== null) comparativosDia.push([financeiroSpanVariacao(compSemanaAnt.pct), ' do mesmo dia da semana passada']);
@@ -19888,7 +19908,7 @@ function financeiroGerarBriefing() {
   const atendUlt = financeiroValorDoDia(ultimo.data, 'atendimentos');
   if (atendUlt !== null) {
     const compAtDiaAnt = financeiroComparar(ultimo.data, financeiroDiaAnterior(ultimo.data), 'atendimentos');
-    parteDia.push(`. Nesse dia registaram-se ${financeiroFormatarNumero(atendUlt)} atendimentos`);
+    parteDia.push(quandoUlt ? `. ${quandoUlt} registaram-se ${financeiroFormatarNumero(atendUlt)} atendimentos` : `. Registaram-se ${financeiroFormatarNumero(atendUlt)} atendimentos`);
     if (compAtDiaAnt.pct !== null) { parteDia.push(' ('); parteDia.push(financeiroSpanVariacao(compAtDiaAnt.pct)); parteDia.push(' do dia anterior)'); }
     const ticketUlt = financeiroTicketMedioDoDia(ultimo.data);
     if (ticketUlt !== null) parteDia.push(` — Talão Médio de ${financeiroFormatarEuro(ticketUlt, 2)}`);
@@ -19996,7 +20016,7 @@ function financeiroGerarBriefing() {
     const ritmoDiarioNecessario = metaMesUlt / diasNoMesUlt;
     const diferencaRitmo = ultimo.valor - ritmoDiarioNecessario;
     paragrafos.push([
-      `No último dia registado, precisavas de faturar ${financeiroFormatarEuro(ritmoDiarioNecessario, 2)} para manteres o ritmo do Objetivo Mensal — fizeste ${financeiroFormatarEuro(ultimo.valor, 2)}, `,
+      `${quandoUlt ? quandoUlt : `A ${financeiroDataPorExtenso(ultimo.data)}`} precisavas de faturar ${financeiroFormatarEuro(ritmoDiarioNecessario, 2)} para manteres o ritmo do Objetivo Mensal — fizeste ${financeiroFormatarEuro(ultimo.valor, 2)}, `,
       financeiroSpanValorEuroDirecao(Math.abs(diferencaRitmo), diferencaRitmo >= 0),
       ' do necessário.',
     ]);
@@ -20581,11 +20601,16 @@ function buildFinanceiroLinhaMultiAnoChart(series, alturaPx, formatarValor, form
   series.forEach(s => {
     const pontosValidos = s.pontos.filter(p => p.valor !== null && p.valor !== undefined && p.valor > 0);
     if (pontosValidos.length < 2) return;
-    svg.appendChild(svgEl('path', { d: caminhoSuave(pontosValidos), fill: 'none', stroke: s.cor, 'stroke-width': 2.4, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+    // Ano atual mais grosso e por cima; ano anterior normal; anos mais antigos finos e mais claros (2026-09-25).
+    const dist = s.distancia === undefined ? 0 : s.distancia;
+    const larguraLinha = dist === 0 ? 3.2 : (dist === 1 ? 2.3 : 1.7);
+    const opacidadeLinha = dist === 0 ? 1 : (dist === 1 ? 0.9 : 0.62);
+    svg.appendChild(svgEl('path', { d: caminhoSuave(pontosValidos), fill: 'none', stroke: s.cor, 'stroke-width': larguraLinha, 'stroke-opacity': opacidadeLinha, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
   });
   series.forEach(s => {
     s.pontos.filter(p => p.valor !== null && p.valor !== undefined && p.valor > 0).forEach(p => {
-      const c = svgEl('circle', { cx: x(p.mes).toFixed(1), cy: y(p.valor).toFixed(1), r: 3.5, fill: s.cor, stroke: '#fff', 'stroke-width': 1.5, style: 'cursor:pointer;' });
+      const distP = s.distancia === undefined ? 0 : s.distancia;
+      const c = svgEl('circle', { cx: x(p.mes).toFixed(1), cy: y(p.valor).toFixed(1), r: distP === 0 ? 4.2 : (distP === 1 ? 3.4 : 2.8), fill: s.cor, 'fill-opacity': distP >= 2 ? 0.75 : 1, stroke: '#fff', 'stroke-width': 1.5, style: 'cursor:pointer;' });
       c.addEventListener('mouseenter', () => mostrarTooltipFlutuante(c, `${MESES_PT_NOMES[p.mes - 1]} ${s.ano}\n${formatarValor(p.valor)}`));
       c.addEventListener('mouseleave', esconderTooltipFlutuante);
       svg.appendChild(c);
@@ -20738,16 +20763,24 @@ function financeiroCorPorAnoIndice(idxDoFim, totalAnos) {
   const hue = 217 - t * 217;
   return `hsl(${hue.toFixed(0)}, 75%, 46%)`;
 }
+// Cor FIXA de cada ano (2026-09-25, Hugo: "melhora os gráficos e a uniformidade das cores para os diferentes
+// anos"): antes a cor dependia de quantos anos estavam no gráfico (com "2 anos" o 2025 saía vermelho, com
+// "Todos os anos" saía verde-água). Agora depende só da distância ao ano atual — o mesmo ano tem sempre a
+// mesma cor, em qualquer vista, métrica ou no Relatório PDF. Ano atual: azul forte e em destaque.
+const FINANCEIRO_CORES_ANOS = ['#1d4ed8', '#0d9488', '#9333ea', '#d97706', '#db2777', '#64748b', '#94a3b8'];
+function financeiroCorDoAno(ano) {
+  const distancia = Math.max(0, new Date().getFullYear() - Number(ano));
+  return FINANCEIRO_CORES_ANOS[Math.min(distancia, FINANCEIRO_CORES_ANOS.length - 1)];
+}
 function financeiroConstruirSeriesAnos(anos, campo) {
   return anos.map((ano) => {
-    const idx = anos.length - 1 - anos.indexOf(ano); // 0 = mais recente
-    const cor = financeiroCorPorAnoIndice(idx, anos.length);
+    const cor = financeiroCorDoAno(ano);
     const pontos = MESES_PT_NOMES.map((_, i) => {
       const mes = i + 1;
       const v = financeiroValorMesPorMetrica(ano, mes, campo);
       return { mes, valor: v || null };
     });
-    return { ano, cor, pontos };
+    return { ano, cor, pontos, distancia: Math.max(0, new Date().getFullYear() - Number(ano)) };
   });
 }
 function buildFinanceiroEvolucaoCard() {
@@ -20789,7 +20822,7 @@ function buildFinanceiroEvolucaoCard() {
     faturacaoBtn.classList.toggle('active', metrica === 'faturacao');
     atendimentosBtn.classList.toggle('active', metrica === 'atendimentos');
     ticketMedioBtn.classList.toggle('active', metrica === 'ticketMedio');
-    const series = construirSeries(metrica);
+    const series = construirSeries(metrica).slice().sort((x, y) => Number(x.ano) - Number(y.ano));
     const temAlgumDado = series.some(s => s.pontos.some(p => p.valor !== null));
     const formatarValor = metrica === 'atendimentos' ? financeiroFormatarNumero : ((v) => financeiroFormatarEuro(v, 2));
     // Rótulos do eixo: sem casas decimais, mesmo em € — arredondado a
@@ -20808,7 +20841,7 @@ function buildFinanceiroEvolucaoCard() {
           h('p', {}, metrica === 'atendimentos' ? 'Regista pelo menos um dia de Atendimentos — as linhas aparecem aqui automaticamente.' : metrica === 'ticketMedio' ? 'Regista Faturação e Atendimentos do mesmo dia — as linhas aparecem aqui automaticamente.' : 'Regista pelo menos um dia de Faturação — as linhas aparecem aqui automaticamente.'),
         ]));
     corpo.appendChild(h('div', { style: 'display:flex;gap:16px;margin-top:10px;flex-wrap:wrap;font-size:11px;color:var(--pharm-500);' },
-      series.map(s => h('span', {}, [h('span', { style: `display:inline-block;width:9px;height:9px;background:${s.cor};border-radius:2px;margin-right:5px;` }), String(s.ano)]))
+      series.map(s => h('span', { style: `display:inline-flex;align-items:center;${s.distancia === 0 ? 'font-weight:700;color:var(--pharm-900);' : ''}` }, [h('span', { style: `display:inline-block;width:16px;height:${s.distancia === 0 ? 4 : (s.distancia === 1 ? 3 : 2)}px;background:${s.cor};border-radius:2px;margin-right:6px;opacity:${s.distancia >= 2 ? 0.7 : 1};` }), String(s.ano)]))
     ));
     const comentario = temAlgumDado ? financeiroComentarioEvolucaoAnos(anosSelecionados(), metrica) : null;
     const padraoSazonal = temAlgumDado ? financeiroPadraoSazonalAnos(anosSelecionados(), metrica) : null;
@@ -27453,7 +27486,7 @@ function isAdminFundador(u) { return !!u && u.username === ADMIN_FUNDADOR_USERNA
 ================================================================= */
 async function gerarBackupCompleto() {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível.'; return null; }
-  const chaves = Object.keys(TABLES);
+  const chaves = Object.keys(TABLES).filter(k => k !== 'pontoRegistos'); // picagens: só pelas funções seguras
   const pedidosExtra = [
     ['mensagemDia', 'mensagem_dia'],
     ['eventosMarcacoes', 'eventos_marcacoes'],
@@ -27704,7 +27737,7 @@ function buildDefinicoesPage(container, goTo) {
       // pedido explícito 2026-09-08. Para os restantes, nem aparecem no
       // formulário (ver usuarioFormSchema), por isso nem faz sentido
       // andar a copiá-los para o draft.
-      : { primeiroNome, apelido, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', prestadorKey: u.prestadorKey || '', ativo: u.ativo !== false, incluirHorarios: u.incluirHorarios === true, estatutoColaborador: u.estatutoColaborador || '', dataNascimento: u.dataNascimento || '', ...(isMasterUser() ? { username: u.username || '', pin: u.pin || '' } : {}) };
+      : { primeiroNome, apelido, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', prestadorKey: u.prestadorKey || '', ativo: u.ativo !== false, incluirHorarios: u.incluirHorarios === true, estatutoColaborador: u.estatutoColaborador || '', dataNascimento: u.dataNascimento || '', ...(isMasterUser() ? { username: u.username || '', pin: '' } : {}) };
     formError = '';
     showForm = true;
     rerender();
@@ -27722,7 +27755,8 @@ function buildDefinicoesPage(container, goTo) {
     if (!semCategoriaObrigatoria && !String(d.categoriaProfissional || '').trim()) missing.push('Categoria Profissional');
     if (isNew || editingSelf) {
       if (!String(d.username || '').trim()) missing.push('Username');
-      if (!String(d.pin || '').trim()) missing.push('PIN');
+      // 2026-09-25: o PIN atual já não chega aos aparelhos — ao editar, deixar em branco = manter o PIN atual.
+      if (isNew && !String(d.pin || '').trim()) missing.push('PIN');
     }
     return missing;
   }
@@ -27757,7 +27791,7 @@ function buildDefinicoesPage(container, goTo) {
       return;
     }
     if (!editingId || editingSelf || isMasterUser()) {
-      if (!formatoUsernamePinValido(draft.username) || !formatoUsernamePinValido(draft.pin)) {
+      if (!formatoUsernamePinValido(draft.username) || (String(draft.pin || '').trim() && !formatoUsernamePinValido(draft.pin)) || (!editingId && !formatoUsernamePinValido(draft.pin))) {
         formError = 'O Username e o PIN devem conter apenas números, entre 2 e 4 algarismos.';
         rerender();
         return;
@@ -27788,13 +27822,19 @@ function buildDefinicoesPage(container, goTo) {
     const dataNascimento = draft.dataNascimento || null;
     if (editingId) {
       const payload = editingSelf
-        ? { nomeCompleto, categoriaProfissional, perfilNivel: draft.perfilNivel, prestadorKey, incluirHorarios, estatutoColaborador, dataNascimento, username: draft.username, pin: draft.pin }
+        ? { nomeCompleto, categoriaProfissional, perfilNivel: draft.perfilNivel, prestadorKey, incluirHorarios, estatutoColaborador, dataNascimento, username: draft.username }
         // Username/PIN de outra pessoa: só entram no payload quando quem
         // está a gravar é Hugo/Paulo (isMasterUser) — pedido explícito
         // 2026-09-08. Sem isto, os campos apareciam editáveis no
         // formulário mas a alteração era sempre ignorada ao guardar.
-        : { nomeCompleto, categoriaProfissional, perfilNivel: draft.perfilNivel, prestadorKey, incluirHorarios, estatutoColaborador, dataNascimento, ativo: draft.ativo !== false, ...(isMasterUser() ? { username: draft.username, pin: draft.pin } : {}) };
+        : { nomeCompleto, categoriaProfissional, perfilNivel: draft.perfilNivel, prestadorKey, incluirHorarios, estatutoColaborador, dataNascimento, ativo: draft.ativo !== false, ...(isMasterUser() ? { username: draft.username } : {}) };
       const updated = await dbUpdate('usuarios', editingId, payload);
+      // PIN novo (se foi escrito): gravado pela função segura, nunca pela tabela.
+      if (updated && String(draft.pin || '').trim() && (editingSelf || isMasterUser())) {
+        const pinOk = await definirPinNoServidor(editingId, String(draft.pin).trim());
+        if (!pinOk) formError = `Os dados foram guardados, mas o PIN não foi alterado. ${lastDbError || ''}`.trim();
+        else if (editingSelf) { activeUserPin = String(draft.pin).trim(); atualizarPinDaBiometriaGuardada(activeUser, activeUserPin); }
+      }
       if (updated) {
         STATE.usuarios = STATE.usuarios.map(u => u.id === editingId ? updated : u);
         if (editingSelf) {
@@ -27803,9 +27843,13 @@ function buildDefinicoesPage(container, goTo) {
         }
       } else formError = `Não foi possível guardar as alterações. ${lastDbError || 'Verifica a ligação e tenta novamente.'}`;
     } else {
-      const payload = { nomeCompleto, categoriaProfissional, perfilNivel: draft.perfilNivel, prestadorKey, incluirHorarios, estatutoColaborador, dataNascimento, username: draft.username, pin: draft.pin, ativo: true };
+      const payload = { nomeCompleto, categoriaProfissional, perfilNivel: draft.perfilNivel, prestadorKey, incluirHorarios, estatutoColaborador, dataNascimento, username: draft.username, ativo: true };
       const created = await dbInsertUsuarioComLimpeza(payload);
-      if (created) STATE.usuarios = [created, ...STATE.usuarios];
+      if (created) {
+        STATE.usuarios = [created, ...STATE.usuarios];
+        const pinOk = await definirPinNoServidor(created.id, String(draft.pin).trim());
+        if (!pinOk) formError = `O utilizador foi criado, mas o PIN não ficou definido — abre "Editar" e grava o PIN outra vez. ${lastDbError || ''}`.trim();
+      }
       else formError = `Não foi possível criar o utilizador. ${lastDbError || 'Verifica a ligação e tenta novamente.'}`;
     }
     saving = false;
@@ -27916,7 +27960,8 @@ function buildDefinicoesPage(container, goTo) {
         // vezes é preciso mudar"). Continua sempre visível ao criar um
         // utilizador novo e ao editar o próprio, como já era.
         { name: 'username', label: 'Username (2 a 4 números)', type: 'text', maxLength: 4, inputmode: 'numeric', pattern: '[0-9]{2,4}', digitsOnly: true, placeholder: 'Ex: 123', size: 'xs' },
-        { name: 'pin', label: 'PIN (2 a 4 números)', type: 'text', maxLength: 4, inputmode: 'numeric', pattern: '[0-9]{2,4}', digitsOnly: true, placeholder: 'Ex: 1234', size: 'xs' },
+        // 2026-09-25: o PIN atual nunca chega aos aparelhos — ao editar, o campo vem vazio (em branco = manter).
+        { name: 'pin', label: editingId ? 'PIN novo (em branco = manter o atual)' : 'PIN (2 a 4 números)', type: 'text', maxLength: 4, inputmode: 'numeric', pattern: '[0-9]{2,4}', digitsOnly: true, placeholder: editingId ? '••••' : 'Ex: 1234', size: 'xs' },
       );
     }
     return base;
@@ -34179,6 +34224,8 @@ function escalaShowErro(acao) {
 // preciso persistir o separador para lá da visita atual.
 let horariosContextoMemorizado = { activeTab: 'pessoal', semanaSelecionadaData: null, viewModeGerador: 'vertical', viewModeEquipa: 'vertical', viewModePessoal: 'semana', mesPessoalData: null, colaboradorValidacaoId: null, mesValidacaoData: null };
 function buildHorariosPage(container, goTo) {
+  // Picagens de ponto (vêm por função segura, não por tempo real): ao abrir Horários pede só o que mudou.
+  pontoSincronizar().then(mudou => { if (mudou) renderOuAdiarSeOcupado(); });
   // Reset a cada entrada no módulo (ver comentário acima) — nunca
   // reaproveita o que ficou de uma visita anterior nesta sessão.
   horariosContextoMemorizado = { activeTab: 'pessoal', semanaSelecionadaData: null, viewModeGerador: 'vertical', viewModeEquipa: 'vertical', viewModePessoal: 'semana', mesPessoalData: null, colaboradorValidacaoId: null, mesValidacaoData: null };
@@ -37544,6 +37591,7 @@ function buildHorariosPage(container, goTo) {
     // 2026-09-25: além de a partir de outubro, as colunas do ponto aparecem em qualquer mês que já tenha picagens
     // (ex: os testes da Direção em setembro) — senão essas picagens não se viam em lado nenhum da Validação.
     const prefixoMesPonto = String(primeiroDiaMes || '').slice(0, 7);
+    if (opts && opts.mostrarPonto) pontoGarantirMes(primeiroDiaMes).then(mudou => { if (mudou) renderOuAdiarSeOcupado(); });
     const mesTemPicagens = (STATE.pontoRegistos || []).some(r => !r.eliminado && String(r.data || '').slice(0, 7) === prefixoMesPonto);
     const mostrarPonto = !!(opts && opts.mostrarPonto) && (primeiroDiaMes >= PONTO_DATA_INICIO || mesTemPicagens);
     const aoIrAnterior = (opts && opts.irMesAnterior) || irMesAnterior;
@@ -50624,7 +50672,7 @@ async function loadAllData() {
     // As 18 tabelas de LAZY_TABLE_KEYS também ficam de fora — carregam-se
     // sozinhas quando o módulo respetivo é aberto (ver
     // garantirTabelasCarregadas/PAGINA_TABELAS_LAZY, 2026-09-03, Egress).
-    const keys = Object.keys(TABLES).filter(k => k !== 'financeiro' && k !== 'objetivosMensais' && !LAZY_TABLE_KEYS.includes(k));
+    const keys = Object.keys(TABLES).filter(k => !TABELAS_SO_VIA_RPC.includes(k) && !LAZY_TABLE_KEYS.includes(k));
     // CRIADO 2026-08-30 (Egress — ver nota completa em
     // lerCacheLocalEstado/dbFetchAllDesde acima): com cache local válida,
     // parte da última cópia conhecida e só pergunta ao Supabase o que
@@ -50670,7 +50718,7 @@ async function loadAllData() {
       return dbFetchChat();
     }
     const [, mensagemDia, mensagensChat, documentosEmitidos, gavetaRecados, notaPessoalRegisto] = await Promise.all([
-      carregarDadosFinanceirosSeAutorizado(),
+      Promise.all([carregarDadosFinanceirosSeAutorizado(), pontoSincronizar({ completo: true })]),
       dbFetchMensagemDia(),
       carregarChat(),
       dbFetchDocumentosEmitidos(),
@@ -50709,6 +50757,66 @@ async function loadAllData() {
 // qualquer linha a quem não tiver sessão válida e perfil autorizado (nunca
 // Estafeta, Prestador de Serviço, ou Farmácia Boa Nova — ver RLS no
 // Supabase). Sem sessão (ou com um perfil sem acesso), fica sempre vazio.
+// ---- Picagens de ponto: carregadas pela função segura rpc_ponto_listar (2026-09-25) ----
+// Cada pessoa só recebe as suas picagens; a Direção recebe as de todos. Primeiro carrega os últimos ~2 meses;
+// depois só pede o que mudou (atualizado_desde) — Egress mínimo. Meses mais antigos (Validação de Horários)
+// são pedidos à parte, só quando alguém os abre (pontoGarantirMes).
+let PONTO_SYNC_MARCA = null;          // maior updated_at já recebido
+let PONTO_SYNC_ULTIMA_EM = 0;
+let PONTO_SYNC_EM_CURSO = null;
+let PONTO_CARREGADO_DESDE = null;     // 'AAAA-MM-DD' — início do período já carregado
+const PONTO_MESES_CARREGADOS = new Set();
+function pontoFundirRegistos(linhas) {
+  const novos = sanitizarSupabase((linhas || []).map(rowToRecord));
+  if (!novos.length) return 0;
+  const porId = new Map((STATE.pontoRegistos || []).map(r => [String(r.id), r]));
+  novos.forEach(r => {
+    porId.set(String(r.id), Object.assign({}, porId.get(String(r.id)) || {}, r));
+    if (r.updatedAt && (!PONTO_SYNC_MARCA || r.updatedAt > PONTO_SYNC_MARCA)) PONTO_SYNC_MARCA = r.updatedAt;
+  });
+  STATE.pontoRegistos = [...porId.values()];
+  return novos.length;
+}
+function pontoLimparMemoria() {
+  STATE.pontoRegistos = []; PONTO_SYNC_MARCA = null; PONTO_SYNC_ULTIMA_EM = 0; PONTO_CARREGADO_DESDE = null; PONTO_MESES_CARREGADOS.clear();
+}
+async function pontoSincronizar(opts) {
+  opts = opts || {};
+  if (!sb || !activeUser || !activeUserPin) { if (!activeUser) pontoLimparMemoria(); return false; }
+  if (!opts.completo && Date.now() - PONTO_SYNC_ULTIMA_EM < (opts.minIntervaloMs !== undefined ? opts.minIntervaloMs : 20000)) return false;
+  if (PONTO_SYNC_EM_CURSO) return PONTO_SYNC_EM_CURSO;
+  PONTO_SYNC_EM_CURSO = (async () => {
+    try {
+      let params;
+      if (opts.completo || !PONTO_SYNC_MARCA) {
+        const inicio = new Date(); inicio.setDate(inicio.getDate() - 62);
+        const inicioISO = dateToISO(inicio);
+        params = { p_data_inicio: inicioISO, p_data_fim: null, p_atualizado_desde: null };
+        pontoLimparMemoria();
+        PONTO_CARREGADO_DESDE = inicioISO;
+      } else {
+        params = { p_data_inicio: null, p_data_fim: null, p_atualizado_desde: PONTO_SYNC_MARCA };
+      }
+      const res = await pontoChamarRpc('rpc_ponto_listar', params);
+      PONTO_SYNC_ULTIMA_EM = Date.now();
+      if (!res) return false;
+      return pontoFundirRegistos(res.registos) > 0;
+    } finally { PONTO_SYNC_EM_CURSO = null; }
+  })();
+  return PONTO_SYNC_EM_CURSO;
+}
+// Validação de Horários: garante que um mês mais antigo que o período já carregado também está em memória.
+async function pontoGarantirMes(primeiroDiaMesISO) {
+  if (!activeUser || !activeUserPin || !primeiroDiaMesISO) return false;
+  const prefixo = String(primeiroDiaMesISO).slice(0, 7);
+  if (PONTO_MESES_CARREGADOS.has(prefixo)) return false;
+  if (PONTO_CARREGADO_DESDE && `${prefixo}-01` >= PONTO_CARREGADO_DESDE.slice(0, 7) + '-01' && prefixo !== PONTO_CARREGADO_DESDE.slice(0, 7)) return false;
+  PONTO_MESES_CARREGADOS.add(prefixo);
+  const fim = new Date(`${prefixo}-01T12:00:00`); fim.setMonth(fim.getMonth() + 1); fim.setDate(0);
+  const res = await pontoChamarRpc('rpc_ponto_listar', { p_data_inicio: `${prefixo}-01`, p_data_fim: dateToISO(fim), p_atualizado_desde: null });
+  if (!res) { PONTO_MESES_CARREGADOS.delete(prefixo); return false; }
+  return pontoFundirRegistos(res.registos) > 0;
+}
 async function carregarDadosFinanceirosSeAutorizado() {
   if (!sb || !podeVerFinanceiro() || !activeUserPin) { STATE.financeiro = []; STATE.objetivosMensais = []; return; }
   try {
@@ -50981,7 +51089,7 @@ function setupRealtime() {
   // As tabelas LAZY (ver LAZY_TABLE_KEYS) também ficam de fora aqui —
   // só são subscritas quando o módulo respetivo é mesmo aberto (ver
   // garantirTabelasCarregadas), nunca logo ao iniciar sessão.
-  Object.keys(TABLES).filter(k => k !== 'financeiro' && k !== 'objetivosMensais' && !LAZY_TABLE_KEYS.includes(k)).forEach(subscreverTabelaRealtime);
+  Object.keys(TABLES).filter(k => !TABELAS_SO_VIA_RPC.includes(k) && !LAZY_TABLE_KEYS.includes(k)).forEach(subscreverTabelaRealtime);
   sb.channel('realtime-mensagens_chat')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_chat' }, async (payload) => {
       const aplicado = aplicarPayloadRealtimeAoStateOrdenadoPorData('mensagensChat', payload, true);
@@ -52009,33 +52117,55 @@ function valorUltimaAtualizacao() {
 // Administrador fundador — gravado diretamente no código, para nunca ficar
 // sem acesso à app, mesmo que o registo respetivo na base de dados seja
 // apagado, corrompido, ou a ligação à Supabase esteja em baixo.
+// SEGURANÇA (2026-09-25): a chave de emergência que estava escrita aqui ficava visível a qualquer pessoa que
+// abrisse o código da página (é pública no GitHub Pages) — foi retirada. O login é sempre verificado no
+// servidor (rpc_login); este objeto fica só como referência de nome/perfil em código antigo.
 const ADMIN_FUNDADOR = {
   id: 'admin-fundador-99',
   username: '99',
-  pin: 'Juncal#Admin2026!',
   nomeCompleto: 'Hugo Cunha',
   categoriaProfissional: 'Diretor Técnico Adjunto',
   perfilNivel: 'Administrador',
 };
-function findUsuario(username, pin) {
-  const uname = String(username || '').trim().toLowerCase();
-  const p = String(pin || '').trim();
-  if (!uname || !p) return null;
-  // O registo REAL da base de dados tem sempre prioridade: só tem um "id"
-  // válido (gravável em qualquer coluna com chave estrangeira, como
-  // remetente_id/destinatario_id da Gaveta de Recados) o registo que veio
-  // mesmo do Supabase. O ADMIN_FUNDADOR sintético (id: 'admin-fundador-99',
-  // uma string que NÃO existe em usuarios_app) é só uma rede de segurança
-  // para o caso desse registo estar apagado/corrompido ou a app estar sem
-  // ligação — nunca deve ser usado por defeito quando o registo real já
-  // existe e está acessível, sob pena de qualquer escrita que dependa do
-  // ID do utilizador (como enviar um recado) falhar sempre.
-  const real = (STATE.usuarios || []).find(u =>
-    String(u.username || '').trim().toLowerCase() === uname && String(u.pin || '') === p && u.ativo !== false
-  );
-  if (real) return real;
-  if (uname === ADMIN_FUNDADOR.username && p === ADMIN_FUNDADOR.pin) return ADMIN_FUNDADOR;
-  return null;
+// Login verificado no SERVIDOR (2026-09-25): os PINs deixaram de chegar aos aparelhos. Devolve
+// { u, erro } — u é o registo do utilizador (sem PIN), já no formato da app.
+// Define/altera o PIN de um utilizador pela função segura (o próprio, ou um Administrador para outra pessoa).
+async function definirPinNoServidor(usuarioId, novoPin) {
+  if (!sb || !activeUser || !activeUserPin) { lastDbError = 'Sessão inválida — volta a iniciar sessão.'; return false; }
+  try {
+    const { data, error } = await comTimeoutSupabase(sb.rpc('rpc_utilizador_definir_pin', { p_username: activeUser.username, p_pin: activeUserPin, p_usuario_id: Number(usuarioId), p_novo_pin: novoPin }), 20000);
+    if (error) { lastDbError = error.message; return false; }
+    if (!data || data.ok === false) { lastDbError = (data && data.erro) || 'Não foi possível alterar o PIN.'; return false; }
+    return true;
+  } catch (e) { lastDbError = 'Sem ligação ao servidor.'; return false; }
+}
+async function loginNoServidor(username, pin) {
+  if (!sb) return { u: null, erro: 'Sem ligação ao servidor — verifica a internet e tenta outra vez.' };
+  try {
+    const { data, error } = await comTimeoutSupabase(sb.rpc('rpc_login', { p_username: String(username || '').trim(), p_pin: String(pin || '').trim() }), 20000);
+    if (error) {
+      if (erroDeRede(error)) marcarConexao(false);
+      // Transição segura: SQL de segurança ainda não corrido -> rpc_login não existe e a lista de utilizadores
+      // ainda vem da tabela antiga (com PIN) — verifica como antes, para ninguém ficar sem login entretanto.
+      if (/Could not find the function|does not exist/i.test(error.message || '')) {
+        const uname = String(username || '').trim().toLowerCase(), p = String(pin || '').trim();
+        const antigo = (STATE.usuarios || []).find(x => x.pin !== undefined && String(x.username || '').trim().toLowerCase() === uname && String(x.pin || '') === p && x.ativo !== false && !x.eliminado);
+        if (antigo) return { u: antigo, erro: null };
+        return { u: null, erro: 'Username ou PIN incorretos.' };
+      }
+      return { u: null, erro: 'Sem ligação ao servidor — verifica a internet e tenta outra vez.' };
+    }
+    if (!data || data.ok === false) return { u: null, erro: (data && data.erro) || 'Username ou PIN incorretos.' };
+    const u = sanitizarSupabase([rowToRecord(data.utilizador)])[0];
+    // Mantém a lista de utilizadores em memória a par (sem PIN).
+    STATE.usuarios = (STATE.usuarios || []).some(x => String(x.id) === String(u.id))
+      ? STATE.usuarios.map(x => String(x.id) === String(u.id) ? Object.assign({}, x, u) : x)
+      : [u, ...(STATE.usuarios || [])];
+    return { u, erro: null };
+  } catch (e) {
+    if (erroDeRede(e)) marcarConexao(false);
+    return { u: null, erro: 'Sem ligação ao servidor — verifica a internet e tenta outra vez.' };
+  }
 }
 
 // Constrói o botão/badge do utilizador consoante o estado atual — chamado
@@ -52173,6 +52303,13 @@ function getCredencialBiometrica() {
     return bruto ? JSON.parse(bruto) : null;
   } catch (e) { return null; }
 }
+// Depois de um login normal: se este aparelho tem a biometria da mesma pessoa registada, guarda (ou atualiza)
+// o PIN junto dela — assim a biometria volta a funcionar sem ser preciso registá-la outra vez.
+function atualizarPinDaBiometriaGuardada(u, pin) {
+  const guardada = getCredencialBiometrica();
+  if (!guardada || !u || String(guardada.userId) !== String(u.id) || !pin) return;
+  try { window.localStorage.setItem(WEBAUTHN_KEY, JSON.stringify(Object.assign({}, guardada, { pin }))); } catch (e) { /* ignora */ }
+}
 function limparCredencialBiometrica() {
   try { window.localStorage.removeItem(WEBAUTHN_KEY); } catch (e) { /* ignora */ }
 }
@@ -52196,9 +52333,12 @@ async function registarBiometriaNesteDispositivo(user) {
       },
     });
     if (!credential) return false;
+    // 2026-09-25: o PIN (necessário para as funções seguras — ponto, Financeiro) fica guardado SÓ neste aparelho,
+    // junto da passkey; já não vem da lista de utilizadores do servidor.
     window.localStorage.setItem(WEBAUTHN_KEY, JSON.stringify({
       credentialId: bytesParaBase64url(credential.rawId),
       userId: String(user.id), username: user.username, nomeCompleto: user.nomeCompleto || user.username,
+      pin: activeUserPin || null,
     }));
     return true;
   } catch (e) { console.warn('[WebAuthn] não foi possível registar a biometria:', e && e.message); return false; }
@@ -52219,14 +52359,17 @@ async function tentarLoginBiometrico() {
       },
     });
     if (!assertion) return null;
-    // Confirma que a conta ainda existe e não foi entretanto eliminada —
-    // a passkey só destranca, quem decide se a conta é válida é sempre a
-    // mesma tabela usuarios_app de sempre.
-    const u = (STATE.usuarios || []).find(x => String(x.id) === String(guardada.userId) && x.username === guardada.username);
-    if (u) return u;
-    if (guardada.username === ADMIN_FUNDADOR.username) return ADMIN_FUNDADOR;
-    limparCredencialBiometrica();
-    return null;
+    // 2026-09-25: a passkey só destranca — quem confirma que a conta existe, está ativa e que o PIN guardado
+    // neste aparelho continua certo é sempre o servidor (rpc_login).
+    if (!guardada.pin) return { u: null, erro: 'Entra uma vez com o Username e o PIN — a biometria volta logo a funcionar neste aparelho.' };
+    const { u, erro } = await loginNoServidor(guardada.username, guardada.pin);
+    if (u) return { u, pin: guardada.pin };
+    if (/incorretos/i.test(erro || '')) {
+      // O PIN mudou entretanto: deixa de o guardar (a passkey continua registada).
+      try { window.localStorage.setItem(WEBAUTHN_KEY, JSON.stringify(Object.assign({}, guardada, { pin: null }))); } catch (e) { /* ignora */ }
+      return { u: null, erro: 'O teu PIN mudou — entra uma vez com o Username e o PIN novo.' };
+    }
+    return { u: null, erro };
   } catch (e) { console.warn('[WebAuthn] autenticação biométrica cancelada/falhou:', e && e.message); return null; }
 }
 
@@ -52277,8 +52420,14 @@ function showUserLoginScreen(onSuccess, opts) {
   // filtrar/restringir a dígitos como o do username: aceita texto livre, e
   // é a validação em tryLogin() que decide se o que foi escrito é um PIN
   // numérico válido OU exatamente a chave da conta de emergência.
-  const pinInput = h('input', { class: 'login-input login-input-compact', type: 'password', maxlength: '40', placeholder: 'PIN', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', style: 'margin-top:10px;' });
-  pinInput.addEventListener('input', () => { credenciais.pinReal = pinInput.value; });
+  // 2026-09-25 (Hugo: "nos PCs da farmácia não quero que dados de acesso fiquem guardados"): o PIN deixa de
+  // ser um campo "password" — é esse tipo de campo que faz o Safari/Chrome/Edge oferecer-se para guardar a
+  // palavra-passe. Fica um campo de texto com os caracteres escondidos por CSS (igual ao Username).
+  const pinInput = h('input', { class: 'login-input login-input-masked login-input-compact', type: 'text', inputmode: 'numeric', 'data-lpignore': 'true', 'data-1p-ignore': 'true', 'data-form-type': 'other', pattern: '[0-9]{2,4}', maxlength: '4', placeholder: 'PIN', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', style: 'margin-top:10px;' });
+  pinInput.addEventListener('input', () => { const v = pinInput.value.replace(/\D/g, ''); if (v !== pinInput.value) pinInput.value = v; credenciais.pinReal = v; });
+  // Computador (desktop/MacBook): nunca fica nada de acesso guardado — se alguma vez tiver ficado registada
+  // uma biometria/passkey neste aparelho (versões antigas), é apagada aqui (2026-09-25).
+  if (!ehDispositivoMobileOuTablet()) limparCredencialBiometrica();
 
   const errorMsg = h('p', { class: 'login-error' }, '');
 
@@ -52297,9 +52446,9 @@ function showUserLoginScreen(onSuccess, opts) {
     }, { confirmLabel: 'Ativar' });
   }
 
-  async function concluirLogin(u, preservarEcra) {
+  async function concluirLogin(u, preservarEcra, pinUsado) {
     activeUser = { id: u.id, username: u.username, nomeCompleto: u.nomeCompleto || u.username, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', fundoAppId: u.fundoAppId || '', prestadorKey: u.prestadorKey || '', estatutoColaborador: u.estatutoColaborador || '' };
-    activeUserPin = u.pin || null;
+    activeUserPin = pinUsado || null; // 2026-09-25: o PIN já não vem da lista de utilizadores (fica só em memória)
     aplicarFundoAppDoUtilizador(activeUser);
     // Herdar do modo convidado o que já tinha sido lido antes do login —
     // evita que o badge reconte mensagens já vistas no ecrã anterior.
@@ -52351,23 +52500,30 @@ function showUserLoginScreen(onSuccess, opts) {
     atualizarIndicadorDadosAtualizados();
     atualizarIndicadoresChat();
   }
+  let loginEmCurso = false;
   async function tryLogin() {
+    if (loginEmCurso) return;
     const pareceNumerico = /^[0-9]{2,4}$/.test(credenciais.usernameReal) && /^[0-9]{2,4}$/.test(credenciais.pinReal);
-    const podeSerContaEmergencia = credenciais.usernameReal === ADMIN_FUNDADOR.username;
-    if (!pareceNumerico && !podeSerContaEmergencia) {
+    if (!pareceNumerico) {
       errorMsg.textContent = 'O Username e o PIN devem conter entre 2 e 4 números.';
       return;
     }
     // Nunca lemos userInput.value / pinInput.value diretamente aqui —
     // usamos sempre os valores reais guardados no objeto de estado.
-    const u = findUsuario(credenciais.usernameReal, credenciais.pinReal);
+    loginEmCurso = true;
+    errorMsg.textContent = 'A verificar…';
+    const pinUsado = credenciais.pinReal;
+    const { u, erro } = await loginNoServidor(credenciais.usernameReal, pinUsado);
+    loginEmCurso = false;
     if (u) {
-      await concluirLogin(u, preservarEcra);
+      errorMsg.textContent = '';
+      atualizarPinDaBiometriaGuardada(u, pinUsado);
+      await concluirLogin(u, preservarEcra, pinUsado);
       // Oferece a biometria só DEPOIS do modal já ter fechado — não atrasa
       // o login em si.
       ofereceAtivarBiometriaSeAplicavel(u);
     } else {
-      errorMsg.textContent = 'Username ou PIN incorretos.';
+      errorMsg.textContent = erro || 'Username ou PIN incorretos.';
       credenciais.pinReal = '';
       pinInput.value = '';
       pinInput.focus();
@@ -52375,9 +52531,10 @@ function showUserLoginScreen(onSuccess, opts) {
   }
   async function tryLoginBiometrico() {
     errorMsg.textContent = '';
-    const u = await tentarLoginBiometrico();
-    if (u) concluirLogin(u, preservarEcra);
-    else errorMsg.textContent = 'Não foi possível autenticar por biometria. Use o Username e o PIN.';
+    errorMsg.textContent = 'A verificar…';
+    const res = await tentarLoginBiometrico();
+    if (res && res.u) { errorMsg.textContent = ''; concluirLogin(res.u, preservarEcra, res.pin); }
+    else errorMsg.textContent = (res && res.erro) || 'Não foi possível autenticar por biometria. Use o Username e o PIN.';
   }
   userInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') pinInput.focus(); });
   pinInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryLogin(); });
@@ -52604,6 +52761,7 @@ function clearSessionSilently() {
   propagarChatLastReadParaConvidado();
   activeUser = null;
   activeUserPin = null;
+  pontoLimparMemoria(); // 2026-09-25: as picagens de uma pessoa nunca ficam em memória depois de sair
   aplicarFundoAppPadrao(); // sessão terminada (inatividade) — fundo neutro até à próxima pessoa entrar
   STATE.financeiro = [];
   STATE.objetivosMensais = [];
@@ -52631,6 +52789,7 @@ function manualLogout() {
   if (activeUser) propagarChatLastReadParaConvidado();
   activeUser = null;
   activeUserPin = null;
+  pontoLimparMemoria(); // 2026-09-25: as picagens de uma pessoa nunca ficam em memória depois de sair
   aplicarFundoAppPadrao(); // sessão terminada — fundo neutro até à próxima pessoa entrar
   STATE.financeiro = [];
   STATE.objetivosMensais = [];
