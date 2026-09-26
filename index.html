@@ -4407,6 +4407,9 @@
   .turno-relogio-centro-grande{font-size:19px;font-weight:800;fill:var(--pharm-900);font-variant-numeric:tabular-nums;letter-spacing:.01em;}
   .turno-relogio-centro-pequeno{font-size:10.5px;font-weight:600;fill:var(--pharm-500);}
   .turno-relogio-fatia{transition:stroke-width .15s ease;}
+  .turno-relogio-bola-pulso{transform-box:fill-box;transform-origin:center;animation:turno-bola-pulso 1.8s ease-out infinite;}
+  @keyframes turno-bola-pulso{0%{transform:scale(1);opacity:.9;}100%{transform:scale(2.3);opacity:0;}}
+  @media (prefers-reduced-motion: reduce){ .turno-relogio-bola-pulso{animation:none;opacity:0;} }
   .turno-relogio-fatia:hover, .turno-relogio-fatia.realce{stroke-width:8;}
   .turno-relogio-toque{cursor:pointer;}
   .turno-relogio-legenda{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 6px;margin-top:2px;}
@@ -53591,6 +53594,7 @@ function buildLinhaTemporalDiaWidget(opcoes) {
   // Fatias das tarefas
   const legendas = [];
   const toqueDepois = []; // as áreas de toque ficam por cima de tudo (acrescentadas no fim)
+  const bolasTarefas = []; // bola "a decorrer" em cada tarefa (2026-09-26, Hugo) — ver atualizar()
   ordenadas.forEach(t => {
     const anel = Math.min(anelDe.get(t), MAX_ANEIS - 1);
     const info = escalaTarefaInfo(t.tipo);
@@ -53599,6 +53603,7 @@ function buildLinhaTemporalDiaWidget(opcoes) {
     const texto = `${escalaTarefaTextoItem(t)} · ${t.inicio}${t.fim ? ' – ' + t.fim : ''}`;
     const fatia = el('path', { d: arco(R_TAREFA0 + anel * PASSO, angDe(ini) + 0.8, angDe(fim) - 0.8), fill: 'none', stroke: cor, 'stroke-width': '6', 'stroke-linecap': 'butt', class: 'turno-relogio-fatia' });
     svg.appendChild(fatia);
+    bolasTarefas.push({ ini, fim, r: R_TAREFA0 + anel * PASSO, cor });
     // Área de toque invisível e mais larga por cima da fatia (fácil de acertar com o rato ou o dedo).
     const toque = el('path', { d: fatia.getAttribute('d'), fill: 'none', stroke: 'transparent', 'stroke-width': '14', 'pointer-events': 'stroke', class: 'turno-relogio-toque' });
     toqueDepois.push(() => { svg.appendChild(toque); ligarDetalhe(toque, texto, fatia); });
@@ -53617,6 +53622,18 @@ function buildLinhaTemporalDiaWidget(opcoes) {
   // Ponto "agora" + texto central
   const ponto = el('circle', { r: '7', fill: '#fff', stroke: '#12324a', 'stroke-width': '3', class: 'turno-relogio-agora' });
   svg.appendChild(ponto);
+  // Bola "a decorrer" nas tarefas (2026-09-26, Hugo: "colocar ícone bola na tarefa para ver também que está a
+  // decorrer"): enquanto a tarefa decorre, uma bola com a cor da tarefa acompanha a hora atual no anel dela, alinhada
+  // com a bola do turno, e com um anel a pulsar. Não interfere com o toque (pointer-events:none).
+  bolasTarefas.forEach(b => {
+    b.g = el('g', { class: 'turno-relogio-bola-tarefa', 'pointer-events': 'none' });
+    b.g.append(
+      el('circle', { r: '4.5', fill: 'none', stroke: b.cor, 'stroke-width': '1.6', class: 'turno-relogio-bola-pulso' }),
+      el('circle', { r: '4.6', fill: '#fff', stroke: b.cor, 'stroke-width': '2.6' }),
+    );
+    b.g.style.display = 'none';
+    svg.appendChild(b.g);
+  });
   const txtGrande = el('text', { x: cx, y: cy - 2, 'text-anchor': 'middle', class: 'turno-relogio-centro-grande' });
   const txtPequeno = el('text', { x: cx, y: cy + 17, 'text-anchor': 'middle', class: 'turno-relogio-centro-pequeno' });
   svg.append(txtGrande, txtPequeno);
@@ -53634,6 +53651,11 @@ function buildLinhaTemporalDiaWidget(opcoes) {
     const [px, py] = pt(A0 + frac * VARR, R_BASE);
     ponto.setAttribute('cx', px.toFixed(2)); ponto.setAttribute('cy', py.toFixed(2));
     ponto.style.display = dentro ? '' : 'none';
+    bolasTarefas.forEach(b => {
+      const aDecorrer = agora >= b.ini && agora < b.fim;
+      b.g.style.display = aDecorrer ? '' : 'none';
+      if (aDecorrer) { const [bx, by] = pt(A0 + frac * VARR, b.r); b.g.setAttribute('transform', `translate(${bx.toFixed(2)} ${by.toFixed(2)})`); }
+    });
     // nível da água (0 = vazio, 1 = cheio)
     const topo = cy + 54 - frac * 108;
     const ondaPath = (amp, fase) => { let d = `M${cx - 120} ${topo}`; for (let x = cx - 120; x <= cx + 120; x += 20) d += ` Q${x + 5} ${topo - amp * fase} ${x + 10} ${topo} T${x + 20} ${topo}`; return d + ` V${cy + 60} H${cx - 120} Z`; };
