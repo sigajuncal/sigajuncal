@@ -9940,12 +9940,27 @@ async function dbFetchDocumentosEmitidosIncremental() {
   }
   return dbFetchDocumentosEmitidos();
 }
-let FINANCEIRO_ULTIMA_CARGA_EM = 0;
-async function carregarDadosFinanceirosComIntervalo() {
-  // No regresso à app, o Financeiro (lista completa pela função segura) só volta a ser pedido de 10 em 10 minutos.
-  if (EGRESS_ARRANQUE_COMPLETO_FEITO && FINANCEIRO_ULTIMA_CARGA_EM && Date.now() - FINANCEIRO_ULTIMA_CARGA_EM < 10 * 60 * 1000) return;
-  await carregarDadosFinanceirosSeAutorizado();
-  FINANCEIRO_ULTIMA_CARGA_EM = Date.now();
+// Estado da última leitura do Financeiro: quando, para quem, e se correu bem.
+// BUG CORRIGIDO 2026-09-26 (Hugo: "confirma a não apresentação dos dados que estavam aqui guardados, garante que
+// algo assim não acontece nunca"): os dados NUNCA se perderam da base de dados — era só a app que não os voltava a
+// pedir. Ao terminar a sessão (manual ou por inatividade) o Financeiro é apagado da memória, por privacidade; mas a
+// poupança de Egress ("só voltar a pedir de 10 em 10 minutos") olhava só para a HORA da última leitura. Quem voltasse
+// a entrar menos de 10 minutos depois ficava com o Financeiro vazio ("Sem Faturação registada") até à leitura
+// seguinte. Agora a poupança só se aplica quando os dados que estão em memória são mesmo desta pessoa e foram lidos
+// com sucesso; limpar a memória limpa também este registo; e uma falha de leitura nunca aparece como "sem dados".
+const FINANCEIRO_CARGA = { em: 0, utilizadorId: null, ok: false, erro: '' };
+function financeiroLimparMemoria() {
+  STATE.financeiro = []; STATE.objetivosMensais = [];
+  FINANCEIRO_CARGA.em = 0; FINANCEIRO_CARGA.utilizadorId = null; FINANCEIRO_CARGA.ok = false; FINANCEIRO_CARGA.erro = '';
+}
+function financeiroCarregadoParaUtilizadorAtual() {
+  return !!activeUser && FINANCEIRO_CARGA.ok && String(FINANCEIRO_CARGA.utilizadorId) === String(activeUser.id);
+}
+async function carregarDadosFinanceirosComIntervalo(forcar) {
+  // No regresso à app, o Financeiro (lista completa pela função segura) só volta a ser pedido de 10 em 10 minutos —
+  // mas só se o que está em memória for desta pessoa e tiver sido lido com sucesso.
+  if (!forcar && EGRESS_ARRANQUE_COMPLETO_FEITO && financeiroCarregadoParaUtilizadorAtual() && Date.now() - FINANCEIRO_CARGA.em < 10 * 60 * 1000) return true;
+  return carregarDadosFinanceirosSeAutorizado();
 }
 async function dbFetchGavetaRecados() {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível.'; return []; }
@@ -22300,9 +22315,31 @@ function buildFinanceiroPage(container, goTo) {
   }
   function irParaMesAtual() { anoSel = anoAtualReal; mesSel = mesAtualReal; rerender(); }
 
+  // Rede de segurança (2026-09-26): ao abrir o Financeiro sem os dados desta pessoa em memória, pede-os já e
+  // redesenha quando chegarem — nunca fica a mostrar "Sem Faturação registada" por não os ter pedido.
+  let financeiroACarregar = false;
+  function garantirDadosFinanceiros(forcar) {
+    if (financeiroACarregar || (!forcar && financeiroCarregadoParaUtilizadorAtual())) return;
+    financeiroACarregar = true;
+    carregarDadosFinanceirosComIntervalo(true).finally(() => { financeiroACarregar = false; if (container.isConnected) rerender(); });
+  }
   function build() {
     const wrap = h('div', { class: 'animate-in' });
     wrap.appendChild(withBackButton(buildPageHeader('fileDollar', 'Financeiro', 'Faturação (Vendas − Descontos) e Atendimentos diários — registo, pesquisa e comparativos.', undefined), goTo));
+    if (!financeiroCarregadoParaUtilizadorAtual()) {
+      if (!financeiroACarregar && !FINANCEIRO_CARGA.erro) garantirDadosFinanceiros();
+      if (financeiroACarregar) {
+        wrap.appendChild(CarregandoState('A carregar os dados do Financeiro…'));
+        return wrap;
+      }
+      const tentarBtn = h('button', { class: 'btn btn-secondary', style: 'font-size:12.5px;padding:6px 12px;' }, 'Tentar novamente');
+      tentarBtn.addEventListener('click', () => { FINANCEIRO_CARGA.erro = ''; garantirDadosFinanceiros(true); rerender(); });
+      wrap.appendChild(h('div', { class: 'fin-alerta-bar', style: 'background:#fef2f2;border-color:#fecaca;color:#991b1b;' }, [
+        h('div', { class: 'fin-alerta-bar-texto' }, [Icon('alert', { size: 15, strokeWidth: 2.2 }),
+          h('span', {}, `Não foi possível carregar os dados do Financeiro${FINANCEIRO_CARGA.erro ? ` — ${FINANCEIRO_CARGA.erro}` : '.'} Os dados continuam guardados no servidor; o que vês abaixo pode estar incompleto.`)]),
+        tentarBtn,
+      ]));
+    }
 
     // ---- Switch "Com Trocas" / "Sem Trocas" (pedido explícito de Hugo,
     // 2026-08-19, indicação de Paulo: os valores a considerar são "com
@@ -52675,19 +52712,37 @@ async function pontoGarantirMes(primeiroDiaMesISO) {
   return pontoFundirRegistos(res.registos) > 0;
 }
 async function carregarDadosFinanceirosSeAutorizado() {
-  if (!sb || !podeVerFinanceiro() || !activeUserPin) { STATE.financeiro = []; STATE.objetivosMensais = []; return; }
+  if (!sb || !podeVerFinanceiro()) { financeiroLimparMemoria(); return false; }
+  const utilizadorId = activeUser.id;
+  // Mesma pessoa de antes: se a leitura falhar, fica o que já estava em memória (nunca se troca por "vazio").
+  const mesmaPessoa = String(FINANCEIRO_CARGA.utilizadorId) === String(utilizadorId);
+  if (!activeUserPin) {
+    if (!mesmaPessoa) { STATE.financeiro = []; STATE.objetivosMensais = []; }
+    FINANCEIRO_CARGA.ok = false; FINANCEIRO_CARGA.erro = 'Para ver o Financeiro é preciso entrar com o PIN (a sessão foi retomada sem ele).';
+    return false;
+  }
   try {
     const [finRes, objRes] = await Promise.all([
       sb.rpc('rpc_financeiro_listar', { p_username: activeUser.username, p_pin: activeUserPin }),
       sb.rpc('rpc_objetivos_listar', { p_username: activeUser.username, p_pin: activeUserPin }),
     ]);
-    STATE.financeiro = finRes.error ? [] : sanitizarSupabase((finRes.data || []).map(rowToRecord));
-    STATE.objetivosMensais = objRes.error ? [] : sanitizarSupabase((objRes.data || []).map(rowToRecord));
+    if (!activeUser || String(activeUser.id) !== String(utilizadorId)) return false; // a sessão mudou entretanto
     if (finRes.error) console.error('[Supabase] erro ao carregar financeiro:', finRes.error.message);
     if (objRes.error) console.error('[Supabase] erro ao carregar objetivos mensais:', objRes.error.message);
+    if (!finRes.error) STATE.financeiro = sanitizarSupabase((finRes.data || []).map(rowToRecord));
+    else if (!mesmaPessoa) STATE.financeiro = [];
+    if (!objRes.error) STATE.objetivosMensais = sanitizarSupabase((objRes.data || []).map(rowToRecord));
+    else if (!mesmaPessoa) STATE.objetivosMensais = [];
+    FINANCEIRO_CARGA.utilizadorId = utilizadorId;
+    FINANCEIRO_CARGA.ok = !finRes.error && !objRes.error;
+    FINANCEIRO_CARGA.erro = FINANCEIRO_CARGA.ok ? '' : 'O servidor não devolveu os dados do Financeiro.';
+    if (FINANCEIRO_CARGA.ok) FINANCEIRO_CARGA.em = Date.now();
+    return FINANCEIRO_CARGA.ok;
   } catch (e) {
-    STATE.financeiro = []; STATE.objetivosMensais = [];
+    if (!mesmaPessoa) { STATE.financeiro = []; STATE.objetivosMensais = []; }
+    FINANCEIRO_CARGA.ok = false; FINANCEIRO_CARGA.erro = 'Sem ligação ao servidor.';
     console.error('[Supabase] erro de rede ao carregar dados financeiros:', formatarErroSeguro(e));
+    return false;
   }
 }
 
@@ -54987,8 +55042,7 @@ function clearSessionSilently() {
   activeUserPin = null;
   pontoLimparMemoria(); // 2026-09-25: as picagens de uma pessoa nunca ficam em memória depois de sair
   aplicarFundoAppPadrao(); // sessão terminada (inatividade) — fundo neutro até à próxima pessoa entrar
-  STATE.financeiro = [];
-  STATE.objetivosMensais = [];
+  financeiroLimparMemoria(); // privacidade — e obriga a voltar a ler na próxima sessão (ver FINANCEIRO_CARGA)
   pararPresenca();
   // resetIdleRefreshTimer() REMOVIDO 2026-09-03 (Egress) — sem sessão, a app já não tem nenhum polling periódico próprio.
   // Fim de sessão: o slider da Calculadora de Posologia volta ao valor inicial.
@@ -55015,8 +55069,7 @@ function manualLogout() {
   activeUserPin = null;
   pontoLimparMemoria(); // 2026-09-25: as picagens de uma pessoa nunca ficam em memória depois de sair
   aplicarFundoAppPadrao(); // sessão terminada — fundo neutro até à próxima pessoa entrar
-  STATE.financeiro = [];
-  STATE.objetivosMensais = [];
+  financeiroLimparMemoria(); // privacidade — e obriga a voltar a ler na próxima sessão (ver FINANCEIRO_CARGA)
   limparSessaoPersistente();
   pararPresenca();
   // resetIdleRefreshTimer() REMOVIDO 2026-09-03 (Egress) — sem sessão, a app já não tem nenhum polling periódico próprio.
