@@ -17065,7 +17065,16 @@ function buildHomepage(container, goTo) {
       return {
         icon: prestador ? prestador.icon : 'calendar',
         titulo: prestador ? `${prestador.especialidade} · ${prestador.nome}` : 'Agenda',
-        subtitulo: buildBadgeServicoAgenda(m.prestadorKey, aDecorrer, m.data, normalizarHora(m.hora)),
+        // Marcações/vagas do dia, no mesmo formato do Próximo Evento (2026-09-26, Hugo: "nos serviços com agenda
+        // também não faria sentido pôr as marcações e vagas"): marcações ativas / (marcações + vagas livres
+        // estimadas — o mesmo cálculo do calendário, agendaVagasLivresDia).
+        subtitulo: (() => {
+          const c = agendaContagemMarcacoesVagas(m.prestadorKey, m.data);
+          return h('span', {}, [
+            buildBadgeServicoAgenda(m.prestadorKey, aDecorrer, m.data, normalizarHora(m.hora)),
+            c ? h('span', { title: `${c.marcadas} marcaç${c.marcadas === 1 ? 'ão' : 'ões'} · ${c.livres > 0 ? `${c.livres} vaga${c.livres === 1 ? '' : 's'} livre${c.livres === 1 ? '' : 's'} (estimativa)` : 'sem vagas livres'}` }, ` · ${c.marcadas}/${c.total}`) : null,
+          ]);
+        })(),
         aDecorrer,
         onClick: () => document.body.appendChild(buildAgendaDiaModal(m.prestadorKey, m.data, () => {})),
       };
@@ -23667,10 +23676,22 @@ function janelaServicoNoDia(prestadorKey, dateISO) {
 // grelha completa desse prestador que não estão ocupados por nenhuma
 // marcação/bloqueio. É só uma estimativa: consultas mais longas (ex.
 // primeiras consultas) ocupam mais do que 1 slot na prática.
+// Contagem para os cartões da Página Inicial: marcações ativas (com cliente; bloqueios, canceladas e faltas não
+// contam) e total = marcações + vagas livres estimadas desse dia.
+function agendaContagemMarcacoesVagas(prestadorKey, dateISO) {
+  const inativos = ['cancelada', 'cancelado', 'faltou'];
+  const marcadas = (STATE.agendaMarcacoes || []).filter(m => m.prestadorKey === prestadorKey && m.data === dateISO
+    && m.tipoLinha !== 'bloqueado' && String(m.nomeCliente || '').trim() && !inativos.includes(String(m.estado || '').toLowerCase())).length;
+  const livres = agendaVagasLivresDia(prestadorKey, dateISO);
+  const total = marcadas + livres;
+  return total > 0 ? { marcadas, livres, total } : null;
+}
 function agendaVagasLivresDia(prestadorKey, dateISO) {
   const grade = agendaSlotsPara(prestadorKey);
   const ocupados = new Set();
-  (STATE.agendaMarcacoes || []).filter(m => m.prestadorKey === prestadorKey && m.data === dateISO).forEach(m => {
+  // Marcações canceladas / faltas já não ocupam a vaga (2026-09-26).
+  (STATE.agendaMarcacoes || []).filter(m => m.prestadorKey === prestadorKey && m.data === dateISO
+    && !['cancelada', 'cancelado', 'faltou'].includes(String(m.estado || '').toLowerCase())).forEach(m => {
     agendaHorariosOcupados(normalizarHora(m.hora), m.duracaoMin || 15, prestadorKey).forEach(hh => ocupados.add(hh));
   });
   return Math.max(0, grade.length - ocupados.size);
