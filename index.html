@@ -4438,6 +4438,9 @@
   /* Mais baixo (2026-09-26, Hugo: "widget de dia e noite grande"): altura limitada, como os cartões das tarefas. */
   /* Sem moldura branca (2026-09-26, Hugo: "desnecessário o rebordo branco à volta"): só o céu, cantos arredondados. */
   .dianoite-card{flex:0 0 auto;background:none;border:none;padding:0;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(15,40,60,.10);display:block;}
+  .home-top-meio > .dianoite-card{flex:1 1 auto !important;position:relative;}
+  .home-top-meio > .dianoite-card::before{content:'';display:block;padding-top:35.714%;} /* altura mínima = proporção 420×150 */
+  .home-top-meio > .dianoite-card > .dianoite-svg{position:absolute;inset:0;width:100%;height:100%;}
   .dianoite-svg{width:100%;height:auto;display:block;}
   .dianoite-relogio{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;}
   .dianoite-estado{font-size:10px;font-weight:600;}
@@ -8456,7 +8459,9 @@ function marcacoesComAvisoPendenteProximosDias() {
 // sempre que a janela/zoom muda, que o calendário se redesenha (setas, 4↔5
 // meses) ou que o próprio conteúdo muda de tamanho. Desliga-se sozinho quando
 // a Página Inicial sai do ecrã.
+let HOME_ULTIMA_LARGURA_CONTEUDO = 0; // última largura medida — cada redesenho já nasce com ela (sem reajuste visível)
 function sincronizarLarguraHomeComCalendario(wrapHome, calendarioSec) {
+  if (HOME_ULTIMA_LARGURA_CONTEUDO > 200) wrapHome.style.setProperty('--home-largura-conteudo', HOME_ULTIMA_LARGURA_CONTEUDO + 'px');
   if (typeof ResizeObserver === 'undefined' || typeof MutationObserver === 'undefined') return;
   let rafId = 0;
   let ro = null, mo = null;
@@ -8467,7 +8472,7 @@ function sincronizarLarguraHomeComCalendario(wrapHome, calendarioSec) {
     const grupo = calendarioSec.querySelector('.cal-pair');
     if (!grupo) return;
     const largura = Math.round(grupo.getBoundingClientRect().right - wrapHome.getBoundingClientRect().left);
-    if (largura > 200) wrapHome.style.setProperty('--home-largura-conteudo', largura + 'px');
+    if (largura > 200) { wrapHome.style.setProperty('--home-largura-conteudo', largura + 'px'); HOME_ULTIMA_LARGURA_CONTEUDO = largura; }
   };
   const agendar = () => { if (!rafId) rafId = requestAnimationFrame(medir); };
   ro = new ResizeObserver(agendar);
@@ -10836,7 +10841,13 @@ async function dbInsertMarcacoesBulk(rows) {
 // Egress (2026-09-24): antes descarregava as marcações de TODOS os eventos de sempre, a cada desenho da Página
 // Inicial (e uma vez por cada evento do cartão). Agora só pede os eventos que estão mesmo no ecrã (eventoIds),
 // numa única chamada partilhada, e reaproveita o resultado durante 1 minuto.
-const CONTAGENS_MARCACOES_CACHE = new Map(); // chave (ids ordenados) -> { em, promessa }
+const CONTAGENS_MARCACOES_CACHE = new Map(); // chave (ids ordenados) -> { em, promessa, valor }
+// Último valor já recebido (mesmo que com mais de 1 min) — para a Página Inicial nascer logo com as vagas escritas.
+function marcacaoCountsJaConhecidas(eventoIds) {
+  const ids = [...new Set((eventoIds || []).filter(x => x !== null && x !== undefined).map(String))].sort();
+  const g = ids.length ? CONTAGENS_MARCACOES_CACHE.get(ids.join(',')) : null;
+  return g && g.valor ? g.valor : null;
+}
 function dbFetchMarcacaoCounts(eventoIds) {
   const ids = [...new Set((eventoIds || []).filter(x => x !== null && x !== undefined).map(String))].sort();
   if (!ids.length) return Promise.resolve({});
@@ -10844,7 +10855,9 @@ function dbFetchMarcacaoCounts(eventoIds) {
   const guardado = CONTAGENS_MARCACOES_CACHE.get(chave);
   if (guardado && Date.now() - guardado.em < 60000) return guardado.promessa;
   const promessa = dbFetchMarcacaoCountsDoServidor(ids);
-  CONTAGENS_MARCACOES_CACHE.set(chave, { em: Date.now(), promessa });
+  const entrada = { em: Date.now(), promessa, valor: guardado ? guardado.valor : undefined };
+  CONTAGENS_MARCACOES_CACHE.set(chave, entrada);
+  promessa.then(v => { entrada.valor = v; });
   return promessa;
 }
 async function dbFetchMarcacaoCountsDoServidor(ids) {
@@ -15281,7 +15294,7 @@ function buildMensagemDiaBanner(onSaved) {
   // equipa sem chamar a atenção visual do painel. Carregada à parte
   // (assíncrona) e atualizada diretamente no DOM quando chega, sem
   // precisar de voltar a desenhar o resto da Home.
-  const vistoPorEl = h('p', { class: 'msg-dia-visto-por', id: 'msg-dia-visto-por' }, '');
+  const vistoPorEl = h('p', { class: 'msg-dia-visto-por', id: 'msg-dia-visto-por', 'data-volatil': '1' }, '');
   const banner = h('div', { class: 'msg-dia-banner' }, [
     h('p', { class: 'msg-dia-text' + (ativa ? '' : ' placeholder') }, texto),
     ativa ? vistoPorEl : null,
@@ -15423,7 +15436,10 @@ function buildValidadesTickerWidget(goTo) {
   requestAnimationFrame(() => {
     if (!card.isConnected || faixa.scrollHeight <= janela.clientHeight + 2) return;
     lista.forEach(r => { const copia = linha(r); copia.setAttribute('aria-hidden', 'true'); faixa.appendChild(copia); });
-    faixa.style.animationDuration = `${Math.max(12, lista.length * 3)}s`;
+    const duracaoEscoar = Math.max(12, lista.length * 3);
+    faixa.style.animationDuration = `${duracaoEscoar}s`;
+    // Sem recomeçar do início a cada redesenho: a lista continua no ponto do ciclo em que ia.
+    faixa.style.animationDelay = `-${(((typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000) % duracaoEscoar).toFixed(3)}s`;
     faixa.classList.add('escoar-faixa-a-correr');
   });
   return card;
@@ -17007,7 +17023,7 @@ function buildHomepage(container, goTo) {
         horariosAtalhoBtn,
       ]),
       h('p', { class: 'welcome-sub mensagem-motivadora-dashboard' }, activeUser ? mensagemMotivadoraJuncal(activeUser) : 'O teu espaço central de trabalho e gestão na Farmácia Juncal.'),
-      h('p', { class: 'dados-atualizados-indicador', id: 'dados-atualizados-indicador' }, textoDadosAtualizados()),
+      h('p', { class: 'dados-atualizados-indicador', id: 'dados-atualizados-indicador', 'data-volatil': '1' }, textoDadosAtualizados()),
       ultimaNotifWidget,
     ]),
     presencaBadgeHome,
@@ -17087,7 +17103,7 @@ function buildHomepage(container, goTo) {
       };
     }),
   });
-  dbFetchMarcacaoCounts(itensEventoFinal.map(ev => ev.id)).then(counts => { itensEventoFinal.forEach(ev => {
+  const preencherVagasEventos = (counts) => { itensEventoFinal.forEach(ev => {
       const c = counts[ev.id];
       const span = vagasSpans[ev.id];
       if (!c || !(c.total > 0) || !span) return;
@@ -17096,6 +17112,16 @@ function buildHomepage(container, goTo) {
       span.textContent = ` · ${c.marcadas}/${c.total}`;
       span.title = `${c.marcadas} marcaç${c.marcadas === 1 ? 'ão' : 'ões'} · ${c.livres > 0 ? `${c.livres} vaga${c.livres === 1 ? '' : 's'} livre${c.livres === 1 ? '' : 's'}` : 'sem vagas livres'}`;
     });
+  };
+  // Sem piscar (2026-09-26): se as contagens já são conhecidas, a página nasce logo com elas; se chegarem
+  // diferentes do servidor, a página é redesenhada uma vez (a comparação de conteúdo trata do resto).
+  const vagasConhecidas = marcacaoCountsJaConhecidas(itensEventoFinal.map(ev => ev.id));
+  if (vagasConhecidas) preencherVagasEventos(vagasConhecidas);
+  dbFetchMarcacaoCounts(itensEventoFinal.map(ev => ev.id)).then(counts => {
+    if (vagasConhecidas && JSON.stringify(vagasConhecidas) === JSON.stringify(counts)) return;
+    preencherVagasEventos(counts);
+    const algumSpan = Object.values(vagasSpans)[0];
+    if (vagasConhecidas && algumSpan && !algumSpan.isConnected && STATE.page === 'home') renderOuAdiarSeOcupado();
   });
 
   const entregasCounts = entregasPendentesPorFarmacia();
@@ -31416,7 +31442,8 @@ function escalaTarefaPill(dia, agoraMin) {
 function escalaTarefaAtivaAgora(dia, agora) {
   if (!dia || dia.tipo !== 'normal') return false;
   const hhmm = `${pad2(agora.getHours())}:${pad2(agora.getMinutes())}`;
-  return escalaTarefasDoDia(dia).some(t => t.inicio && t.fim && hhmm >= t.inicio && hhmm < t.fim);
+  const agoraMin = escalaMinutosAbsolutos(hhmm, false); // minutos absolutos: tarefa até às "00:00" também conta
+  return escalaTarefasDoDia(dia).some(t => t.inicio && t.fim && agoraMin >= escalaMinutosAbsolutos(t.inicio, false) && agoraMin < escalaMinutosAbsolutos(t.fim, true));
 }
 // Chave de ESCALA_DIAS ('seg'..'dom') correspondente a uma data — mesma
 // convenção (Segunda=0) já usada nos cálculos de semana (getDay()+6)%7.
@@ -31458,7 +31485,11 @@ function escalaTarefasAtivasAgora() {
     // sozinho assim que a hora passa.
     escalaTarefasDoDia(dia).forEach(t => {
       if (t.tipo === 'formacao') return;
-      if (!t.inicio || !t.fim || !(hhmm >= t.inicio && hhmm < t.fim)) return;
+      // Minutos absolutos do turno (2026-09-26): uma tarefa que termina à meia-noite ("00:00") comparava-se como
+      // texto ("19:59" < "00:00" é falso) e nunca aparecia em "Em Curso Agora".
+      if (!t.inicio || !t.fim) return;
+      const agoraMinT = escalaMinutosAbsolutos(hhmm, false);
+      if (!(agoraMinT >= escalaMinutosAbsolutos(t.inicio, false) && agoraMinT < escalaMinutosAbsolutos(t.fim, true))) return;
       ativas.push({
         codigo,
         tarefa: t,
@@ -51586,6 +51617,46 @@ function render() {
 // decorrer em paralelo, é que ficam à espera de uma troca de separador/dia
 // para aparecer, exatamente como todos os outros módulos protegidos.
 const PAGINAS_NUNCA_RECONSTROI_EM_FUNDO = new Set(['horarios', 'vacinacao', 'lembretes']);
+// Impressão digital do conteúdo de uma página acabada de construir: textos, classes, títulos e estilos (só HTML).
+// Nos desenhos SVG contam só as classes e os textos — o resto (posições, arcos) depende da hora e é redesenhado
+// pelo próprio widget. Elementos marcados com data-volatil (contadores ao segundo, "Atualizado há...") ficam de
+// fora; data-assinatura acrescenta o que um desenho mostra sem ser texto (ex.: tarefas no relógio do turno).
+function impressaoDigitalPagina(raiz) {
+  const partes = [];
+  const visitar = (n) => {
+    if (n.nodeType === 3) { const t = n.nodeValue.trim(); if (t) partes.push(t); return; }
+    if (n.nodeType !== 1) return;
+    if (n.hasAttribute('data-volatil')) { partes.push('~'); return; }
+    const ehSvg = typeof SVGElement !== 'undefined' && n instanceof SVGElement;
+    const cls = typeof n.className === 'string' ? n.className : ((n.className && n.className.baseVal) || '');
+    let linha = '<' + n.tagName + '.' + cls;
+    const titulo = n.getAttribute('title'); if (titulo) linha += '|t:' + titulo;
+    if (!ehSvg) { const st = n.getAttribute('style'); if (st) linha += '|s:' + st.replace(/--home-largura-conteudo:[^;]*;?/g, ''); }
+    if (n.dataset && n.dataset.assinatura) linha += '|a:' + n.dataset.assinatura;
+    partes.push(linha);
+    for (const c of n.childNodes) visitar(c);
+  };
+  visitar(raiz);
+  return String(partes.length) + ':' + hashDeterministico(partes.join('\n')) + ':' + partes.join('').length;
+}
+// Animações que continuam onde iam depois de um redesenho (em vez de recomeçarem): cada animação CSS fica
+// "presa" ao relógio da página (atraso negativo = ponto do ciclo em que já devia ir), e as animações SVG (bolhas)
+// avançam para o mesmo instante. Chamado antes de o browser pintar a página nova.
+function ancorarAnimacoesAoTempo(raiz) {
+  if (!raiz || !raiz.isConnected) return;
+  const agoraS = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+  const segundos = (v) => { const m = String(v || '').trim().match(/^(-?[\d.]+)(ms|s)$/); return m ? parseFloat(m[1]) / (m[2] === 'ms' ? 1000 : 1) : NaN; };
+  raiz.querySelectorAll('*').forEach(e => {
+    if (e.closest('.dianoite-cruz-leds')) return; // os LEDs têm o seu próprio ciclo, já preso ao relógio
+    let cs; try { cs = getComputedStyle(e); } catch (x) { return; }
+    if (!cs || !cs.animationName || cs.animationName === 'none' || cs.animationName.includes(',')) return;
+    if (String(cs.animationIterationCount).trim() !== 'infinite') return;
+    const dur = segundos(cs.animationDuration), atraso = segundos(cs.animationDelay);
+    if (!(dur > 0) || isNaN(atraso)) return;
+    e.style.animationDelay = `${(atraso - (agoraS % dur)).toFixed(3)}s`;
+  });
+  raiz.querySelectorAll('svg').forEach(sv => { try { if (typeof sv.setCurrentTime === 'function') sv.setCurrentTime(agoraS % 3600); } catch (x) { /* ignora */ } });
+}
 function renderInterno(ehTransicaoDePagina) {
   const root = document.getElementById('root');
 
@@ -51901,7 +51972,21 @@ function renderInterno(ehTransicaoDePagina) {
   // Só agora — com o conteúdo da página (ou o ecrã de erro de recurso, se
   // aplicável) já 100% construído — é que o novo .page-container entra na
   // árvore visível, substituindo o antigo numa única operação atómica.
-  if (pageContainerAntigo) mainWrap.replaceChild(pageContainer, pageContainerAntigo);
+  // Página Inicial sem piscar (2026-09-26, Hugo: "evita estes piscares todos ao abrir num PC, parece que está a
+  // reajustar"): ao entrar na app há vários redesenhos seguidos (login, dados frescos, presença, Realtime...) e
+  // cada um trocava a página inteira — o relógio, a lista a escoar e a cruz recomeçavam e o topo reajustava-se.
+  // Agora compara-se o CONTEÚDO da página nova com o da que está no ecrã (impressão digital calculada logo ao
+  // construir, antes de qualquer ajuste feito depois no ecrã); se for igual, a nova é deitada fora e a do ecrã
+  // continua exatamente como está. Só se troca quando alguma coisa mudou mesmo.
+  let manterPaginaAtual = false;
+  if (STATE.page === 'home' && pageContainer.dataset.carregando !== '1') {
+    try {
+      pageContainer.dataset.impressao = impressaoDigitalPagina(pageContainer);
+      manterPaginaAtual = !!(pageContainerAntigo && pageContainerAntigo.dataset.pagina === 'home' && pageContainerAntigo.dataset.impressao === pageContainer.dataset.impressao);
+    } catch (e) { manterPaginaAtual = false; }
+  }
+  if (manterPaginaAtual) { /* conteúdo igual: fica a página que já está no ecrã */ }
+  else if (pageContainerAntigo) mainWrap.replaceChild(pageContainer, pageContainerAntigo);
   else mainWrap.appendChild(pageContainer);
   } // fim do bloco "reconstruir página" (ver PAGINAS_NUNCA_RECONSTROI_EM_FUNDO acima)
 
@@ -53278,8 +53363,12 @@ function buildWidgetDiaNoite() {
   const uid = `dn${++DIA_NOITE_SEQ}`;
   // Mais largo do que alto (2026-09-26): ocupa a largura toda da coluna sem ficar alto demais.
   const W = 420, HOR = 112;
-  const P0 = [34, HOR], C = [W / 2, -52], P2 = [W - 34, HOR];
-  const bez = (t) => [(1 - t) * (1 - t) * P0[0] + 2 * (1 - t) * t * C[0] + t * t * P2[0], (1 - t) * (1 - t) * P0[1] + 2 * (1 - t) * t * C[1] + t * t * P2[1]];
+  // Arco cúbico (2 pontos de controlo): na altura normal é exatamente o arco de sempre; quando o cartão cresce (ver
+  // ajustarAltura) sobe e fica mais "redondo" (cúpula), em vez de bicudo.
+  const P0 = [34, HOR], P2 = [W - 34, HOR];
+  const C1 = [P0[0] + (W / 2 - P0[0]) * 2 / 3, HOR + (-52 - HOR) * 2 / 3], C2 = [P2[0] - (W / 2 - P0[0]) * 2 / 3, HOR + (-52 - HOR) * 2 / 3];
+  const bez = (t) => { const u = 1 - t; return [0, 1].map(k => u * u * u * P0[k] + 3 * u * u * t * C1[k] + 3 * u * t * t * C2[k] + t * t * t * P2[k]); };
+  const dArco = () => `M${P0[0]} ${P0[1]} C${C1[0].toFixed(1)} ${C1[1].toFixed(1)} ${C2[0].toFixed(1)} ${C2[1].toFixed(1)} ${P2[0]} ${P2[1]}`;
   const hhmm = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
   const svg = el('svg', { viewBox: `0 0 ${W} 150`, class: 'dianoite-svg', role: 'img', 'aria-label': 'Dia e noite', preserveAspectRatio: 'xMidYMid meet' });
   const defs = el('defs');
@@ -53291,14 +53380,17 @@ function buildWidgetDiaNoite() {
   const mascaraLua = el('mask', { id: `${uid}Lua` });
   const luaBranco = el('circle', { r: '8', fill: '#fff' }), luaPreto = el('circle', { r: '7', fill: '#000' });
   mascaraLua.append(luaBranco, luaPreto);
-  const recorte = el('clipPath', { id: `${uid}Recorte` }); recorte.append(el('rect', { x: 0, y: 0, width: W, height: 150, rx: 0 }));
+  const recorteRect = el('rect', { x: 0, y: 0, width: W, height: 150, rx: 0 });
+  const recorte = el('clipPath', { id: `${uid}Recorte` }); recorte.append(recorteRect);
   defs.append(ceu, brilhoSol, mascaraLua, recorte);
   svg.appendChild(defs);
   const g = el('g', { 'clip-path': `url(#${uid}Recorte)` });
-  g.appendChild(el('rect', { x: 0, y: 0, width: W, height: HOR, fill: `url(#${uid}Ceu)` }));
+  const ceuRect = el('rect', { x: 0, y: 0, width: W, height: HOR, fill: `url(#${uid}Ceu)` });
+  g.appendChild(ceuRect);
   const estrelas = el('g', { class: 'dianoite-estrelas' });
   [[40, 22], [78, 48], [112, 16], [168, 34], [205, 14], [238, 44], [262, 24], [60, 80], [140, 64], [226, 76], [96, 92], [190, 88], [285, 58], [292, 18], [250, 94]].forEach(([x, y], i) => {
     const s = el('circle', { cx: (x * W / 300).toFixed(1), cy: y, r: i % 3 === 0 ? 1.3 : 0.8, fill: '#fff' });
+    s.dataset.y0 = String(y);
     s.style.animationDelay = `${(i % 5) * 0.7}s`;
     estrelas.appendChild(s);
   });
@@ -53351,15 +53443,15 @@ function buildWidgetDiaNoite() {
   }
   farmacia.append(telhado, fachada, faixa, montraE, montraD, porta, degrau, suporte, halo, cruz, ledsCruz);
   svg.appendChild(farmacia);
-  const arcoTodo = el('path', { d: `M${P0[0]} ${P0[1]} Q${C[0]} ${C[1]} ${P2[0]} ${P2[1]}`, fill: 'none', 'stroke-width': '1.6', 'stroke-dasharray': '3 4' });
+  const arcoTodo = el('path', { d: dArco(), fill: 'none', 'stroke-width': '1.6', 'stroke-dasharray': '3 4' });
   const arcoFeito = el('path', { fill: 'none', 'stroke-width': '2.4', 'stroke-linecap': 'round' });
   svg.append(arcoTodo, arcoFeito);
   const glow = el('circle', { r: '20', fill: `url(#${uid}Brilho)` });
   const sol = el('circle', { r: '8.5', fill: '#fbbf24', stroke: '#f59e0b', 'stroke-width': '1.5' });
   const lua = el('circle', { r: '8', fill: '#e5e7eb', mask: `url(#${uid}Lua)` });
   svg.append(glow, sol, lua);
-  const txtRelogio = el('text', { x: 14, y: 30, class: 'dianoite-relogio' });
-  const txtEstado = el('text', { x: W - 14, y: 22, 'text-anchor': 'end', class: 'dianoite-estado' });
+  const txtRelogio = el('text', { x: 14, y: 30, class: 'dianoite-relogio', 'data-volatil': '1' });
+  const txtEstado = el('text', { x: W - 14, y: 22, 'text-anchor': 'end', class: 'dianoite-estado', 'data-volatil': '1' });
   const txtEsq = el('text', { x: 12, y: HOR + 21, 'text-anchor': 'start', class: 'dianoite-hora' });
   const txtDir = el('text', { x: W - 12, y: HOR + 21, 'text-anchor': 'end', class: 'dianoite-hora' });
   const txtEsqRot = el('text', { x: 12, y: HOR + 32, 'text-anchor': 'start', class: 'dianoite-hora-rotulo' });
@@ -53457,21 +53549,59 @@ function buildWidgetDiaNoite() {
   const relogio = setInterval(() => { if (!card.isConnected) { clearInterval(relogio); return; } atualizar(); }, 30000);
   // Ciclo dos efeitos da cruz de LEDs (para sozinho quando o cartão sai da página).
   const MODOS_CRUZ = [['onda', 3000], ['rodopio', 3000], ['piscar', 1600], ['enche', 2600], ['fixa', 1800]];
-  let modoCruzIdx = -1, cruzTentativas = 0, cruzJaLigada = false;
+  let cruzTentativas = 0, cruzJaLigada = false, modoCruzAtual = '';
+  const CICLO_CRUZ_MS = MODOS_CRUZ.reduce((a, m) => a + m[1], 0);
   const movimentoReduzidoCruz = () => { try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { return false; } };
   const cicloCruz = () => {
     if (card.isConnected) cruzJaLigada = true;
     else if (cruzJaLigada || ++cruzTentativas > 20) return;
-    MODOS_CRUZ.forEach(([m]) => ledsCruz.classList.remove(`modo-${m}`));
-    let espera = 1000;
+    let espera = 1000, novoModo = '';
     if (ledsCruz.classList.contains('acesa') && !movimentoReduzidoCruz() && document.visibilityState !== 'hidden') {
-      modoCruzIdx = (modoCruzIdx + 1) % MODOS_CRUZ.length;
-      ledsCruz.classList.add(`modo-${MODOS_CRUZ[modoCruzIdx][0]}`);
-      espera = MODOS_CRUZ[modoCruzIdx][1];
+      // O modo é escolhido pela hora (não por contagem), por isso uma cruz redesenhada continua no mesmo efeito.
+      let pos = Date.now() % CICLO_CRUZ_MS;
+      for (const [m, d] of MODOS_CRUZ) { if (pos < d) { novoModo = m; espera = d - pos; break; } pos -= d; }
     }
-    setTimeout(cicloCruz, espera);
+    if (novoModo !== modoCruzAtual) {
+      MODOS_CRUZ.forEach(([m]) => ledsCruz.classList.remove(`modo-${m}`));
+      if (novoModo) ledsCruz.classList.add(`modo-${novoModo}`);
+      modoCruzAtual = novoModo;
+    }
+    setTimeout(cicloCruz, Math.max(40, espera));
   };
-  setTimeout(cicloCruz, 60);
+  requestAnimationFrame(() => { cicloCruz(); ancorarAnimacoesAoTempo(card); });
+
+  // Altura adaptável (2026-09-26, Hugo: "quando fica aquele buraco vazio do card de tarefas futuras, aumenta a
+  // altura do card do dia e noite para ocupar esse espaço"): na coluna do meio do topo o cartão estica até ao fundo
+  // da linha; o desenho acompanha, com mais céu por cima (o chão, a farmácia e as horas ficam no mesmo sítio e nada
+  // fica deformado). O relógio e a temperatura sobem com o topo do céu.
+  let extraAtual = 0;
+  const ajustarAltura = (extra) => {
+    extra = Math.max(0, Math.round(extra));
+    if (Math.abs(extra - extraAtual) < 1) return;
+    extraAtual = extra;
+    svg.setAttribute('viewBox', `0 ${-extra} ${W} ${150 + extra}`);
+    ceuRect.setAttribute('y', -extra); ceuRect.setAttribute('height', HOR + extra);
+    recorteRect.setAttribute('y', -extra); recorteRect.setAttribute('height', 150 + extra);
+    estrelas.querySelectorAll('circle').forEach(c => { const y0 = Number(c.dataset.y0); c.setAttribute('cy', (-extra + y0 * (HOR + extra) / HOR).toFixed(1)); });
+    txtRelogio.setAttribute('y', 30 - extra); txtEstado.setAttribute('y', 22 - extra);
+    // Arco do sol/lua mais alto na mesma medida (2026-09-26, Hugo: "tornar o arco do dia mais alto para compensar e
+    // não ficar tanto céu vazio"): o topo do arco sobe exatamente o que o céu cresceu — fica sempre à mesma distância
+    // do topo do cartão; as pontas continuam no horizonte (nascer e pôr do sol).
+    const topoArco = 30 - extra;                        // ponto mais alto do arco (y), sempre à mesma distância do topo
+    const yControlo = (topoArco - 0.25 * HOR) / 0.75;    // cúbica simétrica: topo = ¼·horizonte + ¾·controlo
+    const recuo = (W / 2 - P0[0]) * 2 / 3 - Math.min(1, extra / 200) * 70; // lados mais a pique quando há mais céu
+    C1[0] = P0[0] + recuo; C2[0] = P2[0] - recuo; C1[1] = C2[1] = yControlo;
+    arcoTodo.setAttribute('d', dArco());
+    atualizar();
+  };
+  if (typeof ResizeObserver === 'function') {
+    const ro = new ResizeObserver(() => {
+      if (!card.isConnected) { if (cruzJaLigada) ro.disconnect(); return; }
+      const w = card.clientWidth, hgt = card.clientHeight;
+      if (w > 50 && hgt > 20) ajustarAltura(W * hgt / w - 150);
+    });
+    ro.observe(card);
+  }
   return card;
 }
 
@@ -53634,7 +53764,7 @@ function buildLinhaTemporalDiaWidget(opcoes) {
     b.g.style.display = 'none';
     svg.appendChild(b.g);
   });
-  const txtGrande = el('text', { x: cx, y: cy - 2, 'text-anchor': 'middle', class: 'turno-relogio-centro-grande' });
+  const txtGrande = el('text', { x: cx, y: cy - 2, 'text-anchor': 'middle', class: 'turno-relogio-centro-grande', 'data-volatil': '1' });
   const txtPequeno = el('text', { x: cx, y: cy + 17, 'text-anchor': 'middle', class: 'turno-relogio-centro-pequeno' });
   svg.append(txtGrande, txtPequeno);
   toqueDepois.forEach(fn => fn());
@@ -53673,6 +53803,8 @@ function buildLinhaTemporalDiaWidget(opcoes) {
     h('div', { class: 'turno-relogio-titulo' }, [Icon('clock', { size: 14, strokeWidth: 2.2 }), ` Turno de hoje · ${dia.entrada} – ${dia.saida}`]),
     svg,
   ]);
+  card.dataset.assinatura = JSON.stringify([dia.pausaInicio || '', dia.pausaFim || '', tarefas.map(t => [t.tipo, t.outro || '', t.inicio, t.fim])]);
+  requestAnimationFrame(() => ancorarAnimacoesAoTempo(card));
   const relogio = setInterval(() => { if (!card.isConnected) { clearInterval(relogio); return; } if (document.visibilityState !== 'hidden') atualizar(); }, 1000);
   return card;
 }
