@@ -4109,7 +4109,9 @@
   .gaveta-tarefa-direcao.enviei{background:#dbeafe;color:#1d4ed8;}
   .gaveta-tarefa-direcao.paraMim{background:#fef3c7;color:#92400e;}
   /* ---- Banner de alerta: Entregas Pendentes Pós-Prazo (2h de tolerância) ---- */
-  .entrega-alerta-banner{display:flex;align-items:center;gap:12px;width:100%;text-align:left;
+  /* À medida do texto (2026-09-26, Hugo: "melhora a largura da notificação das entregas em atraso... para se ajustar
+     ao conteúdo") — deixou de ocupar a largura toda da página. */
+  .entrega-alerta-banner{display:flex;align-items:center;gap:12px;width:fit-content;max-width:100%;text-align:left;
     margin-bottom:16px;padding:12px 14px;border-radius:12px;border:1.5px solid #fca5a5;
     background:#fef2f2;color:#b91c1c;cursor:pointer;transition:all .15s ease;
     animation:entregaAlertaPulse 2.2s ease-in-out infinite;}
@@ -4413,8 +4415,15 @@
   p.ajuda-recolhida.ajuda-aberta{display:block !important;background:#f5f9fc;border-radius:10px;padding:8px 12px !important;margin-top:4px !important;}
 
   /* Tabelas sem duas barras de deslocação (ver tabelasSemScrollDuplo) */
-  .table-wrap.table-wrap-livre{max-height:none !important;overflow:visible;}
-  .table-wrap.table-wrap-livre.table-wrap-livre-x{overflow-x:auto;overflow-y:hidden;}
+  .table-wrap.table-wrap-livre{max-height:none !important;overflow:visible;overscroll-behavior:auto;}
+  /* Tabela só com deslocação para os lados (2026-09-26, Hugo: "quero fazer scroll para cima clicando no meio da tabela
+     e não permite, só nos bordos"): o gesto vertical feito em cima da tabela passa para a página — antes o
+     overscroll-behavior:contain prendia-o dentro da tabela, e no telemóvel só se conseguia subir tocando fora dela. */
+  .table-wrap.table-wrap-livre.table-wrap-livre-x{overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;overscroll-behavior-y:auto;}
+  @media (max-width:900px), (hover:none), (pointer:coarse){
+    /* Telemóvel/tablet: ao chegar ao fim de uma lista (ou de um cartão com scroll), o gesto continua na página. */
+    .table-wrap, .dash-grid > .card{overscroll-behavior-y:auto;}
+  }
   .table-wrap.table-wrap-livre:not(.table-wrap-livre-x) thead th{position:sticky;top:0;z-index:3;}
 
   /* Página Sobre */
@@ -7758,13 +7767,18 @@ function calendarioMesesExtraParaLargura(larguraContentor) {
   if (mesesQueCabem >= CAL_MESES_BASE + 1) return 1;
   return 0;
 }
+const CAL_MESES_EXTRA_MEMORIA = {}; // último nº de meses extra medido, por calendário (ver buildCalendarioCarrossel)
 function buildCalendarioCarrossel(onDayClick, prestadorKey, calendarioGoTo, restringirPorPerfil, expandirDesktop) {
   let offset = 0; // 0 = mês atual é o do centro
   const wrap = h('div', { class: 'cal-carousel-outer' });
   // Nunca mostra mais do que 4 meses até a largura real do contentor ter
   // sido medida pelo menos uma vez — o valor seguro por omissão evita
   // qualquer hipótese de um primeiro frame já com meses a mais.
-  let extraAtual = 0;
+  // Começa com o nº de meses da última vez que este calendário foi medido (2026-09-26, Hugo: "corrige o resizing
+  // que acontece quando volto à página inicial"): começar sempre com 4 e só depois passar a 5 fazia a Página
+  // Inicial inteira reajustar-se (o topo acompanha a largura do calendário) a cada regresso, num ecrã largo.
+  const chaveMemoriaMeses = `${prestadorKey || 'geral'}|${expandirDesktop ? 1 : 0}`;
+  let extraAtual = expandirDesktop && !ehDispositivoMobileOuTablet() ? (CAL_MESES_EXTRA_MEMORIA[chaveMemoriaMeses] || 0) : 0;
   // ResizeObserver mede a largura REAL do próprio contentor (não a da
   // janela) — reage também a colapsar/expandir a sidebar, não só ao
   // zoom. Restrição ESTRITA a monitores desktop verdadeiramente grandes,
@@ -7783,6 +7797,7 @@ function buildCalendarioCarrossel(onDayClick, prestadorKey, calendarioGoTo, rest
       // Só volta a desenhar quando o número de meses realmente muda —
       // nunca a cada pixel de redimensionamento — para a transição ser
       // sempre atómica (de 4 direto para 5, nunca por um estado a meio).
+      CAL_MESES_EXTRA_MEMORIA[chaveMemoriaMeses] = novoExtra;
       if (novoExtra !== extraAtual) { extraAtual = novoExtra; render(); }
     });
   }
@@ -8506,20 +8521,32 @@ function sincronizarLarguraHomeComCalendario(wrapHome, calendarioSec) {
   let rafId = 0;
   let ro = null, mo = null;
   const desligar = () => { if (ro) ro.disconnect(); if (mo) mo.disconnect(); };
+  let jaEsteveNoEcra = false;
   const medir = () => {
     rafId = 0;
-    if (!document.body.contains(wrapHome)) { desligar(); return; }
+    // Ainda a ser construída fora do ecrã: espera (só se desliga quando SAI do ecrã depois de lá ter estado).
+    if (!document.body.contains(wrapHome)) { if (jaEsteveNoEcra) desligar(); return; }
+    jaEsteveNoEcra = true;
     const grupo = calendarioSec.querySelector('.cal-pair');
     if (!grupo) return;
     const largura = Math.round(grupo.getBoundingClientRect().right - wrapHome.getBoundingClientRect().left);
-    if (largura > 200) { wrapHome.style.setProperty('--home-largura-conteudo', largura + 'px'); HOME_ULTIMA_LARGURA_CONTEUDO = largura; }
+    if (!(largura > 200)) return;
+    HOME_ULTIMA_LARGURA_CONTEUDO = largura;
+    if (wrapHome.style.getPropertyValue('--home-largura-conteudo') === largura + 'px') return; // sem mudança: não mexe
+    wrapHome.style.setProperty('--home-largura-conteudo', largura + 'px');
   };
   const agendar = () => { if (!rafId) rafId = requestAnimationFrame(medir); };
-  ro = new ResizeObserver(agendar);
+  // Mede logo (antes de o browser pintar): quando o calendário muda de 4 para 5 meses, ou a página muda de
+  // tamanho, o topo acompanha no MESMO fotograma — antes ficava um fotograma com a largura antiga (via-se a
+  // página a "reajustar-se"). O agendar() fica como rede de segurança.
+  const medirJa = () => { if (rafId) { cancelAnimationFrame(rafId); rafId = 0; } medir(); };
+  ro = new ResizeObserver(medirJa);
   ro.observe(wrapHome); ro.observe(calendarioSec);
-  mo = new MutationObserver(agendar);
+  mo = new MutationObserver(medirJa);
   mo.observe(calendarioSec, { childList: true, subtree: true });
   agendar();
+  // Primeiro de todos: a largura do topo decide a medida de tudo o resto (dia/noite, lista a escoar).
+  registarAjusteAposInserir(() => { if (rafId) { cancelAnimationFrame(rafId); rafId = 0; } medir(); }, true);
 }
 function buildCalendarioSection(goTo) {
   const tituloKids = [h('h3', { class: 'home-section-title', style: 'margin:0;' }, 'Calendário de Agendamentos')];
@@ -15473,15 +15500,19 @@ function buildValidadesTickerWidget(goTo) {
   // Corre de forma CONTÍNUA de baixo para cima (2026-09-26, Hugo: "a lista deve correr de baixo para cima,
   // continuamente, mostrar uns 6"): a lista é duplicada e desliza sem parar, em ciclo, sem saltos; para com o rato
   // por cima. Só corre se houver mais produtos do que cabem na janela.
-  requestAnimationFrame(() => {
-    if (!card.isConnected || faixa.scrollHeight <= janela.clientHeight + 2) return;
+  let escoarPreparada = false;
+  const prepararEscoar = () => {
+    if (escoarPreparada || !card.isConnected || faixa.scrollHeight <= janela.clientHeight + 2) return;
+    escoarPreparada = true;
     lista.forEach(r => { const copia = linha(r); copia.setAttribute('aria-hidden', 'true'); faixa.appendChild(copia); });
     const duracaoEscoar = Math.max(12, lista.length * 3);
     faixa.style.animationDuration = `${duracaoEscoar}s`;
     // Sem recomeçar do início a cada redesenho: a lista continua no ponto do ciclo em que ia.
     faixa.style.animationDelay = `-${(((typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000) % duracaoEscoar).toFixed(3)}s`;
     faixa.classList.add('escoar-faixa-a-correr');
-  });
+  };
+  registarAjusteAposInserir(prepararEscoar);
+  requestAnimationFrame(prepararEscoar); // fora da Página Inicial (ou se o ajuste imediato não chegar a correr)
   return card;
 }
 
@@ -51886,6 +51917,18 @@ const PAGINAS_NUNCA_RECONSTROI_EM_FUNDO = new Set(['horarios', 'vacinacao', 'lem
 // Nos desenhos SVG contam só as classes e os textos — o resto (posições, arcos) depende da hora e é redesenhado
 // pelo próprio widget. Elementos marcados com data-volatil (contadores ao segundo, "Atualizado há...") ficam de
 // fora; data-assinatura acrescenta o que um desenho mostra sem ser texto (ex.: tarefas no relógio do turno).
+// Ajustes que dependem de medidas reais (largura do topo, altura do dia/noite, lista a escoar) — corridos logo a
+// seguir a a página nova entrar no ecrã, ANTES de o browser a pintar (2026-09-26, Hugo: "corrige o resizing que
+// acontece quando volto à página inicial"). Antes corriam num fotograma seguinte (requestAnimationFrame /
+// ResizeObserver), e em computadores mais lentos chegava a ver-se o topo pintado com as medidas antigas e depois a
+// reajustar-se. Cada widget regista aqui o seu ajuste ao ser construído; se a página nova for deitada fora (conteúdo
+// igual ao que já está no ecrã), os ajustes dela também são.
+let AJUSTES_APOS_INSERIR = [];
+function registarAjusteAposInserir(fn, primeiro) { if (primeiro) AJUSTES_APOS_INSERIR.unshift(fn); else AJUSTES_APOS_INSERIR.push(fn); }
+function correrAjustesAposInserir() {
+  const lista = AJUSTES_APOS_INSERIR; AJUSTES_APOS_INSERIR = [];
+  lista.forEach(fn => { try { fn(); } catch (e) { /* nunca partir a página por causa de um ajuste */ } });
+}
 function impressaoDigitalPagina(raiz) {
   const partes = [];
   const visitar = (n) => {
@@ -52114,6 +52157,7 @@ function renderInterno(ehTransicaoDePagina) {
   // no DOM (substituindo o antigo, numa única operação atómica) depois de
   // ter 100% do conteúdo pronto, incluindo o ecrã de erro do catch abaixo
   // se for o caso. Nunca fica visível um contentor vazio ou a meio.
+  AJUSTES_APOS_INSERIR = []; // só os ajustes desta página nova
   const pageContainer = h('div', { class: 'page-container' });
   pageContainer.dataset.pagina = STATE.page;
   // Marca explícita de "isto ainda é só o placeholder de carregamento" (ver
@@ -52250,9 +52294,12 @@ function renderInterno(ehTransicaoDePagina) {
       manterPaginaAtual = !!(pageContainerAntigo && pageContainerAntigo.dataset.pagina === 'home' && pageContainerAntigo.dataset.impressao === pageContainer.dataset.impressao);
     } catch (e) { manterPaginaAtual = false; }
   }
-  if (manterPaginaAtual) { /* conteúdo igual: fica a página que já está no ecrã */ }
-  else if (pageContainerAntigo) mainWrap.replaceChild(pageContainer, pageContainerAntigo);
-  else mainWrap.appendChild(pageContainer);
+  if (manterPaginaAtual) { AJUSTES_APOS_INSERIR = []; /* conteúdo igual: fica a página que já está no ecrã */ }
+  else {
+    if (pageContainerAntigo) mainWrap.replaceChild(pageContainer, pageContainerAntigo);
+    else mainWrap.appendChild(pageContainer);
+    correrAjustesAposInserir();
+  }
   } // fim do bloco "reconstruir página" (ver PAGINAS_NUNCA_RECONSTROI_EM_FUNDO acima)
 
   // Sidebar de ecrã (desktop): conteúdo sempre atualizado (destaque da
@@ -53876,11 +53923,16 @@ function buildWidgetDiaNoite() {
     arcoTodo.setAttribute('d', dArco());
     atualizar();
   };
+  const medirCartao = () => {
+    if (!card.isConnected) return;
+    const w = card.clientWidth, hgt = card.clientHeight;
+    if (w > 50 && hgt > 20) ajustarAltura(W * hgt / w - 150);
+  };
+  registarAjusteAposInserir(medirCartao);
   if (typeof ResizeObserver === 'function') {
     const ro = new ResizeObserver(() => {
       if (!card.isConnected) { if (cruzJaLigada) ro.disconnect(); return; }
-      const w = card.clientWidth, hgt = card.clientHeight;
-      if (w > 50 && hgt > 20) ajustarAltura(W * hgt / w - 150);
+      medirCartao();
     });
     ro.observe(card);
   }
