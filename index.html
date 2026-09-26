@@ -4440,6 +4440,17 @@
   .dianoite-estado{font-size:10px;font-weight:600;}
   .dianoite-temperatura{font-size:12.5px;font-weight:800;}
   .dianoite-cruz-halo{animation:dianoite-cruz-pulsar 2.8s ease-in-out infinite;}
+  /* Cruz de LEDs: o JavaScript alterna os modos em ciclo (onda do centro para fora · rodopio · piscar · encher de
+     baixo para cima · acesa fixa); cada modo tem a sua animação infinita, com atrasos por LED. */
+  .dianoite-cruz-leds.acesa.modo-onda circle{animation:dianoite-led-onda 1s ease-out var(--atraso-onda) infinite backwards;}
+  .dianoite-cruz-leds.acesa.modo-rodopio circle{animation:dianoite-led-rodopio 1s linear calc(var(--atraso-rodopio) * -1) infinite;}
+  .dianoite-cruz-leds.acesa.modo-piscar circle{animation:dianoite-led-piscar .4s steps(1) infinite;}
+  .dianoite-cruz-leds.acesa.modo-enche circle{animation:dianoite-led-enche 2.6s ease-out var(--atraso-linha) 1 both;}
+  @keyframes dianoite-led-onda{0%{opacity:.22;}20%{opacity:1;}100%{opacity:.22;}}
+  @keyframes dianoite-led-rodopio{0%{opacity:1;}30%,100%{opacity:.22;}}
+  @keyframes dianoite-led-piscar{0%{opacity:1;}50%{opacity:.12;}}
+  @keyframes dianoite-led-enche{0%{opacity:.15;}12%,100%{opacity:1;}}
+  @media (prefers-reduced-motion: reduce){ .dianoite-cruz-leds circle{animation:none !important;opacity:1;} }
   @keyframes dianoite-cruz-pulsar{0%,100%{opacity:1;}50%{opacity:.55;}}
   @media (prefers-reduced-motion: reduce){ .dianoite-cruz-halo{animation:none;} }
   .dianoite-hora{font-size:10.5px;font-weight:700;font-variant-numeric:tabular-nums;}
@@ -53264,7 +53275,25 @@ function buildWidgetDiaNoite() {
   const suporte = el('rect', { x: CX - 0.9, y: CY + 7, width: 1.8, height: HOR - (CY + 7) });
   const halo = el('circle', { cx: CX, cy: CY, r: 17, fill: `url(#${uid}Cruz)`, class: 'dianoite-cruz-halo' });
   const cruz = el('path', { d: `M${CX - 3} ${CY - 8.5} h6 v5.5 h5.5 v6 h-5.5 v5.5 h-6 v-5.5 h-5.5 v-6 h5.5 Z`, 'stroke-width': '1.4', 'stroke-linejoin': 'round' });
-  farmacia.append(telhado, fachada, faixa, montraE, montraD, porta, degrau, suporte, halo, cruz);
+  // Cruz de LEDs, como as cruzes reais das farmácias (2026-09-26, Hugo: "aqueles efeitos reais das cruzes de
+  // farmácias"): grelha de 9×9 pontos de luz com a forma da cruz, sobre o fundo verde-escuro. Acesa, corre em ciclo
+  // uma sequência de efeitos: onda do centro para fora, rodopio pelos braços, piscar, encher de baixo para cima e
+  // acesa fixa. Fechada (00:00–08:00) ou com "reduzir movimento" ligado, não há animação.
+  const ledsCruz = el('g', { class: 'dianoite-cruz-leds' });
+  const PASSO_LED = 1.9;
+  for (let i = -4; i <= 4; i++) {
+    for (let j = -4; j <= 4; j++) {
+      if (Math.abs(i) > 1 && Math.abs(j) > 1) continue; // fora da cruz
+      const led = el('circle', { cx: (CX + i * PASSO_LED).toFixed(2), cy: (CY + j * PASSO_LED).toFixed(2), r: '0.78' });
+      const anel = Math.max(Math.abs(i), Math.abs(j));             // 0 (centro) … 4 (pontas)
+      const ang = (Math.atan2(j, i) * 180 / Math.PI + 450) % 360;    // ângulo para o "rodopio"
+      led.style.setProperty('--atraso-onda', `${(anel * 0.11).toFixed(2)}s`);
+      led.style.setProperty('--atraso-rodopio', `${(ang / 360).toFixed(2)}s`);
+      led.style.setProperty('--atraso-linha', `${((4 - j) * 0.12).toFixed(2)}s`);
+      ledsCruz.appendChild(led);
+    }
+  }
+  farmacia.append(telhado, fachada, faixa, montraE, montraD, porta, degrau, suporte, halo, cruz, ledsCruz);
   svg.appendChild(farmacia);
   const arcoTodo = el('path', { d: `M${P0[0]} ${P0[1]} Q${C[0]} ${C[1]} ${P2[0]} ${P2[1]}`, fill: 'none', 'stroke-width': '1.6', 'stroke-dasharray': '3 4' });
   const arcoFeito = el('path', { fill: 'none', 'stroke-width': '2.4', 'stroke-linecap': 'round' });
@@ -53317,8 +53346,10 @@ function buildWidgetDiaNoite() {
     porta.setAttribute('fill', tomFarmacia.porta); porta.setAttribute('stroke', tomFarmacia.linha); porta.setAttribute('stroke-width', '0.6');
     degrau.setAttribute('fill', tomFarmacia.linha); suporte.setAttribute('fill', tomFarmacia.suporte);
     // Acesa: verde vivo com contorno branco (destaca-se no céu azul de dia) e brilho à volta; apagada: cinzenta.
-    cruz.setAttribute('fill', aberta ? (eDia && !crepusculo ? '#16c95a' : '#34e37a') : (eDia ? '#94a3b8' : '#3b4660'));
+    cruz.setAttribute('fill', aberta ? '#0e6b34' : (eDia ? '#94a3b8' : '#3b4660'));
     cruz.setAttribute('stroke', aberta ? '#ffffff' : (eDia ? '#64748b' : '#2a3350'));
+    ledsCruz.classList.toggle('acesa', aberta);
+    ledsCruz.querySelectorAll('circle').forEach(l => l.setAttribute('fill', aberta ? '#6dffa0' : (eDia ? '#b6c0cc' : '#4a5570')));
     halo.style.display = aberta ? '' : 'none';
     farmaciaEstadoTexto = aberta ? 'Farmácia aberta (08:00 – 00:00)' : 'Farmácia fechada — abre às 08:00';
     // céu
@@ -53368,6 +53399,23 @@ function buildWidgetDiaNoite() {
   const card = h('div', { class: 'dianoite-card' }, [svg]);
   const meteoTemporizador = setInterval(() => { if (!card.isConnected) { clearInterval(meteoTemporizador); return; } if (document.visibilityState !== 'hidden') meteoObter().then(atualizar); }, 5 * 60 * 1000);
   const relogio = setInterval(() => { if (!card.isConnected) { clearInterval(relogio); return; } atualizar(); }, 30000);
+  // Ciclo dos efeitos da cruz de LEDs (para sozinho quando o cartão sai da página).
+  const MODOS_CRUZ = [['onda', 3000], ['rodopio', 3000], ['piscar', 1600], ['enche', 2600], ['fixa', 1800]];
+  let modoCruzIdx = -1, cruzTentativas = 0, cruzJaLigada = false;
+  const movimentoReduzidoCruz = () => { try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { return false; } };
+  const cicloCruz = () => {
+    if (card.isConnected) cruzJaLigada = true;
+    else if (cruzJaLigada || ++cruzTentativas > 20) return;
+    MODOS_CRUZ.forEach(([m]) => ledsCruz.classList.remove(`modo-${m}`));
+    let espera = 1000;
+    if (ledsCruz.classList.contains('acesa') && !movimentoReduzidoCruz() && document.visibilityState !== 'hidden') {
+      modoCruzIdx = (modoCruzIdx + 1) % MODOS_CRUZ.length;
+      ledsCruz.classList.add(`modo-${MODOS_CRUZ[modoCruzIdx][0]}`);
+      espera = MODOS_CRUZ[modoCruzIdx][1];
+    }
+    setTimeout(cicloCruz, espera);
+  };
+  setTimeout(cicloCruz, 60);
   return card;
 }
 
