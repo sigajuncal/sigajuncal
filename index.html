@@ -4458,6 +4458,13 @@
   .servico-rotativo-card .validades-ticker-dots{justify-content:flex-start;margin-top:6px;}
   .servico-rotativo-card .validades-ticker-progress-dot{background:var(--tom-claro,#e2e8f0);}
   .servico-rotativo-card .validades-ticker-progress-dot.ativo{background:var(--tom,#475569);}
+  /* Toque no telemóvel (2026-09-26): o Android pintava de azul o retângulo inteiro do elemento tocado (no relógio,
+     metade do cartão) — o realce passa a ser só o da própria app (fatia mais grossa, botões com :active). E nos
+     cartões interativos do topo e na Timeline, um toque prolongado já não seleciona texto nem abre "Copiar/Traduzir". */
+  html{-webkit-tap-highlight-color:transparent;}
+  .home-top-grelha, .turno-relogio-card, .dianoite-card, .stat-card, .escoar-card,
+  .escala-vertical-bloco, .escala-tarefa-icone, .validades-ticker-item{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;}
+  .turno-relogio-svg *, .dianoite-svg *{-webkit-tap-highlight-color:transparent;outline:none;}
 </style>
 </head>
 <body>
@@ -19299,7 +19306,8 @@ function financeiroDiaSeguinte(dataISO) {
 // todos os ícones de ajuda (evita criar/remover elementos do DOM a cada
 // hover). Ver mostrarTooltipFlutuante/esconderTooltipFlutuante.
 let tooltipFlutuanteEl = null;
-function mostrarTooltipFlutuante(alvoEl, texto) {
+function mostrarTooltipFlutuante(alvoEl, texto, ponto) {
+  AVISO_FLUTUANTE_ORIGEM = alvoEl;
   if (!tooltipFlutuanteEl) {
     tooltipFlutuanteEl = document.createElement('div');
     tooltipFlutuanteEl.className = 'campo-ajuda-tooltip-flutuante';
@@ -19308,7 +19316,8 @@ function mostrarTooltipFlutuante(alvoEl, texto) {
   tooltipFlutuanteEl.textContent = texto;
   tooltipFlutuanteEl.style.display = 'block';
   const larguraTooltip = tooltipFlutuanteEl.offsetWidth || 240;
-  const rect = alvoEl.getBoundingClientRect();
+  // ponto (opcional): posição do rato/dedo — em formas grandes (arcos do relógio) o aviso fica junto a onde se tocou.
+  const rect = (ponto && typeof ponto.x === 'number') ? { left: ponto.x, top: ponto.y, width: 0, height: 0, bottom: ponto.y + 10 } : alvoEl.getBoundingClientRect();
   let left = rect.left + rect.width / 2 - larguraTooltip / 2;
   left = Math.max(8, Math.min(left, window.innerWidth - larguraTooltip - 8));
   let top = rect.bottom + 7;
@@ -19321,6 +19330,24 @@ function mostrarTooltipFlutuante(alvoEl, texto) {
 function esconderTooltipFlutuante() {
   if (tooltipFlutuanteEl) tooltipFlutuanteEl.style.display = 'none';
 }
+// Avisos flutuantes no telemóvel (2026-09-26, Hugo: "o que aparece ao lado deve desaparecer mal clique noutro sítio
+// ou inicie scroll"): os dois avisos flutuantes da app (este e o dos colaboradores na Timeline dos Horários) fecham
+// sozinhos ao tocar/clicar noutro sítio, ao deslizar a página (ou uma lista) e ao rodar/redimensionar o ecrã.
+let AVISO_FLUTUANTE_ORIGEM = null;
+(function fecharAvisosFlutuantesAoTocarOuDeslizar() {
+  const fechar = () => {
+    try { esconderTooltipFlutuante(); } catch (e) { /* ignora */ }
+    try { esconderTooltipColaborador(); } catch (e) { /* ignora */ }
+    document.querySelectorAll('.turno-relogio-fatia.realce').forEach(f => f.classList.remove('realce'));
+  };
+  document.addEventListener('pointerdown', (e) => {
+    if (AVISO_FLUTUANTE_ORIGEM && AVISO_FLUTUANTE_ORIGEM.contains && AVISO_FLUTUANTE_ORIGEM.contains(e.target)) return;
+    AVISO_FLUTUANTE_ORIGEM = null;
+    fechar();
+  }, { capture: true, passive: true });
+  document.addEventListener('scroll', fechar, { capture: true, passive: true });
+  window.addEventListener('resize', fechar);
+})();
 // Ícone pequeno de "i" com informação em hover — usado nos rótulos dos
 // campos do Financeiro para dar a mesma informação dos antigos textos
 // de ajuda, sem ocupar espaço permanente no ecrã. O tooltip é
@@ -53205,9 +53232,10 @@ function buildWidgetDiaNoite() {
   const alvoDetalhe = el('circle', { r: '16', fill: 'transparent', style: 'cursor:pointer;' });
   svg.appendChild(alvoDetalhe);
   let textoDetalhe = '';
-  alvoDetalhe.addEventListener('mouseenter', () => mostrarTooltipFlutuante(alvoDetalhe, textoDetalhe));
+  const mostrarDetalheDN = (alvo) => (e) => { if (e && e.type === 'click') e.stopPropagation(); mostrarTooltipFlutuante(alvo, textoDetalhe, e && typeof e.clientX === 'number' ? { x: e.clientX, y: e.clientY } : null); };
+  alvoDetalhe.addEventListener('mouseenter', mostrarDetalheDN(alvoDetalhe));
   alvoDetalhe.addEventListener('mouseleave', () => { try { esconderTooltipFlutuante(); } catch (e) { /* ignora */ } });
-  alvoDetalhe.addEventListener('click', (e) => { e.stopPropagation(); showToast(textoDetalhe, 'info'); });
+  alvoDetalhe.addEventListener('click', mostrarDetalheDN(alvoDetalhe));
   const duracaoTxt = (ms) => { const min = Math.max(0, Math.round(ms / 60000)); const hh = Math.floor(min / 60), mm = min % 60; return hh ? `${hh}h${mm ? pad2(mm) : ''}` : `${mm} min`; };
   const atualizar = () => {
     const agora = new Date();
@@ -53260,7 +53288,8 @@ function buildWidgetDiaNoite() {
   meteoObter().then(atualizar);
   // Detalhe também ao passar o rato na temperatura (canto superior direito)
   txtEstado.style.cursor = 'pointer';
-  txtEstado.addEventListener('mouseenter', () => mostrarTooltipFlutuante(txtEstado, textoDetalhe));
+  txtEstado.addEventListener('mouseenter', mostrarDetalheDN(txtEstado));
+  txtEstado.addEventListener('click', mostrarDetalheDN(txtEstado));
   txtEstado.addEventListener('mouseleave', () => { try { esconderTooltipFlutuante(); } catch (e) { /* ignora */ } });
   const card = h('div', { class: 'dianoite-card' }, [svg]);
   const meteoTemporizador = setInterval(() => { if (!card.isConnected) { clearInterval(meteoTemporizador); return; } if (document.visibilityState !== 'hidden') meteoObter().then(atualizar); }, 5 * 60 * 1000);
@@ -53305,11 +53334,18 @@ function buildLinhaTemporalDiaWidget(opcoes) {
   // Segundos desde a meia-noite (com o mesmo "dia do turno" de escalaMinutosAbsolutos) — para o contador ao segundo.
   const agoraSegundos = () => { const d = new Date(); return agoraMinutos() * 60 + d.getSeconds(); };
   const contadorTxt = (seg) => { seg = Math.max(0, Math.round(seg)); const hh = Math.floor(seg / 3600), mm = Math.floor((seg % 3600) / 60), ss = seg % 60; return hh ? `${hh}:${pad2(mm)}:${pad2(ss)}` : `${mm}:${pad2(ss)}`; };
-  const ligarDetalhe = (alvo, texto) => {
+  // Hover (rato) e toque (telemóvel) mostram o MESMO aviso, junto ao ponto tocado — nunca um 2.º aviso em baixo
+  // (2026-09-26, Hugo). Fecha ao tocar noutro sítio ou ao deslizar (ver fecharAvisosFlutuantesAoTocarOuDeslizar).
+  const ligarDetalhe = (alvo, texto, fatiaRealce) => {
     alvo.style.cursor = 'pointer';
-    alvo.addEventListener('mouseenter', () => mostrarTooltipFlutuante(alvo, texto));
-    alvo.addEventListener('mouseleave', () => { try { esconderTooltipFlutuante(); } catch (e) { /* ignora */ } });
-    alvo.addEventListener('click', (e) => { e.stopPropagation(); showToast(texto, 'info'); });
+    const mostrar = (e) => {
+      document.querySelectorAll('.turno-relogio-fatia.realce').forEach(f => { if (f !== fatiaRealce) f.classList.remove('realce'); });
+      if (fatiaRealce) fatiaRealce.classList.add('realce');
+      mostrarTooltipFlutuante(alvo, texto, e && typeof e.clientX === 'number' ? { x: e.clientX, y: e.clientY } : null);
+    };
+    alvo.addEventListener('mouseenter', mostrar);
+    alvo.addEventListener('mouseleave', () => { if (fatiaRealce) fatiaRealce.classList.remove('realce'); try { esconderTooltipFlutuante(); } catch (e) { /* ignora */ } });
+    alvo.addEventListener('click', (e) => { e.stopPropagation(); mostrar(e); });
   };
 
   // Tarefas em anéis (sobrepostas nunca se tapam)
@@ -53390,12 +53426,10 @@ function buildLinhaTemporalDiaWidget(opcoes) {
     svg.appendChild(fatia);
     // Área de toque invisível e mais larga por cima da fatia (fácil de acertar com o rato ou o dedo).
     const toque = el('path', { d: fatia.getAttribute('d'), fill: 'none', stroke: 'transparent', 'stroke-width': '14', 'pointer-events': 'stroke', class: 'turno-relogio-toque' });
-    toque.addEventListener('mouseenter', () => fatia.classList.add('realce'));
-    toque.addEventListener('mouseleave', () => fatia.classList.remove('realce'));
-    toqueDepois.push(() => { svg.appendChild(toque); ligarDetalhe(toque, texto); });
+    toqueDepois.push(() => { svg.appendChild(toque); ligarDetalhe(toque, texto, fatia); });
     const chip = h('span', { class: 'turno-barra-chip', title: texto }, [h('span', { class: 'turno-barra-chip-ponto', style: `background:${cor};` }),
       `${info ? info.icon + ' ' : ''}${escalaTarefaLabel(t, info)} · ${t.inicio}${t.fim ? '–' + t.fim : ''}`]);
-    chip.addEventListener('click', () => showToast(texto, 'info'));
+
     legendas.push(chip);
   });
 
