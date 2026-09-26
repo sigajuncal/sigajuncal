@@ -16849,8 +16849,83 @@ function buildAvisoJanelaMortaRotas() {
     ]),
   ]);
 }
+// ---- Seleções da Página Inicial que dependem da hora (usadas ao desenhar E na verificação periódica abaixo) ----
+// Próximo Evento: só gira quando há 2+ eventos DIFERENTES a decorrer em simultâneo hoje; senão mostra-se um único
+// item (o que está a decorrer, se só houver um, senão o próximo agendado).
+function homeItensEventoFinal() {
+  const eventosBruta = proximosEventosLista(20);
+  const aDecorrer = eventosBruta.filter(ev => eventoADecorrerAgora(ev));
+  return aDecorrer.length >= 1 ? aDecorrer : eventosBruta.slice(0, 1);
+}
+// Próximo Serviço de Agenda: um item por SERVIÇO/PRESTADOR distinto (a marcação mais próxima de cada um). Um
+// Prestador de Serviço externo só vê os seus. O carrossel só entra em ação com 2+ serviços a decorrer ao mesmo
+// tempo; fora isso, um único item — de preferência o que está a decorrer, senão o próximo agendado.
+function homeItensAgendaFinal() {
+  const agendaBruta = proximasAgendaMarcacoes(30)
+    .filter(m => !isPrestadorServico() || !activeUser || !activeUser.prestadorKey || m.prestadorKey === activeUser.prestadorKey);
+  const prestadoresVistos = new Set();
+  const servicosDistintos = [];
+  agendaBruta.forEach(m => {
+    if (prestadoresVistos.has(m.prestadorKey)) return;
+    prestadoresVistos.add(m.prestadorKey);
+    servicosDistintos.push(m);
+  });
+  const aDecorrer = servicosDistintos.filter(m => servicoAgendaADecorrerAgora(m.prestadorKey));
+  return aDecorrer.length >= 1 ? aDecorrer : servicosDistintos.slice(0, 1);
+}
+// LED das Entregas: pisca quando uma entrega pendente já entrou no seu bloco horário ou está perto da hora-limite.
+function homeEntregaUrgenteAgora() {
+  return (STATE.entregas || []).some(r => r.farmacia === 'Juncal' && r.estadoEntrega !== 'Entregue' && (entregaPrazoEstado(r).piscar || entregaBlocoJaComecou(r)));
+}
+// ---- Página Inicial "viva", com ou sem sessão iniciada, sem gastar Egress (2026-09-26, Hugo: "todas as
+// variáveis da página principal que possam ser atualizadas mesmo sem sessão iniciada... desde que não gaste
+// egress") ----
+// Tudo o que muda só com a passagem do tempo é recalculado com os dados que JÁ estão no browser (nada é pedido ao
+// Supabase). Relógio do turno (ao segundo), widget do dia e da noite (sol/lua, cruz da farmácia) e lista de produtos
+// a escoar já se atualizavam sozinhos. Faltavam os cartões que só eram calculados ao desenhar a página: Em Curso
+// Agora, Tarefas da Equipa, Próximo Evento, Próximo Serviço de Agenda, LED das Entregas e tudo o que depende do
+// DIA (calendário, validades, SASU, aviso das rotas, objetivos, relógio do turno do dia novo). A cada 20 s
+// calcula-se uma "assinatura" desses resultados; só quando ela muda (uma tarefa começou/acabou, um serviço
+// começou, passou a meia-noite...) é que a página é redesenhada — umas poucas vezes por dia, nunca de 20 em 20 s,
+// e nunca a meio de um formulário ou com uma janela aberta (fica para a verificação seguinte). A saudação e a frase
+// do topo atualizam-se no próprio texto, sem redesenhar nada.
+let assinaturaHomeDesenhada = null;
+function assinaturaPaginaInicial() {
+  const partes = [todayISO(), activeUser ? String(activeUser.id) : '-'];
+  const juntar = (fn) => { try { partes.push(JSON.stringify(fn())); } catch (e) { partes.push('!'); } };
+  juntar(() => (activeUser ? assinaturaMeuDiaMobile() : ''));
+  juntar(() => escalaTarefasAtivasAgora());
+  juntar(() => escalaTarefasHojeEquipa());
+  juntar(() => homeItensEventoFinal().map(ev => [ev.id, eventoADecorrerAgora(ev)]));
+  juntar(() => homeItensAgendaFinal().map(m => [m.prestadorKey, m.data, m.hora, servicoAgendaADecorrerAgora(m.prestadorKey)]));
+  juntar(() => homeEntregaUrgenteAgora());
+  return partes.join('|');
+}
+function atualizarPaginaInicialComOTempo() {
+  if (STATE.page !== 'home' || document.visibilityState === 'hidden') return;
+  if (!document.querySelector('#root .home-wrap')) return; // perfis restritos / página ainda não desenhada
+  // Saudação ("Bom dia/Boa tarde/Boa noite") e frase do topo: só o texto, no sítio.
+  if (activeUser) {
+    try {
+      const titulo = document.querySelector('#root .home-saudacao');
+      const saud = saudacaoPersonalizadaDinamica(activeUser.nomeCompleto || activeUser.username);
+      if (titulo && titulo.textContent !== saud) titulo.textContent = saud;
+      const frase = document.querySelector('#root .mensagem-motivadora-dashboard');
+      const novaFrase = mensagemMotivadoraJuncal(activeUser);
+      if (frase && frase.textContent !== novaFrase) frase.textContent = novaFrase;
+    } catch (e) { /* nunca partir a app por causa disto */ }
+  }
+  const nova = assinaturaPaginaInicial();
+  if (nova === assinaturaHomeDesenhada) return;
+  // Alguém a trabalhar (janela aberta, a escrever) ou um aviso flutuante aberto: fica para a próxima verificação.
+  if (uiEstaOcupada()) return;
+  if ([...document.querySelectorAll('.campo-ajuda-tooltip-flutuante, .colaborador-tooltip-flutuante')].some(t => t.style.display === 'block')) return;
+  render();
+}
+
 function buildHomepage(container, goTo) {
   clear(container);
+  assinaturaHomeDesenhada = assinaturaPaginaInicial();
 
   if (isEstafeta()) {
     const wrapEstafeta = h('div', { class: 'animate-in' });
@@ -16923,7 +16998,7 @@ function buildHomepage(container, goTo) {
   wrap.appendChild(h('div', { class: 'home-largura-calendario', style: 'margin-bottom:18px;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;' }, [
     h('div', {}, [
       h('div', { style: 'display:flex;align-items:center;gap:10px;' }, [
-        h('h2', { class: 'welcome-title', style: 'margin:0;' }, activeUser ? saudacaoPersonalizadaDinamica(activeUser.nomeCompleto || activeUser.username) : 'Painel de Controlo'),
+        h('h2', { class: 'welcome-title home-saudacao', style: 'margin:0;' }, activeUser ? saudacaoPersonalizadaDinamica(activeUser.nomeCompleto || activeUser.username) : 'Painel de Controlo'),
         lembretesBell,
         blocoNotasBtn,
         horariosAtalhoBtn,
@@ -16991,13 +17066,7 @@ function buildHomepage(container, goTo) {
   }
   wrap.appendChild(linhaSuperiorHome);
 
-  const eventosBruta = proximosEventosLista(20);
-  const eventosADecorrerAgora = eventosBruta.filter(ev => eventoADecorrerAgora(ev));
-  // Mesmo critério da Agenda: só gira quando há 2+ eventos DIFERENTES a
-  // decorrer em simultâneo hoje; senão mostra-se um único item estático
-  // (o que está a decorrer, se só houver um, senão o próximo agendado).
-  const itensEventoFinal = eventosADecorrerAgora.length >= 2 ? eventosADecorrerAgora
-    : (eventosADecorrerAgora.length === 1 ? eventosADecorrerAgora : eventosBruta.slice(0, 1));
+  const itensEventoFinal = homeItensEventoFinal();
   const vagasSpans = {};
   const proximoEventoCard = buildProximoServicoRotativoCard({
     labelTitulo: 'Próximo Evento', labelVazio: 'Sem eventos agendados', tone: 'tone-blue-soft',
@@ -17037,8 +17106,7 @@ function buildHomepage(container, goTo) {
   // começou), não só quando está prestes a expirar. Havendo pendentes mas
   // nenhuma dentro do bloco/urgente, mostra-se um ponto estático (sinaliza
   // que existem, sem alarmar à toa).
-  const entregasJuncalPendentes = STATE.entregas.filter(r => r.farmacia === 'Juncal' && r.estadoEntrega !== 'Entregue');
-  const entregaUrgenteAgora = entregasJuncalPendentes.some(r => entregaPrazoEstado(r).piscar || entregaBlocoJaComecou(r));
+  const entregaUrgenteAgora = homeEntregaUrgenteAgora();
   const entregasCard = h('button', { class: 'stat-card tone-card entregas-badge-card clickable next-evento-card', onclick: () => goTo('entregas') }, [
     h('div', { class: 'stat-icon' }, Icon('truck', { size: 19 })),
     h('div', { style: 'min-width:0;' }, [
@@ -17054,22 +17122,7 @@ function buildHomepage(container, goTo) {
   // — a marcação mais próxima de cada prestador representa esse serviço.
   // Um Prestador de Serviço externo só vê os seus próprios agendamentos
   // aqui — Colaboradores/Administrador continuam a ver a totalidade.
-  const agendaBruta = proximasAgendaMarcacoes(30)
-    .filter(m => !isPrestadorServico() || !activeUser || !activeUser.prestadorKey || m.prestadorKey === activeUser.prestadorKey);
-  const prestadoresVistos = new Set();
-  const servicosDistintos = [];
-  agendaBruta.forEach(m => {
-    if (prestadoresVistos.has(m.prestadorKey)) return;
-    prestadoresVistos.add(m.prestadorKey);
-    servicosDistintos.push(m);
-  });
-  const servicosADecorrerAgora = servicosDistintos.filter(m => servicoAgendaADecorrerAgora(m.prestadorKey));
-  // O carrossel só entra em ação quando há mesmo 2+ SERVIÇOS DIFERENTES a
-  // decorrer ao mesmo tempo hoje; fora isso, mostra-se sempre um único
-  // item estático — de preferência o que estiver a decorrer agora, senão
-  // simplesmente o próximo agendado.
-  const itensAgendaFinal = servicosADecorrerAgora.length >= 2 ? servicosADecorrerAgora
-    : (servicosADecorrerAgora.length === 1 ? servicosADecorrerAgora : servicosDistintos.slice(0, 1));
+  const itensAgendaFinal = homeItensAgendaFinal();
   const agendaAlgumADecorrer = itensAgendaFinal.some(m => servicoAgendaADecorrerAgora(m.prestadorKey));
   const proximaAgendaCard = buildProximoServicoRotativoCard({
     labelTitulo: agendaAlgumADecorrer ? 'Serviço a Decorrer' : 'Próximo Serviço de Agenda', labelVazio: 'Sem consultas/serviços agendados', tone: 'tone-blue-soft',
@@ -54798,6 +54851,9 @@ async function startApp() {
   // o elemento quando a pessoa tem turno hoje; puro cálculo local, sem
   // pedir nada ao Supabase (ver atualizarLinhaTemporalMarcador).
   setInterval(atualizarLinhaTemporalMarcador, 30000);
+  // Página Inicial viva com a passagem do tempo — puro cálculo local, sem Egress (ver atualizarPaginaInicialComOTempo).
+  setInterval(atualizarPaginaInicialComOTempo, 20000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') setTimeout(atualizarPaginaInicialComOTempo, 300); });
 }
 
 function showLoginGate() {
