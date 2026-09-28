@@ -47168,6 +47168,37 @@ function buildVacinacaoPage(container, goTo) {
       semDadosTexto: 'Lista de espera vazia.',
     });
   }
+  // Navegação entre dias (2026-09-28, pedido de Hugo): ‹ › passam ao dia
+  // anterior/seguinte (aberto ou fechado); « » saltam para o dia ABERTO
+  // anterior/seguinte. Sempre dentro do período da campanha.
+  function buildNavegacaoDiasVacinacao(dateISO) {
+    const campanha = campanhaAtual();
+    const minISO = campanha && campanha.dataInicio ? campanha.dataInicio : null;
+    const maxISO = campanha && campanha.dataFim ? campanha.dataFim : null;
+    const somarDias = (iso, n) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return dateToISO(d); };
+    const dentro = (iso) => (!minISO || iso >= minISO) && (!maxISO || iso <= maxISO);
+    const irPara = (iso) => { if (!iso) return; agendaDiaSelecionado = iso; marcacaoSelectedIds = new Set(); rerender(); };
+    const abertos = vacinacaoDiasAbertosDaCampanha().filter(dentro);
+    const abertoAnterior = abertos.filter(d => d < dateISO).slice(-1)[0] || null;
+    const abertoSeguinte = abertos.find(d => d > dateISO) || null;
+    const anterior = dentro(somarDias(dateISO, -1)) ? somarDias(dateISO, -1) : null;
+    const seguinte = dentro(somarDias(dateISO, 1)) ? somarDias(dateISO, 1) : null;
+    const botao = (icone, alvo, titulo) => {
+      const b = h('button', { class: 'btn btn-secondary', style: 'padding:6px 10px;min-width:38px;justify-content:center;', title: alvo ? `${titulo} (${formatDate(alvo)})` : titulo, 'aria-label': titulo, disabled: alvo ? undefined : 'disabled' }, icone);
+      if (alvo) b.addEventListener('click', () => irPara(alvo));
+      return b;
+    };
+    const aberto = vacinacaoDiaAberto(dateISO);
+    const dt = new Date(dateISO + 'T12:00:00');
+    return h('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;' }, [
+      botao('«', abertoAnterior, 'Dia aberto anterior'),
+      botao(Icon('arrowleft', { size: 14, strokeWidth: 2.4 }), anterior, 'Dia anterior'),
+      h('h3', { class: 'dash-card-title', style: 'margin:0 4px;min-width:190px;text-align:center;' }, `${DIAS_SEMANA_PT[(dt.getDay() + 6) % 7]}, ${formatDate(dateISO)}`),
+      botao(Icon('arrowright', { size: 14, strokeWidth: 2.4 }), seguinte, 'Dia seguinte'),
+      botao('»', abertoSeguinte, 'Dia aberto seguinte'),
+      h('span', { class: 'badge ' + (aberto ? 'badge-green' : 'badge-gray'), style: 'margin-left:4px;' }, aberto ? 'DIA ABERTO' : 'DIA POR ABRIR'),
+    ]);
+  }
   function buildAgendaDiaView(dateISO) {
     const wrap = h('div', {});
     const cabecalho = h('div', { style: 'display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px;' }, [
@@ -47203,7 +47234,7 @@ function buildVacinacaoPage(container, goTo) {
       }));
       return wrap;
     }
-    wrap.appendChild(h('h3', { class: 'dash-card-title', style: 'margin-bottom:6px;' }, formatDate(dateISO)));
+    wrap.appendChild(buildNavegacaoDiasVacinacao(dateISO));
     wrap.appendChild(buildResponsavelDoDiaAviso(dateISO));
     const avisoOutrosServicos = buildOutrosServicosDoDiaAviso(dateISO);
     if (avisoOutrosServicos) wrap.appendChild(avisoOutrosServicos);
