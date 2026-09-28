@@ -5881,6 +5881,18 @@ function buildCampoHoraScrollVacinacao(field, draft) {
 }
 // Idade calculada a partir da Data de Nascimento (anos completos) — usada
 // para a Lista de Espera e para o alerta de elegibilidade nas Marcações.
+// Vaga indisponibilizada (bloqueio) — 2026-09-28: a tabela
+// vacinacao_marcacoes não tinha a coluna tipo_linha, por isso o bloqueio
+// era gravado SEM ela (a app descarta em silêncio colunas que não existem)
+// e aparecia como uma marcação "— —" PENDENTE. Enquanto o SQL
+// (sigajuncal_vacinacao_bloqueios_e_tarefa.sql) não é corrido — e para os
+// bloqueios antigos — uma linha sem nome, sem contacto e sem vacina conta
+// sempre como bloqueio (uma marcação real exige sempre contacto e vacina).
+function vacinacaoEhBloqueio(m) {
+  if (!m) return false;
+  if (m.tipoLinha === 'bloqueado') return true;
+  return !String(m.nome || '').trim() && !String(m.contacto || '').trim() && !m.gripe && !m.covid;
+}
 function vacinacaoCalcularIdade(dataNascISO) {
   if (!dataNascISO) return null;
   const nasc = new Date(dataNascISO + 'T00:00:00');
@@ -6028,7 +6040,7 @@ function vacinacaoSomarMinutos(hora, minutos) {
 // Contagem de administrações/pendentes/canceladas num intervalo [desde,até]
 // (datas ISO, inclusive) — usada para os totais Hoje/Semana/Mês/Total.
 function vacinacaoContarPeriodo(campanha, desde, ate) {
-  const marcs = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanha.id && m.data && m.data >= desde && m.data <= ate && m.tipoLinha !== 'bloqueado');
+  const marcs = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanha.id && m.data && m.data >= desde && m.data <= ate && !vacinacaoEhBloqueio(m));
   const quebras = STATE.vacinacaoQuebras.filter(q => q.campanhaId === campanha.id && q.data && q.data >= desde && q.data <= ate);
   return {
     administradas: marcs.filter(m => m.estado === 'Administrada').length,
@@ -6535,7 +6547,8 @@ function agendaDiaTemMarcacaoAtiva(prestadorKey, dateISO) {
 // passados ficam só para consulta — nenhuma ação de escrita é permitida.
 function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   const overlay = h('div', { class: 'modal-overlay' });
-  function close() { document.removeEventListener('keydown', onKeydown); if (barraSelecaoEl) { barraSelecaoEl.remove(); barraSelecaoEl = null; } overlay.remove(); }
+  let regAoVivo = null; // atualização ao vivo enquanto o dia está aberto (2026-09-28)
+  function close() { document.removeEventListener('keydown', onKeydown); if (barraSelecaoEl) { barraSelecaoEl.remove(); barraSelecaoEl = null; } removerAtualizadorAoVivo(regAoVivo); overlay.remove(); }
   function onKeydown(e) { if (e.key === 'Escape') close(); }
   document.addEventListener('keydown', onKeydown);
   overlay.addEventListener('click', (e) => { if (e.target === overlay && cliqueComecouEm(overlay)) close(); });
@@ -6682,6 +6695,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       duracaoManual: m.duracaoMin || agendaDuracaoManualDefault(prestadorKey), nomeCliente: m.nomeCliente || '', contacto: m.contacto || '',
       aviso: !!m.aviso, observacoes: m.observacoes || '', responsavel: m.responsavel || currentUserName(), ultimaAtualizacaoPor: m.ultimaAtualizacaoPor || '', forcarEncaixe: false,
       estado: m.estado || 'agendada',
+      baseRegisto: m, // versão em que a edição começou (alterações simultâneas, 2026-09-28)
     };
     formError = ''; tipoConsultaInvalido = false; showForm = ehEncaixe ? 'encaixe' : 'nova'; render();
   }
@@ -6785,6 +6799,17 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       }
     }
     const duracaoMin = agendaDuracaoPorTipo(prestadorKey, formDraft.tipoConsulta, formDraft.duracaoManual);
+    // Dois colegas ao mesmo tempo (2026-09-28): antes das regras de
+    // conflito abaixo, relê do servidor as marcações DESTE dia desta agenda
+    // (poucas linhas) — apanha o que um colega gravou há segundos e ainda
+    // não chegou a este ecrã. Sem rede, segue com o que já há (como antes).
+    if (!formDraft.servidorConfirmado) {
+      saving = true; render();
+      await refrescarLinhasDoServidor('agendaMarcacoes',
+        q => q.eq('prestador_key', prestadorKey).eq('data', dateISO),
+        m => m.prestadorKey === prestadorKey && m.data === dateISO);
+      saving = false;
+    }
     // ---- Regras específicas Prima Corpus ----
     // 1) O último serviço do dia tem início até às 19h (máximo).
     // 2) Podem existir DOIS serviços em simultâneo, mas o segundo carece de
@@ -6809,6 +6834,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
         perguntaSimNaoDialog(`Já existe um serviço neste horário (${outra.hora}${outra.nomeCliente ? ' · ' + outra.nomeCliente : ''}). Dois serviços em simultâneo carecem de validação com a Andreia (tempo necessário). Confirma a marcação em simultâneo?`, (sim) => {
           if (!sim) return;
           formDraft.forcarEncaixe = true; // já validado — não voltar a perguntar nem barrar no conflito
+          formDraft.servidorConfirmado = true; // já relido do servidor há instantes
           submitForm();
         });
         return;
@@ -6844,14 +6870,48 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     // marcação foi criada, para se poder reverter cancelamentos/faltas
     // por engano ou corrigir o estado manualmente.
     if (formDraft.editId) payload.estado = formDraft.estado || 'agendada';
-    const created = formDraft.editId
-      ? await dbUpdate('agendaMarcacoes', formDraft.editId, payload)
+    let created = formDraft.editId
+      ? await dbUpdate('agendaMarcacoes', formDraft.editId, payload, formDraft.baseRegisto ? { base: formDraft.baseRegisto } : undefined)
       : await dbInsert('agendaMarcacoes', payload);
-    saving = false;
     if (created) {
       STATE.agendaMarcacoes = formDraft.editId
         ? STATE.agendaMarcacoes.map(x => x.id === created.id ? created : x)
         : [created, ...STATE.agendaMarcacoes];
+    }
+    // Confirmação logo a seguir a gravar uma marcação NOVA (2026-09-28): se
+    // um colega gravou uma marcação sobreposta no mesmo instante, fica a
+    // que foi gravada primeiro (id mais baixo) e esta é anulada, com aviso.
+    // Prima Corpus: só anula se passar a haver 2 ou mais anteriores
+    // sobrepostas (o máximo são 2 em simultâneo), ou 1 que ninguém confirmou.
+    if (created && !formDraft.editId && !criandoVagaLivre) {
+      const relida = await refrescarLinhasDoServidor('agendaMarcacoes',
+        q => q.eq('prestador_key', prestadorKey).eq('data', dateISO),
+        m => m.prestadorKey === prestadorKey && m.data === dateISO);
+      if (relida) {
+        const anteriores = (agendaEhPrimaCorpus(prestadorKey)
+          ? agendaSobreposicoesPrimaCorpus(dateISO, created.hora, duracaoMin, created.id)
+          : [agendaConflito(prestadorKey, dateISO, created.hora, duracaoMin, created.id)].filter(Boolean)
+        ).filter(m => Number(m.id) < Number(created.id));
+        const excede = agendaEhPrimaCorpus(prestadorKey)
+          ? (anteriores.length >= 2 || (anteriores.length === 1 && !formDraft.forcarEncaixe))
+          : (anteriores.length >= 1 && !formDraft.forcarEncaixe);
+        if (excede) {
+          const ok = await dbDelete('agendaMarcacoes', created.id);
+          if (ok) {
+            STATE.agendaMarcacoes = STATE.agendaMarcacoes.filter(x => x.id !== created.id);
+            const outra = anteriores[0];
+            created = null;
+            saving = false;
+            formDraft.servidorConfirmado = false;
+            formError = `ATENÇÃO: um colega acabou de marcar ${outra.nomeCliente || 'outra pessoa'} às ${outra.hora} neste horário — esta marcação não ficou gravada. Escolhe outro horário.`;
+            render();
+            return;
+          }
+        }
+      }
+    }
+    saving = false;
+    if (created) {
       showForm = false;
       await abrirDiaAgendaSilencioso();
       if (onSaved) onSaved();
@@ -7264,6 +7324,18 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   function render() {
     comScrollPreservado(() => renderInternoAgendaDia(), overlay);
   }
+  // Marcação/cancelamento/abrir-fechar dia feito por um colega aparece
+  // sozinho neste dia aberto (dados do Realtime, sem pedidos extra) —
+  // nunca a meio de um formulário, de uma gravação ou de uma escolha de motivo.
+  regAoVivo = registarAtualizadorAoVivo(['agendaMarcacoes', 'agendaDias'], () => {
+    if (!overlay.isConnected) return 'terminado';
+    if (showForm || saving || perguntandoMotivo || !modalLivreParaRedesenhar(overlay)) return 'ocupado';
+    // Seleção de marcações que entretanto desapareceram (eliminadas por um colega) é limpa.
+    selecionadas.forEach(id => { if (!STATE.agendaMarcacoes.some(x => x.id === id)) selecionadas.delete(id); });
+    render();
+    if (onSaved) onSaved(); // calendário por trás (cores do dia) também fica certo
+    return 'feito';
+  });
   function renderInternoAgendaDia() {
     renderHeaderAcoes();
     clear(bodyEl);
@@ -8790,7 +8862,12 @@ function buildAgendaPage(container, goTo, prestadorKey) {
 
   function build() {
     const wrap = h('div', { class: 'animate-in' });
-    wrap.appendChild(withCustomBackButton(buildPageHeader(prestador.icon, prestador.nome, prestador.especialidade, undefined), () => goTo('hub-agendas')));
+    // Voltar hierárquico (2026-09-28): as agendas de Nutrição abrem-se a
+    // partir do passo intermédio "Nutrição" (escolha da profissional) — é
+    // para lá que a seta volta, não diretamente para o hub de Agendas.
+    const servicoDoPrestador = SERVICOS_AGENDA.find(sv => (sv.prestadores || []).includes(prestadorKey));
+    const paiAgenda = servicoDoPrestador && servicoDoPrestador.key === 'nutricao' && servicoDoPrestador.prestadores.length > 1 ? 'hub-agendas-nutricao' : 'hub-agendas';
+    wrap.appendChild(withCustomBackButton(buildPageHeader(prestador.icon, prestador.nome, prestador.especialidade, undefined), () => goTo(paiAgenda)));
     const corServico = (SERVICOS_CALENDARIO.find(s => s.key === prestadorKey) || {}).cor || 'var(--pharm-400)';
     const badgeCorAgenda = h('span', {
       class: 'agenda-cor-badge',
@@ -9123,12 +9200,14 @@ function mapa48hCalcularDataFim(dataInicioISO) {
 // Devolve a marcação em conflito (menos de 72h de intervalo) ou null se a data for válida.
 function mapa48hConflito(novaDataInicio, excludeId) {
   if (!novaDataInicio) return null;
-  const novaTime = new Date(novaDataInicio + 'T00:00:00').getTime();
+  // T12:00 (e não T00:00): na semana da mudança da hora de verão um
+  // intervalo de exatamente 3 dias media 71h e era bloqueado por engano.
+  const novaTime = new Date(novaDataInicio + 'T12:00:00').getTime();
   const limiteMs = MAPA48H_INTERVALO_DIAS * 24 * 60 * 60 * 1000;
   for (const r of STATE.mapa48h) {
     if (r.id === excludeId || !r.dataInicio) continue;
-    const t = new Date(r.dataInicio + 'T00:00:00').getTime();
-    if (Math.abs(novaTime - t) < limiteMs) return r;
+    const t = new Date(r.dataInicio + 'T12:00:00').getTime();
+    if (Math.abs(novaTime - t) < limiteMs - 2 * 60 * 60 * 1000) return r; // folga de 2h para a mudança de hora
   }
   return null;
 }
@@ -9728,7 +9807,7 @@ function aplicarLoteAoState(listKey, registosNovos) {
       if (idx !== -1) lista.splice(idx, 1);
       return;
     }
-    if (idx !== -1) { lista[idx] = registo; return; }
+    if (idx !== -1) { guardarVersaoAnterior(listKey, lista[idx]); lista[idx] = registo; return; }
     if (listKey === 'usuarios') {
       let pos = lista.findIndex(r => String(r.nomeCompleto || '').localeCompare(String(registo.nomeCompleto || '')) > 0);
       if (pos === -1) pos = lista.length;
@@ -10311,6 +10390,107 @@ function verificarLembreteTarefasPendentes() {
   showToast(texto, 'info', { onClick: () => abrirModalGaveta() });
   if (pushGavetaPermitidoNesteDispositivo()) dispararNotificacaoNativa('📋 Lembrete de tarefas pendentes', texto);
 }
+/* ---- Alterações simultâneas em toda a app (2026-09-28) ----
+   Problema: o trinco otimista do dbUpdate comparava com a versão que está
+   em STATE no MOMENTO de gravar — mas o Realtime vai atualizando STATE
+   enquanto um formulário está aberto, por isso o trinco passava sempre e
+   um formulário aberto há minutos repunha, sem aviso, o que um colega
+   tinha acabado de gravar nos campos que nem sequer foram mexidos.
+   Agora cada gravação é uma fusão a 3 vias:
+     base   = versão em que a edição COMEÇOU (o updated_at que o rascunho traz,
+              ou opts.base passado pelo chamador — ex: horários);
+     minha  = o que se está a gravar;
+     deles  = versão atual (servidor/STATE).
+   Campos só meus → gravam-se; só deles → mantêm-se (nunca se repõem);
+   iguais nos dois → nada a fazer; objetos (ex: o horário da semana) →
+   fundem-se célula a célula; o MESMO campo mudado de forma diferente pelos
+   dois → conflito real: nada é gravado e a pessoa é avisada, com os dados
+   já recarregados, para decidir. */
+const VERSOES_ANTERIORES = new Map(); // `${listKey}|${id}|${updatedAt}` → registo nessa versão
+const VERSOES_ANTERIORES_MAX = 400;
+function guardarVersaoAnterior(listKey, registo) {
+  if (!registo || registo.id === undefined || registo.id === null || !registo.updatedAt) return;
+  const chave = `${listKey}|${registo.id}|${registo.updatedAt}`;
+  if (VERSOES_ANTERIORES.has(chave)) VERSOES_ANTERIORES.delete(chave);
+  VERSOES_ANTERIORES.set(chave, registo);
+  while (VERSOES_ANTERIORES.size > VERSOES_ANTERIORES_MAX) VERSOES_ANTERIORES.delete(VERSOES_ANTERIORES.keys().next().value);
+}
+// Antes de substituir uma lista inteira em STATE, guarda as versões que vão ser ultrapassadas.
+function guardarVersoesUltrapassadas(listKey, listaAntiga, listaNova) {
+  if (!Array.isArray(listaAntiga) || !listaAntiga.length || !Array.isArray(listaNova)) return;
+  const novas = new Map(listaNova.map(r => [String(r.id), r.updatedAt]));
+  listaAntiga.forEach(r => { if (r && r.updatedAt && novas.has(String(r.id)) && novas.get(String(r.id)) !== r.updatedAt) guardarVersaoAnterior(listKey, r); });
+}
+const CAMPOS_META_EDICAO = new Set(['id', 'createdAt', 'updatedAt', 'dataEliminacao']);
+// "Quem mexeu por último" muda em todas as gravações — nunca é conflito
+// (fica sempre o de quem grava), mas também nunca justifica gravar sozinho.
+const CAMPOS_AUTORIA_EDICAO = new Set(['ultimaAtualizacaoPor', 'ultimaEdicaoPor', 'ultimaEdicaoEm']);
+function igualProfundo(a, b) {
+  if (a === b) return true;
+  const va = (a === undefined || a === '') ? null : a, vb = (b === undefined || b === '') ? null : b;
+  if (va === vb) return true;
+  if (typeof va !== 'object' || typeof vb !== 'object' || va === null || vb === null) return false;
+  return JSON.stringify(va) === JSON.stringify(vb);
+}
+function ehObjetoSimples(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
+// Fusão a 3 vias de objetos (recursiva; listas contam como um valor só).
+function fundirObjeto3Vias(base, minha, deles, caminho, conflitos) {
+  const b = base || {}, m = minha || {}, d = deles || {};
+  const out = Object.assign({}, d);
+  new Set([...Object.keys(b), ...Object.keys(m), ...Object.keys(d)]).forEach(k => {
+    const vb = b[k], vm = m[k], vd = d[k];
+    if (igualProfundo(vm, vb)) return;            // não mexi — fica o deles
+    if (igualProfundo(vd, vb) || igualProfundo(vm, vd)) {  // só eu mexi (ou chegámos ao mesmo)
+      if (vm === undefined) delete out[k]; else out[k] = vm;
+      return;
+    }
+    if (ehObjetoSimples(vm) && ehObjetoSimples(vd) && (vb === undefined || vb === null || ehObjetoSimples(vb))) {
+      out[k] = fundirObjeto3Vias(vb, vm, vd, caminho.concat(k), conflitos);
+      return;
+    }
+    conflitos.push(caminho.concat(k).join(' › '));
+    out[k] = vd;
+  });
+  return out;
+}
+// Devolve { patch, conflitos } — patch só com o que é preciso gravar.
+function fundirEdicaoConcorrente(base, patch, deles) {
+  const resultado = {}, conflitos = [];
+  Object.keys(patch).forEach(k => {
+    if (CAMPOS_META_EDICAO.has(k)) return;
+    const vm = patch[k], vb = base ? base[k] : undefined, vd = deles ? deles[k] : undefined;
+    if (base && igualProfundo(vm, vb)) return;     // campo que eu não mudei — nunca repor o valor antigo
+    if (igualProfundo(vm, vd)) return;              // já está igual no servidor
+    if (!base || igualProfundo(vd, vb) || CAMPOS_AUTORIA_EDICAO.has(k)) { resultado[k] = vm; return; }
+    if (ehObjetoSimples(vm) && ehObjetoSimples(vd) && (vb === undefined || vb === null || ehObjetoSimples(vb))) {
+      const c = [];
+      const fundido = fundirObjeto3Vias(vb, vm, vd, [k], c);
+      if (c.length) conflitos.push(...c); else if (!igualProfundo(fundido, vd)) resultado[k] = fundido;
+      return;
+    }
+    conflitos.push(k);
+  });
+  // Só autoria (nada de real para gravar) → nada a gravar.
+  if (Object.keys(resultado).every(k => CAMPOS_AUTORIA_EDICAO.has(k))) return { patch: {}, conflitos };
+  return { patch: resultado, conflitos };
+}
+// Versão em que a edição começou: opts.base (explícita) ou a versão
+// guardada com o updated_at que o rascunho traz (formulários copiam o registo).
+function baseDaEdicao(listKey, id, patch, opts, atual) {
+  if (opts && opts.base) return opts.base;
+  if (!patch || !patch.updatedAt || !atual || patch.updatedAt === atual.updatedAt) return null;
+  return VERSOES_ANTERIORES.get(`${listKey}|${id}|${patch.updatedAt}`) || null;
+}
+// Nomes legíveis dos campos em conflito (ex: "dados › A1 › dias › seg" → horário).
+function nomeCampoConflito(c) {
+  const t = String(c).split(' › ')[0];
+  if (t === 'dados') return 'horário';
+  return t.replace(/([A-Z])/g, ' $1').toLowerCase();
+}
+function mensagemConflitoEdicao(conflitos) {
+  const campos = [...new Set(conflitos.map(nomeCampoConflito))].slice(0, 4).join(', ');
+  return `Um colega alterou isto ao mesmo tempo que tu (${campos}). Para não apagar o que ele gravou, a tua alteração NÃO foi guardada — os dados já estão atualizados; confirma e volta a gravar se ainda for preciso.`;
+}
 async function dbFetchOne(listKey, id) {
   if (!sb) return null;
   try {
@@ -10319,14 +10499,29 @@ async function dbFetchOne(listKey, id) {
     return rowToRecord(sanitizarSupabase(data));
   } catch (e) { return null; }
 }
-async function dbUpdate(listKey, id, patch) {
+async function dbUpdate(listKey, id, patch, opts) {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível.'; return null; }
   // Atualização parcial: só envia os campos que realmente mudaram face ao
   // que já está no STATE — nunca o registo completo — para nunca
   // sobrepor, sem querer, uma edição que outro colega tenha feito
   // entretanto no mesmo registo.
   const atual = (STATE[listKey] || []).find(r => r.id === id);
-  const patchFinal = apenasCamposAlterados(atual, patch);
+  // Alterações simultâneas (2026-09-28): se o registo mudou desde que esta
+  // edição começou, funde a 3 vias em vez de repor o que o colega gravou.
+  const baseEdicao = baseDaEdicao(listKey, id, patch, opts, atual);
+  let patchFinal;
+  if (baseEdicao && atual && baseEdicao !== atual && baseEdicao.updatedAt !== atual.updatedAt) {
+    const fusao = fundirEdicaoConcorrente(baseEdicao, patch, atual);
+    if (fusao.conflitos.length) {
+      lastDbError = mensagemConflitoEdicao(fusao.conflitos);
+      showToast(lastDbError, 'error');
+      return null;
+    }
+    patchFinal = fusao.patch;
+  } else {
+    patchFinal = apenasCamposAlterados(atual, patch);
+    CAMPOS_META_EDICAO.forEach(k => { if (k !== 'id') delete patchFinal[k]; });
+  }
   if (atual && Object.keys(patchFinal).length === 0) return atual; // nada mudou de facto — poupa um pedido ao servidor
   // ---- Proteção de edição concorrente (optimistic locking) ----
   // Quando o registo tem updated_at (mapeado automaticamente para
@@ -10366,6 +10561,7 @@ async function dbUpdate(listKey, id, patch) {
       if (error.code === 'PGRST116') {
         const fresco = await dbFetchOne(listKey, id);
         if (fresco) {
+          if (atual) guardarVersaoAnterior(listKey, atual);
           STATE[listKey] = (STATE[listKey] || []).map(r => (r.id === id ? fresco : r));
           // Se os campos que se tentou gravar já batem certo no servidor,
           // o UPDATE afinal teve sucesso — só a confirmação por .single()
@@ -10393,8 +10589,18 @@ async function dbUpdate(listKey, id, patch) {
           // segundo pedido também falhar por lock é que se assume mesmo um
           // conflito real e se mostra o erro ao utilizador.
           if (usaLockOtimista && fresco.updatedAt && fresco.updatedAt !== atual.updatedAt) {
+            // (2026-09-28) Antes repetia às cegas por cima da versão nova;
+            // agora funde primeiro contra ela — só repete se não houver
+            // conflito real (o mesmo campo mudado pelos dois).
+            const fusaoRetry = fundirEdicaoConcorrente(atual, Object.assign({}, atual, patchFinal), fresco);
+            if (fusaoRetry.conflitos.length) {
+              lastDbError = mensagemConflitoEdicao(fusaoRetry.conflitos);
+              showToast(lastDbError, 'error');
+              return null;
+            }
+            if (!Object.keys(fusaoRetry.patch).length) return fresco;
             try {
-              const rowRetry = recordToRow(limparCamposSoUI(listKey, patchFinal));
+              const rowRetry = recordToRow(limparCamposSoUI(listKey, fusaoRetry.patch));
               const { data: dataRetry, error: errorRetry } = await comAutoLimpezaDeColunas(listKey, rowRetry, (row) =>
                 sb.from(TABLES[listKey]).update(row).eq('id', id).eq('updated_at', fresco.updatedAt).select().single());
               if (!errorRetry && dataRetry) {
@@ -10415,6 +10621,7 @@ async function dbUpdate(listKey, id, patch) {
       lastDbError = error.message; console.error(`[Supabase] erro ao atualizar ${listKey}#${id}:`, error.message); return null;
     }
     marcarConexao(true);
+    if (atual) guardarVersaoAnterior(listKey, atual);
     return rowToRecord(data);
   } catch (e) {
     if (erroDeRede(e)) {
@@ -13441,6 +13648,9 @@ const PAGINA_PAI = {
   // Definições
   'hub-definicoes': 'home',
   definicoes: 'hub-definicoes', seguranca: 'hub-definicoes', sobre: 'hub-definicoes',
+  // Personalização vive no hub de Definições (ao lado de Segurança) —
+  // faltava aqui e a seta levava diretamente à Página Inicial (2026-09-28).
+  personalizacao: 'hub-definicoes',
 
   // Chat — item único, sem hub próprio
   chat: 'home',
@@ -16331,7 +16541,7 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
     if (notaAtual && notaAtual.tipo === 'tarefa' && !notaAtual.aplicadoHorario) {
       const resultado = escalaAplicarTarefaPedidoNoHorario(notaAtual);
       if (resultado.ok) {
-        const semanaUpdated = await dbUpdate('escalaSemanas', resultado.semana.id, { dados: resultado.novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() });
+        const semanaUpdated = await dbUpdate('escalaSemanas', resultado.semana.id, { dados: resultado.novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() }, { base: resultado.semana });
         if (semanaUpdated) {
           STATE.escalaSemanas = (STATE.escalaSemanas || []).map(s => s.id === semanaUpdated.id ? semanaUpdated : s);
           patch.aplicadoHorario = true;
@@ -16845,6 +17055,9 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
               b2.addEventListener('click', () => agir(() => trocaResponderColega(troca, false), () => 'Troca recusada.'));
               acoes.push(b1, b2);
             } else if (troca && troca.estado === 'aguarda_direcao' && souDirecaoHorariosGlobal()) {
+              // Tipo de troca sempre visível à Direção, mesmo em recados
+              // antigos (o texto do recado é fixo, isto é calculado ao vivo).
+              acoes.push(trocaTipoBadge(troca));
               const b1 = botaoAcaoGaveta('aprovar', 'Validar troca');
               const b2 = botaoAcaoGaveta('rejeitar', 'Rejeitar');
               b1.addEventListener('click', () => agir(() => trocaDecidirDirecao(troca, true), (res) => res.aplicacao && !res.aplicacao.ok ? `Troca validada. Horário por ajustar à mão: ${res.aplicacao.motivo}.` : 'Troca validada e horário atualizado.'));
@@ -24614,7 +24827,9 @@ function buildDiaEspecialModal(dateISO, evento, onSaved) {
 
 function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
   const overlay = h('div', { class: 'modal-overlay' });
-  function close() { document.removeEventListener('keydown', onKeydown); if (barraSelecaoEl) { barraSelecaoEl.remove(); barraSelecaoEl = null; } overlay.remove(); }
+  let canalTempoRealEvento = null; // Realtime só das vagas deste dia, enquanto o modal está aberto (2026-09-28)
+  let tempoRealEventoTimer = null;
+  function close() { document.removeEventListener('keydown', onKeydown); if (barraSelecaoEl) { barraSelecaoEl.remove(); barraSelecaoEl = null; } desligarTempoRealEvento(); overlay.remove(); }
   function onKeydown(e) { if (e.key === 'Escape') close(); }
   document.addEventListener('keydown', onKeydown);
   overlay.addEventListener('click', (e) => { if (e.target === overlay && cliqueComecouEm(overlay)) close(); });
@@ -24675,6 +24890,57 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     loadingMarc = true; render();
     marcacoes = await dbFetchMarcacoes(currentEvento.id);
     loadingMarc = false; render();
+    ligarTempoRealEvento();
+  }
+  // ---- Dois colegas ao mesmo tempo (2026-09-28) ----
+  // eventos_marcacoes vive fora do Realtime genérico: enquanto este dia
+  // está aberto, subscreve-se SÓ as vagas deste evento (filtro evento_id)
+  // — cada mudança de um colega chega como 1 linha, sem pedidos extra ao
+  // servidor, e é desligado ao fechar o modal.
+  function ligarTempoRealEvento() {
+    if (!sb || !currentEvento || canalTempoRealEvento) return;
+    const eventoId = currentEvento.id;
+    try {
+      canalTempoRealEvento = sb.channel(`evento-vagas-${eventoId}-${Date.now()}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'eventos_marcacoes', filter: `evento_id=eq.${eventoId}` }, (payload) => {
+          const linha = payload.new && Object.keys(payload.new).length ? payload.new : payload.old;
+          if (!linha || linha.id === undefined || linha.id === null) return;
+          const reg = sanitizarSupabase(rowToRecord(linha));
+          const idx = marcacoes.findIndex(m => String(m.id) === String(reg.id));
+          if (payload.eventType === 'DELETE' || reg.eliminado === true) { if (idx !== -1) marcacoes = marcacoes.filter((_, i) => i !== idx); }
+          else if (idx !== -1) marcacoes = marcacoes.map((m, i) => i === idx ? Object.assign({}, m, reg) : m);
+          else marcacoes = [...marcacoes, reg];
+          agendarRedesenhoTempoRealEvento(40);
+        })
+        .subscribe();
+    } catch (e) { canalTempoRealEvento = null; console.warn('[Eventos] tempo real indisponível:', formatarErroSeguro(e)); }
+  }
+  function desligarTempoRealEvento() {
+    if (tempoRealEventoTimer) { clearTimeout(tempoRealEventoTimer); tempoRealEventoTimer = null; }
+    if (canalTempoRealEvento && sb) { try { sb.removeChannel(canalTempoRealEvento); } catch (e) { /* ignora */ } }
+    canalTempoRealEvento = null;
+  }
+  function agendarRedesenhoTempoRealEvento(restantes) {
+    if (tempoRealEventoTimer) clearTimeout(tempoRealEventoTimer);
+    tempoRealEventoTimer = setTimeout(() => {
+      tempoRealEventoTimer = null;
+      if (!overlay.isConnected) { desligarTempoRealEvento(); return; }
+      if (showForm || saving || editingEvento || editandoHoraVagaId || perguntandoMotivo || !modalLivreParaRedesenhar(overlay)) {
+        if (restantes > 0) agendarRedesenhoTempoRealEvento(restantes - 1);
+        return;
+      }
+      selecionadas.forEach(id => { if (!marcacoes.some(m => m.id === id)) selecionadas.delete(id); });
+      render();
+      if (onSaved) onSaved();
+    }, restantes >= 40 ? 300 : 3000);
+  }
+  // Relê as vagas deste dia do servidor (poucas linhas) antes de gravar.
+  async function releMarcacoesDoServidor() {
+    if (!currentEvento) return;
+    const frescas = await dbFetchMarcacoes(currentEvento.id);
+    // dbFetchMarcacoes devolve [] também quando falha — só substitui se veio algo
+    // ou se já não havia nada (evita "apagar" a grelha por falta de rede).
+    if (frescas.length || !marcacoes.length) marcacoes = frescas;
   }
 
   /* ---- Criação do dia ---- */
@@ -25069,7 +25335,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
   function abrirEditarMarcacao(m, slotsPadrao) {
     const ehEncaixe = !slotsPadrao.includes(m.hora);
     formDraft = { hora: m.hora, nomeCliente: m.nomeCliente || '', nFicha: m.nFicha || '', contacto: m.contacto || '', observacoes: m.observacoes || '', aviso: !!m.aviso, estado: m.estado || 'agendada' };
-    formError = ''; showForm = { grupo: m.grupoVaga, hora: m.hora, encaixe: ehEncaixe, vagaId: m.id, editar: true }; render();
+    formError = ''; showForm = { grupo: m.grupoVaga, hora: m.hora, encaixe: ehEncaixe, vagaId: m.id, editar: true, base: m }; render();
   }
   function cancelForm() { showForm = false; formError = ''; render(); }
 
@@ -25095,6 +25361,34 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       formDraft.hora = normalizarHora(formDraft.hora);
       if (!horaFormatoValido(formDraft.hora)) { formError = 'Indica a hora no formato HH:MM (ex: 14:10).'; render(); return; }
       hora = formDraft.hora;
+    }
+    // Dois colegas ao mesmo tempo (2026-09-28): relê as vagas deste dia do
+    // servidor ANTES de gravar (só as deste evento — poucas linhas).
+    saving = true; render();
+    await releMarcacoesDoServidor();
+    saving = false;
+    // Marcar numa vaga livre: se um colega a ocupou/bloqueou entretanto,
+    // pára aqui — antes, a 2.ª gravação escrevia por cima da 1.ª sem aviso.
+    // Vaga da grelha ainda sem linha própria: se entretanto um colega criou
+    // uma linha a essa hora, usa-se essa (se livre) em vez de duplicar.
+    if (!showForm.vagaId && !showForm.encaixe && !showForm.editar) {
+      const existente = marcacoesDoGrupo(showForm.grupo).find(m => normalizarHora(m.hora) === normalizarHora(hora));
+      if (existente) {
+        if (existente.tipoLinha === 'bloqueado' || !vagaVazia(existente)) {
+          formError = `ATENÇÃO: a vaga das ${hora} acabou de ser ${existente.tipoLinha === 'bloqueado' ? 'bloqueada' : `ocupada por um colega (${existente.nomeCliente || 'outra pessoa'})`}. Cancela e escolhe outra vaga.`;
+          render(); return;
+        }
+        showForm.vagaId = existente.id;
+      }
+    }
+    const vagaAlvo = showForm.vagaId ? marcacoes.find(m => m.id === showForm.vagaId) : null;
+    if (showForm.vagaId && !showForm.editar) {
+      if (!vagaAlvo || vagaAlvo.tipoLinha === 'bloqueado' || !vagaVazia(vagaAlvo)) {
+        formError = `ATENÇÃO: a vaga das ${showForm.hora} acabou de ser ${!vagaAlvo ? 'removida' : vagaAlvo.tipoLinha === 'bloqueado' ? 'bloqueada' : `ocupada por um colega (${vagaAlvo.nomeCliente || 'outra pessoa'})`}. Cancela e escolhe outra vaga.`;
+        render(); return;
+      }
+    }
+    if (showForm.encaixe || showForm.editar) {
       const colide = marcacoesDoGrupo(showForm.grupo).some(m => m.hora === hora && m.id !== showForm.vagaId);
       if (colide) { formError = `ATENÇÃO: já existe uma vaga às ${hora} neste grupo. Escolhe outra hora.`; render(); return; }
     }
@@ -25122,10 +25416,40 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     if (showForm.editar) payload.estado = formDraft.estado || 'agendada';
     // Se já existe uma vaga pré-criada vazia para esta hora, atualiza-a em
     // vez de inserir outra linha — evita duplicar o slot na base de dados.
+    // Trinco otimista (updated_at): se a vaga mudou no servidor entre a
+    // releitura acima e esta gravação, a gravação é recusada em vez de
+    // escrever por cima do que o colega acabou de gravar.
+    // Editar uma marcação que um colega alterou entretanto: grava só o que
+    // eu mudei; se mudámos os dois o mesmo campo, não grava e avisa.
+    let payloadFinal = payload;
+    if (showForm.editar && showForm.base && vagaAlvo && vagaAlvo.updatedAt !== showForm.base.updatedAt) {
+      const fusao = fundirEdicaoConcorrente(showForm.base, payload, vagaAlvo);
+      if (fusao.conflitos.length) { saving = false; formError = mensagemConflitoEdicao(fusao.conflitos); render(); return; }
+      payloadFinal = fusao.patch;
+      if (!Object.keys(payloadFinal).length) { saving = false; showForm = false; render(); return; }
+    }
     const created = showForm.vagaId
-      ? await dbUpdateMarcacao(showForm.vagaId, payload)
-      : await dbInsertMarcacao(payload);
+      ? await dbUpdateMarcacao(showForm.vagaId, payloadFinal, vagaAlvo && vagaAlvo.updatedAt ? vagaAlvo.updatedAt : undefined)
+      : await dbInsertMarcacao(payloadFinal);
     saving = false;
+    if (!created && showForm.vagaId) {
+      await releMarcacoesDoServidor();
+      formError = 'ATENÇÃO: esta vaga foi alterada por um colega no mesmo instante — nada foi gravado. Cancela e confirma a grelha atualizada.';
+      render();
+      return;
+    }
+    if (created && !showForm.vagaId && created.hora) {
+      // Encaixe novo: se no mesmo instante um colega criou outro à MESMA
+      // hora neste grupo, fica o que foi gravado primeiro (id mais baixo).
+      await releMarcacoesDoServidor();
+      const anterior = marcacoes.find(m => m.id !== created.id && Number(m.id) < Number(created.id) && m.hora === created.hora && (m.grupoVaga || 'principal') === (created.grupoVaga || 'principal'));
+      if (anterior && await dbDeleteMarcacao(created.id)) {
+        marcacoes = marcacoes.filter(m => m.id !== created.id);
+        formError = `ATENÇÃO: um colega acabou de criar uma vaga/marcação às ${created.hora} neste grupo — esta não ficou gravada. Escolhe outra hora.`;
+        render();
+        return;
+      }
+    }
     if (created) {
       const horaAntiga = showForm.hora;
       marcacoes = showForm.vagaId ? marcacoes.map(x => x.id === created.id ? created : x) : [...marcacoes, created];
@@ -27112,7 +27436,7 @@ function buildDocA4(conteudoKids, rodapeNode, extraClass) {
 // só na 1ª página, <thead> da tabela repetido em todas, altura de linha
 // fixa (para o cálculo de quantas linhas cabem ser garantido, não
 // estimado), e um rodapé opcional (ex: assinatura) só na ÚLTIMA página.
-function buildListaMultiPaginaDoc({ cabecalho, colunas, linhas, linhasPrimeira, linhasResto, semDadosTexto, rodapeFinal, linhaTotalFinal, linhaTotalFinalNode }) {
+function buildListaMultiPaginaDoc({ cabecalho, colunas, linhas, linhasPrimeira, linhasResto, semDadosTexto, rodapeFinal, linhaTotalFinal, linhaTotalFinalNode, pesosLinhas }) {
   const bordaCel = 'border:1px solid #94a3b8;padding:3px 5px;font-size:9.5px;color:#000;height:20px;';
   function buildThead() {
     return h('thead', {}, h('tr', {}, colunas.map(c =>
@@ -27135,9 +27459,23 @@ function buildListaMultiPaginaDoc({ cabecalho, colunas, linhas, linhasPrimeira, 
     ]);
   }
   const blocos = [];
-  let resto = linhas.slice();
-  blocos.push(resto.splice(0, linhasPrimeira));
-  while (resto.length) blocos.push(resto.splice(0, linhasResto));
+  if (Array.isArray(pesosLinhas) && pesosLinhas.length === linhas.length) {
+    // Opcional (2026-09-28): linhas que ocupam mais do que 1 linha de
+    // altura (ex: Observações por extenso a quebrar em 2-3 linhas) contam
+    // pelo seu "peso" — a página enche por capacidade, nunca por nº de
+    // linhas, para nada ficar cortado. Sem pesosLinhas, tudo como antes.
+    let atual = [], usado = 0, capacidade = linhasPrimeira;
+    linhas.forEach((ln, i) => {
+      const peso = Math.max(1, Math.ceil(Number(pesosLinhas[i]) || 1));
+      if (atual.length && usado + peso > capacidade) { blocos.push(atual); atual = []; usado = 0; capacidade = linhasResto; }
+      atual.push(ln); usado += peso;
+    });
+    if (atual.length) blocos.push(atual);
+  } else {
+    let resto = linhas.slice();
+    blocos.push(resto.splice(0, linhasPrimeira));
+    while (resto.length) blocos.push(resto.splice(0, linhasResto));
+  }
   const paginasHtml = blocos.map((bloco, i) => {
     const ultima = i === blocos.length - 1;
     const filhos = i === 0 ? [...cabecalho] : [];
@@ -31239,7 +31577,7 @@ function escalaInstalarInteracaoTurno(opts) {
     const atual = novoDados[codigoVaga].dias[diaKey];
     Object.assign(atual, campos);
     atual.horas = escalaCalcularHorasComPausa(atual.entrada, atual.saida, atual.pausaInicio || '', atual.pausaFim || '');
-    const updated = await dbUpdate('escalaSemanas', semana.id, { dados: novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() });
+    const updated = await dbUpdate('escalaSemanas', semana.id, { dados: novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() }, { base: semana });
     if (updated) STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
     else showToast(`Não foi possível guardar. ${escalaMensagemErroAmigavel(lastDbError)}`, 'error');
     rerenderFn();
@@ -31573,6 +31911,11 @@ const ESCALA_TAREFAS_ESPECIAIS = [
   // várias pessoas em simultâneo (não é uma tarefa exclusiva, ver TIPOS_TAREFA_SEM_SOBREPOSICAO). O Grupo B
   // (Backoffice — B1/B2) recebe-a automaticamente — períodos configuráveis por posição em Gerir Posições (ver escalaReposicaoAutoDaPosicao).
   { key: 'reposicao', label: 'Reposição', icon: '🧴', cor: { bg: '#ecfccb', border: '#bef264', text: '#3f6212' } },
+  // "Vacinação" (pedido de Hugo, 2026-09-28): quem é Responsável pela
+  // Vacinação nesse período. Comunica sozinha com o módulo Vacinação
+  // (só neste sentido: Gerador → Vacinação) — ver vacinacaoResponsaveisDoHorario.
+  // Pode haver várias pessoas em simultâneo (não é exclusiva).
+  { key: 'vacinacao', label: 'Vacinação', icon: '💉', cor: { bg: '#e0f2fe', border: '#7dd3fc', text: '#075985' } },
   { key: 'reuniao', label: 'Reunião', icon: '📅', cor: { bg: '#fce7f3', border: '#f9a8d4', text: '#9d174d' } },
   // "Formação" (pedido explícito de Paulo, 2026-08-19): única tarefa cujo
   // Início/Fim pode variar de 15 em 15 minutos (ver GRANULARIDADE_MINUTOS_FORMACAO
@@ -31597,6 +31940,7 @@ function escalaTarefaInfo(tipoKey) { return ESCALA_TAREFAS_ESPECIAIS.find(t => t
 function escalaTarefaLabel(t, info) {
   if (t.tipo === 'outro') return t.outro || 'Outro';
   if (t.tipo === 'reposicao') return t.outro ? `Reposição (${t.outro})` : 'Reposição';
+  if (t.tipo === 'vacinacao') return t.outro ? `Vacinação (${t.outro})` : 'Vacinação';
   if (t.tipo === 'formacao') {
     const detalhe = [t.marca, t.gama].filter(Boolean).join(' — ');
     return detalhe ? `Formação (${detalhe})` : 'Formação';
@@ -31635,10 +31979,25 @@ const ESCALA_TAREFAS_MANUAIS_PEDIVEIS = ESCALA_TAREFAS_ESPECIAIS.filter(t => ['c
 function escalaTarefasDoDia(dia) {
   if (!dia) return [];
   if (Array.isArray(dia.tarefas) && dia.tarefas.length) {
-    return dia.tarefas.filter(t => t && t.tipo).slice(0, 3);
+    return dia.tarefas.filter(t => t && t.tipo).slice(0, 3).map(escalaNormalizarTarefaVacinacao);
   }
-  if (dia.tarefaTipo) return [{ tipo: dia.tarefaTipo, outro: dia.tarefaOutro || '', inicio: dia.tarefaInicio || '', fim: dia.tarefaFim || '' }];
+  if (dia.tarefaTipo) return [escalaNormalizarTarefaVacinacao({ tipo: dia.tarefaTipo, outro: dia.tarefaOutro || '', inicio: dia.tarefaInicio || '', fim: dia.tarefaFim || '' })];
   return [];
+}
+// Antes de existir a tarefa "Vacinação" (2026-09-28), o Paulo marcou os
+// Responsáveis pela Vacinação como "Outro" com o texto "Vacinação" (ou
+// parecido). Essas tarefas passam a ser lidas como Vacinação em toda a app
+// (também nas semanas passadas, que nunca se reescrevem); nas semanas por
+// vir são convertidas de vez no horário (escalaMigrarTarefasOutroVacinacao).
+function escalaTextoEhVacinacao(texto) {
+  return /vacin/.test(normalizarTexto(texto || ''));
+}
+function escalaNormalizarTarefaVacinacao(t) {
+  if (!t || t.tipo !== 'outro' || !escalaTextoEhVacinacao(t.outro)) return t;
+  const detalhe = String(t.outro || '').trim();
+  // "Vacinação"/"Vacinas"/"Vacinação Gripe e COVID" — fica só o detalhe que acrescente algo.
+  const soNome = /^(responsavel(\s+(pela|de|da))?\s+)?vacin(acao|as|a)?\.?$/.test(normalizarTexto(detalhe));
+  return Object.assign({}, t, { tipo: 'vacinacao', outro: soNome ? '' : detalhe });
 }
 // CRIADO 2026-08-29 (BUG GRAVE encontrado ao verificar a pedido de Hugo
 // "confirma pf que tudo funciona na perfeição" — esta função vivia SÓ
@@ -31979,6 +32338,7 @@ const ESCALA_FAMILIAS_TAREFA_HOME = [
   { chave: 'encomenda', tipos: ['encomenda_manha', 'encomenda_tarde', 'encomenda'], label: 'Encomenda' },
   { chave: 'conferencia', tipos: ['conferencia'], label: 'Conferência' },
   { chave: 'reuniao', tipos: ['reuniao'], label: 'Reunião' },
+  { chave: 'vacinacao', tipos: ['vacinacao'], label: 'Vacinação' },
   { chave: 'outro', tipos: ['outro'], label: 'Outro' },
 ];
 function escalaTarefasHojeEquipa() {
@@ -32659,6 +33019,84 @@ function colaboradoresElegiveisTarefaGeral() {
 }
 // Devolve a lista certa consoante o tipo de tarefa — só Chefe de Turno/
 // Encomendas ficam restritos a Farmacêuticos/Direção Técnica.
+// ---- Tarefa "Vacinação" → módulo Vacinação (2026-09-28) ----
+// Responsáveis pela Vacinação definidos no Gerador de Horário (tarefa
+// "Vacinação", ou os "Outro: Vacinação" antigos) para um dia. Só LÊ o
+// horário — o módulo Vacinação usa isto junto com os seus próprios
+// Responsáveis; nada do que se define no módulo Vacinação escreve no
+// horário (sentido único, pedido de Hugo). Conta com rascunhos também
+// (é planeamento da Direção), e segue sempre a rotação real do Grupo B.
+function vacinacaoResponsaveisDoHorario(dateISO) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateISO || ''))) return [];
+  const semana = escalaSemanaPorInicio(escalaSegundaFeiraDaSemanaDeISO(dateISO));
+  if (!semana || !semana.dados) return [];
+  const diaInfo = ESCALA_DIAS.find(d => escalaDataDoDia(semana.semanaInicio, d.key) === dateISO);
+  if (!diaInfo) return [];
+  const rotB = {};
+  try { escalaAtribuirGrupoBParaDia(dateISO).atribuicoes.forEach(a => { rotB[a.codigo] = a; }); } catch (e) { /* sem rotação — usa a legenda */ }
+  const out = [];
+  Object.keys(semana.dados).forEach(codigo => {
+    const linha = semana.dados[codigo];
+    const dia = linha && linha.dias ? linha.dias[diaInfo.key] : null;
+    if (!dia || dia.tipo !== 'normal') return;
+    const b = rotB[codigo];
+    // Ocupante real da posição nesse dia (trocas validadas e rotação do Grupo B incluídas).
+    const colaboradorId = escalaOcupanteRealDoCodigo(semana.dados, codigo, diaInfo.key, dateISO);
+    if (!colaboradorId) return;
+    if (escalaAusenciaDoDia(colaboradorId, dateISO)) return; // de férias/baixa nesse dia — não conta
+    const u = colaboradorId ? (STATE.usuarios || []).find(x => String(x.id) === String(colaboradorId)) : null;
+    const nome = (u && (u.nomeCompleto || u.username)) || dia.colaboradorNome || (b && b.colaboradorNome) || (linha && linha.colaboradorNome) || '';
+    if (!nome) return;
+    escalaTarefasDoDia(dia).forEach(t => {
+      if (t.tipo !== 'vacinacao') return;
+      const inicio = t.inicio || dia.entrada || '';
+      const fim = t.fim || dia.saida || '';
+      out.push({
+        id: `horario-${semana.id}-${codigo}-${diaInfo.key}-${inicio}`, origem: 'horario', colaboradorId, nome,
+        dataInicio: dateISO, dataFim: dateISO, horaInicio: inicio, horaFim: fim === '00:00' ? '24:00' : fim, detalhe: t.outro || '',
+        semanaEstado: semana.estado,
+      });
+    });
+  });
+  return out.sort((a, b) => (a.horaInicio || '').localeCompare(b.horaInicio || ''));
+}
+// Converte de vez, nas semanas de hoje em diante, as tarefas "Outro"
+// com texto de vacinação em tarefas "Vacinação" (as semanas passadas nunca
+// se reescrevem — lá a conversão é só na leitura, ver
+// escalaNormalizarTarefaVacinacao). Corre sozinha quando o Hugo/Paulo abrem
+// Horários; não faz nada se não houver nada para converter.
+let escalaMigracaoVacinacaoFeita = false;
+async function escalaMigrarTarefasOutroVacinacao() {
+  if (escalaMigracaoVacinacaoFeita) return;
+  escalaMigracaoVacinacaoFeita = true;
+  const hojeSeg = escalaSegundaFeiraDaSemanaDeISO(todayISO());
+  const converter = (t) => (t && t.tipo === 'outro' && escalaTextoEhVacinacao(t.outro)) ? escalaNormalizarTarefaVacinacao(t) : t;
+  let convertidas = 0;
+  for (const semana of (STATE.escalaSemanas || []).filter(sm => !sm.eliminado && sm.semanaInicio >= hojeSeg && sm.dados)) {
+    const dados = JSON.parse(JSON.stringify(semana.dados));
+    let mudou = false;
+    Object.keys(dados).forEach(codigo => {
+      const dias = (dados[codigo] && dados[codigo].dias) || {};
+      Object.keys(dias).forEach(dk => {
+        const dia = dias[dk];
+        if (!dia) return;
+        if (Array.isArray(dia.tarefas)) {
+          dia.tarefas = dia.tarefas.map(t => { const n = converter(t); if (n !== t) { mudou = true; convertidas += 1; } return n; });
+        }
+        if (dia.tarefaTipo === 'outro' && escalaTextoEhVacinacao(dia.tarefaOutro)) {
+          const n = escalaNormalizarTarefaVacinacao({ tipo: 'outro', outro: dia.tarefaOutro });
+          dia.tarefaTipo = 'vacinacao'; dia.tarefaOutro = n.outro; mudou = true;
+          if (!Array.isArray(dia.tarefas)) convertidas += 1;
+        }
+      });
+    });
+    if (!mudou) continue;
+    const updated = await dbUpdate('escalaSemanas', semana.id, { dados }, { base: semana });
+    if (updated) STATE.escalaSemanas = STATE.escalaSemanas.map(sm => sm.id === semana.id ? updated : sm);
+    else { escalaMigracaoVacinacaoFeita = false; return; } // tenta de novo numa próxima abertura
+  }
+  if (convertidas) showToast(`${convertidas} tarefa${convertidas > 1 ? 's' : ''} "Outro — Vacinação" convertida${convertidas > 1 ? 's' : ''} na nova tarefa Vacinação 💉.`, 'success');
+}
 function colaboradoresElegiveisParaTipoTarefa(tipo) {
   return TIPOS_TAREFA_SEM_SOBREPOSICAO.includes(tipo) ? colaboradoresElegiveisTarefaEspecial() : colaboradoresElegiveisTarefaGeral();
 }
@@ -34105,7 +34543,7 @@ async function escalaRecalcularDadosSemana(semana, opts) {
   // a grelha de um horário que a equipa já vê como oficial sem primeiro
   // deixar de o ser.
   if (opts && opts.despublicar) Object.assign(campos, { estado: 'rascunho', publicadoEm: null, publicadoPor: null });
-  const updated = await dbUpdate('escalaSemanas', semana.id, campos);
+  const updated = await dbUpdate('escalaSemanas', semana.id, campos, { base: semana });
   if (!updated) return { semana: null, vagasLibertadas: [], vagasComCobertura: [] };
   STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
   return { semana: updated, vagasLibertadas, vagasComCobertura };
@@ -34768,10 +35206,10 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     bloco.tarefaSelect.closest('.field').style.display = visivel ? '' : 'none';
     const temTarefa = visivel && !!bloco.tarefaSelect.value;
     const tipoTarefaBloco = bloco.tarefaSelect.value;
-    bloco.tarefaOutroInput.closest('.field').style.display = (temTarefa && (tipoTarefaBloco === 'outro' || tipoTarefaBloco === 'reposicao')) ? '' : 'none';
+    bloco.tarefaOutroInput.closest('.field').style.display = (temTarefa && (tipoTarefaBloco === 'outro' || tipoTarefaBloco === 'reposicao' || tipoTarefaBloco === 'vacinacao')) ? '' : 'none';
     // Reposição: o mesmo campo passa a ser o LOCAL (opcional); Outro: a descrição (obrigatória).
-    if (bloco.tarefaOutroLabel) bloco.tarefaOutroLabel.textContent = tipoTarefaBloco === 'reposicao' ? 'Local da Reposição (opcional — ex: Armazém, Frontoffice)' : 'Qual? (Outro)';
-    bloco.tarefaOutroInput.placeholder = tipoTarefaBloco === 'reposicao' ? 'Ex: Armazém, Frontoffice da farmácia...' : 'Escreve a tarefa...';
+    if (bloco.tarefaOutroLabel) bloco.tarefaOutroLabel.textContent = tipoTarefaBloco === 'reposicao' ? 'Local da Reposição (opcional — ex: Armazém, Frontoffice)' : tipoTarefaBloco === 'vacinacao' ? 'Detalhe (opcional — ex: só Gripe)' : 'Qual? (Outro)';
+    bloco.tarefaOutroInput.placeholder = tipoTarefaBloco === 'reposicao' ? 'Ex: Armazém, Frontoffice da farmácia...' : tipoTarefaBloco === 'vacinacao' ? 'Ex: só Gripe, apoio...' : 'Escreve a tarefa...';
     bloco.tarefaMarcaInput.closest('.field').style.display = (temTarefa && bloco.tarefaSelect.value === 'formacao') ? '' : 'none';
     bloco.tarefaGamaInput.closest('.field').style.display = (temTarefa && bloco.tarefaSelect.value === 'formacao') ? '' : 'none';
     bloco.tarefaInicioInput.closest('.field').style.display = temTarefa ? '' : 'none';
@@ -34900,7 +35338,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
         const tipoT = bloco.tarefaSelect.value;
         if (!tipoT) continue;
         let outroT = '', marcaT = '', gamaT = '';
-        if (tipoT === 'reposicao') outroT = bloco.tarefaOutroInput.value.trim(); // Local: opcional
+        if (tipoT === 'reposicao' || tipoT === 'vacinacao') outroT = bloco.tarefaOutroInput.value.trim(); // Local/Detalhe: opcional
         if (tipoT === 'outro') {
           outroT = bloco.tarefaOutroInput.value.trim();
           if (!outroT) {
@@ -35089,7 +35527,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       overrideDisponibilidade: (overrideAtivo && tipo === 'normal' && !!ausenciaCelula) || undefined,
     };
     saving = true; guardarBtn.disabled = true; guardarBtn.textContent = 'A guardar…';
-    const updated = await dbUpdate('escalaSemanas', semana.id, { dados: novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() });
+    const updated = await dbUpdate('escalaSemanas', semana.id, { dados: novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() }, { base: semana });
     saving = false;
     if (updated) {
       STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
@@ -35212,7 +35650,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     novoDados[codigoVaga].dias[diaKey] = dia1Novo;
     novoDados[codigo2].dias[diaKey] = dia2Novo;
     saving = true; guardarBtn.disabled = true;
-    const updated = await dbUpdate('escalaSemanas', semana.id, { dados: novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() });
+    const updated = await dbUpdate('escalaSemanas', semana.id, { dados: novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() }, { base: semana });
     saving = false;
     if (updated) {
       STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
@@ -35427,14 +35865,52 @@ function trocaParteDoTurno(dataISO, uid, inicio, fim) {
     horas: Math.round((minutos / 60) * 100) / 100, completo: iniMin === turnoIni && fimMin === turnoFim,
   };
 }
+// Tipo de troca (2026-09-28, Hugo: "o pedido que surge ao Paulo não
+// especifica se é uma troca de turno direta (total das horas)"): diz
+// logo à cabeça se é troca DIRETA de turno(s) completo(s) — todas as horas
+// do turno, aplicada sozinha ao horário ao validar — ou só PARCIAL (parte
+// do turno, horário ajustado à mão). Usa o completoA/completoB gravados
+// na proposta (fonte de verdade no momento em que foi feita).
+function trocaEhDiretaTurnoCompleto(t) {
+  return !!t && !!t.completoA && (!t.diaB || !!t.completoB);
+}
+function trocaTipoTexto(t) {
+  if (!t) return '';
+  const dif = Math.abs(Number(t.diferenca) || 0);
+  if (trocaEhDiretaTurnoCompleto(t)) {
+    if (!t.diaB) return `Cedência de turno completo (total das horas: ${trocasHorasTexto(t.horasA)}), sem turno em troca`;
+    return dif < 0.01
+      ? `Troca direta de turnos completos (total das horas: ${trocasHorasTexto(t.horasA)} ↔ ${trocasHorasTexto(t.horasB)})`
+      : `Troca direta de turnos completos, com horas diferentes (${trocasHorasTexto(t.horasA)} ↔ ${trocasHorasTexto(t.horasB)})`;
+  }
+  return 'Troca parcial — só parte do turno (horário a ajustar à mão depois de validar)';
+}
+// Horas do turno COMPLETO dessa pessoa nesse dia (para "Xh de Yh"), ou null
+// se já não for possível saber (ex: troca já aplicada ao horário).
+function trocaHorasTurnoCompleto(dataISO, uid) {
+  try { const info = trocaParteDoTurno(dataISO, uid); return info && !info.erro ? info.horas : null; } catch (e) { return null; }
+}
+function trocaParteTexto(completo, horas, dataISO, uid) {
+  if (completo) return `turno completo, ${trocasHorasTexto(horas)}`;
+  const total = trocaHorasTurnoCompleto(dataISO, uid);
+  return total ? `parte do turno: ${trocasHorasTexto(horas)} de ${trocasHorasTexto(total)}` : `parte do turno: ${trocasHorasTexto(horas)}`;
+}
 function trocaDescricao(t) {
   const a = trocasNomeUtilizador(t.autorId), c = trocasNomeUtilizador(t.colegaId);
-  const parteA = `${c} faz o turno de ${a} de ${formatDate(t.diaA)} (${t.inicioA}–${t.fimA}, ${trocasHorasTexto(t.horasA)})`;
-  const parteB = t.diaB ? `; ${a} faz o turno de ${c} de ${formatDate(t.diaB)} (${t.inicioB}–${t.fimB}, ${trocasHorasTexto(t.horasB)})` : ` (${a} não faz nenhum turno de ${c} em troca)`;
+  const parteA = `${c} faz o turno de ${a} de ${formatDate(t.diaA)} (${t.inicioA}–${t.fimA}, ${trocaParteTexto(t.completoA, t.horasA, t.diaA, t.autorId)})`;
+  const parteB = t.diaB ? `; ${a} faz o turno de ${c} de ${formatDate(t.diaB)} (${t.inicioB}–${t.fimB}, ${trocaParteTexto(t.completoB, t.horasB, t.diaB, t.colegaId)})` : ` (${a} não faz nenhum turno de ${c} em troca)`;
   const dif = Number(t.diferenca) || 0;
   const resultado = Math.abs(dif) < 0.01 ? ' — troca equilibrada, ninguém fica a dever.'
     : ` — ${dif > 0 ? a : c} fica a dever ${trocasHorasTexto(dif)} a ${dif > 0 ? c : a}.`;
-  return parteA + parteB + resultado;
+  return `[${trocaTipoTexto(t)}] ` + parteA + parteB + resultado;
+}
+// Etiqueta visual do tipo de troca (cartões da Direção e Gaveta).
+function trocaTipoBadge(t) {
+  const direta = trocaEhDiretaTurnoCompleto(t);
+  return h('span', {
+    class: 'badge ' + (direta ? 'badge-green' : 'badge-orange'),
+    style: 'align-self:flex-start;white-space:normal;',
+  }, direta ? (t.diaB ? '🔁 TROCA DIRETA · TURNO COMPLETO' : '➡️ CEDÊNCIA · TURNO COMPLETO') : '✂️ TROCA PARCIAL · PARTE DO TURNO');
 }
 function trocaEstadoTexto(t) {
   return ({ aguarda_colega: 'Aguarda resposta do colega', aguarda_direcao: 'Aguarda validação da Direção', validada: 'Validada', rejeitada: 'Rejeitada pela Direção', recusada_colega: 'Recusada pelo colega', anulada: 'Anulada' })[t.estado] || t.estado;
@@ -35544,7 +36020,7 @@ async function trocaAplicarNoHorario(t) {
     }
   });
   for (const { semana, dados } of porSemana.values()) {
-    const updated = await dbUpdate('escalaSemanas', semana.id, { dados });
+    const updated = await dbUpdate('escalaSemanas', semana.id, { dados }, { base: semana });
     if (!updated) return { ok: false, motivo: `não foi possível gravar o horário (${lastDbError || 'ligação'})` };
     STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === updated.id ? updated : s);
   }
@@ -35568,7 +36044,7 @@ async function trocaDesfazerNoHorario(t) {
       });
     });
     if (mudou) {
-      const updated = await dbUpdate('escalaSemanas', sem.id, { dados });
+      const updated = await dbUpdate('escalaSemanas', sem.id, { dados }, { base: sem });
       if (!updated) return { ok: false };
       STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === updated.id ? updated : s);
     }
@@ -35733,7 +36209,7 @@ async function formacaoSincronizarHorario(formacao, opts) {
   // 3) grava só as semanas que mudaram
   for (const { semana, dados } of trabalho.values()) {
     if (JSON.stringify(dados) === JSON.stringify(semana.dados || {})) continue;
-    const updated = await dbUpdate('escalaSemanas', semana.id, { dados });
+    const updated = await dbUpdate('escalaSemanas', semana.id, { dados }, { base: semana });
     if (!updated) { relatorio.erroGravacao = lastDbError || 'falha ao gravar o horário'; break; }
     STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === updated.id ? updated : s);
   }
@@ -35822,6 +36298,9 @@ function abrirModalProporTroca(rerender) {
       if (!infoA.erro && (!st.comB || (infoB && !infoB.erro)) && st.colegaId) {
         const dif = Math.round((infoA.horas - (st.comB ? infoB.horas : 0)) * 100) / 100;
         const nomeColega = trocasNomeUtilizador(st.colegaId);
+        // Tipo de troca visível já na proposta (2026-09-28) — o mesmo que a Direção vai ver.
+        const previa = { completoA: infoA.completo, horasA: infoA.horas, diaB: st.comB ? st.diaB : null, completoB: st.comB ? infoB.completo : null, horasB: st.comB ? infoB.horas : 0, diferenca: dif };
+        corpo.appendChild(h('div', { style: 'display:flex;flex-direction:column;gap:4px;margin:4px 0 6px;' }, [trocaTipoBadge(previa), h('span', { class: 'field-helper-text', style: 'margin:0;' }, trocaTipoTexto(previa))]));
         corpo.appendChild(h('p', { style: `margin:4px 0 12px;font-weight:700;color:${Math.abs(dif) < 0.01 ? '#15803d' : '#b45309'};` },
           Math.abs(dif) < 0.01 ? 'Troca equilibrada — ninguém fica a dever.' : (dif > 0 ? `Ficas a dever ${trocasHorasTexto(dif)} a ${nomeColega}.` : `${nomeColega} fica a dever-te ${trocasHorasTexto(dif)}.`)));
       }
@@ -35950,7 +36429,7 @@ function buildVistaGestaoTrocas(rerender) {
     const r = h('button', { class: 'btn btn-secondary', type: 'button', style: 'font-size:12px;padding:5px 10px;' }, iconeTexto('x', 'Rejeitar', { tom: 'nao' }));
     const decidir = (sim) => requireAuth(async () => { const res = await trocaDecidirDirecao(t, sim); if (res.erro) showToast(res.erro, 'error'); else { showToast(sim ? (res.aplicacao && !res.aplicacao.ok ? `Troca validada. Horário por ajustar à mão: ${res.aplicacao.motivo}.` : 'Troca validada e horário atualizado.') : 'Troca rejeitada.', sim && res.aplicacao && !res.aplicacao.ok ? 'info' : 'success'); rerender(); } });
     v.addEventListener('click', () => decidir(true)); r.addEventListener('click', () => decidir(false));
-    itens.push(h('div', { style: 'padding:10px;border:1px solid #fde2c4;border-radius:10px;background:#fffaf3;font-size:13px;display:flex;flex-direction:column;gap:6px;' }, [h('span', {}, trocaDescricao(t)), t.nota ? h('span', { class: 'cell-muted' }, `Nota: ${t.nota}`) : null, h('div', { style: 'display:flex;gap:6px;' }, [v, r])]));
+    itens.push(h('div', { style: 'padding:10px;border:1px solid #fde2c4;border-radius:10px;background:#fffaf3;font-size:13px;display:flex;flex-direction:column;gap:6px;' }, [trocaTipoBadge(t), h('span', {}, trocaDescricao(t)), t.nota ? h('span', { class: 'cell-muted' }, `Nota: ${t.nota}`) : null, h('div', { style: 'display:flex;gap:6px;' }, [v, r])]));
   });
   pendMov.forEach(m => {
     const v = h('button', { class: 'btn btn-primary', type: 'button', style: 'font-size:12px;padding:5px 10px;' }, iconeTexto('check', 'Validar'));
@@ -36108,7 +36587,7 @@ function buildHorariosPage(container, goTo) {
     novoDados[codigo].dias[diaKey][campoCorrigido] = valorNum;
     novoDados[codigo].dias[diaKey].correcaoBancoHePor = currentUserName();
     novoDados[codigo].dias[diaKey].correcaoBancoHeEm = new Date().toISOString();
-    const updated = await dbUpdate('escalaSemanas', semana.id, { dados: novoDados });
+    const updated = await dbUpdate('escalaSemanas', semana.id, { dados: novoDados }, { base: semana });
     correcaoBancoHeSaving = false;
     if (updated) {
       STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
@@ -36349,6 +36828,7 @@ function buildHorariosPage(container, goTo) {
   // feriasDraft/feriasError/feriasSaving/feriasConflitosPendentes já
   // existentes — só controla se o modal está visível.
   let mostrarModalMarcacaoFerias = false;
+  let feriasEdicaoBase = null;
   // Modal de Definições Avançadas (⚙️ Configurações) — concentra Limites
   // de Sobreposição/Exceções, Feriados, Reuniões do Grupo e a Tabela Base
   // de Rotações; só visível/acessível ao Diretor Técnico/Administrador.
@@ -37083,7 +37563,7 @@ function buildHorariosPage(container, goTo) {
     if (novoEstado && nota.tipo === 'tarefa' && !nota.aplicadoHorario) {
       const resultado = escalaAplicarTarefaPedidoNoHorario(nota);
       if (resultado.ok) {
-        const semanaUpdated = await dbUpdate('escalaSemanas', resultado.semana.id, { dados: resultado.novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() });
+        const semanaUpdated = await dbUpdate('escalaSemanas', resultado.semana.id, { dados: resultado.novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() }, { base: resultado.semana });
         if (semanaUpdated) {
           STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semanaUpdated.id ? semanaUpdated : s);
           patch.aplicadoHorario = true;
@@ -37104,7 +37584,7 @@ function buildHorariosPage(container, goTo) {
     if (!novoEstado && nota.tipo === 'tarefa' && nota.aplicadoHorario) {
       const resultado = escalaRemoverTarefaPedidoDoHorario(nota);
       if (resultado.ok) {
-        const semanaUpdated = await dbUpdate('escalaSemanas', resultado.semana.id, { dados: resultado.novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() });
+        const semanaUpdated = await dbUpdate('escalaSemanas', resultado.semana.id, { dados: resultado.novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() }, { base: resultado.semana });
         if (semanaUpdated) {
           STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semanaUpdated.id ? semanaUpdated : s);
         } else {
@@ -38558,7 +39038,7 @@ function buildHorariosPage(container, goTo) {
       escalaPlanearTarefasComunsDia(semana, d, novoDados, resumo);
       escalaAtribuirReposicaoBackofficeDia(semana, d, novoDados, resumo);
     });
-    const updated = await dbUpdate('escalaSemanas', semana.id, { dados: novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() });
+    const updated = await dbUpdate('escalaSemanas', semana.id, { dados: novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() }, { base: semana });
     if (updated) {
       STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
       tarefasComunsResumo = { semanaId: semana.id, ...resumo };
@@ -38678,7 +39158,7 @@ function buildHorariosPage(container, goTo) {
       tarefaTipo: primeiraTarefa.tipo, tarefaOutro: primeiraTarefa.outro, tarefaInicio: primeiraTarefa.inicio, tarefaFim: primeiraTarefa.fim,
     };
     atribuicaoRapidaSaving = true; rerender();
-    dbUpdate('escalaSemanas', semana.id, { dados: novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() }).then(updated => {
+    dbUpdate('escalaSemanas', semana.id, { dados: novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() }, { base: semana }).then(updated => {
       atribuicaoRapidaSaving = false;
       if (updated) {
         STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
@@ -38720,7 +39200,7 @@ function buildHorariosPage(container, goTo) {
     // Editor de Dia. Formação continua de fora de propósito (fluxo
     // próprio — granularidade de 15min, campos Marca/Gama —, não cabe
     // neste atalho de atribuição única).
-    const TIPOS_ATRIBUICAO_RAPIDA = ['chefe_turno', 'encomenda_manha', 'encomenda_tarde', 'reposicao', 'conferencia', 'reuniao', 'outro'];
+    const TIPOS_ATRIBUICAO_RAPIDA = ['chefe_turno', 'encomenda_manha', 'encomenda_tarde', 'reposicao', 'vacinacao', 'conferencia', 'reuniao', 'outro'];
     const tipoSelect = h('select', { class: 'select' }, [
       h('option', { value: '' }, '— Escolher —'),
       ...ESCALA_TAREFAS_ESPECIAIS.filter(t => TIPOS_ATRIBUICAO_RAPIDA.includes(t.key)).map(t => h('option', { value: t.key, selected: atribuicaoRapidaDraft.tipo === t.key ? 'selected' : undefined }, `${t.icon} ${t.label}`)),
@@ -39670,6 +40150,21 @@ function buildHorariosPage(container, goTo) {
     if (!janela) return null;
     return (p.dataInicio >= janela.inicio && p.dataFim <= janela.fim) ? null : janela;
   }
+  // Dia de Aniversário marcado DENTRO da janela (±1 mês) mas NÃO no dia
+  // exato do aniversário (2026-09-28, Hugo: "o meu aniversário é a 24/10,
+  // nas férias está o 23"). Pode ser de propósito (a janela existe para
+  // isso) ou engano — por isso só se assinala, nunca se corrige sozinho.
+  // Devolve o ISO do aniversário nesse ano, ou null se bate certo/não se aplica.
+  function escalaAniversarioDiferenteDoReal(p) {
+    if (!p || p.tipo !== 'aniversario' || escalaAniversarioForaDaJanela(p)) return null;
+    const colaborador = (STATE.usuarios || []).find(u => String(u.id) === String(p.utilizadorId));
+    if (!colaborador || !colaborador.dataNascimento) return null;
+    const mmdd = String(colaborador.dataNascimento).slice(5, 10);
+    const ano = String(p.dataInicio || '').slice(0, 4);
+    if (!ano || mmdd.length !== 5) return null;
+    const real = `${ano}-${mmdd}`;
+    return (p.dataInicio <= real && real <= p.dataFim) ? null : real;
+  }
   function escalaFeriasTipoBadge(tipo) {
     const info = ESCALA_TIPOS_DIA.find(t => t.key === tipo);
     const tons = { ferias: 'badge-purple', extra: 'badge-teal', aniversario: 'badge-pink', outras: 'badge-gray', falta: 'badge-red', baixa: 'badge-orange', indisponivel: 'badge-blue' };
@@ -39753,7 +40248,7 @@ function buildHorariosPage(container, goTo) {
         dataInicio: p.dataInicio, dataFim: p.dataFim, observacoes: feriasDraft.observacoes || '',
         descontarDiasTransitados: !!feriasDraft.descontarDiasTransitados,
       };
-      const updated = await dbUpdate('escalaFerias', feriasEditandoId, payload);
+      const updated = await dbUpdate('escalaFerias', feriasEditandoId, payload, feriasEdicaoBase && feriasEdicaoBase.id === feriasEditandoId ? { base: feriasEdicaoBase } : undefined);
       feriasSaving = false;
       if (updated) {
         STATE.escalaFerias = STATE.escalaFerias.map(f => f.id === feriasEditandoId ? updated : f);
@@ -39848,6 +40343,7 @@ function buildHorariosPage(container, goTo) {
       return;
     }
     feriasEditandoId = pedido.id;
+    feriasEdicaoBase = pedido; // versão em que a edição começou (alterações simultâneas, 2026-09-28)
     // Contexto derivado do próprio registo (mesmo espírito da correção
     // acima) — nunca deixa uma edição trocar de grupo Quadro↔Prestador
     // por engano através do dropdown Colaborador.
@@ -40038,7 +40534,13 @@ function buildHorariosPage(container, goTo) {
                 escalaFeriasTipoBadge(p.tipo),
                 h('span', { style: 'font-size:11px;font-weight:700;color:#b45309;cursor:help;', title: `A data de nascimento atual só permite marcar o Dia de Aniversário entre ${formatDate(foraDaJanela.inicio)} e ${formatDate(foraDaJanela.fim)}. Edite (✎) ou elimine este registo.` }, '⚠ fora da janela do aniversário'),
               ])
-            : escalaFeriasTipoBadge(p.tipo);
+            : (() => {
+                const real = escalaAniversarioDiferenteDoReal(p);
+                if (!real) return escalaFeriasTipoBadge(p.tipo);
+                const nota = h('span', { style: 'font-size:11px;font-weight:700;color:#b45309;cursor:default;', tabindex: '0' }, `🎂 aniversário: ${formatDate(real).slice(0, 5)}`);
+                instalarTooltipContaHoras(nota, `Marcado num dia diferente do aniversário (${formatDate(real)}). Se não foi de propósito, edita o período (✎).`);
+                return h('span', { style: 'display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;' }, [escalaFeriasTipoBadge(p.tipo), nota]);
+              })();
         })()),
         h('td', {}, `${formatDate(p.dataInicio)} – ${formatDate(p.dataFim)}`),
         h('td', { class: 'cell-muted' }, p.observacoes || '—'),
@@ -44502,7 +45004,20 @@ function buildHorariosPage(container, goTo) {
       if (meuDiaMobile) wrap.appendChild(meuDiaMobile);
     }
     const cabecalhoHorarios = buildPageHeader('clock', 'Horários', 'A tua semana, a escala da equipa e a gestão de férias e posições.', undefined);
-    wrap.appendChild(saudacaoMobile ? h('div', { class: 'page-header-wrap' }, [cabecalhoHorarios]) : withBackButton(cabecalhoHorarios, goTo));
+    // Voltar hierárquico (2026-09-28): dentro da secção "📌 Pedidos
+    // Especiais" (página inteira dentro de Férias) a seta volta a Férias —
+    // e, com o formulário do pedido aberto, fecha primeiro só o formulário.
+    // Nos restantes casos (separadores do mesmo nível), sobe à Página Inicial.
+    const voltarHorarios = () => {
+      if (activeTab === 'ferias' && mostrarSecaoPedidosEspeciais) {
+        if (pedidoEspecialMostrarForm) { pedidoEspecialMostrarForm = false; }
+        else mostrarSecaoPedidosEspeciais = false;
+        rerender();
+        return;
+      }
+      goTo(PAGINA_PAI[STATE.page] || 'home');
+    };
+    wrap.appendChild(saudacaoMobile ? h('div', { class: 'page-header-wrap' }, [cabecalhoHorarios]) : withCustomBackButton(cabecalhoHorarios, voltarHorarios));
 
     // Restrição Estrita de Dispositivos Móveis (item 1): em telemóvel/
     // tablet (ehDispositivoMobileOuTablet — mesmo detetor já usado para
@@ -44555,6 +45070,8 @@ function buildHorariosPage(container, goTo) {
       }, [Icon('briefcase', { size: 14 }), h('span', {}, 'Gestão')]));
     }
     wrap.appendChild(tabsRow);
+    // Tarefas antigas "Outro — Vacinação" → nova tarefa Vacinação (só semanas por vir; corre 1x por sessão).
+    if (podeGerirHorarios() && !ehMobile) escalaMigrarTarefasOutroVacinacao();
     if (podeGerirHorarios() && !ehMobile && emGestaoHorarios) {
       HORARIOS_ULTIMA_TAB_GESTAO = activeTab;
       const subTab = (chave, icone, rotulo, antes) => h('button', {
@@ -44792,6 +45309,20 @@ function buildMapa48hPage(container, goTo) {
     }
     const formatoInvalido = checkFieldFormats(draft, mapa48hSchema);
     if (formatoInvalido) { formError = formatoInvalido; rerender(); return; }
+    // Dois colegas ao mesmo tempo (2026-09-28): relê do servidor só os
+    // registos à volta desta data (±3 dias) antes de verificar o intervalo
+    // de 72h — apanha o que um colega gravou há segundos.
+    if (draft.dataInicio) {
+      const base = new Date(draft.dataInicio + 'T12:00:00');
+      const de = new Date(base); de.setDate(de.getDate() - MAPA48H_INTERVALO_DIAS);
+      const ate = new Date(base); ate.setDate(ate.getDate() + MAPA48H_INTERVALO_DIAS);
+      const deISO = dateToISO(de), ateISO = dateToISO(ate);
+      saving = true; rerender();
+      await refrescarLinhasDoServidor('mapa48h',
+        q => q.gte('data_inicio', deISO).lte('data_inicio', ateISO),
+        r => r.dataInicio && r.dataInicio >= deISO && r.dataInicio <= ateISO);
+      saving = false;
+    }
     const conflito = mapa48hConflito(draft.dataInicio, editingId);
     if (conflito) {
       formError = `ATENÇÃO: Agendamento bloqueado. O aparelho já tem uma marcação em ${formatDate(conflito.dataInicio)} (${conflito.nomeCliente || 'sem nome'}). Tem de haver pelo menos 3 dias (72h) de intervalo entre exames. Próxima data disponível: ${formatDate(mapa48hProximaDataDisponivel(editingId))}.`;
@@ -44810,6 +45341,22 @@ function buildMapa48hPage(container, goTo) {
       const created = await dbInsert('mapa48h', Object.assign({ dataRegisto: todayISO() }, draft));
       if (created) STATE.mapa48h = [created, ...STATE.mapa48h];
       else formError = `Não foi possível criar o registo. ${lastDbError || 'Verifica a ligação e tenta novamente.'}`;
+      // Confirmação logo a seguir a gravar: se um colega gravou no mesmo
+      // instante uma marcação a menos de 72h, fica a que foi gravada primeiro.
+      if (created && created.dataInicio) {
+        const base = new Date(created.dataInicio + 'T12:00:00');
+        const de = new Date(base); de.setDate(de.getDate() - MAPA48H_INTERVALO_DIAS);
+        const ate = new Date(base); ate.setDate(ate.getDate() + MAPA48H_INTERVALO_DIAS);
+        const deISO = dateToISO(de), ateISO = dateToISO(ate);
+        const relida = await refrescarLinhasDoServidor('mapa48h',
+          q => q.gte('data_inicio', deISO).lte('data_inicio', ateISO),
+          r => r.dataInicio && r.dataInicio >= deISO && r.dataInicio <= ateISO);
+        const outro = relida ? mapa48hConflito(created.dataInicio, created.id) : null;
+        if (outro && Number(outro.id) < Number(created.id) && await dbDelete('mapa48h', created.id)) {
+          STATE.mapa48h = STATE.mapa48h.filter(r => r.id !== created.id);
+          formError = `ATENÇÃO: um colega acabou de marcar o aparelho para ${formatDate(outro.dataInicio)} (${outro.nomeCliente || 'sem nome'}) — esta marcação não ficou gravada. Escolhe outra data.`;
+        }
+      }
     }
     saving = false;
     if (!formError) showForm = false;
@@ -45131,6 +45678,93 @@ function abrirModalVacinacaoAtrasadas(itensIniciais, onFechar) {
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
 }
+// ---- Agendas: dois colegas a marcar ao mesmo tempo (2026-09-28) ----
+// Mecanismo partilhado por Vacinação, Agendas de prestadores (Nutrição,
+// Podologia, Massagem, Depilação, Prima Corpus), Eventos/AFA e Mapa 48H:
+//  (a) antes de gravar, confirma-se no SERVIDOR (e não só no que está no
+//      ecrã) se a vaga continua livre — só as linhas desse dia/agenda, por
+//      isso o Egress é desprezável;
+//  (b) o ecrã aberto atualiza-se sozinho quando um colega marca/cancela,
+//      com o que o Realtime já trouxe (sem pedidos extra), só quando é
+//      seguro — nunca com um formulário aberto ou alguém a escrever.
+const ATUALIZADORES_AO_VIVO = new Set();
+// tentar() devolve 'feito' | 'ocupado' (tenta de novo daqui a 3 s) | 'terminado' (ecrã fechado — sai do registo).
+function registarAtualizadorAoVivo(listKeys, tentar) {
+  const reg = { listKeys: new Set(listKeys), tentar, timer: null };
+  ATUALIZADORES_AO_VIVO.add(reg);
+  return reg;
+}
+function removerAtualizadorAoVivo(reg) {
+  if (!reg) return;
+  if (reg.timer) clearTimeout(reg.timer);
+  ATUALIZADORES_AO_VIVO.delete(reg);
+}
+function agendarAtualizadorAoVivo(reg) {
+  if (reg.timer) clearTimeout(reg.timer);
+  const correr = (restantes) => {
+    reg.timer = null;
+    let r = 'feito';
+    try { r = reg.tentar(); } catch (e) { console.warn('[Ao vivo] falha ao redesenhar:', formatarErroSeguro(e)); }
+    if (r === 'terminado') { ATUALIZADORES_AO_VIVO.delete(reg); return; }
+    if (r === 'ocupado' && restantes > 0) reg.timer = setTimeout(() => correr(restantes - 1), 3000);
+  };
+  reg.timer = setTimeout(() => correr(40), 300); // junta rajadas de eventos num só redesenho
+}
+function notificarAtualizadoresAoVivo(listKey) {
+  ATUALIZADORES_AO_VIVO.forEach(reg => { if (reg.listKeys.has(listKey)) agendarAtualizadorAoVivo(reg); });
+}
+// Um modal de dia (Agenda/Evento) só se redesenha sozinho quando não há
+// outro diálogo por cima (ex: confirmação) nem ninguém a escrever lá dentro.
+function modalLivreParaRedesenhar(overlay) {
+  if (!overlay || !overlay.isConnected) return false;
+  if ([...document.querySelectorAll('.modal-overlay')].some(o => o !== overlay && !overlay.contains(o))) return false;
+  if (typeof ultimoFocoEmCampoEm === 'number' && Date.now() - ultimoFocoEmCampoEm < JANELA_TOLERANCIA_EDICAO_MS) return false;
+  const ativo = document.activeElement;
+  if (ativo && overlay.contains(ativo) && ['INPUT', 'TEXTAREA', 'SELECT'].includes(ativo.tagName)) return false;
+  return true;
+}
+// Relê do servidor SÓ as linhas de um dia/agenda (filtros) e funde-as em
+// STATE[listKey] — acrescenta as novas, atualiza as alteradas e retira as
+// que entretanto foram eliminadas (`pertence` diz quais linhas locais
+// estão abrangidas pela leitura). Devolve false sem rede (nunca bloqueia).
+async function refrescarLinhasDoServidor(listKey, aplicarFiltros, pertence) {
+  if (!sb || !TABLES[listKey]) return false;
+  try {
+    const { data, error } = await comTimeoutSupabase(aplicarFiltros(sb.from(TABLES[listKey]).select('*').eq('eliminado', false)), 8000);
+    if (error) { console.warn(`[Agendas] releitura de ${listKey} falhou:`, error.message); return false; }
+    const frescos = (data || []).map(r => sanitizarSupabase(rowToRecord(r)));
+    const porId = new Map(frescos.map(r => [String(r.id), r]));
+    const lista = (STATE[listKey] || []).filter(r => !pertence(r) || porId.has(String(r.id)))
+      .map(r => { const f = porId.get(String(r.id)); if (f) { porId.delete(String(r.id)); if (f.updatedAt !== r.updatedAt) guardarVersaoAnterior(listKey, r); return Object.assign({}, r, f); } return r; });
+    STATE[listKey] = [...porId.values(), ...lista];
+    return true;
+  } catch (e) { console.warn(`[Agendas] releitura de ${listKey} falhou:`, formatarErroSeguro(e)); return false; }
+}
+// ---- Vacinação: dois colegas a marcar ao mesmo tempo (2026-09-28) ----
+// (1) Antes de gravar (e logo a seguir), pergunta-se ao SERVIDOR se já
+// existe uma marcação ativa nesse dia+hora — a verificação local (STATE)
+// não chega, porque o colega pode ter gravado há segundos. Consulta
+// mínima: só id/nome, no máximo 5 linhas (Egress desprezável).
+// Devolve a lista de marcações ativas nesse dia+hora (sem excluirId),
+// ou null se não foi possível confirmar (sem rede) — nunca bloqueia por
+// falta de resposta, a verificação local continua a valer.
+async function vacinacaoMarcacoesNoServidor(campanhaId, dataISO, hora, excluirId) {
+  if (!sb || !campanhaId || !dataISO || !hora) return null;
+  try {
+    const { data, error } = await comTimeoutSupabase(sb.from(TABLES.vacinacaoMarcacoes)
+      .select('id, nome')
+      .eq('campanha_id', campanhaId).eq('data', dataISO).eq('hora', hora)
+      .eq('eliminado', false)
+      .or('estado.is.null,estado.neq.Cancelada')
+      .order('id', { ascending: true })
+      .limit(5), 8000);
+    if (error) { console.warn('[Vacinação] verificação de vaga no servidor falhou:', error.message); return null; }
+    return (data || []).filter(r => String(r.id) !== String(excluirId || ''));
+  } catch (e) { console.warn('[Vacinação] verificação de vaga no servidor falhou:', formatarErroSeguro(e)); return null; }
+}
+// (2) Atualização ao vivo — ver registarAtualizadorAoVivo (mecanismo
+// partilhado por todas as agendas, 2026-09-28).
+let vacinacaoAtualizadorAoVivo = null; // registo ativo da página de Vacinação
 function buildVacinacaoPage(container, goTo) {
   // A campanha da temporada corrente já nasce escolhida automaticamente —
   // nunca é preciso passar pelo ecrã de escolha só para lá chegar (ver
@@ -45204,6 +45838,21 @@ function buildVacinacaoPage(container, goTo) {
 
 
   function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
+  // Atualização ao vivo (2026-09-28): a página está protegida contra
+  // redesenhos de fundo (PAGINAS_NUNCA_RECONSTROI_EM_FUNDO), por isso uma
+  // marcação de um colega só aparecia depois de mexer em algo. Agora
+  // redesenha-se sozinha com o que o Realtime já trouxe (sem pedidos
+  // extra), só quando é seguro: sem formulário aberto e sem ninguém a escrever.
+  if (vacinacaoAtualizadorAoVivo) removerAtualizadorAoVivo(vacinacaoAtualizadorAoVivo);
+  vacinacaoAtualizadorAoVivo = registarAtualizadorAoVivo(
+    ['vacinacaoMarcacoes', 'vacinacaoListaEspera', 'vacinacaoEncomendas', 'vacinacaoQuebras', 'vacinacaoResponsaveis', 'agendaDias', 'escalaSemanas'],
+    () => {
+      if (!container.isConnected || STATE.page !== 'vacinacao') return 'terminado';
+      if (showCampanhaForm || showMarcacaoForm || showEncomendaForm || showQuebraForm || showEsperaForm || showResponsavelForm) return 'ocupado';
+      if (uiEstaOcupada()) return 'ocupado';
+      rerender();
+      return 'feito';
+    });
   // A campanha ATUALMENTE em vigor (hoje dentro de dataInicio-dataFim)
   // fica sempre em primeiro lugar, qualquer que seja a data — as
   // restantes (passadas ou futuras já semeadas) seguem-se por ordem
@@ -45268,7 +45917,7 @@ function buildVacinacaoPage(container, goTo) {
     showResponsavelForm = false; responsavelDraft = null; responsavelEditId = null;
     rerender();
   }
-  function voltarCampanhas() { campanhaId = null; rerender(); }
+  function voltarCampanhas() { campanhaId = null; agendaDiaSelecionado = null; marcacaoSelectedIds = new Set(); rerender(); }
   function openEditCampanha(c) { campanhaDraft = Object.assign({}, c); campanhaEditId = c.id; campanhaFormError = ''; showCampanhaForm = true; rerender(); }
   function cancelCampanha() { showCampanhaForm = false; campanhaFormError = ''; rerender(); }
   async function submitCampanha() {
@@ -45352,6 +46001,16 @@ function buildVacinacaoPage(container, goTo) {
     const formatoInvalido = checkFieldFormats(marcacaoDraft, vacinacaoMarcacaoSchema);
     if (formatoInvalido) { marcacaoFormError = formatoInvalido; rerender(); return; }
     if (!marcacaoDraft.gripe && !marcacaoDraft.covid) { marcacaoFormError = 'Seleciona pelo menos uma vacina (Gripe e/ou COVID).'; rerender(); return; }
+    // Dia por abrir = sem marcações (pedido 2026-09-28, mesma regra das
+    // Agendas de prestadores desde 2026-09-21). Antes, gravar uma marcação
+    // num dia fechado abria o dia sozinho — deixou de ser assim: o dia tem
+    // de ser aberto primeiro («Abrir Dia»). Editar uma marcação que já
+    // existe sem lhe mudar o dia continua sempre possível.
+    if (vacinacaoMarcacaoBloqueadaPorDiaFechado(marcacaoDraft, marcacaoEditId)) {
+      marcacaoFormError = `O dia ${formatDate(marcacaoDraft.data)} ainda está por abrir — não é possível marcar. Abre primeiro o dia na Agenda (botão «Abrir Dia») ou escolhe um dia já aberto.`;
+      rerender();
+      return;
+    }
     // Verificação de elegibilidade por idade — só se aplica à CRIAÇÃO de
     // marcações diretas novas (nunca à edição de uma marcação já
     // existente): editar Observações, Estado ou Hora de uma marcação
@@ -45405,6 +46064,22 @@ function buildVacinacaoPage(container, goTo) {
         return;
       }
     }
+    // Mesma verificação, agora no SERVIDOR (2026-09-28) — apanha a marcação
+    // que um colega gravou há segundos e que ainda não chegou a este ecrã.
+    // Só quando é marcação nova ou quando o dia/hora mudou (editar só as
+    // Observações de uma marcação nunca faz pedidos a mais).
+    const originalMarcacao = marcacaoEditId ? STATE.vacinacaoMarcacoes.find(m => m.id === marcacaoEditId) : null;
+    const vagaMudou = !originalMarcacao || originalMarcacao.data !== marcacaoDraft.data || originalMarcacao.hora !== marcacaoDraft.hora;
+    if (marcacaoDraft.hora && marcacaoDraft.data && vagaMudou) {
+      marcacaoSaving = true; rerender();
+      const noServidor = await vacinacaoMarcacoesNoServidor(campanhaId, marcacaoDraft.data, marcacaoDraft.hora, marcacaoEditId);
+      marcacaoSaving = false;
+      if (noServidor && noServidor.length) {
+        marcacaoFormError = `Um colega acabou de ocupar a vaga das ${marcacaoDraft.hora} deste dia (${noServidor[0].nome || 'sem nome'}). Escolhe outra hora — ex: ${vacinacaoSomarMinutos(marcacaoDraft.hora, 1)}.`;
+        rerender();
+        return;
+      }
+    }
     // Marcação DIRETA (não veio de "Marcar" na Lista de Espera) cujo
     // utente já está na Lista de Espera desta campanha para a MESMA vacina
     // — em vez de só avisar, informa-se claramente que a pessoa vai ser
@@ -45446,6 +46121,22 @@ function buildVacinacaoPage(container, goTo) {
       const created = await dbInsert('vacinacaoMarcacoes', Object.assign({ estado: 'Pendente' }, marcacaoDraft));
       if (created) { STATE.vacinacaoMarcacoes = [created, ...STATE.vacinacaoMarcacoes]; ok = true; }
       else marcacaoFormError = `Não foi possível adicionar a marcação. ${lastDbError || 'Verifica a ligação e tenta novamente.'}`;
+      // Confirmação logo a seguir a gravar (2026-09-28): se dois colegas
+      // gravaram a MESMA vaga no mesmo segundo, fica a que foi gravada
+      // primeiro (id mais baixo) e a outra é anulada, com aviso — nunca
+      // ficam duas pessoas marcadas à mesma hora.
+      if (created && created.hora && created.data) {
+        const outras = await vacinacaoMarcacoesNoServidor(campanhaId, created.data, created.hora, created.id);
+        const anterior = (outras || []).find(r => Number(r.id) < Number(created.id));
+        if (anterior) {
+          const apagados = await bulkSoftDelete('vacinacaoMarcacoes', [created.id]);
+          if (apagados.has(created.id)) {
+            STATE.vacinacaoMarcacoes = STATE.vacinacaoMarcacoes.filter(m => m.id !== created.id);
+            ok = false;
+            marcacaoFormError = `Um colega marcou ${anterior.nome || 'outra pessoa'} para as ${created.hora} no mesmo instante — esta marcação não ficou gravada. Escolhe outra hora — ex: ${vacinacaoSomarMinutos(created.hora, 1)}.`;
+          }
+        }
+      }
     }
     marcacaoSaving = false;
     if (ok) {
@@ -45458,11 +46149,9 @@ function buildVacinacaoPage(container, goTo) {
         marcacaoOrigemEsperaId = null;
         showToast(`${marcacaoDraft.nome || 'Utente'} removido(a) da Lista de Espera.`, 'success');
       }
-      // Abertura automática e silenciosa do dia (sem popup, mesmo ao
-      // domingo) assim que uma marcação é mesmo gravada com sucesso —
-      // exatamente a mesma regra já usada nas restantes Agendas da app.
-      // A confirmação de domingo só se aplica ao botão explícito "Abrir Dia".
-      if (marcacaoDraft.data && !vacinacaoDiaAberto(marcacaoDraft.data)) await vacinacaoAbrirDiaConfirmado(marcacaoDraft.data, () => {});
+      // (Removida 2026-09-28 a abertura automática do dia ao gravar — um
+      // dia por abrir já não aceita marcações, ver
+      // vacinacaoMarcacaoBloqueadaPorDiaFechado no início desta função.)
       showMarcacaoForm = false;
     }
     rerender();
@@ -45558,7 +46247,7 @@ function buildVacinacaoPage(container, goTo) {
     // tipoLinha 'bloqueado' (vagas indisponibilizadas manualmente — ver
     // bloquearVagaVacinacao) nunca aparece aqui: não é uma marcação real de
     // ninguém, só existe para ocupar o lugar na grelha de Vagas.
-    let list = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.tipoLinha !== 'bloqueado');
+    let list = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && !vacinacaoEhBloqueio(m));
     if (q) list = list.filter(m => [m.nome, m.contacto, m.responsavel].some(v => normalizarTexto(v).includes(q)));
     if (marcacaoTab === 'administradas') list = list.filter(m => m.estado === 'Administrada');
     else if (marcacaoTab === 'canceladas') list = list.filter(m => m.estado === 'Cancelada');
@@ -45851,11 +46540,38 @@ function buildVacinacaoPage(container, goTo) {
   // quando indicada, filtra também pelo período horário (horaInicio/
   // horaFim) — um responsável sem período definido vale para o dia
   // inteiro, por isso conta sempre, com ou sem `hora` passada.
+  // (2026-09-28) Junta os Responsáveis definidos AQUI aos definidos no
+  // Gerador de Horário (tarefa "Vacinação") — sentido único: o horário
+  // alimenta este módulo, nunca o contrário. Os do horário vêm marcados
+  // com origem:'horario' e não se editam aqui (editam-se no Gerador).
+  // Tarefas "Vacinação" dos horários já gerados, de hoje até ao fim da campanha.
+  function responsaveisDoHorarioProximos() {
+    const campanha = campanhaAtual();
+    const hoje = todayISO();
+    const inicio = campanha && campanha.dataInicio && campanha.dataInicio > hoje ? campanha.dataInicio : hoje;
+    const semanas = (STATE.escalaSemanas || []).filter(sm => !sm.eliminado && sm.semanaInicio && sm.dados);
+    if (!semanas.length) return [];
+    const ultimaSeg = semanas.map(sm => sm.semanaInicio).sort().slice(-1)[0];
+    const d = new Date(ultimaSeg + 'T12:00:00'); d.setDate(d.getDate() + 6);
+    let fim = dateToISO(d);
+    if (campanha && campanha.dataFim && campanha.dataFim < fim) fim = campanha.dataFim;
+    const out = [];
+    const cur = new Date(inicio + 'T12:00:00');
+    for (let guarda = 0; guarda < 400 && dateToISO(cur) <= fim; guarda += 1) {
+      out.push(...vacinacaoResponsaveisDoHorario(dateToISO(cur)));
+      cur.setDate(cur.getDate() + 1);
+    }
+    return out;
+  }
   function responsaveisNoDia(dateISO, hora) {
-    return STATE.vacinacaoResponsaveis.filter(r => r.campanhaId === campanhaId && r.dataInicio && r.dataInicio <= dateISO && (!r.dataFim || r.dataFim >= dateISO))
+    const manuais = STATE.vacinacaoResponsaveis.filter(r => r.campanhaId === campanhaId && r.dataInicio && r.dataInicio <= dateISO && (!r.dataFim || r.dataFim >= dateISO));
+    const doHorario = vacinacaoResponsaveisDoHorario(dateISO);
+    return [...manuais, ...doHorario]
       .filter(r => {
         if (!hora) return true;
         if (!r.horaInicio && !r.horaFim) return true;
+        // Horário da tarefa: início incluído, fim excluído (a vaga das 13:00 já é de quem entra às 13:00).
+        if (r.origem === 'horario') return (!r.horaInicio || hora >= r.horaInicio) && (!r.horaFim || hora < r.horaFim);
         return (!r.horaInicio || hora >= r.horaInicio) && (!r.horaFim || hora <= r.horaFim);
       });
   }
@@ -45954,7 +46670,7 @@ function buildVacinacaoPage(container, goTo) {
   // impressão, Fechar Dia, etc., todos já filtram tipoLinha!=='bloqueado').
   function bloquearVagaVacinacao(dateISO, hora) {
     confirmDialog(`Indisponibilizar a vaga das ${hora}?`, async () => {
-      const created = await dbInsert('vacinacaoMarcacoes', { campanhaId, data: dateISO, hora, tipoLinha: 'bloqueado', responsavel: currentUserName() });
+      const created = await dbInsert('vacinacaoMarcacoes', { campanhaId, data: dateISO, hora, tipoLinha: 'bloqueado', gripe: false, covid: false, responsavel: currentUserName() });
       if (created) { STATE.vacinacaoMarcacoes = [created, ...STATE.vacinacaoMarcacoes]; rerender(); }
       else showDbErrorToast('Não foi possível indisponibilizar a vaga');
     });
@@ -45972,7 +46688,7 @@ function buildVacinacaoPage(container, goTo) {
   // quebras), tal como o resto do módulo — qualquer marcação, cancelamento
   // ou quebra registada atualiza estes números no próximo render() local.
   function buildResumoDoDiaCards(dateISO) {
-    const doDia = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO && m.tipoLinha !== 'bloqueado');
+    const doDia = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO && !vacinacaoEhBloqueio(m));
     const agendadasGripe = doDia.filter(m => m.estado !== 'Cancelada' && m.gripe).length;
     const agendadasCovid = doDia.filter(m => m.estado !== 'Cancelada' && m.covid).length;
     const administradasGripe = doDia.filter(m => m.estado === 'Administrada' && m.gripe).length;
@@ -46027,7 +46743,7 @@ function buildVacinacaoPage(container, goTo) {
     // exatamente na posição (hora) que lhes corresponde (pedido explícito
     // 2026-08-11). `todasHoras` é a união ordenada da grelha fixa com as
     // horas de encaixe ainda ativas nesse dia.
-    const horasEncaixe = doDia.filter(m => m.hora && m.estado !== 'Cancelada' && m.tipoLinha !== 'bloqueado' && !grade.includes(m.hora)).map(m => m.hora);
+    const horasEncaixe = doDia.filter(m => m.hora && m.estado !== 'Cancelada' && !vacinacaoEhBloqueio(m) && !grade.includes(m.hora)).map(m => m.hora);
     const todasHoras = Array.from(new Set([...grade, ...horasEncaixe])).sort();
 
     // Badge de Estado clicável — troca-se, ali mesmo, por um <select> com
@@ -46069,13 +46785,13 @@ function buildVacinacaoPage(container, goTo) {
     // ainda) — nunca definitivo, só quem se espera que administre.
     function buildRespPeriodoBadge(hora) {
       const respNoPeriodo = responsaveisNoDia(dateISO, hora);
-      const nomeRespPeriodo = respNoPeriodo.length ? respNoPeriodo.map(r => r.nome).join(', ') : '';
+      const nomeRespPeriodo = respNoPeriodo.length ? [...new Set(respNoPeriodo.map(r => r.nome).filter(Boolean))].join(', ') : '';
       return nomeRespPeriodo
         ? h('span', { class: 'agenda-slot-responsavel', title: 'Responsável pela Vacinação escalado para este período' }, nomeRespPeriodo)
         : h('span', { class: 'agenda-slot-responsavel agenda-slot-responsavel-vazio', title: 'Sem Responsável pela Vacinação definido para este período — ver separador "Responsáveis"' }, 'Sem responsável');
     }
     function linhaOcupada(m, hora) {
-      if (m.tipoLinha === 'bloqueado') return linhaBloqueada(m, hora);
+      if (vacinacaoEhBloqueio(m)) return linhaBloqueada(m, hora);
       const selecionada = marcacaoSelectedIds.has(m.id);
       // Encaixe (fora da grelha fixa de 10 em 10 min) — pequeno selo para
       // continuar fácil de distinguir de relance, agora que já não vive
@@ -46170,11 +46886,21 @@ function buildVacinacaoPage(container, goTo) {
         h('div', { class: 'row-actions' }, [bookBtn]),
       ]);
     }
+    // Dia por abrir (pedido 2026-09-28 — mesma regra/visual das Agendas
+    // de prestadores): vagas sem utente a cinzento, com os botões
+    // desativados, e aviso no topo. Marcações que já existam continuam
+    // visíveis e editáveis.
+    const porAbrir = !vacinacaoDiaAberto(dateISO);
     const linhas = todasHoras.map(hora => {
       const m = ocupacao[hora];
       if (m) return linhaOcupada(m, hora);
       const slotInfo = slotInfoPorHora[hora];
-      return slotInfo && slotInfo.dentroDefault ? linhaLivre(hora) : linhaIndisponivel(hora);
+      const node = slotInfo && slotInfo.dentroDefault ? linhaLivre(hora) : linhaIndisponivel(hora);
+      if (porAbrir && node && !node.classList.contains('agenda-vaga-expirada')) {
+        node.classList.add('agenda-slot-dia-fechado');
+        node.querySelectorAll('button').forEach(b => { b.disabled = true; b.title = 'Abre o dia primeiro'; });
+      }
+      return node;
     });
     // Manhã | Tarde lado a lado (em vez de uma única coluna comprida) —
     // aproveita a largura do ecrã e poupa scroll. Divisão às 14:00 (fim da
@@ -46184,6 +46910,10 @@ function buildVacinacaoPage(container, goTo) {
     const colManha = linhas.slice(0, meio === -1 ? linhas.length : meio);
     const colTarde = meio === -1 ? [] : linhas.slice(meio);
     const corpo = [
+      porAbrir ? h('div', { class: 'agenda-dia-por-abrir' }, [
+        Icon('lockClosed', { size: 15, strokeWidth: 2.3 }),
+        h('span', {}, [h('strong', {}, 'Dia por abrir. '), 'As vagas ficam bloqueadas até abrires o dia — usa o botão «Abrir Dia», no topo.']),
+      ]) : null,
       h('div', { class: 'vagas-grelha-colunas' }, [
         h('div', {}, [
           h('p', { class: 'field-helper-text', style: 'margin:0 0 6px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;' }, 'Manhã'),
@@ -46226,11 +46956,15 @@ function buildVacinacaoPage(container, goTo) {
   function buildResponsavelDoDiaAviso(dateISO) {
     const ativos = responsaveisNoDia(dateISO);
     if (!ativos.length) return h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, 'Sem Responsável pela Vacinação definido para este dia — ver separador "Responsáveis".');
+    const vistos = new Set();
     const partes = ativos.map(r => {
-      if (r.horaInicio || r.horaFim) return `${r.nome || '—'} (${r.horaInicio || 'início'}–${r.horaFim || 'fim'})`;
-      return r.nome || '—';
-    });
-    return h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, `Responsável pela Vacinação hoje: ${partes.join(', ')}`);
+      const txt = (r.horaInicio || r.horaFim) ? `${r.nome || '—'} (${r.horaInicio || 'início'}–${r.horaFim === '24:00' ? '00:00' : (r.horaFim || 'fim')})` : (r.nome || '—');
+      if (vistos.has(txt)) return null;
+      vistos.add(txt);
+      return r.origem === 'horario' ? `${txt} 💉` : txt;
+    }).filter(Boolean);
+    const temDoHorario = ativos.some(r => r.origem === 'horario');
+    return h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, `Responsável pela Vacinação neste dia: ${partes.join(', ')}${temDoHorario ? ' (💉 = definido no Gerador de Horário)' : ''}`);
   }
   // Outros serviços (Agendas de outros prestadores) e Eventos a decorrer
   // no mesmo dia — a farmácia só tem 2 gabinetes, por isso é importante
@@ -46245,7 +46979,7 @@ function buildVacinacaoPage(container, goTo) {
       if (label && !labels.includes(label)) labels.push(label);
     });
     (STATE.agendaMarcacoes || []).forEach(m => {
-      if (m.data !== dateISO || m.tipoLinha === 'bloqueado') return;
+      if (m.data !== dateISO || vacinacaoEhBloqueio(m)) return;
       const servico = SERVICOS_CALENDARIO.find(s => s.key === m.prestadorKey);
       if (servico && !labels.includes(servico.label)) labels.push(servico.label);
     });
@@ -46302,6 +47036,18 @@ function buildVacinacaoPage(container, goTo) {
   }
   function vacinacaoDiaAbertoRegisto(dateISO) { return agendaDiaAbertoRegisto(vacinacaoPrestadorKey(), dateISO); }
   function vacinacaoDiaAberto(dateISO) { return agendaDiaAberto(vacinacaoPrestadorKey(), dateISO); }
+  // true quando a marcação (nova, ou editada PARA outro dia) cai num dia
+  // ainda por abrir. Editar uma marcação sem lhe mudar o dia nunca fica
+  // bloqueado (ex: dia entretanto fechado, marcações antigas).
+  function vacinacaoMarcacaoBloqueadaPorDiaFechado(draft, editId) {
+    if (!draft || !draft.data) return false;
+    if (editId) {
+      const original = STATE.vacinacaoMarcacoes.find(m => m.id === editId);
+      if (original && original.data === draft.data) return false;
+    }
+    return !vacinacaoDiaAberto(draft.data);
+  }
+  function avisoVacinacaoDiaPorAbrir() { showToast('Este dia ainda está por abrir — abre o dia (botão «Abrir Dia») antes de marcar.', 'error'); }
   function vacinacaoEhDomingo(dateISO) { return new Date(dateISO + 'T00:00:00').getDay() === 0; }
   async function vacinacaoAbrirDiaConfirmado(dateISO, depois) {
     const created = await dbInsert('agendaDias', { prestadorKey: vacinacaoPrestadorKey(), data: dateISO, responsavel: currentUserName() });
@@ -46321,7 +47067,7 @@ function buildVacinacaoPage(container, goTo) {
   function vacinacaoFecharDia(dateISO) {
     const registo = vacinacaoDiaAbertoRegisto(dateISO);
     if (!registo) return;
-    const temAtiva = STATE.vacinacaoMarcacoes.some(m => m.campanhaId === campanhaId && m.data === dateISO && m.estado !== 'Cancelada' && m.tipoLinha !== 'bloqueado');
+    const temAtiva = STATE.vacinacaoMarcacoes.some(m => m.campanhaId === campanhaId && m.data === dateISO && m.estado !== 'Cancelada' && !vacinacaoEhBloqueio(m));
     if (temAtiva) {
       confirmDialog('Impossível fechar o dia: é necessário primeiro concluir, cancelar ou eliminar todas as marcações ativas para esta data.', () => {}, { confirmLabel: 'Entendido' });
       return;
@@ -46377,6 +47123,51 @@ function buildVacinacaoPage(container, goTo) {
       semDadosTexto: 'Sem marcações para este dia.',
     });
   }
+  // Documento imprimível da Lista de Espera (pedido 2026-09-28) — mesma
+  // estrutura do documento do dia: coluna ☐ para assinalar à mão quem já
+  // foi contactado, ordem de registo (Nº), Observações por extenso.
+  function buildImpressaoListaEsperaDoc(campanha, lista, pesquisa) {
+    const filtro = String(pesquisa || '').trim();
+    const nGripe = lista.filter(e => e.gripe).length;
+    const nCovid = lista.filter(e => e.covid).length;
+    const cabecalho = [
+      buildDocLetterhead(),
+      h('h1', { class: 'doc-title', style: 'font-size:16px;letter-spacing:.02em;text-transform:none;margin-bottom:4px;' },
+        `Vacinação — Lista de Espera | ${(campanha && campanha.nome) || ''}`),
+      h('p', { style: 'font-size:10px;color:#555;margin:0 0 10px;' },
+        `Impresso a ${formatDate(todayISO())} · ${lista.length} pessoa${lista.length !== 1 ? 's' : ''} (Gripe: ${nGripe} · COVID: ${nCovid})${filtro ? ` · filtro de pesquisa: "${filtro}"` : ''} — ordem de registo (quem se inscreveu primeiro, primeiro a marcar).`),
+    ];
+    return buildListaMultiPaginaDoc({
+      cabecalho,
+      colunas: [
+        { label: '✓', width: '5%', align: 'center' },
+        { label: 'Nº', width: '7%', align: 'center' },
+        { label: 'Nome', width: '26%', align: 'left', nowrap: true },
+        { label: 'Idade', width: '8%', align: 'center' },
+        { label: 'Contacto', width: '13%', align: 'center' },
+        { label: 'Vacina(s)', width: '13%', align: 'center' },
+        { label: 'Observações', width: '28%', align: 'left' },
+      ],
+      linhas: lista.map(e => {
+        const idade = vacinacaoCalcularIdade(e.dataNascimento);
+        return [
+          h('span', { style: 'display:inline-block;width:11px;height:11px;border:1.3px solid #000;' }),
+          formatarNumeroPedido('vacinacaoListaEspera', e),
+          e.nome || '—',
+          idade === null ? '—' : `${idade}`,
+          e.contacto ? formatarTelefonePT(e.contacto) : '—',
+          vacinacaoLabelVacinas(e) || '—',
+          (e.observacoes && e.observacoes.trim()) ? e.observacoes.trim() : '—',
+        ];
+      }),
+      // Observações quebram linha (não se cortam) — cada ~45 caracteres
+      // conta como mais uma linha de altura na paginação.
+      pesosLinhas: lista.map(e => Math.max(1, Math.ceil(String((e.observacoes || '').trim()).length / 45))),
+      linhasPrimeira: 30,
+      linhasResto: 38,
+      semDadosTexto: 'Lista de espera vazia.',
+    });
+  }
   function buildAgendaDiaView(dateISO) {
     const wrap = h('div', {});
     const cabecalho = h('div', { style: 'display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px;' }, [
@@ -46385,7 +47176,8 @@ function buildVacinacaoPage(container, goTo) {
         buildAbrirFecharDiaBtn(dateISO),
         (() => {
           const btn = h('button', { class: 'btn btn-secondary btn-destaque-laranja', title: 'Registo tardio — predefine a hora atual, mas podes escolher outra' }, [Icon('plus', { size: 14, strokeWidth: 2.4 }), ' Adicionar Encaixe']);
-          btn.addEventListener('click', () => requireAuth(() => openNewMarcacao({ data: dateISO, hora: horaAtualHHMM() })));
+          if (!vacinacaoDiaAberto(dateISO)) { btn.disabled = true; btn.title = 'Abre o dia primeiro'; btn.style.opacity = '.5'; btn.style.cursor = 'not-allowed'; }
+          btn.addEventListener('click', () => { if (!vacinacaoDiaAberto(dateISO)) { avisoVacinacaoDiaPorAbrir(); return; } requireAuth(() => openNewMarcacao({ data: dateISO, hora: horaAtualHHMM() })); });
           return btn;
         })(),
         (() => {
@@ -46396,7 +47188,7 @@ function buildVacinacaoPage(container, goTo) {
         (() => {
           const btn = h('button', { class: 'btn btn-secondary' }, [Icon('printer', { size: 14, strokeWidth: 2.2 }), ' Imprimir']);
           btn.addEventListener('click', () => {
-            const lista = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO && m.estado !== 'Cancelada' && m.tipoLinha !== 'bloqueado')
+            const lista = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO && m.estado !== 'Cancelada' && !vacinacaoEhBloqueio(m))
               .slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || ''));
             imprimirDocumento(buildImpressaoMarcacoesDoc(campanhaAtual(), dateISO, lista), { titulo: `vacinacao_${dateISO}` });
           });
@@ -46450,14 +47242,14 @@ function buildVacinacaoPage(container, goTo) {
       }));
       return wrap;
     } else {
-      const listDoDia = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO && m.tipoLinha !== 'bloqueado')
+      const listDoDia = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO && !vacinacaoEhBloqueio(m))
         .slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || ''));
       wrap.appendChild(buildMarcacoesTable(listDoDia, 'Sem marcações neste dia.'));
     }
     wrap.appendChild(buildBottomActionBar({
       selectedCount: marcacaoSelectedIds.size,
       addLabel: 'Nova Marcação',
-      onAdd: () => openNewMarcacao({ data: dateISO }),
+      onAdd: () => { if (!vacinacaoDiaAberto(dateISO)) { avisoVacinacaoDiaPorAbrir(); return; } openNewMarcacao({ data: dateISO }); },
       onEdit: () => { if (marcacaoSelectedIds.size === 1) openEditMarcacao(STATE.vacinacaoMarcacoes.find(m => m.id === [...marcacaoSelectedIds][0])); },
       onDelete: removeMarcacoesSelecionadas,
       hideDelete: isEnfermeiro(),
@@ -46497,7 +47289,7 @@ function buildVacinacaoPage(container, goTo) {
     for (let i = 0; i < startWeekday; i++) cells.push(h('div', {}));
     for (let d = 1; d <= daysInMonth; d++) {
       const dateISO = `${ano}-${pad2(mes0 + 1)}-${pad2(d)}`;
-      const doDia = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO && m.estado !== 'Cancelada');
+      const doDia = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO && m.estado !== 'Cancelada' && !vacinacaoEhBloqueio(m));
       const covidDoDia = doDia.filter(m => m.covid).length;
       const avisoMultiplo = covidDoDia > 0 && vacinacaoFaltamParaMultiploSeis(covidDoDia) !== 0;
       const isToday = dateISO === todayStr;
@@ -46567,6 +47359,9 @@ function buildVacinacaoPage(container, goTo) {
       const camposComOverrides = (marcacaoEditId ? vacinacaoMarcacaoSchema : vacinacaoMarcacaoSchema.filter(f => f.name !== 'administradoPor')).map(f => {
         if (f.name === 'hora') return Object.assign({}, f, { type: 'combo', options: slots.map(s => s.hora), optionLabels: slots.map(s => s.label), placeholder: 'Ex: 08:20' });
         if (f.name === 'dataNascimento') return Object.assign({}, f, { onChange: agendarRerenderDataNascimento, helperText: avisoElegibilidadeMarcacao || undefined, helperTone: toneElegibilidadeMarcacao || undefined });
+        if (f.name === 'data' && vacinacaoMarcacaoBloqueadaPorDiaFechado(marcacaoDraft, marcacaoEditId)) {
+          return Object.assign({}, f, { onChange: () => rerender(), helperText: '🔒 Dia por abrir — não é possível marcar. Abre o dia na Agenda («Abrir Dia») ou escolhe um dia já aberto.', helperTone: 'orange' });
+        }
         if (f.name === 'data' || f.name === 'gripe' || f.name === 'covid' || f.name === 'colaboradorFarmacia') return Object.assign({}, f, { onChange: () => rerender() });
         return f;
       });
@@ -46882,13 +47677,26 @@ function buildVacinacaoPage(container, goTo) {
     // vacinacaoNecessidadeEncomenda), só que visível aqui também, onde
     // estas pessoas realmente estão (pedido explícito 2026-08-12).
     const todosEspera = STATE.vacinacaoListaEspera.filter(e => e.campanhaId === campanhaId);
-    wrap.appendChild(h('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;' }, [
-      h('span', { class: 'badge badge-blue' }, `Gripe: ${todosEspera.filter(e => e.gripe).length}`),
-      h('span', { class: 'badge badge-blue' }, `COVID: ${todosEspera.filter(e => e.covid).length}`),
+    const list = listaEsperaDaCampanha();
+    // Imprimir Lista de Espera (pedido 2026-09-28) — mesmo motor do
+    // "Imprimir" do dia da Agenda (buildListaMultiPaginaDoc); imprime o que
+    // está a ser mostrado (respeita a pesquisa, se houver), pela mesma
+    // ordem de registo, com coluna ☐ para ir assinalando à mão quem já foi
+    // contactado.
+    const imprimirEsperaBtn = h('button', { class: 'btn btn-secondary', title: 'Imprimir a Lista de Espera desta campanha', disabled: list.length ? undefined : 'disabled' }, [Icon('printer', { size: 14, strokeWidth: 2.2 }), ' Imprimir']);
+    imprimirEsperaBtn.addEventListener('click', () => {
+      if (!list.length) return;
+      imprimirDocumento(buildImpressaoListaEsperaDoc(campanhaAtual(), list, esperaSearch), { titulo: `vacinacao_lista_espera_${todayISO()}` });
+    });
+    wrap.appendChild(h('div', { style: 'display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px;' }, [
+      h('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;' }, [
+        h('span', { class: 'badge badge-blue' }, `Gripe: ${todosEspera.filter(e => e.gripe).length}`),
+        h('span', { class: 'badge badge-blue' }, `COVID: ${todosEspera.filter(e => e.covid).length}`),
+      ]),
+      imprimirEsperaBtn,
     ]));
     wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:14px;' }, searchInput));
 
-    const list = listaEsperaDaCampanha();
     if (!list.length) {
       wrap.appendChild(EmptyState(esperaSearch ? 'Nenhum resultado para essa pesquisa.' : 'Lista de espera vazia nesta campanha.'));
     } else {
@@ -46897,7 +47705,12 @@ function buildVacinacaoPage(container, goTo) {
       // próprio formulário de Nova Marcação (ver showEsperaPicker em
       // buildAgendaTab), onde faz mais sentido: já se está a preencher a
       // marcação, só falta escolher a pessoa.
-      const thead = h('thead', {}, h('tr', {}, ['', 'Nº', 'Nome', 'Idade', 'Contacto', 'Vacina(s)', 'Elegibilidade'].map(t => h('th', {}, t))));
+      // Coluna de Observações (pedido 2026-09-28) — só o ícone do olho,
+      // igual às Agendas/Mapa de Tarefas (obsEyeButton: hover mostra o
+      // texto, clique/toque abre o popover com a nota inteira); cabeçalho
+      // também só com o ícone.
+      const obsHeaderEspera = h('span', { style: 'display:flex;align-items:center;justify-content:center;', title: 'Observações' }, Icon('eye', { size: 13, strokeWidth: 2.2 }));
+      const thead = h('thead', {}, h('tr', {}, ['', 'Nº', 'Nome', 'Idade', 'Contacto', 'Vacina(s)', 'Elegibilidade', obsHeaderEspera].map(t => h('th', {}, t))));
       const tbody = h('tbody', {}, list.map(e => {
         const selected = esperaSelectedIds.has(e.id);
         const idade = vacinacaoCalcularIdade(e.dataNascimento);
@@ -46910,6 +47723,7 @@ function buildVacinacaoPage(container, goTo) {
           h('td', {}, e.contacto ? formatarTelefonePT(e.contacto) : '—'),
           h('td', {}, vacinacaoLabelVacinas(e)),
           h('td', {}, h('span', { class: 'badge ' + (elegivel ? 'badge-green' : 'badge-orange') }, elegivel ? 'ELEGÍVEL (60–84)' : (idade === null ? '—' : (idade < 60 ? '< 60 ANOS' : '> 84 ANOS')))),
+          h('td', { style: 'text-align:center;', onclick: (ev) => { if (ev.target.closest('button')) ev.stopPropagation(); } }, obsEyeButton(e.observacoes)),
         ]);
         // Clicar na linha só SELECIONA (já ligado por buildSelectionCheckbox
         // acima) — ver/editar passa a exigir selecionar + botão "Editar" da
@@ -46958,6 +47772,24 @@ function buildVacinacaoPage(container, goTo) {
       }));
       wrap.appendChild(h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', {}, [thead, tbody]))));
     }
+    // Definidos no Gerador de Horário (tarefa "Vacinação" 💉, 2026-09-28) —
+    // só consulta aqui: alteram-se no Gerador; valem logo na Agenda.
+    const doHorario = responsaveisDoHorarioProximos();
+    wrap.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:22px 0 6px;' }, '💉 Definidos no Gerador de Horário'));
+    wrap.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 10px;' }, 'Colegas com a tarefa "Vacinação" no horário (de hoje em diante). Contam automaticamente como Responsáveis na Agenda — para alterar, edita a tarefa no Gerador de Horário.'));
+    if (!doHorario.length) {
+      wrap.appendChild(EmptyState('Ainda não há tarefas "Vacinação" nos horários gerados.'));
+    } else {
+      wrap.appendChild(h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', {}, [
+        h('thead', {}, h('tr', {}, ['Responsável', 'Dia', 'Período', 'Horário'].map(t => h('th', {}, t)))),
+        h('tbody', {}, doHorario.map(r => h('tr', {}, [
+          h('td', { class: 'cell-strong' }, [r.nome, r.detalhe ? h('span', { class: 'cell-muted' }, ` · ${r.detalhe}`) : null]),
+          h('td', {}, vacinacaoLabelDiaAberto(r.dataInicio)),
+          h('td', {}, `${r.horaInicio || 'início'}–${r.horaFim === '24:00' ? '00:00' : (r.horaFim || 'fim')}`),
+          h('td', {}, h('span', { class: 'badge ' + (r.semanaEstado === 'publicado' ? 'badge-green' : 'badge-orange') }, r.semanaEstado === 'publicado' ? 'PUBLICADO' : 'RASCUNHO')),
+        ]))),
+      ]))));
+    }
     wrap.appendChild(buildBottomActionBar({
       selectedCount: responsavelSelectedIds.size,
       addLabel: 'Novo Período de Responsabilidade',
@@ -46987,9 +47819,13 @@ function buildVacinacaoPage(container, goTo) {
       else if (showEsperaForm) cancelEsperaForm();
       else if (showResponsavelForm) cancelResponsavelForm();
     };
+    // Voltar hierárquico (2026-09-28): formulário aberto → fecha-o; dia
+    // da Agenda aberto → volta ao calendário da campanha (antes saltava
+    // logo para a lista de campanhas); senão → lista de campanhas.
+    const voltarDoDiaAoCalendario = () => { agendaDiaSelecionado = null; marcacaoSelectedIds = new Set(); rerender(); };
     wrap.appendChild(withCustomBackButton(
       buildPageHeader('syringe', campanha.nome || 'Vacinação', 'Gestão de agendamentos, stock e lista de espera desta campanha.', undefined),
-      anyFormOpen ? fecharFormAtivo : voltarCampanhas,
+      anyFormOpen ? fecharFormAtivo : ((activeSubTab === 'agenda' && agendaDiaSelecionado) ? voltarDoDiaAoCalendario : voltarCampanhas),
     ));
     if (!anyFormOpen) {
       const abas = [
@@ -52646,7 +53482,7 @@ async function loadAllData() {
         return { k, modo: 'delta', dados: delta };
       }));
       resultadosDelta.forEach(({ k, modo, dados }) => {
-        if (modo === 'completo') STATE[k] = sanitizarSupabase(dados);
+        if (modo === 'completo') { const novos = sanitizarSupabase(dados); guardarVersoesUltrapassadas(k, STATE[k], novos); STATE[k] = novos; }
         else aplicarLoteAoState(k, dados);
       });
     } else {
@@ -52655,7 +53491,7 @@ async function loadAllData() {
       // passar por sanitizarSupabase() mesmo aqui, no exato ponto em que entra
       // no STATE — garante blindagem total, mesmo que algum dia uma função de
       // leitura nova seja adicionada sem essa sanitização embutida.
-      keys.forEach((k, i) => { STATE[k] = sanitizarSupabase(results[i]); });
+      keys.forEach((k, i) => { const novos = sanitizarSupabase(results[i]); guardarVersoesUltrapassadas(k, STATE[k], novos); STATE[k] = novos; });
     }
     guardarCacheLocalEstado();
     normalizarTipoPremioDesafios();
@@ -52892,7 +53728,7 @@ function aplicarPayloadRealtimeAoState(listKey, payload) {
   // com um merge (`Object.assign`) em vez de substituição: uma chave
   // ausente no payload mantém o valor que já lá estava; uma chave presente
   // (mesmo `null`, uma limpeza real) continua a substituir normalmente.
-  if (idx !== -1) { lista[idx] = Object.assign({}, lista[idx], registo); return true; }
+  if (idx !== -1) { guardarVersaoAnterior(listKey, lista[idx]); lista[idx] = Object.assign({}, lista[idx], registo); return true; }
   // Registo novo (INSERT) — inserir já na posição certa em vez de deixar
   // simplesmente no fim, para a ordenação em STATE continuar idêntica à
   // que dbFetchAll() devolvia.
@@ -53037,7 +53873,7 @@ function subscreverTabelaRealtime(listKey) {
       // de volta ao comportamento antigo só nesse evento específico, para
       // nunca ficar com dados incompletos.
       const aplicado = aplicarPayloadRealtimeAoState(listKey, payload);
-      if (!aplicado) STATE[listKey] = sanitizarSupabase(await dbFetchAll(listKey));
+      if (!aplicado) { const novos = sanitizarSupabase(await dbFetchAll(listKey)); guardarVersoesUltrapassadas(listKey, STATE[listKey], novos); STATE[listKey] = novos; }
       if (listKey === 'desafios') normalizarTipoPremioDesafios();
       if (listKey === 'lembretes' && lembretesUrgentesPopupAtualizar) lembretesUrgentesPopupAtualizar();
       // Timestamp da última atualização de dados com sucesso — alimenta o
@@ -53050,6 +53886,7 @@ function subscreverTabelaRealtime(listKey) {
         handleNovaEntregaPendente(sanitizarSupabase(rowToRecord(payload.new)));
       }
       renderOuAdiarSeOcupado();
+      notificarAtualizadoresAoVivo(listKey);
     })
     .subscribe();
 }
