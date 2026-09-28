@@ -49519,22 +49519,77 @@ async function pontoCarregarConfig(forcar) {
 function pontoConfigDefinida(cfg) {
   return !!(cfg && cfg.lat !== null && cfg.lat !== undefined && cfg.lng !== null && cfg.lng !== undefined);
 }
-// ---- Jornada atual de uma pessoa (mesma regra do servidor) ----
+// Turno planeado de uma pessoa num dia (ou null) — só para contexto do ponto.
+function pontoTurnoPlaneado(utilizadorId, dataISO) {
+  try {
+    const semana = escalaSemanaPorInicio(escalaSegundaFeiraDaSemanaDeISO(dataISO));
+    if (!semana) return null;
+    const diaInfo = ESCALA_DIAS.find(d => escalaDataDoDia(semana.semanaInicio, d.key) === dataISO);
+    const vaga = diaInfo && escalaVagaDoColaboradorNoDia(semana, diaInfo.key, utilizadorId);
+    const dia = vaga && vaga.dia;
+    return (dia && dia.tipo === 'normal' && dia.entrada && dia.saida) ? dia : null;
+  } catch (e) { return null; }
+}
+// Até quando uma entrada sem saída ainda pode ser fechada pela própria
+// pessoa (2026-09-28, Hugo: "quem se esquece de picar a saída e só se lembra
+// ao entrar no dia seguinte não pode ficar com essa hora como saída"):
+// fim do turno planeado desse dia + 3 h (um turno até à meia-noite conta
+// até às 03:00); sem turno planeado (ex: troca), 14 h depois da entrada.
+// Nunca além das 20 h do servidor. Passado isto a jornada fica "esquecida":
+// a saída só a Direção a corrige, com a hora verdadeira.
+const PONTO_MARGEM_SAIDA_HORAS = 3;
+const PONTO_SEM_TURNO_MAX_HORAS = 14;
+function pontoLimiteSaidaJornada(entrada) {
+  const inicio = new Date(entrada.registadoEm || entrada.createdAt || 0).getTime();
+  const maxServidor = inicio + PONTO_JORNADA_MAX_HORAS * 3600 * 1000;
+  const turno = pontoTurnoPlaneado(entrada.utilizadorId, entrada.data);
+  let limite;
+  if (turno) {
+    const base = new Date(entrada.data + 'T00:00:00').getTime();
+    limite = base + (escalaMinutosAbsolutos(turno.saida, true) * 60 + PONTO_MARGEM_SAIDA_HORAS * 3600) * 1000;
+    limite = Math.max(limite, inicio + 2 * 3600 * 1000); // entrou já depois da hora — ainda dá margem
+  } else {
+    limite = inicio + PONTO_SEM_TURNO_MAX_HORAS * 3600 * 1000;
+  }
+  // Igual ao servidor (rpc_picar_ponto, 2026-09-28): uma entrada de um dia
+  // anterior só pode ser fechada até às 04:00 do dia seguinte.
+  const dia = new Date(entrada.data + 'T00:00:00');
+  dia.setDate(dia.getDate() + 1);
+  dia.setHours(4, 0, 0, 0);
+  return Math.min(limite, maxServidor, dia.getTime());
+}
+// ---- Jornada atual de uma pessoa ----
 function pontoJornadaAtual(utilizadorId) {
   const hoje = todayISO();
   const agora = Date.now();
   const meus = (STATE.pontoRegistos || []).filter(r => String(r.utilizadorId) === String(utilizadorId) && !r.eliminado && r.estado !== 'rejeitada');
   const momento = (r) => { const t = new Date(r.registadoEm || r.createdAt || 0).getTime(); return Number.isFinite(t) ? t : 0; };
-  const aberta = meus
-    .filter(r => r.tipo === 'entrada' && agora - momento(r) < PONTO_JORNADA_MAX_HORAS * 3600 * 1000
-      && !meus.some(s => s.tipo === 'saida' && s.data === r.data))
-    .sort((a, b) => momento(b) - momento(a))[0];
-  if (aberta) return { data: aberta.data, entrada: aberta, saida: null };
+  const semSaida = meus
+    .filter(r => r.tipo === 'entrada' && agora - momento(r) < 72 * 3600 * 1000 && !meus.some(s => s.tipo === 'saida' && s.data === r.data))
+    .sort((a, b) => momento(b) - momento(a));
+  const aberta = semSaida.find(r => agora <= pontoLimiteSaidaJornada(r));
+  // Entrada de um dia anterior que ficou sem saída e já não pode ser fechada pela própria pessoa.
+  const esquecida = semSaida.find(r => r !== aberta && r.data !== hoje && agora > pontoLimiteSaidaJornada(r)) || null;
+  if (aberta) return { data: aberta.data, entrada: aberta, saida: null, esquecida: aberta.data === hoje ? esquecida : null };
   return {
     data: hoje,
     entrada: meus.find(r => r.tipo === 'entrada' && r.data === hoje) || null,
     saida: meus.find(r => r.tipo === 'saida' && r.data === hoje) || null,
+    esquecida,
   };
+}
+// Avisa a Direção (Gaveta) de uma saída esquecida — a hora verdadeira é
+// corrigida por eles na Validação de Horários.
+async function pontoAvisarSaidaEsquecida(entrada) {
+  const destinatarios = escalaUsuariosDirecao().filter(u => String(u.id) !== String(activeUser.id));
+  const lista = destinatarios.length ? destinatarios : escalaUsuariosDirecao();
+  const mensagem = `${activeUser.nomeCompleto || activeUser.username} esqueceu-se de picar a saída de ${formatDate(entrada.data)} (entrada às ${entrada.horaReal}). Corrige a saída na Validação de Horários.`;
+  let ok = false;
+  for (const u of lista) {
+    const criado = await dbInsertRecado({ remetenteId: activeUser.id, destinatarioId: u.id, mensagem, tratado: false, tipo: 'tarefa', referenciaTabela: 'ponto_registos', referenciaId: entrada.id });
+    if (criado) { STATE.gavetaRecados = [criado, ...(STATE.gavetaRecados || [])]; ok = true; }
+  }
+  return ok;
 }
 function pontoGuardarRegistoNoState(registoBruto) {
   if (!registoBruto) return null;
@@ -49678,7 +49733,9 @@ function buildPontoWidget(rerender, diaHoje) {
   infoLinhas.push(infoEstadoEl);
   if (!ehTelemovel) infoLinhas.push(h('li', {}, 'Estás num computador: a picagem fica registada à hora certa, mas só conta depois de validada pela Direção. Sempre que possível, pica no teu telemóvel.'));
   if (pontoEhIOSForaDoEcraPrincipal()) infoLinhas.push(h('li', {}, 'Dica: adiciona o SigaJuncal ao ecrã principal (Partilhar → "Adicionar ao ecrã principal"). Assim o iPhone nunca "esquece" este telemóvel, mesmo depois de férias.'));
-  infoLinhas.push(h('li', {}, `A picagem conta logo quando é feita no teu telemóvel, a menos de ${RAIO_PONTO_METROS} m da farmácia. Nos outros casos fica registada à hora certa e a Direção valida-a.`));
+  infoLinhas.push(h('li', {}, 'A picagem conta logo quando é feita no teu telemóvel, na farmácia. Nos outros casos fica registada à hora certa e a Direção valida-a.'));
+  infoLinhas.push(h('li', {}, 'Pausas e almoço NÃO se picam: pica só a Entrada ao chegar e a Saída no fim do dia — a pausa conta tal como está no teu horário.'));
+  infoLinhas.push(h('li', {}, `Esqueceste-te de picar a saída? Só dá para a picar até ${PONTO_MARGEM_SAIDA_HORAS} h depois do fim do teu turno. Depois disso avisa a Direção (botão que aparece aqui), que corrige com a hora verdadeira.`));
   const infoPainel = h('ul', { class: 'ponto-info-painel', hidden: 'hidden' }, infoLinhas);
   const infoBtn = h('button', { class: 'ponto-info-btn', type: 'button', title: 'Mais informação', 'aria-label': 'Mais informação', 'aria-expanded': 'false' }, Icon('info', { size: 16, strokeWidth: 2.2 }));
   infoBtn.addEventListener('click', () => {
@@ -49706,6 +49763,23 @@ function buildPontoWidget(rerender, diaHoje) {
   const etiquetasEl = etiquetas.length ? h('div', { class: 'ponto-etiquetas' }, etiquetas) : null;
 
   const card = h('div', { class: 'card card-pad ponto-card' }, [cabecalho, infoPainel]);
+  // Saída esquecida num dia anterior (2026-09-28): nunca se oferece picar
+  // essa saída agora (ficaria com a hora de hoje) — avisa-se a Direção.
+  if (jornada.esquecida) {
+    const esq = jornada.esquecida;
+    const jaAvisou = (STATE.gavetaRecados || []).some(r => r.referenciaTabela === 'ponto_registos' && String(r.referenciaId) === String(esq.id) && String(r.remetenteId) === String(activeUser.id));
+    const avisarBtn = h('button', { class: 'btn btn-secondary', type: 'button', style: 'font-size:12.5px;padding:6px 12px;margin-top:6px;', disabled: jaAvisou ? 'disabled' : undefined }, jaAvisou ? 'Direção já avisada' : 'Avisar a Direção');
+    avisarBtn.addEventListener('click', () => requireAuth(async () => {
+      avisarBtn.setAttribute('disabled', 'disabled');
+      const ok = await pontoAvisarSaidaEsquecida(esq);
+      if (ok) { showToast('Direção avisada — vão corrigir a hora de saída.', 'success'); avisarBtn.textContent = 'Direção já avisada'; }
+      else { showDbErrorToast('Não foi possível avisar a Direção'); avisarBtn.removeAttribute('disabled'); }
+    }));
+    card.appendChild(h('div', { class: 'ponto-esquecida', style: 'background:#fff7ed;border:1px solid #fdba74;border-radius:10px;padding:10px 12px;margin:0 0 10px;font-size:13px;color:#9a3412;' }, [
+      h('div', {}, `⚠️ Não picaste a saída de ${formatDate(esq.data)} (entrada às ${esq.horaReal}). Já não dá para a picar agora — a Direção corrige com a hora verdadeira.`),
+      avisarBtn,
+    ]));
+  }
 
   // ---- Dia completo / saída sem entrada: sem botão ----
   if (jornada.entrada && jornada.saida) {
@@ -49751,7 +49825,10 @@ function buildPontoWidget(rerender, diaHoje) {
     const raio = (cfg && cfg.raioMetros) || RAIO_PONTO_METROS;
     const limite = (cfg && cfg.limiteAbsolutoMetros) || PONTO_LIMITE_ABSOLUTO_METROS;
     const precisaoMax = (cfg && cfg.precisaoMaxMetros) || PONTO_PRECISAO_MAX_METROS;
-    const m = (x) => `~${Math.round(x)} m`;
+    // (2026-09-28, Hugo: "não faz sentido dizer a que distância estamos —
+    // parece que a app está sempre a ler a localização") — nunca se mostram
+    // metros a quem pica: só Na farmácia / Perto / Longe. A distância exata
+    // continua a ir para o servidor e a Direção vê-a só ao validar uma picagem pendente.
     let curto, longo, tom = 'aviso', bloqueado = false;
     if (!ehTelemovel) {
       curto = 'Fica por validar (computador)'; longo = 'A picagem ficará pendente de validação da Direção.';
@@ -49764,14 +49841,14 @@ function buildPontoWidget(rerender, diaHoje) {
         : 'Não foi possível obter a localização. Podes picar na mesma, mas fica pendente de validação.';
     } else if (distancia > limite) {
       bloqueado = true; tom = 'erro';
-      curto = `Longe da farmácia (${m(distancia)})`; longo = `Estás a ${m(distancia)} da farmácia — só é possível picar a menos de ${limite} m.`;
+      curto = 'Longe da farmácia'; longo = 'Estás longe da farmácia — só é possível picar quando estiveres na farmácia ou muito perto.';
     } else if (distancia > raio) {
-      curto = `${m(distancia)} — fica por validar`; longo = `Estás a ${m(distancia)} (fora dos ${raio} m) — a picagem fica pendente de validação.`;
+      curto = 'Perto da farmácia — fica por validar'; longo = 'Estás perto, mas ainda fora da farmácia — a picagem fica pendente de validação da Direção.';
     } else if (typeof loc.precisao === 'number' && loc.precisao > precisaoMax) {
       curto = 'Localização imprecisa — fica por validar';
-      longo = `Localização pouco precisa (±${Math.round(loc.precisao)} m) — a picagem fica pendente de validação. Se puderes, espera uns segundos e volta a abrir esta página.`;
+      longo = 'Localização pouco precisa — a picagem fica pendente de validação. Se puderes, espera uns segundos e volta a abrir esta página.';
     } else {
-      tom = 'ok'; curto = `📍 Na farmácia (${m(distancia)})`; longo = `Estás perto da farmácia (${m(distancia)}) — a picagem conta logo.`;
+      tom = 'ok'; curto = '📍 Na farmácia'; longo = 'Estás na farmácia — a picagem conta logo.';
     }
     estadoEl.textContent = curto;
     estadoEl.className = `ponto-estado ${tom}`;
@@ -49795,7 +49872,20 @@ function buildPontoWidget(rerender, diaHoje) {
     }
   })();
 
-  btn.addEventListener('click', () => requireAuth(async () => {
+  // Saída muito antes do fim do turno (ex: ao ir almoçar) — pede
+  // confirmação, porque as pausas não se picam e uma saída fecha o dia.
+  function confirmarSaidaAntecipada(seguir) {
+    if (acaoTipo !== 'saida' || !jornada.entrada) { seguir(); return; }
+    const turno = pontoTurnoPlaneado(activeUser.id, jornada.data);
+    if (!turno) { seguir(); return; }
+    const base = new Date(jornada.data + 'T00:00:00').getTime();
+    const fimTurno = base + escalaMinutosAbsolutos(turno.saida, true) * 60000;
+    const faltaMin = Math.round((fimTurno - Date.now()) / 60000);
+    if (faltaMin <= 45) { seguir(); return; }
+    const pausaTxt = turno.pausaInicio && turno.pausaFim ? ` e tens pausa das ${turno.pausaInicio} às ${turno.pausaFim}` : '';
+    confirmDialog(`O teu turno de hoje só acaba às ${turno.saida}${pausaTxt}. As pausas e o almoço não se picam — a Saída fecha o dia e não dá para voltar a picar a Entrada. Vais mesmo sair agora (ex: saída antecipada)?`, seguir, { confirmLabel: 'Sim, picar a saída' });
+  }
+  btn.addEventListener('click', () => requireAuth(() => confirmarSaidaAntecipada(async () => {
     if (aPicar || btn.hasAttribute('disabled')) return;
     aPicar = true;
     btn.classList.add('a-registar');
@@ -49822,7 +49912,7 @@ function buildPontoWidget(rerender, diaHoje) {
       showToast(`${reg.tipo === 'entrada' ? 'Entrada' : 'Saída'} registada às ${reg.horaReal}.${res.aparelho_associado ? ' Este telemóvel ficou associado a ti.' : ''}`, 'success');
     }
     rerender();
-  }));
+  })));
   return card;
 }
 
