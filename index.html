@@ -5713,8 +5713,8 @@ const vacinacaoCampanhaSchema = [
   { name: 'nome', label: 'Campanha', type: 'text', col: 2, placeholder: 'Ex: 2026/2027' },
   { name: 'dataInicio', label: 'Início', type: 'date', size: 'xs', smartDate: true },
   { name: 'dataFim', label: 'Fim', type: 'date', size: 'xs', smartDate: true },
-  { name: 'stockInicialGripe', label: 'Stock Inicial — Gripe', type: 'number', size: 'xs' },
-  { name: 'stockInicialCovid', label: 'Stock Inicial — COVID', type: 'number', size: 'xs' },
+  { name: 'stockInicialGripe', label: 'Stock Inicial — Gripe (doses)', type: 'number', size: 'xs' },
+  { name: 'stockInicialCovid', label: 'Stock Inicial — COVID (doses)', type: 'number', size: 'xs' },
 ];
 // Campos agrupados por assunto (Quando/Quem → Vacinas → Estado/Registo →
 // Observações), com tamanhos proporcionais ao conteúdo real de cada campo
@@ -5755,8 +5755,10 @@ const vacinacaoEncomendaSchema = [
   { name: 'data', label: 'Data da Encomenda', type: 'date', size: 'xs', smartDate: true },
   { name: 'estado', label: 'Estado', type: 'select', options: ['Pendente', 'Rececionada'], size: 'xs' },
   { name: 'dataRececao', label: 'Data de Receção', type: 'date', size: 'xs', smartDate: true },
-  { name: 'qtdGripe', label: 'Quantidade — Gripe', type: 'number', size: 'sm' },
-  { name: 'qtdCovid', label: 'Quantidade — COVID', type: 'number', size: 'sm' },
+  { name: 'qtdGripe', label: 'Quantidade — Gripe (doses)', type: 'number', size: 'sm' },
+  // Sempre em DOSES (2026-09-28): o stock, as administrações e as quebras
+  // contam-se todos em doses — 1 frasco COVID = 6 doses.
+  { name: 'qtdCovid', label: 'Quantidade — COVID (doses)', type: 'number', size: 'sm', helperText: 'Em doses, não em frascos — 1 frasco COVID = 6 doses (ex: 5 frascos = 30).' },
   { name: 'responsavel', label: 'Registado Por', type: 'text', size: 'sm' },
   // Quem confirma a receção (marcarEncomendaRececionada) — sempre quem tem
   // sessão iniciada nesse momento, nunca quem registou a encomenda
@@ -5775,8 +5777,8 @@ const vacinacaoEncomendaSchema = [
 const vacinacaoQuebraSchema = [
   { name: 'data', label: 'Data', type: 'date', size: 'xs', smartDate: true },
   { name: 'hora', label: 'Hora', type: 'text', size: 'xs', placeholder: 'Ex: 10:15' },
-  { name: 'qtdGripe', label: 'Quebra — Gripe', type: 'number', size: 'xs' },
-  { name: 'qtdCovid', label: 'Quebra — COVID', type: 'number', size: 'xs' },
+  { name: 'qtdGripe', label: 'Quebra — Gripe (doses)', type: 'number', size: 'xs' },
+  { name: 'qtdCovid', label: 'Quebra — COVID (doses)', type: 'number', size: 'xs' },
   { name: 'motivo', label: 'Motivo (opcional)', type: 'text', col: 2, placeholder: 'Ex: frasco caiu, seringa contaminada...' },
   // Pré-preenchido com quem tem sessão iniciada (ver quebraVazia), mas
   // continua sempre editável — permite corrigir para outra colega, se foi
@@ -5893,11 +5895,15 @@ function vacinacaoEhBloqueio(m) {
   if (m.tipoLinha === 'bloqueado') return true;
   return !String(m.nome || '').trim() && !String(m.contacto || '').trim() && !m.gripe && !m.covid;
 }
-function vacinacaoCalcularIdade(dataNascISO) {
+// dataRefISO (opcional, 2026-09-28): idade NESSE dia (ex: dia da marcação)
+// — quem faz 60 anos entre hoje e o dia marcado já é elegível nesse dia.
+// Sem data de referência (Lista de Espera), conta a idade de hoje.
+function vacinacaoCalcularIdade(dataNascISO, dataRefISO) {
   if (!dataNascISO) return null;
-  const nasc = new Date(dataNascISO + 'T00:00:00');
+  const nasc = new Date(dataNascISO + 'T12:00:00');
   if (isNaN(nasc.getTime())) return null;
-  const hoje = new Date();
+  const ref = /^\d{4}-\d{2}-\d{2}$/.test(String(dataRefISO || '')) ? new Date(dataRefISO + 'T12:00:00') : null;
+  const hoje = ref || new Date();
   let idade = hoje.getFullYear() - nasc.getFullYear();
   const aindaNaoFezAnos = (hoje.getMonth() < nasc.getMonth()) || (hoje.getMonth() === nasc.getMonth() && hoje.getDate() < nasc.getDate());
   if (aindaNaoFezAnos) idade -= 1;
@@ -5934,6 +5940,17 @@ function vacinacaoElegibilidadeTone(idade, gripe, covid) {
   if (idade > 84) return 'red';
   if (idade < 60) return (gripe && !covid) ? 'orange' : 'red';
   return 'green';
+}
+// Quantidades de vacinas: vazio = 0; senão tem de ser um número inteiro
+// ≥ 0 (2026-09-28 — antes aceitava -3 ou 2,5 e o stock ficava errado).
+function vacinacaoQuantidadeInvalida(draft, campos) {
+  for (const c of campos) {
+    const v = draft[c];
+    if (v === '' || v === null || v === undefined) continue;
+    const n = Number(String(v).replace(',', '.'));
+    if (!Number.isInteger(n) || n < 0) return 'As quantidades têm de ser números inteiros (sem vírgulas) e nunca negativos.';
+  }
+  return '';
 }
 function vacinacaoLabelVacinas(r) {
   const nomes = [];
@@ -6113,13 +6130,13 @@ function vacinacaoAvisoDuplicadoTexto(dup) {
   return linhas.length ? `Esta pessoa ${linhas.join('; ')}. Queres continuar mesmo assim?` : '';
 }
 function vacinacaoInicioSemanaISO(dateISO) {
-  const dt = new Date(dateISO + 'T00:00:00');
+  const dt = new Date(dateISO + 'T12:00:00');
   const dow = (dt.getDay() + 6) % 7; // 0 = segunda-feira
   dt.setDate(dt.getDate() - dow);
   return dateToISO(dt);
 }
 function vacinacaoFimSemanaISO(dateISO) {
-  const dt = new Date(vacinacaoInicioSemanaISO(dateISO) + 'T00:00:00');
+  const dt = new Date(vacinacaoInicioSemanaISO(dateISO) + 'T12:00:00');
   dt.setDate(dt.getDate() + 6);
   return dateToISO(dt);
 }
@@ -30989,10 +31006,100 @@ function escalaSegundaFeiraDaSemanaDeISO(dataISO) {
 // sincronização, etc.) conseguir confundir a app outra vez.
 function escalaSemanaPorInicio(semanaInicio) {
   const candidatas = (STATE.escalaSemanas || []).filter(s => s.semanaInicio === semanaInicio);
-  if (candidatas.length <= 1) return candidatas[0] || null;
-  const publicada = candidatas.find(s => s.estado === 'publicado');
-  if (publicada) return publicada;
-  return candidatas.slice().sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0];
+  let escolhida;
+  if (candidatas.length <= 1) escolhida = candidatas[0] || null;
+  else {
+    const publicada = candidatas.find(s => s.estado === 'publicado');
+    escolhida = publicada || candidatas.slice().sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0];
+  }
+  if (escolhida) escalaCompletarPessoaDoDiaGrupoB(escolhida);
+  return escolhida;
+}
+// Grupo B (Carina/Adriano — rotação DIÁRIA): cada dia TEM de dizer quem lá
+// está (dia.colaboradorId/colaboradorNome). Semanas antigas (e dias
+// editados antes da correção de 2026-09-28 no editor de célula) ficaram
+// sem essa informação, e aí toda a app caía na "legenda" da posição (a
+// pessoa do 1º dia trabalhado) — daí a Carina "desaparecer" e o Adriano
+// aparecer duas vezes. Esta função completa, em memória, SÓ os dias sem
+// pessoa, com a rotação desse dia; nunca mexe num dia que já diz quem é
+// (nem num null de uma troca validada, que é intencional). Nunca atribui a
+// mesma pessoa às duas posições no mesmo dia. As semanas de hoje em diante
+// ficam também gravadas assim (escalaGravarPessoaDoDiaGrupoB).
+const ESCALA_GRUPO_B_COMPLETADAS = new WeakSet();
+function escalaCompletarPessoaDoDiaGrupoB(semana) {
+  if (!semana || !semana.dados || !semana.semanaInicio) return 0;
+  if (ESCALA_GRUPO_B_COMPLETADAS.has(semana.dados)) return 0;
+  let completados = 0;
+  try {
+    const codigosB = new Set(escalaVagasGrupoOrdenadas('B').map(v => v.codigo));
+    if (!codigosB.size) { ESCALA_GRUPO_B_COMPLETADAS.add(semana.dados); return 0; }
+    ESCALA_DIAS.forEach(d => {
+      const dataISO = escalaDataDoDia(semana.semanaInicio, d.key);
+      const emFalta = [], usados = new Set();
+      codigosB.forEach(codigo => {
+        const linha = semana.dados[codigo];
+        if (!linha || !linha.dias) return;
+        const dia = linha.dias[d.key];
+        if (!dia) return;
+        if (dia.colaboradorId === undefined) emFalta.push(codigo);
+        else if (dia.colaboradorId !== null) {
+          usados.add(String(dia.colaboradorId));
+          // Pessoa gravada mas sem nome → nome a partir dos utilizadores (senão caía na legenda).
+          if (!dia.colaboradorNome) {
+            const u = (STATE.usuarios || []).find(x => String(x.id) === String(dia.colaboradorId));
+            if (u) { dia.colaboradorNome = u.nomeCompleto || u.username || ''; completados += 1; }
+          }
+        }
+      });
+      if (!emFalta.length) return;
+      const atribuicoes = escalaAtribuirGrupoBParaDia(dataISO).atribuicoes;
+      const porCodigo = new Map(atribuicoes.map(a => [a.codigo, a]));
+      emFalta.forEach(codigo => {
+        let at = porCodigo.get(codigo);
+        // Já há alguém gravado com essa pessoa noutra posição B nesse dia → usa a pessoa que sobra.
+        if (!at || !at.utilizadorId || usados.has(String(at.utilizadorId))) at = atribuicoes.find(a => a.utilizadorId && !usados.has(String(a.utilizadorId))) || null;
+        if (!at || !at.utilizadorId) return;
+        const dia = semana.dados[codigo].dias[d.key];
+        dia.colaboradorId = at.utilizadorId;
+        dia.colaboradorNome = at.colaboradorNome || '';
+        usados.add(String(at.utilizadorId));
+        completados += 1;
+      });
+    });
+  } catch (e) {
+    console.warn('[Horários] não foi possível completar a pessoa do dia no Grupo B:', formatarErroSeguro(e));
+    return 0;
+  }
+  ESCALA_GRUPO_B_COMPLETADAS.add(semana.dados);
+  return completados;
+}
+// Grava de vez, nas semanas de hoje em diante, os dias do Grupo B que não
+// diziam quem lá está (corre 1x por sessão quando o Hugo/Paulo abrem
+// Horários). As semanas passadas nunca se reescrevem — lá a correção é
+// só na leitura (escalaCompletarPessoaDoDiaGrupoB).
+let escalaReparacaoGrupoBFeita = false;
+async function escalaGravarPessoaDoDiaGrupoB() {
+  if (escalaReparacaoGrupoBFeita || !sb) return;
+  escalaReparacaoGrupoBFeita = true;
+  const hojeSeg = escalaSegundaFeiraDaSemanaDeISO(todayISO());
+  const alvo = (STATE.escalaSemanas || []).filter(sm => !sm.eliminado && sm.semanaInicio >= hojeSeg && sm.dados);
+  for (const semana of alvo) {
+    // Compara com o que está MESMO gravado no servidor (a cópia em memória
+    // já pode ter sido completada para mostrar certo).
+    const fresco = await dbFetchOne('escalaSemanas', semana.id);
+    if (!fresco || !fresco.dados) continue;
+    const copia = { semanaInicio: fresco.semanaInicio, dados: JSON.parse(JSON.stringify(fresco.dados)) };
+    if (!escalaCompletarPessoaDoDiaGrupoB(copia)) continue;
+    try {
+      let q = sb.from(TABLES.escalaSemanas).update({ dados: copia.dados }).eq('id', semana.id);
+      if (fresco.updatedAt) q = q.eq('updated_at', fresco.updatedAt); // nunca por cima de uma edição feita entretanto
+      const { data, error } = await comTimeoutSupabase(q.select().maybeSingle(), 15000);
+      if (error || !data) { escalaReparacaoGrupoBFeita = false; continue; }
+      const gravada = rowToRecord(sanitizarSupabase(data));
+      guardarVersaoAnterior('escalaSemanas', semana);
+      STATE.escalaSemanas = STATE.escalaSemanas.map(sm => sm.id === semana.id ? gravada : sm);
+    } catch (e) { escalaReparacaoGrupoBFeita = false; }
+  }
 }
 // CORRIGIDO A FUNDO 2026-09-03, 2ª vez no mesmo dia (Hugo: "não aparece a
 // rodar com Adriano, faz sempre o mesmo horário semanal" — a Carina
@@ -35507,7 +35614,19 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     // compatibilidade com qualquer código que ainda não tenha sido
     // migrado a ler `tarefas` (ver escalaTarefasDoDia).
     const primeiraTarefa = tarefas[0] || { tipo: '', outro: '', inicio: '', fim: '' };
+    // BUG CORRIGIDO 2026-09-28 (Hugo: "a Carina desaparece de forma
+    // aleatória e parece que é o Adriano que está de folga"): este objeto
+    // era escrito de raiz SEM a pessoa do dia — no Grupo B (rotação diária)
+    // a pessoa vive precisamente em dia.colaboradorId/colaboradorNome, por
+    // isso bastava editar uma célula (horas, tarefa...) para esse dia
+    // passar a mostrar a "legenda" da posição (quem trabalha no 1º dia da
+    // semana). Também se perdia a marca de uma troca validada (trocaId).
+    // Agora a identidade do dia é sempre preservada.
+    const identidadeDia = {};
+    const diaGravado = (novoDados[codigoVaga].dias && novoDados[codigoVaga].dias[diaKey]) || diaAtual || {};
+    ['colaboradorId', 'colaboradorNome', 'trocaId', 'colaboradorIdAntesTroca'].forEach(k => { if (diaGravado[k] !== undefined) identidadeDia[k] = diaGravado[k]; });
     novoDados[codigoVaga].dias[diaKey] = {
+      ...identidadeDia,
       entrada, saida, pausaInicio, pausaFim, tipo, heHoras, heHorasBanco, heInicio, heFim, heIntervalos, horas, tarefas,
       heSemTurnoNormal: horaExtraSemTurno || undefined,
       bancoHorasIntervalos, bancoHorasDesconto,
@@ -45071,7 +45190,11 @@ function buildHorariosPage(container, goTo) {
     }
     wrap.appendChild(tabsRow);
     // Tarefas antigas "Outro — Vacinação" → nova tarefa Vacinação (só semanas por vir; corre 1x por sessão).
-    if (podeGerirHorarios() && !ehMobile) escalaMigrarTarefasOutroVacinacao();
+    // Grupo B: grava a pessoa de cada dia nas semanas por vir que não a tinham (1x por sessão) —
+    // sempre depois da conversão acima, para as duas nunca gravarem a mesma semana ao mesmo tempo.
+    if (podeGerirHorarios() && !ehMobile) Promise.resolve(escalaMigrarTarefasOutroVacinacao()).catch(() => {}).then(() => escalaGravarPessoaDoDiaGrupoB());
+    // …e, em memória, completa todas as semanas (incl. passadas) antes de desenhar qualquer vista.
+    (STATE.escalaSemanas || []).forEach(sm => { if (!sm.eliminado) escalaCompletarPessoaDoDiaGrupoB(sm); });
     if (podeGerirHorarios() && !ehMobile && emGestaoHorarios) {
       HORARIOS_ULTIMA_TAB_GESTAO = activeTab;
       const subTab = (chave, icone, rotulo, antes) => h('button', {
@@ -45620,6 +45743,7 @@ function vacinacaoMarcacoesAtrasadas(campanhaIdAtual, ignoradasIds) {
   const agora = Date.now();
   return STATE.vacinacaoMarcacoes
     .filter(m => m.campanhaId === campanhaIdAtual && m.estado === 'Pendente' && m.hora
+      && !vacinacaoEhBloqueio(m) // (2026-09-28) vagas bloqueadas antigas vinham como "Pendente" e apareciam como atrasadas
       && !(ignoradasIds && ignoradasIds.has(m.id))
       && (agora - vacinacaoMarcacaoHoraDate(m).getTime()) > VACINACAO_ATRASO_LIMITE_MS)
     .sort((a, b) => `${a.data}${a.hora}`.localeCompare(`${b.data}${b.hora}`));
@@ -45979,7 +46103,7 @@ function buildVacinacaoPage(container, goTo) {
       });
       rerender();
     };
-    const idade = vacinacaoCalcularIdade(esp.dataNascimento);
+    const idade = vacinacaoCalcularIdade(esp.dataNascimento, marcacaoDraft && marcacaoDraft.data);
     if (idade !== null && idade < 60 && esp.gripe && !esp.covid) {
       confirmDialog('Esta pessoa tem menos de 60 anos e só quer a vacina da Gripe — não é preciso marcação (só com receita médica válida), pode simplesmente aparecer quando quiser. Usa o contacto na tabela acima para a informar, se for preciso.', () => {}, { confirmLabel: 'Entendido' });
       return;
@@ -46029,7 +46153,7 @@ function buildVacinacaoPage(container, goTo) {
     // <60 anos só com Gripe nunca bloqueia (só precisa de receita médica,
     // sem gestão de vaga — mesma exceção já aplicada em escolherDaListaEsperaNoFormulario).
     if (!marcacaoEditId && !marcacaoDraft.colaboradorFarmacia) {
-      const idadeMarcacao = vacinacaoCalcularIdade(marcacaoDraft.dataNascimento);
+      const idadeMarcacao = vacinacaoCalcularIdade(marcacaoDraft.dataNascimento, marcacaoDraft.data);
       if (idadeMarcacao !== null && idadeMarcacao > 84) {
         marcacaoFormError = '⚠️ Não é possível criar esta marcação direta: idade acima dos 84 anos deve realizar a vacinação no Centro de Saúde onde está inscrito(a). Se se tratar de um(a) colaborador(a) da farmácia, assinale "Colaborador da Farmácia Juncal".';
         rerender();
@@ -46269,6 +46393,8 @@ function buildVacinacaoPage(container, goTo) {
     if (encomendaSaving) return; // trava duplo-submissão (ver nota em submit() de Entregas)
     const missing = checkRequiredFields(encomendaDraft, vacinacaoEncomendaSchema);
     if (missing.length) { encomendaFormError = buildRequiredMessage(missing, vacinacaoEncomendaSchema); rerender(); return; }
+    const qtdInvalidaEnc = vacinacaoQuantidadeInvalida(encomendaDraft, ['qtdGripe', 'qtdCovid']);
+    if (qtdInvalidaEnc) { encomendaFormError = qtdInvalidaEnc; rerender(); return; }
     if (!(Number(encomendaDraft.qtdGripe) > 0) && !(Number(encomendaDraft.qtdCovid) > 0)) {
       encomendaFormError = 'Indica a quantidade encomendada de pelo menos uma vacina.'; rerender(); return;
     }
@@ -46335,6 +46461,8 @@ function buildVacinacaoPage(container, goTo) {
     if (quebraSaving) return; // trava duplo-submissão (ver nota em submit() de Entregas)
     const missing = checkRequiredFields(quebraDraft, vacinacaoQuebraSchema);
     if (missing.length) { quebraFormError = buildRequiredMessage(missing, vacinacaoQuebraSchema); rerender(); return; }
+    const qtdInvalidaQuebra = vacinacaoQuantidadeInvalida(quebraDraft, ['qtdGripe', 'qtdCovid']);
+    if (qtdInvalidaQuebra) { quebraFormError = qtdInvalidaQuebra; rerender(); return; }
     if (!(Number(quebraDraft.qtdGripe) > 0) && !(Number(quebraDraft.qtdCovid) > 0)) {
       quebraFormError = 'Indica a quantidade perdida de pelo menos uma vacina.'; rerender(); return;
     }
@@ -46937,6 +47065,7 @@ function buildVacinacaoPage(container, goTo) {
     const doDia = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO);
     const marcadas = doDia.filter(m => m.estado !== 'Cancelada' && m.covid).length;
     const administradas = doDia.filter(m => m.estado === 'Administrada' && m.covid).length;
+    const porAdministrar = doDia.filter(m => m.estado === 'Pendente' && m.covid && !vacinacaoEhBloqueio(m)).length;
     if (!marcadas && !administradas) return null;
     const blocos = [];
     const faltam = vacinacaoFaltamParaMultiploSeis(marcadas);
@@ -46945,13 +47074,40 @@ function buildVacinacaoPage(container, goTo) {
         ? `✅ COVID: ${marcadas} pessoa${marcadas > 1 ? 's' : ''} marcada${marcadas > 1 ? 's' : ''} — múltiplo exato de 6 (${marcadas / 6} frasco${marcadas / 6 > 1 ? 's' : ''}), sem desperdício previsto.`
         : `⚠️ COVID: ${marcadas} pessoa${marcadas > 1 ? 's' : ''} marcada${marcadas > 1 ? 's' : ''} — faltam ${faltam} para completar múltiplo de 6. Ajuste (marcar mais via Lista de Espera ou desmarcar) fica ao critério do Responsável pela Vacinação.`);
     }
-    if (administradas > 0) {
+    // (2026-09-28) Enquanto ainda há COVID por administrar nesse dia, o
+    // frasco aberto ainda vai ser usado — antes aparecia logo "quebra
+    // prevista" a meio do dia, o que não era verdade.
+    if (administradas > 0 && porAdministrar > 0) {
+      blocos.push(`💉 COVID administradas: ${administradas} — ainda ${porAdministrar} por administrar neste dia (a quebra só se calcula no fim).`);
+    } else if (administradas > 0) {
       const quebra = vacinacaoQuebraCovid(administradas);
       blocos.push(quebra === 0
         ? `✅ COVID administradas: ${administradas} — sem quebra.`
         : `🗑️ COVID administradas: ${administradas} — quebra prevista de ${quebra} dose${quebra > 1 ? 's' : ''} (frasco aberto por completar). Isto é só uma estimativa — se a quebra realmente aconteceu, regista-a em "Registar Quebra" para atualizar o stock.`);
     }
     return h('div', { class: 'card card-pad', style: 'margin-bottom:14px;background:var(--pharm-50);' }, blocos.map(b => h('p', { style: 'margin:0 0 4px;font-size:13px;' }, b)));
+  }
+  // (2026-09-28, Hugo: "não é assim tão importante") — deixou de ser uma
+  // linha de texto por cima das vagas; passa a ser só um (i) ao lado da
+  // data (hover/foco mostra, toque/clique também), ver buildNavegacaoDiasVacinacao.
+  function textoResponsaveisDoDia(dateISO) {
+    const ativos = responsaveisNoDia(dateISO);
+    if (!ativos.length) return 'Sem Responsável pela Vacinação definido para este dia — ver separador "Responsáveis" (ou a tarefa Vacinação no Gerador de Horário).';
+    const vistos = new Set();
+    const partes = ativos.map(r => {
+      const txt = (r.horaInicio || r.horaFim) ? `${r.nome || '—'} (${r.horaInicio || 'início'}–${r.horaFim === '24:00' ? '00:00' : (r.horaFim || 'fim')})` : (r.nome || '—');
+      if (vistos.has(txt)) return null;
+      vistos.add(txt);
+      return r.origem === 'horario' ? `${txt} 💉` : txt;
+    }).filter(Boolean);
+    const temDoHorario = ativos.some(r => r.origem === 'horario');
+    return `Responsável pela Vacinação neste dia:\n${partes.join('\n')}${temDoHorario ? '\n(💉 = definido no Gerador de Horário)' : ''}`;
+  }
+  function buildIconeResponsaveisDoDia(dateISO) {
+    const texto = textoResponsaveisDoDia(dateISO);
+    const icone = construirIconeAjuda(texto);
+    icone.addEventListener('click', (e) => { e.stopPropagation(); mostrarTooltipFlutuante(icone, texto); });
+    return icone;
   }
   function buildResponsavelDoDiaAviso(dateISO) {
     const ativos = responsaveisNoDia(dateISO);
@@ -47197,6 +47353,7 @@ function buildVacinacaoPage(container, goTo) {
       botao(Icon('arrowright', { size: 14, strokeWidth: 2.4 }), seguinte, 'Dia seguinte'),
       botao('»', abertoSeguinte, 'Dia aberto seguinte'),
       h('span', { class: 'badge ' + (aberto ? 'badge-green' : 'badge-gray'), style: 'margin-left:4px;' }, aberto ? 'DIA ABERTO' : 'DIA POR ABRIR'),
+      buildIconeResponsaveisDoDia(dateISO),
     ]);
   }
   function buildAgendaDiaView(dateISO) {
@@ -47235,7 +47392,6 @@ function buildVacinacaoPage(container, goTo) {
       return wrap;
     }
     wrap.appendChild(buildNavegacaoDiasVacinacao(dateISO));
-    wrap.appendChild(buildResponsavelDoDiaAviso(dateISO));
     const avisoOutrosServicos = buildOutrosServicosDoDiaAviso(dateISO);
     if (avisoOutrosServicos) wrap.appendChild(avisoOutrosServicos);
     const avisoFrascos = buildAvisoFrascosCovid(dateISO);
@@ -47357,6 +47513,19 @@ function buildVacinacaoPage(container, goTo) {
     const meses = vacinacaoMesesDaCampanha(campanha);
     const wrap = h('div', {});
     if (!meses.length) { wrap.appendChild(EmptyState('Esta campanha ainda não tem um período (Início/Fim) definido.')); return wrap; }
+    // Legenda das cores dos dias (2026-09-28, pedido de Hugo) — as mesmas
+    // cores de buildMiniMes, por cima dos meses.
+    const amostra = (bg, border, texto, extra) => h('span', { style: 'display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--pharm-700);white-space:nowrap;' }, [
+      h('span', { style: `width:16px;height:16px;border-radius:4px;border:1.2px solid ${border};background:${bg};flex:0 0 auto;${extra || ''}` }), texto,
+    ]);
+    wrap.appendChild(h('div', { class: 'card card-pad', style: 'display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;margin-bottom:14px;padding:10px 14px;' }, [
+      amostra('#ecfdf5', '#86efac', 'Aberto — COVID em múltiplo de 6 (ou só Gripe)'),
+      amostra('#fffbeb', '#fcd34d', 'Aberto — COVID fora do múltiplo de 6'),
+      amostra('#eff6ff', '#93c5fd', 'Aberto — sem marcações'),
+      amostra('#fff', 'var(--pharm-200)', 'Por abrir'),
+      amostra('#fff', 'var(--pharm-700)', 'Hoje', 'border-width:1.6px;'),
+      amostra('#fff', 'var(--pharm-200)', 'Dia passado', 'opacity:.55;'),
+    ]));
     wrap.appendChild(h('div', { style: 'display:grid;grid-template-columns:repeat(4,1fr);gap:14px;width:100%;box-sizing:border-box;' }, meses.map(mm => buildMiniMes(mm.ano, mm.mes))));
     return wrap;
   }
@@ -47373,9 +47542,13 @@ function buildVacinacaoPage(container, goTo) {
     if (!covidNoDia) return null;
     const faltam = vacinacaoFaltamParaMultiploSeis(covidNoDia);
     if (!faltam) return null;
-    // +1 porque esta própria marcação (a ser criada agora) também ocupa
-    // uma vaga do dia, mesmo sendo só de Gripe.
-    const vagasRestantes = vacinacaoVagasReferenciaDia() - doDia.length - 1;
+    // Vagas REALMENTE livres que sobram nesse dia (2026-09-28 — antes era
+    // um total fixo menos todas as marcações, incluindo encaixes fora do
+    // horário e vagas cuja hora já passou): horário habitual, sem
+    // marcação/bloqueio e ainda por passar — menos a desta marcação.
+    const ocupadasHoras = new Set(doDia.filter(m => m.hora).map(m => m.hora));
+    const livresReais = vacinacaoGerarSlotsHorario().filter(sl => sl.dentroDefault && !ocupadasHoras.has(sl.hora) && !vacinacaoVagaExpirada(marcacaoDraft.data, sl.hora));
+    const vagasRestantes = livresReais.length - (livresReais.some(sl => sl.hora === marcacaoDraft.hora) ? 1 : 0);
     if (vagasRestantes >= faltam) return null;
     return h('div', { class: 'card card-pad', style: 'margin-bottom:14px;background:#fffbeb;border-color:#fde68a;' }, h('p', { style: 'margin:0;font-size:13px;' },
       `⚠️ Neste dia há ${covidNoDia} marcaç${covidNoDia > 1 ? 'ões' : 'ão'} de COVID — falta${faltam > 1 ? 'm' : ''} ${faltam} para completar um frasco de 6 doses, e já não sobram vagas suficientes no dia para lá chegar (evitar quebra). Esta marcação é só de Gripe: pondere marcar para outro dia, guardando esta vaga para alguém que também queira COVID (ou Gripe + COVID).`));
@@ -47384,7 +47557,7 @@ function buildVacinacaoPage(container, goTo) {
     const wrap = h('div', {});
     if (showMarcacaoForm) {
       const slots = vacinacaoGerarSlotsHorario();
-      const idadeMarcacaoDraft = vacinacaoCalcularIdade(marcacaoDraft.dataNascimento);
+      const idadeMarcacaoDraft = vacinacaoCalcularIdade(marcacaoDraft.dataNascimento, marcacaoDraft.data);
       const avisoElegibilidadeMarcacao = vacinacaoAvisoElegibilidade(idadeMarcacaoDraft, !!marcacaoDraft.gripe, !!marcacaoDraft.covid);
       const toneElegibilidadeMarcacao = vacinacaoElegibilidadeTone(idadeMarcacaoDraft, !!marcacaoDraft.gripe, !!marcacaoDraft.covid);
       const camposComOverrides = (marcacaoEditId ? vacinacaoMarcacaoSchema : vacinacaoMarcacaoSchema.filter(f => f.name !== 'administradoPor')).map(f => {
