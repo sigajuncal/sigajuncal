@@ -6072,8 +6072,10 @@ const vacinacaoCampanhaSchema = [
   { name: 'nome', label: 'Campanha', type: 'text', col: 2, placeholder: 'Ex: 2026/2027' },
   { name: 'dataInicio', label: 'Início', type: 'date', size: 'xs', smartDate: true },
   { name: 'dataFim', label: 'Fim', type: 'date', size: 'xs', smartDate: true },
-  { name: 'stockInicialGripe', label: 'Stock Inicial — Gripe (doses)', type: 'number', size: 'xs' },
-  { name: 'stockInicialCovid', label: 'Stock Inicial — COVID (doses)', type: 'number', size: 'xs' },
+  // 2026-09-29: não há stock transitado entre campanhas (tudo o que chega é novo) — os campos ficam só para o
+  // caso raro de haver doses de outra campanha; por norma ficam a 0 e nem aparecem no cartão de Stock.
+  { name: 'stockInicialGripe', label: 'Doses transitadas — Gripe (normalmente 0)', type: 'number', size: 'xs' },
+  { name: 'stockInicialCovid', label: 'Doses transitadas — COVID (normalmente 0)', type: 'number', size: 'xs' },
 ];
 // Campos agrupados por assunto (Quando/Quem → Vacinas → Estado/Registo →
 // Observações), com tamanhos proporcionais ao conteúdo real de cada campo
@@ -49629,29 +49631,40 @@ function buildVacinacaoPage(container, goTo) {
       if (avisoNecessidade) wrap.appendChild(avisoNecessidade);
       const necessidade = vacinacaoNecessidadeEncomenda(campanha);
       wrap.appendChild(h('div', { class: 'quick-grid hub-tier-row', style: 'margin-bottom:16px;' }, [
-        h('div', { class: 'card card-pad' }, [
-          h('p', { class: 'field-helper-text', style: 'margin:0 0 4px;' }, 'Stock Atual — Gripe'),
-          h('p', { style: 'font-size:28px;font-weight:700;margin:0;' }, String(stock.gripe)),
-          h('p', { class: 'field-helper-text', style: 'margin:6px 0 0;' }, `Inicial ${Number(campanha.stockInicialGripe) || 0} · Recebido ${stock.recebidasGripe} · Administrado ${stock.administradasGripe} · Quebra ${stock.quebrasGripe}`),
-        ]),
-        h('div', { class: 'card card-pad' }, [
-          h('p', { class: 'field-helper-text', style: 'margin:0 0 4px;' }, 'Stock Atual — COVID'),
-          h('p', { style: 'font-size:28px;font-weight:700;margin:0;' }, String(stock.covid)),
-          h('p', { class: 'field-helper-text', style: 'margin:6px 0 0;' }, `Inicial ${Number(campanha.stockInicialCovid) || 0} · Recebido ${stock.recebidasCovid} · Administrado ${stock.administradasCovid} · Quebra ${stock.quebrasCovid}`),
-        ]),
-        // Contagem da Lista de Espera (pedido explícito 2026-08-12) — quem
-        // está aqui ainda não tem marcação nenhuma, mas também vai
-        // precisar de dose mais cedo ou mais tarde; já entra no cálculo de
-        // "falta encomendar" acima (vacinacaoNecessidadeEncomenda), mas
-        // fica também visível sempre, mesmo quando o stock ainda chega.
-        h('div', { class: 'card card-pad' }, [
-          h('p', { class: 'field-helper-text', style: 'margin:0 0 4px;' }, 'Lista de Espera'),
-          h('p', { style: 'font-size:28px;font-weight:700;margin:0;' }, String(necessidade.esperaGripe + necessidade.esperaCovid)),
-          h('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;' }, [
-            h('span', { class: 'badge badge-blue' }, `Gripe: ${necessidade.esperaGripe}`),
-            h('span', { class: 'badge badge-blue' }, `COVID: ${necessidade.esperaCovid}`),
-          ]),
-        ]),
+        // Clarificado 2026-09-29 (Hugo: "o que quer dizer aquele inicial? ... o que chega é novo"): o stock de
+        // cada campanha começa a zero e só entra o que é RECECIONADO — "Inicial" deixa de aparecer (só surge, como
+        // "transitado", se alguma campanha o tiver mesmo preenchido). Unidades sempre explícitas: doses.
+        ...[['Gripe', stock.gripe, Number(campanha.stockInicialGripe) || 0, stock.recebidasGripe, stock.administradasGripe, stock.quebrasGripe, necessidade.aCaminhoGripe],
+          ['COVID', stock.covid, Number(campanha.stockInicialCovid) || 0, stock.recebidasCovid, stock.administradasCovid, stock.quebrasCovid, necessidade.aCaminhoCovid]]
+          .map(([nome, atual, transitado, recebidas, administradas, quebras, aCaminho]) => h('div', { class: 'card card-pad' }, [
+            h('p', { class: 'field-helper-text', style: 'margin:0 0 4px;' }, `Stock em farmácia — ${nome}`),
+            h('p', { style: 'margin:0;display:flex;align-items:baseline;gap:6px;' }, [
+              h('span', { style: 'font-size:28px;font-weight:700;' }, String(atual)),
+              h('span', { style: 'font-size:13px;font-weight:600;color:var(--pharm-500);' }, atual === 1 ? 'dose' : 'doses'),
+            ]),
+            h('p', { class: 'field-helper-text', style: 'margin:6px 0 0;display:flex;flex-wrap:wrap;gap:0 8px;', title: 'Stock = doses rececionadas − administradas − quebras' },
+              [transitado ? `Transitadas ${transitado}` : null, `Rececionadas ${recebidas}`, `Administradas ${administradas}`, `Quebras ${quebras}`]
+                .filter(Boolean).map(t => h('span', { style: 'white-space:nowrap;' }, t))),
+            aCaminho ? h('p', { class: 'field-helper-text', style: 'margin:4px 0 0;color:#b45309;font-weight:700;' }, `+ ${aCaminho} ${aCaminho === 1 ? 'dose encomendada' : 'doses encomendadas'} a caminho`) : null,
+          ])),
+        // Lista de Espera (clarificado 2026-09-29, Hugo: "não é claro se são pessoas ou vacinas"): o número grande
+        // passa a ser PESSOAS; por baixo, as vacinas que essas pessoas vão precisar (Gripe + COVID = total de doses).
+        (() => {
+          const pessoasEspera = STATE.vacinacaoListaEspera.filter(e => e.campanhaId === campanha.id).length;
+          const dosesEspera = necessidade.esperaGripe + necessidade.esperaCovid;
+          return h('div', { class: 'card card-pad' }, [
+            h('p', { class: 'field-helper-text', style: 'margin:0 0 4px;' }, 'Lista de Espera'),
+            h('p', { style: 'margin:0;display:flex;align-items:baseline;gap:6px;' }, [
+              h('span', { style: 'font-size:28px;font-weight:700;' }, String(pessoasEspera)),
+              h('span', { style: 'font-size:13px;font-weight:600;color:var(--pharm-500);' }, pessoasEspera === 1 ? 'pessoa' : 'pessoas'),
+            ]),
+            h('p', { class: 'field-helper-text', style: 'margin:6px 0 4px;' }, `Vão precisar de ${dosesEspera} ${dosesEspera === 1 ? 'vacina' : 'vacinas'}:`),
+            h('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;' }, [
+              h('span', { class: 'badge badge-blue' }, `Gripe: ${necessidade.esperaGripe}`),
+              h('span', { class: 'badge badge-blue' }, `COVID: ${necessidade.esperaCovid}`),
+            ]),
+          ]);
+        })(),
       ]));
       wrap.appendChild(h('h3', { class: 'dash-card-title', style: 'margin:0 0 8px;' }, 'Contagem de Administrações'));
       wrap.appendChild(buildContagemPeriodosCards(campanha));
@@ -49800,7 +49813,10 @@ function buildVacinacaoPage(container, goTo) {
       imprimirDocumento(buildImpressaoListaEsperaDoc(campanhaAtual(), list, esperaSearch), { titulo: `vacinacao_lista_espera_${todayISO()}` });
     });
     wrap.appendChild(h('div', { style: 'display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px;' }, [
-      h('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;' }, [
+      // 2026-09-29: pessoas vs vacinas explícito (quem quer as duas conta 1 pessoa e 2 vacinas).
+      h('div', { style: 'display:flex;flex-wrap:wrap;align-items:center;gap:6px;' }, [
+        h('span', { class: 'badge badge-gray' }, `${todosEspera.length} ${todosEspera.length === 1 ? 'pessoa' : 'pessoas'}`),
+        h('span', { class: 'field-helper-text', style: 'margin:0 2px;' }, 'a precisar de'),
         h('span', { class: 'badge badge-blue' }, `Gripe: ${todosEspera.filter(e => e.gripe).length}`),
         h('span', { class: 'badge badge-blue' }, `COVID: ${todosEspera.filter(e => e.covid).length}`),
       ]),
