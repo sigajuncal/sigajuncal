@@ -2146,6 +2146,8 @@
 .vac-contagem-tabela tbody tr{border-top:1px solid var(--pharm-100);}
 .vac-contagem-num{text-align:right;font-weight:800;padding:5px 4px;font-variant-numeric:tabular-nums;}
 .vac-contagem-num.zero{color:#cbd5e1;font-weight:600;}
+.vac-contagem-total{border-left:1px solid var(--pharm-100);}
+.vac-contagem-tabela thead th:last-child{border-left:1px solid var(--pharm-100);}
 .vac-contagem-num.verde{color:#15803d;}
 .vac-contagem-num.laranja{color:#c2410c;}
 .vac-contagem-num.vermelho{color:#b91c1c;}
@@ -6295,9 +6297,10 @@ function vacinacaoContarPeriodo(campanha, desde, ate) {
     administradas: marcs.filter(m => m.estado === 'Administrada').length,
     administradasGripe: marcs.filter(m => m.estado === 'Administrada' && m.gripe).length,
     administradasCovid: marcs.filter(m => m.estado === 'Administrada' && m.covid).length,
-    pendentes: marcs.filter(m => m.estado === 'Pendente').length,
-    pendentesGripe: marcs.filter(m => m.estado === 'Pendente' && m.gripe).length,
-    pendentesCovid: marcs.filter(m => m.estado === 'Pendente' && m.covid).length,
+    // Pendente = tudo o que não está administrado nem cancelado (mesmo critério dos separadores da lista).
+    pendentes: marcs.filter(m => m.estado !== 'Administrada' && m.estado !== 'Cancelada').length,
+    pendentesGripe: marcs.filter(m => m.estado !== 'Administrada' && m.estado !== 'Cancelada' && m.gripe).length,
+    pendentesCovid: marcs.filter(m => m.estado !== 'Administrada' && m.estado !== 'Cancelada' && m.covid).length,
     canceladas: marcs.filter(m => m.estado === 'Cancelada').length,
     canceladasGripe: marcs.filter(m => m.estado === 'Cancelada' && m.gripe).length,
     canceladasCovid: marcs.filter(m => m.estado === 'Cancelada' && m.covid).length,
@@ -6361,7 +6364,7 @@ function vacinacaoBuscarDuplicados(campanhaIdAtual, dados, excluirMarcacaoId, ex
 function vacinacaoAvisoDuplicadoTexto(dup) {
   const linhas = [];
   if (dup.jaMarcada) linhas.push(`já tem uma marcação pendente para o dia ${formatDate(dup.jaMarcada.data)}${dup.jaMarcada.hora ? ' às ' + dup.jaMarcada.hora : ''}`);
-  if (dup.jaAdministrada) linhas.push(`já foi administrada a vacina que está a selecionar, nesta mesma época`);
+  if (dup.jaAdministrada) linhas.push(`já foi administrada a vacina que estás a selecionar, nesta mesma época`);
   if (dup.naListaEspera) linhas.push(`já está na Lista de Espera desta campanha`);
   return linhas.length ? `Esta pessoa ${linhas.join('; ')}. Queres continuar mesmo assim?` : '';
 }
@@ -6735,8 +6738,17 @@ function agendaHorariosOcupados(horaInicio, duracaoMin, prestadorKey) {
 // Verifica se uma nova marcação colide com alguma já existente do mesmo
 // prestador nesse dia (incluindo vagas bloqueadas). Devolve o registo em
 // conflito, ou null se o horário estiver livre.
+// AUDITORIA 2026-09-29: sobreposição calculada por intervalos de minutos (início–fim, com a duração arredondada
+// à grelha como antes). A comparação por "horas da grelha" falhava com encaixes fora da grelha (ex: 14:10 com
+// 45 min não colidia com uma marcação às 14:15/14:30).
+function agendaIntervaloMin(hora, duracaoMin, prestadorKey) {
+  const [hh, mm] = String(normalizarHora(hora) || '00:00').split(':').map(Number);
+  const ini = (hh || 0) * 60 + (mm || 0);
+  return { ini, fim: ini + agendaNumSlots(duracaoMin, prestadorKey) * agendaSlotMinPara(prestadorKey) };
+}
+function agendaIntervalosSobrepoem(a, b) { return a.ini < b.fim && b.ini < a.fim; }
 function agendaConflito(prestadorKey, data, horaInicio, duracaoMin, excludeId) {
-  const novosHorarios = new Set(agendaHorariosOcupados(horaInicio, duracaoMin, prestadorKey));
+  const novo = agendaIntervaloMin(horaInicio, duracaoMin, prestadorKey);
   const doDia = STATE.agendaMarcacoes.filter(m => m.prestadorKey === prestadorKey && m.data === data && m.id !== excludeId);
   for (const m of doDia) {
     // BUG CORRIGIDO 2026-09-17 (Hugo: aproveitar o horário de uma marcação
@@ -6747,8 +6759,7 @@ function agendaConflito(prestadorKey, data, horaInicio, duracaoMin, excludeId) {
     // pouco abaixo) — só nunca se aplica a linhas 'bloqueado' (essas
     // continuam sempre a contar como ocupadas, de propósito).
     if (m.tipoLinha === 'vaga' && (m.estado === 'cancelada' || m.estado === 'faltou' || m.estado === 'cancelado')) continue;
-    const horariosExistentes = agendaHorariosOcupados(m.hora, m.duracaoMin || 15, prestadorKey);
-    if (horariosExistentes.some(hh => novosHorarios.has(hh))) return m;
+    if (agendaIntervalosSobrepoem(novo, agendaIntervaloMin(m.hora, m.duracaoMin || 15, prestadorKey))) return m;
   }
   return null;
 }
@@ -6757,12 +6768,11 @@ function agendaConflito(prestadorKey, data, horaInicio, duracaoMin, excludeId) {
 // (vagas não canceladas; bloqueios contam sempre) se sobrepõem ao horário
 // pretendido — 0 = livre, 1 = permitido após confirmação, 2+ = bloqueado.
 function agendaSobreposicoesPrimaCorpus(data, horaInicio, duracaoMin, excludeId) {
-  const novosHorarios = new Set(agendaHorariosOcupados(horaInicio, duracaoMin, 'prima_corpus'));
+  const novo = agendaIntervaloMin(horaInicio, duracaoMin, 'prima_corpus');
   return STATE.agendaMarcacoes.filter(m => {
     if (m.prestadorKey !== 'prima_corpus' || m.data !== data || m.id === excludeId) return false;
     if (m.tipoLinha === 'vaga' && (m.estado === 'cancelada' || m.estado === 'faltou' || m.estado === 'cancelado')) return false;
-    const horarios = agendaHorariosOcupados(m.hora, m.duracaoMin || 15, 'prima_corpus');
-    return horarios.some(hh => novosHorarios.has(hh));
+    return agendaIntervalosSobrepoem(novo, agendaIntervaloMin(m.hora, m.duracaoMin || 15, 'prima_corpus'));
   });
 }
 
@@ -6771,7 +6781,9 @@ function agendaSobreposicoesPrimaCorpus(data, horaInicio, duracaoMin, excludeId)
 // vista das Agendas.
 function agendaContagemMes(prestadorKey, year, month) {
   const prefixo = `${year}-${pad2(month + 1)}`;
-  return STATE.agendaMarcacoes.filter(m => m.prestadorKey === prestadorKey && m.tipoLinha !== 'bloqueado' && (m.data || '').startsWith(prefixo)).length;
+  // AUDITORIA 2026-09-29: só marcações reais — sem vagas vazias, canceladas ou faltas (antes inflacionavam o total).
+  return STATE.agendaMarcacoes.filter(m => m.prestadorKey === prestadorKey && m.tipoLinha !== 'bloqueado' && (m.data || '').startsWith(prefixo)
+    && !['cancelada', 'cancelado', 'faltou'].includes(m.estado) && String(m.nomeCliente || '').trim()).length;
 }
 function agendaContagemLabel(n) {
   return n === 1 ? '1 marcação' : `${n} marcações`;
@@ -6790,6 +6802,9 @@ function agendaDiaAberto(prestadorKey, dateISO) {
 // "Fechar Dia" só é permitido quando não há nenhuma marcação ativa (vagas
 // bloqueadas não contam, e uma marcação com estado "cancelada"/"faltou"/
 // "cancelado" já não conta como ativa).
+// Marcação cancelada ou falta — não ocupa nem conta como serviço (AUDITORIA 2026-09-29: a Página Inicial
+// mostrava consultas canceladas como "Próximo serviço" e prolongava a janela "A decorrer").
+function agendaMarcacaoAnulada(m) { return ['cancelada', 'cancelado', 'faltou'].includes(String((m && m.estado) || '').toLowerCase()); }
 function agendaDiaTemMarcacaoAtiva(prestadorKey, dateISO) {
   return STATE.agendaMarcacoes.some(m => m.prestadorKey === prestadorKey && m.data === dateISO && m.tipoLinha !== 'bloqueado' && m.estado !== 'cancelada' && m.estado !== 'faltou' && m.estado !== 'cancelado');
 }
@@ -6865,7 +6880,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     const lista = marcacoesSelecionadasLista();
     if (!lista.length) return;
     const n = lista.length;
-    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar permanentemente ${n > 1 ? `as ${n} marcações selecionadas` : 'a marcação selecionada'}? Esta ação não pode ser desfeita!`, async () => {
+    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar ${n > 1 ? `as ${n} marcações selecionadas` : 'a marcação selecionada'}? Vai para o Lixo, de onde ainda pode ser recuperado.`, async () => {
       for (const m of lista) {
         const ok = await dbDelete('agendaMarcacoes', m.id);
         if (ok) STATE.agendaMarcacoes = STATE.agendaMarcacoes.filter(x => x.id !== m.id);
@@ -7183,7 +7198,11 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   // completamente removida — bloqueia-se vaga a vaga, ou por intervalo
   // personalizado através de "Bloquear Intervalo" (abaixo).
   async function bloquearIntervalosPersonalizados(pares) {
-    const ocupadas = new Set(marcacoesDoDia().map(m => m.hora));
+    // AUDITORIA 2026-09-29: conta também as vagas de continuação de uma consulta longa (antes só a hora de início —
+    // bloquear 10:00–13:00 com uma massagem de 60 min às 10:00 criava um bloqueio escondido às 10:30).
+    const ocupadas = new Set(marcacoesDoDia()
+      .filter(m => !(m.tipoLinha === 'vaga' && ['cancelada', 'cancelado', 'faltou'].includes(m.estado)))
+      .flatMap(m => agendaHorariosOcupados(normalizarHora(m.hora), m.duracaoMin || 15, prestadorKey)));
     const grade = agendaSlotsPara(prestadorKey);
     // Junta as vagas LIVRES de todos os intervalos [de, ate] (fechado dos
     // dois lados — "Até" inclusive, pedido explícito 2026-08-09) num único
@@ -8409,6 +8428,8 @@ async function dbBuscarClienteJuncalPorNumero(numero) {
 async function dbBuscarClienteJuncalPorNif(nif) {
   const nifNorm = String(nif || '').trim();
   if (!sb || !nifNorm) return null;
+  // AUDITORIA 2026-09-29: o valor entra num filtro .or() do Supabase — vírgulas/parêntesis estragavam o filtro.
+  if (!/^[A-Za-z0-9]{3,20}$/.test(nifNorm)) return null;
   let colunasBusca = ['nif', 'num_cc'];
   let colunasSelect = ['numero', 'nome', 'morada', 'localidade', 'tlm', 'nif', 'num_cc', 'data_nascimento', 'genero'];
   for (let tentativa = 0; tentativa < 6; tentativa++) {
@@ -9526,7 +9547,7 @@ function erroDeRede(e) {
   if (!e) return false;
   const msg = String(e.message || e || '').toLowerCase();
   return !navigator.onLine || msg.includes('failed to fetch') || msg.includes('load failed')
-    || msg.includes('network') || msg.includes('timeout') || msg.includes('fetch');
+    || msg.includes('network') || msg.includes('timeout') || msg.includes('fetch') || msg.includes('tempo esgotado');
 }
 function atualizarIndicadorLigacao() {
   document.querySelectorAll('.conexao-indicador').forEach(el => {
@@ -9534,7 +9555,7 @@ function atualizarIndicadorLigacao() {
     el.classList.toggle('conexao-offline', !conexaoOnline);
     const pendentes = filaOperacoesPendentes.length;
     const texto = conexaoOnline
-      ? (pendentes ? `Ligação ativa — a sincronizar ${pendentes} alteração${pendentes === 1 ? '' : 'ões'} pendente${pendentes === 1 ? '' : 's'}...` : 'Ligação ativa ao servidor')
+      ? (pendentes ? `Ligação ativa — a sincronizar ${pendentes} ${pendentes === 1 ? 'alteração' : 'alterações'} pendente${pendentes === 1 ? '' : 's'}...` : 'Ligação ativa ao servidor')
       : `Modo offline — alterações guardadas localmente${pendentes ? ` (${pendentes} pendente${pendentes === 1 ? '' : 's'})` : ''}.`;
     el.title = texto;
     el.setAttribute('aria-label', texto);
@@ -9572,7 +9593,17 @@ function apenasCamposAlterados(atual, patch) {
 // automaticamente assim que a ligação voltar (evento "online" do browser,
 // ou a próxima chamada ao Supabase que tenha sucesso).
 function enfileirarOperacaoOffline(listKey, id, patch, updatedAtEsperado) {
-  filaOperacoesPendentes.push({ listKey, id, patch, updatedAtEsperado: updatedAtEsperado || null, tentativas: 0, criadoEm: new Date().toISOString() });
+  // AUDITORIA 2026-09-29: duas edições offline ao MESMO registo juntam-se numa só operação (mantendo o
+  // updated_at da primeira). Antes a 2.ª ficava com o mesmo updated_at esperado e era descartada como
+  // "conflito" quando a 1.ª sincronizava.
+  const patchLimpo = limparCamposSoUI(listKey, Object.assign({}, patch));
+  const existente = filaOperacoesPendentes.find(op => op.listKey === listKey && String(op.id) === String(id));
+  if (existente) {
+    existente.patch = Object.assign({}, existente.patch, patchLimpo);
+    gravarFilaOffline(); atualizarIndicadorLigacao();
+    return;
+  }
+  filaOperacoesPendentes.push({ listKey, id, patch: patchLimpo, updatedAtEsperado: updatedAtEsperado || null, tentativas: 0, criadoEm: new Date().toISOString() });
   gravarFilaOffline();
   atualizarIndicadorLigacao();
 }
@@ -9589,9 +9620,13 @@ async function sincronizarFilaOffline() {
       // registo no servidor ainda não tiver mudado entretanto — nunca
       // sobrepõe cegamente uma alteração feita por outro posto enquanto
       // este estava offline.
-      let query = sb.from(TABLES[op.listKey]).update(recordToRow(op.patch)).eq('id', op.id);
-      if (op.updatedAtEsperado) query = query.eq('updated_at', op.updatedAtEsperado);
-      const { data, error } = op.updatedAtEsperado ? await query.select().single() : await query;
+      // AUDITORIA 2026-09-29: mesma limpeza do dbUpdate (campos só de ecrã e colunas que o Supabase já recusou) —
+      // antes uma coluna inexistente fazia a operação ser descartada em silêncio.
+      const { data, error } = await comAutoLimpezaDeColunas(op.listKey, recordToRow(limparCamposSoUI(op.listKey, op.patch)), (row) => {
+        let query = sb.from(TABLES[op.listKey]).update(row).eq('id', op.id);
+        if (op.updatedAtEsperado) query = query.eq('updated_at', op.updatedAtEsperado);
+        return op.updatedAtEsperado ? query.select().single() : query;
+      });
       if (error) {
         if (erroDeRede(error)) { restantes.push(op); marcarConexao(false); break; } // voltou a cair — para e tenta mais tarde
         if (op.updatedAtEsperado && error.code === 'PGRST116') {
@@ -9854,6 +9889,20 @@ async function dbFetchAll(listKey) {
   DB_FETCH_ALL_FALHOU[listKey] = resultado === null;
   return resultado || [];
 }
+// AUDITORIA 2026-09-29: o Supabase devolve no máximo 1000 linhas por pedido (max_rows). Sem paginação, uma
+// tabela com mais de 1000 registos ficava cortada EM SILÊNCIO (desapareciam os mais antigos). Lê página a
+// página (1000 de cada vez) até vir uma página incompleta — o mesmo tráfego, mas sempre completo.
+async function supabaseLerPaginado(construirQuery) {
+  const TAM = 1000;
+  let todos = [];
+  for (let pag = 0; pag < 500; pag++) {
+    const { data, error } = await construirQuery().range(pag * TAM, pag * TAM + TAM - 1);
+    if (error) return { data: pag === 0 ? null : todos, error };
+    todos = todos.concat(data || []);
+    if (!data || data.length < TAM) break;
+  }
+  return { data: todos, error: null };
+}
 async function dbFetchAllInterno(listKey) {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível.'; return null; }
   const ordenarPor = listKey === 'usuarios' ? 'nome_completo' : 'id';
@@ -9861,9 +9910,13 @@ async function dbFetchAllInterno(listKey) {
   try {
     // Utilizadores são sempre devolvidos por ordem alfabética do nome completo;
     // as restantes tabelas mantêm a ordem cronológica habitual (mais recente primeiro).
-    let query = listKey === 'usuarios'
-      ? sb.from(TABLES[listKey]).select('*').eq('eliminado', false).order('nome_completo', { ascending: true })
-      : sb.from(TABLES[listKey]).select('*').eq('eliminado', false).order('id', { ascending: false });
+    const construirQuery = () => {
+      let q = listKey === 'usuarios'
+        ? sb.from(TABLES[listKey]).select('*').eq('eliminado', false).order('nome_completo', { ascending: true }).order('id', { ascending: true })
+        : sb.from(TABLES[listKey]).select('*').eq('eliminado', false).order('id', { ascending: false });
+      if (listKey === 'vacinacaoMarcacoes') q = q.gte('data', `${vacinacaoTemporadaAtual().inicio}-07-01`);
+      return q;
+    };
     // CRIADO 2026-08-29 (Egress, pedido explícito de Hugo: "faz isso na
     // vacinação... desde que não impeça acesso em caso de pesquisa. Não
     // posso apagar dados de vacinação, precisamos de manter o histórico"):
@@ -9878,11 +9931,8 @@ async function dbFetchAllInterno(listKey) {
     // Época = Julho a Junho (vacinacaoTemporadaAtual) — usa o INÍCIO da
     // época, não uma janela de dias, para cobrir sempre a campanha
     // corrente inteira, esteja "hoje" em que ponto estiver dela.
-    if (listKey === 'vacinacaoMarcacoes') {
-      const temporada = vacinacaoTemporadaAtual();
-      query = query.gte('data', `${temporada.inicio}-07-01`);
-    }
-    const { data, error } = await query;
+    // (o filtro da época da Vacinação está em construirQuery, acima)
+    const { data, error } = await supabaseLerPaginado(construirQuery);
     if (error) {
       // "DataCloneError" nesta mensagem vem de dentro do próprio cliente
       // supabase-js, não dos dados — tenta-se logo a leitura alternativa
@@ -9991,7 +10041,7 @@ function lerCacheLocalEstado() {
     return parsed;
   } catch (e) { return null; }
 }
-function guardarCacheLocalEstado() {
+function guardarCacheLocalEstado(savedAtOriginal) {
   try {
     const tabelas = {};
     // Tabelas lazy nunca entram na cache — só participam nela as tabelas
@@ -10001,7 +10051,7 @@ function guardarCacheLocalEstado() {
     // fora são simplesmente lidas por inteiro no arranque seguinte (2026-09-26).
     for (let tentativa = 0; tentativa < 6; tentativa++) {
       try {
-        localStorage.setItem(STATE_CACHE_KEY, JSON.stringify({ version: STATE_CACHE_VERSION, savedAtCliente: Date.now(), tabelas }));
+        localStorage.setItem(STATE_CACHE_KEY, JSON.stringify({ version: STATE_CACHE_VERSION, savedAtCliente: savedAtOriginal || Date.now(), tabelas }));
         return;
       } catch (erroQuota) {
         const maior = Object.keys(tabelas).sort((a, b) => JSON.stringify(tabelas[b]).length - JSON.stringify(tabelas[a]).length)[0];
@@ -10361,7 +10411,7 @@ async function carregarDadosFinanceirosComIntervalo(forcar) {
 async function dbFetchGavetaRecados() {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível.'; return []; }
   try {
-    const { data, error } = await sb.from('gaveta_recados').select('*').order('created_at', { ascending: false });
+    const { data, error } = await supabaseLerPaginado(() => sb.from('gaveta_recados').select('*').order('created_at', { ascending: false }).order('id', { ascending: false }));
     if (error) { lastDbError = error.message; console.error('[Supabase] erro ao ler gaveta_recados:', error.message); return []; }
     return sanitizarSupabase((data || []).map(rowToRecord));
   } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error('[Supabase] erro de rede ao ler gaveta_recados:', formatarErroSeguro(e)); return []; }
@@ -10776,7 +10826,7 @@ async function dbUpdate(listKey, id, patch, opts) {
     }
     patchFinal = fusao.patch;
   } else {
-    patchFinal = apenasCamposAlterados(atual, patch);
+    patchFinal = Object.assign({}, apenasCamposAlterados(atual, patch)); // cópia: nunca altera o objeto de quem chama (AUDITORIA 2026-09-29)
     CAMPOS_META_EDICAO.forEach(k => { if (k !== 'id') delete patchFinal[k]; });
   }
   if (atual && Object.keys(patchFinal).length === 0) return atual; // nada mudou de facto — poupa um pedido ao servidor
@@ -11055,9 +11105,13 @@ async function chatMarkAllRead() {
   // Atualiza o STATE local já (a UI limpa o badge de imediato, sem esperar
   // pela rede) — o dbUpdate por baixo é que garante que fica gravado e
   // chega aos outros postos.
+  // AUDITORIA 2026-09-29: o dbUpdate compara com o STATE para saber o que mudou — se o STATE fosse atualizado
+  // ANTES, o pedido saía vazio e a última leitura nunca chegava ao servidor (o badge voltava nos outros postos).
+  // O dbUpdate calcula a diferença de forma síncrona logo ao ser chamado, por isso o STATE só muda depois disso.
+  const pedido = dbUpdate('usuarios', activeUser.id, { chatUltimaLeitura: agora });
   STATE.usuarios = (STATE.usuarios || []).map(u => String(u.id) === String(activeUser.id) ? Object.assign({}, u, { chatUltimaLeitura: agora }) : u);
   atualizarIndicadoresChat();
-  const updated = await dbUpdate('usuarios', activeUser.id, { chatUltimaLeitura: agora });
+  const updated = await pedido;
   if (updated) { STATE.usuarios = (STATE.usuarios || []).map(u => String(u.id) === String(updated.id) ? updated : u); atualizarIndicadoresChat(); }
 }
 // Momento em que a app arrancou nesta aba/janela — serve de baseline para a
@@ -11076,8 +11130,9 @@ async function herdarChatLastReadDoConvidado() {
   if (!origem) return;
   const u = (STATE.usuarios || []).find(x => String(x.id) === String(activeUser.id));
   if (u && u.chatUltimaLeitura && u.chatUltimaLeitura >= origem) return;
+  const pedido = dbUpdate('usuarios', activeUser.id, { chatUltimaLeitura: origem }); // antes de mexer no STATE (ver chatMarkAllRead)
   STATE.usuarios = (STATE.usuarios || []).map(x => String(x.id) === String(activeUser.id) ? Object.assign({}, x, { chatUltimaLeitura: origem }) : x);
-  const updated = await dbUpdate('usuarios', activeUser.id, { chatUltimaLeitura: origem });
+  const updated = await pedido;
   if (updated) STATE.usuarios = (STATE.usuarios || []).map(x => String(x.id) === String(updated.id) ? updated : x);
 }
 // Ao sair de sessão (silenciosa ou manual): propaga a última leitura já
@@ -11422,7 +11477,7 @@ async function dbUpdateMarcacao(id, patch, updatedAtEsperado) {
       // não "ver" a linha (ex: RLS). Confirma-se sempre com uma releitura
       // antes de mostrar o erro cru do Postgrest ao utilizador.
       if (error.code === 'PGRST116') {
-        const { data: frescoDireto } = await sb.from('eventos_marcacoes').select('*').eq('id', id).maybeSingle().catch(() => ({ data: null }));
+        const { data: frescoDireto } = await Promise.resolve(sb.from('eventos_marcacoes').select('*').eq('id', id).maybeSingle()).catch(() => ({ data: null })); // AUDITORIA 2026-09-29: o pedido do Supabase não tem .catch próprio
         const registoFresco = frescoDireto ? rowToRecord(frescoDireto) : null;
         if (registoFresco) {
           const aplicouMesmo = Object.keys(patch).every(k => JSON.stringify(registoFresco[k]) === JSON.stringify(patch[k]));
@@ -13406,15 +13461,21 @@ function aplicarMudancaEstadoComRota(r, listKey, novoEstado, gravar) {
 // cobrar só porque a entrega já foi feita. onEscolhaPago é chamado com
 // true (marcar Pago + Entregue), false (manter A Cobrar + marcar Entregue),
 // ou nunca (Cancelar — não faz nada).
-function confirmarPagamentoEntregaDialog(onEscolhaPago) {
+function confirmarPagamentoEntregaDialog(onEscolhaPago, onCancelar) {
   const overlay = h('div', { class: 'modal-overlay' });
-  function close() { document.removeEventListener('keydown', onKeydown); overlay.remove(); }
+  // AUDITORIA 2026-09-29: cancelar (botão, Escape ou fora) avisa quem chamou — no popup de atrasadas os botões
+  // dessa entrega ficavam bloqueados até fechar o popup.
+  let escolheu = false;
+  function close() {
+    document.removeEventListener('keydown', onKeydown); overlay.remove();
+    if (!escolheu && typeof onCancelar === 'function') { escolheu = true; onCancelar(); }
+  }
   overlay.addEventListener('click', (e) => { if (e.target === overlay && cliqueComecouEm(overlay)) close(); });
   function onKeydown(e) { if (e.key === 'Escape') close(); }
   document.addEventListener('keydown', onKeydown);
-  const pagoBtn = h('button', { class: 'btn btn-primary', onclick: () => { close(); onEscolhaPago(true); } },
+  const pagoBtn = h('button', { class: 'btn btn-primary', onclick: () => { escolheu = true; close(); onEscolhaPago(true); } },
     'Sim, marcar como PAGO e Entregue');
-  const manterBtn = h('button', { class: 'btn btn-secondary', onclick: () => { close(); onEscolhaPago(false); } },
+  const manterBtn = h('button', { class: 'btn btn-secondary', onclick: () => { escolheu = true; close(); onEscolhaPago(false); } },
     "Manter 'A Cobrar' e marcar Entregue");
   const cancelBtn = h('button', { class: 'btn btn-secondary', style: 'color:var(--red);', onclick: close }, 'Cancelar');
   const panel = h('div', { class: 'modal-panel confirm-panel' }, [
@@ -14123,7 +14184,7 @@ function buildOrtopediaPage(container, goTo) {
     if (selectedIds.size === 0) return;
     const ids = [...selectedIds];
     const plural = ids.length > 1;
-    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar permanentemente ${ids.length} registo${plural ? 's' : ''} selecionado${plural ? 's' : ''}? Esta ação não pode ser desfeita!`, async () => {
+    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar ${ids.length} registo${plural ? 's' : ''} selecionado${plural ? 's' : ''}? Vai para o Lixo, de onde ainda pode ser recuperado.`, async () => {
       const apagados = await bulkSoftDelete(listKey, ids);
       STATE[listKey] = records().filter(r => !apagados.has(r.id));
       selectedIds = new Set([...selectedIds].filter(id => !apagados.has(id)));
@@ -14486,7 +14547,7 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
     if (selectedIds.size === 0) return;
     const ids = [...selectedIds];
     const plural = ids.length > 1;
-    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar permanentemente ${ids.length} registo${plural ? 's' : ''} selecionado${plural ? 's' : ''}? Esta ação não pode ser desfeita!`, async () => {
+    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar ${ids.length} registo${plural ? 's' : ''} selecionado${plural ? 's' : ''}? Vai para o Lixo, de onde ainda pode ser recuperado.`, async () => {
       const apagados = await bulkSoftDelete(listKey, ids);
       STATE[listKey] = records().filter(r => !apagados.has(r.id));
       selectedIds = new Set([...selectedIds].filter(id => !apagados.has(id)));
@@ -14813,7 +14874,7 @@ function buildSasuEspinhoCard() {
 // objetivo ativo, para pressionar o cumprimento dos prazos no Dashboard.
 function objetivoContagemDecrescente(o) {
   if (!o.dataFim) return null;
-  const dias = Math.ceil((new Date(o.dataFim + 'T00:00:00') - new Date(todayISO() + 'T00:00:00')) / 86400000);
+  const dias = Math.round((new Date(o.dataFim + 'T00:00:00') - new Date(todayISO() + 'T00:00:00')) / 86400000); // round: nunca +1 dia na mudança de hora (AUDITORIA 2026-09-29)
   if (Number.isNaN(dias)) return null;
   // Texto secundário simples e discreto (sem pill): cinzento por norma,
   // laranja quando faltam 7 dias ou menos, vermelho com o prazo ultrapassado.
@@ -16580,7 +16641,7 @@ function buildUltimaNotificacaoWidget() {
   const btn = h('button', { class: 'ultima-notif-btn' + (naoLida ? ' tem-nova' : ''), type: 'button', title: 'Abrir a Gaveta de Recados', 'aria-label': 'Última notificação' }, [
     Icon(naoLida ? 'bell' : 'inbox', { size: 14, strokeWidth: 2.2 }),
     h('span', { class: 'ultima-notif-texto' }, [h('strong', {}, prefixo), trecho]),
-    h('span', { class: 'ultima-notif-hora' }, formatDateTime(tipoEvento === 'concluida' ? r.tratadoEm : r.createdAt)),
+    h('span', { class: 'ultima-notif-hora' }, formatDateTime((tipoEvento === 'concluida' || tipoEvento === 'concluidaPorColega') ? r.tratadoEm : r.createdAt)),
   ]);
   btn.addEventListener('click', () => requireAuth(() => {
     // Abre a conversa JÁ no recado desta notificação (e não no fim da conversa) — ver abrirModalGaveta.
@@ -16640,16 +16701,31 @@ function gavetaConcluidaPorOutraPessoa(r) {
 async function concluirTarefaPartilhada(r) {
   const agora = new Date().toISOString();
   const eu = String(activeUser.id);
-  const minha = await dbAtualizarRecado(r.id, { tratado: true, tratadoEm: agora, notifVistaRecebida: true, tratadoPorId: eu });
-  if (!minha) { showDbErrorToast('Não foi possível concluir a tarefa'); return false; }
-  STATE.gavetaRecados = (STATE.gavetaRecados || []).map(x => x.id === minha.id ? minha : x);
+  // AUDITORIA 2026-09-29: cada cópia só se fecha no servidor se ainda estiver por tratar — duas pessoas a concluir
+  // ao mesmo tempo nunca ficam as duas como "concluída pela outra".
+  const fecharSeAberta = async (id, extra) => {
+    try {
+      const { data, error } = await comAutoLimpezaDeColunas('gavetaRecados', recordToRow(Object.assign({ tratado: true, tratadoEm: agora, tratadoPorId: eu }, extra || {})),
+        (row) => sb.from('gaveta_recados').update(row).eq('id', id).eq('tratado', false).select().maybeSingle());
+      if (error) return { erro: true };
+      return { registo: data ? rowToRecord(sanitizarSupabase(data)) : null };
+    } catch (e) { return { erro: true }; }
+  };
+  const minha = await fecharSeAberta(r.id, { notifVistaRecebida: true });
+  if (minha.erro) { showDbErrorToast('Não foi possível concluir a tarefa'); return false; }
+  if (!minha.registo) {
+    const fresca = await dbFetchGavetaRecados();
+    if (Array.isArray(fresca) && fresca.length) STATE.gavetaRecados = fresca;
+    showToast('Esta tarefa partilhada já tinha sido concluída por outra pessoa do grupo.', 'success');
+    return true;
+  }
+  STATE.gavetaRecados = (STATE.gavetaRecados || []).map(x => x.id === minha.registo.id ? minha.registo : x);
   const outras = gavetaCopiasDoGrupo(r).filter(x => x.id !== r.id && !x.tratado);
-  const res = await Promise.all(outras.map(x => dbAtualizarRecado(x.id, { tratado: true, tratadoEm: agora, tratadoPorId: eu })));
-  res.forEach(upd => { if (upd) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === upd.id ? upd : x); });
-  if (res.some(x => !x)) showToast('Tarefa concluída, mas não foi possível fechar a cópia de todas as pessoas do grupo — avisa-as de viva voz.', 'error');
+  const res = await Promise.all(outras.map(x => fecharSeAberta(x.id)));
+  res.forEach(rr => { if (rr.registo) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === rr.registo.id ? rr.registo : x); });
+  if (res.some(x => x.erro)) showToast('Tarefa concluída, mas não foi possível fechar a cópia de todas as pessoas do grupo — avisa-as de viva voz.', 'error');
   return true;
 }
-// Gaveta aberta neste momento (para o Realtime a atualizar ao vivo e para um aviso clicado não abrir uma 2.ª janela).
 // Recados antigos com "semana de 05/10/2026 — dia 07/10/2026" mostram-se no formato simples de agora ("quarta, 07/10").
 function gavetaTextoRecado(texto) {
   const nomes = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
@@ -16658,6 +16734,7 @@ function gavetaTextoRecado(texto) {
     return isNaN(d) ? m : `${ini} — ${nomes[d.getDay()]}, ${dd}/${mm})`;
   });
 }
+// Gaveta aberta neste momento (para o Realtime a atualizar ao vivo e para um aviso clicado não abrir uma 2.ª janela).
 let GAVETA_ABERTA = null;
 // ---- Janelas que fecham ao clicar no fundo escuro (2026-09-26, Hugo: "quando a Lúcia selecionou as pessoas houve
 // um pequeno bug que causava o fecho da Gaveta de Recados quando ainda selecionava mais uma") ----
@@ -16980,6 +17057,9 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
   function fecharThread() {
     threadComId = null; multiSelecionados = new Map(); primeiroNaoLidoIdNaThread = null; render();
   }
+  // AUDITORIA 2026-09-29: envio a vários que falhou só para ALGUNS — a nova tentativa vai só a quem faltou e
+  // reutiliza o mesmo grupo (antes duplicava o recado a quem já o tinha recebido e criava um 2.º grupo).
+  let envioParcialPendente = null; // { chave, falhados: [ids], grupo }
   async function enviarComposer() {
     const texto = composerTexto.trim();
     if (!texto) { composerError = 'Por favor, escreve a mensagem.'; render(); return; }
@@ -16987,17 +17067,21 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
       composerError = 'Não é possível enviar: a app está a usar a conta de emergência (sem ligação à base de dados de utilizadores).';
       render(); return;
     }
-    const destinatarios = threadComId === 'EQUIPA' ? colegasElegiveis().map(u => String(u.id))
+    let destinatarios = threadComId === 'EQUIPA' ? colegasElegiveis().map(u => String(u.id))
       : threadComId === 'MULTI' ? [...multiSelecionados.keys()]
       : [String(threadComId)];
+    const chaveEnvio = `${threadComId}|${tipoEnvio}|${modoTarefaGrupo || ''}|${texto}|${destinatarios.slice().sort().join(',')}`;
+    const retoma = envioParcialPendente && envioParcialPendente.chave === chaveEnvio ? envioParcialPendente : null;
     const tarefaParaVarios = tipoEnvio === 'tarefa' && destinatarios.length > 1;
+    const totalDestinatarios = destinatarios.length;
+    if (retoma) destinatarios = retoma.falhados.slice();
     if (tarefaParaVarios && !modoTarefaGrupo) {
       composerError = 'Escolhe primeiro como é a tarefa: Individual (cada pessoa faz a sua) ou Partilhada (basta uma pessoa fazer).';
       render(); return;
     }
     composerError = ''; composerSaving = true; render();
     // Liga as cópias do mesmo envio (ver GAVETA_REF_PARTILHADA/INDIVIDUAL).
-    const grupo = tarefaParaVarios
+    const grupo = retoma ? retoma.grupo : tarefaParaVarios
       ? { referenciaTabela: modoTarefaGrupo === 'partilhada' ? GAVETA_REF_PARTILHADA : GAVETA_REF_INDIVIDUAL, referenciaId: `g${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}` }
       : {};
     // Envio SEMPRE individual — nunca um chat de grupo/conjunto: cada
@@ -17009,13 +17093,18 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
     composerSaving = false;
     const criados = resultados.filter(Boolean);
     if (criados.length) STATE.gavetaRecados = [...criados, ...STATE.gavetaRecados];
-    if (criados.length === destinatarios.length) {
+    const falhados = destinatarios.filter((d, i) => !resultados[i]);
+    if (!falhados.length) {
+      envioParcialPendente = null;
       limparRascunhoLocal(`gaveta_composer_${activeUser.id}_${threadComId}`);
       composerTexto = '';
-      if (tarefaParaVarios) showToast(`Tarefa ${modoTarefaGrupo === 'partilhada' ? 'Partilhada' : 'Individual'} enviada a ${criados.length} pessoas.`, 'success');
+      if (tarefaParaVarios) showToast(`Tarefa ${modoTarefaGrupo === 'partilhada' ? 'Partilhada' : 'Individual'} enviada a ${totalDestinatarios} pessoas.`, 'success');
       if (threadComId === 'EQUIPA' || threadComId === 'MULTI') { threadComId = null; multiSelecionados = new Map(); modoTarefaGrupo = null; }
     } else {
-      composerError = `Não foi possível enviar a todos. ${lastDbError || 'Tenta novamente.'}`;
+      envioParcialPendente = { chave: chaveEnvio, falhados, grupo };
+      composerError = falhados.length < totalDestinatarios
+        ? `Não foi possível enviar a ${falhados.length} de ${totalDestinatarios}. Tenta novamente — só vai para quem faltou. ${lastDbError || ''}`.trim()
+        : `Não foi possível enviar. ${lastDbError || 'Tenta novamente.'}`;
     }
     render();
     if (threadComId) scrollHistoricoParaFim();
@@ -18901,7 +18990,7 @@ function buildErrosPage(container, goTo) {
     if (selectedIds.size === 0) return;
     const ids = [...selectedIds];
     const plural = ids.length > 1;
-    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar permanentemente ${ids.length} registo${plural ? 's' : ''} selecionado${plural ? 's' : ''}? Esta ação não pode ser desfeita!`, async () => {
+    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar ${ids.length} registo${plural ? 's' : ''} selecionado${plural ? 's' : ''}? Vai para o Lixo, de onde ainda pode ser recuperado.`, async () => {
       const apagados = await bulkSoftDelete('erros', ids);
       STATE.erros = STATE.erros.filter(r => !apagados.has(r.id));
       selectedIds = new Set([...selectedIds].filter(id => !apagados.has(id)));
@@ -19952,6 +20041,11 @@ function financeiroFormatarEstimativa(v, campo) {
   return `≈ ${financeiroFormatarEuro(Math.round(v), 0)}`;
 }
 function financeiroMediaDiariaMes(ano, mes, campo) {
+  // AUDITORIA 2026-09-29: antes de 2026 só há o total do mês (1 registo) — a "média diária" era o total inteiro.
+  if (Number(ano) < FINANCEIRO_ANO_MINIMO_DIARIO) {
+    const total = financeiroTotalMes(ano, mes, campo);
+    return total ? total / financeiroDiasDoMes(ano, mes) : 0;
+  }
   const registos = financeiroRegistosDoMes(ano, mes, campo);
   return registos.length ? financeiroTotalMes(ano, mes, campo) / registos.length : 0;
 }
@@ -20485,8 +20579,10 @@ const FINANCEIRO_ANO_MINIMO_DIARIO = 2026;
 // for possível calcular).
 function financeiroComparar(dataAtual, dataReferencia, campo) {
   campo = campo || 'faturacao';
-  const atual = financeiroValorDoDia(dataAtual, campo);
-  const ref = financeiroValorDoDia(dataReferencia, campo);
+  // AUDITORIA 2026-09-29: antes de 2026 não há valores por dia (só o total do mês no dia 1) — nunca se compara um dia com isso.
+  const temDia = (d) => Number(String(d || '').slice(0, 4)) >= FINANCEIRO_ANO_MINIMO_DIARIO;
+  const atual = temDia(dataAtual) ? financeiroValorDoDia(dataAtual, campo) : null;
+  const ref = temDia(dataReferencia) ? financeiroValorDoDia(dataReferencia, campo) : null;
   const pct = (atual !== null && ref !== null && ref !== 0) ? ((atual - ref) / ref) * 100 : null;
   return { atual, ref, pct, dataAtual, dataReferencia };
 }
@@ -21431,7 +21527,7 @@ function financeiroGerarBriefing() {
   const antesUltimo = financeiroDiaAnterior(ultimo.data);
   const anoUltimoDia = ultimo.data.slice(0, 4);
   const mediaAnoDiaSemana = financeiroMediaPorDiaSemana('faturacao', `${anoUltimoDia}-01-01`, antesUltimo).find(d => d.diaSemana === diaSemanaUltNum);
-  const d3mAtras = new Date(ultimo.data + 'T00:00:00'); d3mAtras.setMonth(d3mAtras.getMonth() - 3);
+  const d3mAtras = (() => { const b = new Date(ultimo.data + 'T12:00:00'); const d = new Date(b.getFullYear(), b.getMonth() - 3, 1, 12); d.setDate(Math.min(b.getDate(), new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())); return d; })(); // sem transbordar (AUDITORIA 2026-09-29)
   const mediaTrimDiaSemana = financeiroMediaPorDiaSemana('faturacao', dateToISO(d3mAtras), antesUltimo).find(d => d.diaSemana === diaSemanaUltNum);
   if (mediaAnoDiaSemana || mediaTrimDiaSemana) {
     const parteDiaSemana = [`Comparando só com outros dias de ${diaSemanaUlt} — `];
@@ -21896,7 +21992,8 @@ function financeiroLimitesPeriodo(periodo, customInicio, customFim) {
   }
   if (periodo === '3meses' || periodo === '6meses' || periodo === '12meses') {
     const meses = periodo === '3meses' ? 3 : (periodo === '6meses' ? 6 : 12);
-    const d = new Date(hoje); d.setMonth(d.getMonth() - meses);
+    // AUDITORIA 2026-09-29: recuar meses sem transbordar (31/05 − 3 meses = 28/02, não 03/03).
+    const d = new Date(hoje.getFullYear(), hoje.getMonth() - meses, 1); d.setDate(Math.min(hoje.getDate(), new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()));
     return { dataInicio: dateToISO(d), dataFim: hojeISO, rotulo: `Últimos ${meses} Meses` };
   }
   if (periodo === 'custom') {
@@ -22694,9 +22791,15 @@ function buildRelatorioFinanceiroDoc(dataInicio, dataFim, rotuloPeriodo) {
   // período imediatamente anterior (mesma duração, logo antes) ----
   let resumoHomologo = null, resumoAnterior = null;
   if (incluirComparacoesCurtas) {
-    resumoHomologo = financeiroResumoPeriodo(financeiroDiaHomologoAnoAnterior(dataInicio), financeiroDiaHomologoAnoAnterior(dataFim));
+    // AUDITORIA 2026-09-29: antes de 2026 só existe o TOTAL de cada mês (gravado no dia 1). Um período de
+    // comparação nesses anos só é válido se cobrir meses completos — senão apanhava o mês inteiro (ou nada).
+    const periodoComparavel = (ini, fim) => Number(ini.slice(0, 4)) >= FINANCEIRO_ANO_MINIMO_DIARIO
+      || (ini.slice(8, 10) === '01' && Number(fim.slice(8, 10)) === financeiroDiasDoMes(Number(fim.slice(0, 4)), Number(fim.slice(5, 7))));
+    const homIni = financeiroDiaHomologoAnoAnterior(dataInicio), homFim = financeiroDiaHomologoAnoAnterior(dataFim);
+    if (periodoComparavel(homIni, homFim)) resumoHomologo = financeiroResumoPeriodo(homIni, homFim);
     const dataFimAnterior = financeiroDiaAnterior(dataInicio);
-    resumoAnterior = financeiroResumoPeriodo(deslocarDiasISO(dataFimAnterior, -(numDias - 1)), dataFimAnterior);
+    const antIni = deslocarDiasISO(dataFimAnterior, -(numDias - 1));
+    if (periodoComparavel(antIni, dataFimAnterior)) resumoAnterior = financeiroResumoPeriodo(antIni, dataFimAnterior);
   }
 
   // ==== PÁGINA 1 — Capa + Resumo Executivo + KPIs ====
@@ -23765,7 +23868,7 @@ function lembreteProximaOcorrenciaTexto(l) {
     // ocorrência de hoje já concluída continuava a aparecer como "a
     // próxima" nesta coluna, mesmo já não estando pendente.
     if (lembreteDataBateComPadrao(l.data, cursor, info) && !lembreteJaConcluidoNestaData(l, cursor)) return formatDate(cursor);
-    cursor = dateToISO(new Date(new Date(cursor + 'T00:00:00').getTime() + 86400000));
+    { const dSeg = new Date(cursor + 'T12:00:00'); dSeg.setDate(dSeg.getDate() + 1); cursor = dateToISO(dSeg); } // AUDITORIA 2026-09-29: +24 h ficava preso no dia da mudança de hora (25 h)
   }
   return formatDate(l.data);
 }
@@ -24414,7 +24517,7 @@ function buildReclamacoesPage(container, goTo) {
     if (selectedIds.size === 0) return;
     const ids = [...selectedIds];
     const plural = ids.length > 1;
-    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar permanentemente ${ids.length} registo${plural ? 's' : ''} selecionado${plural ? 's' : ''}? Esta ação não pode ser desfeita!`, async () => {
+    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar ${ids.length} registo${plural ? 's' : ''} selecionado${plural ? 's' : ''}? Vai para o Lixo, de onde ainda pode ser recuperado.`, async () => {
       const apagados = await bulkSoftDelete('reclamacoes', ids);
       STATE.reclamacoes = STATE.reclamacoes.filter(r => !apagados.has(r.id));
       selectedIds = new Set([...selectedIds].filter(id => !apagados.has(id)));
@@ -24647,7 +24750,7 @@ function proximasAgendaMarcacoes(limite) {
   const hoje = todayISO();
   const agora = new Date();
   const futuras = (STATE.agendaMarcacoes || []).filter(m => {
-    if (m.tipoLinha === 'bloqueado' || !m.data || !String(m.nomeCliente || '').trim()) return false;
+    if (m.tipoLinha === 'bloqueado' || !m.data || !String(m.nomeCliente || '').trim() || agendaMarcacaoAnulada(m)) return false;
     if (m.data > hoje) return true;
     if (m.data < hoje) return false;
     // m.data === hoje: só entra se a janela desta marcação ainda não acabou.
@@ -24732,7 +24835,7 @@ const SERVICO_BADGE_CORES = {
 // calendário para mostrar o horário real de funcionamento desse dia.
 function janelaServicoNoDia(prestadorKey, dateISO) {
   const marcacoesDia = (STATE.agendaMarcacoes || []).filter(m =>
-    m.prestadorKey === prestadorKey && m.data === dateISO && m.tipoLinha !== 'bloqueado' && String(m.nomeCliente || '').trim());
+    m.prestadorKey === prestadorKey && m.data === dateISO && m.tipoLinha !== 'bloqueado' && String(m.nomeCliente || '').trim() && !agendaMarcacaoAnulada(m));
   if (!marcacoesDia.length) return null;
   const ordenadas = marcacoesDia.slice().sort((a, b) => normalizarHora(a.hora).localeCompare(normalizarHora(b.hora)));
   const primeira = ordenadas[0];
@@ -24773,7 +24876,7 @@ function agendaVagasLivresDia(prestadorKey, dateISO) {
 function janelaServicoHoje(prestadorKey) {
   const hoje = todayISO();
   const marcacoesHoje = (STATE.agendaMarcacoes || []).filter(m =>
-    m.prestadorKey === prestadorKey && m.data === hoje && m.tipoLinha !== 'bloqueado' && String(m.nomeCliente || '').trim());
+    m.prestadorKey === prestadorKey && m.data === hoje && m.tipoLinha !== 'bloqueado' && String(m.nomeCliente || '').trim() && !agendaMarcacaoAnulada(m));
   if (!marcacoesHoje.length) return null;
   const ordenadas = marcacoesHoje.slice().sort((a, b) => normalizarHora(a.hora).localeCompare(normalizarHora(b.hora)));
   const primeira = ordenadas[0];
@@ -25318,7 +25421,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     // podeGerirDiaEvento): AFA só pode ser aberto/editado pelos
     // responsáveis (NOMES_RESPONSAVEIS_AFA) ou Administrador.
     if (tipo === 'AFA' && !souResponsavelAFA()) { cfgError = 'Não tens permissão para abrir ou editar dias de Análise Facial Avançada.'; render(); return; }
-    if (tipo === 'Rastreio' && !String(cfgDraft.subtipoRastreio || '').trim()) { cfgError = 'Por favor, escolha o Tipo de Rastreio.'; render(); return; }
+    if (tipo === 'Rastreio' && !String(cfgDraft.subtipoRastreio || '').trim()) { cfgError = 'Por favor, escolhe o Tipo de Rastreio.'; render(); return; }
     if (tipo === 'Rastreio' && cfgDraft.subtipoRastreio === 'Outro' && !String(cfgDraft.subtipoRastreioOutro || '').trim()) { cfgError = 'Indica o tipo de rastreio em "Outro".'; render(); return; }
     if (tipo === 'Conselheira' && !String(cfgDraft.marcaConselheira || '').trim()) { cfgError = 'Por favor, preenche a Marca.'; render(); return; }
     if ((tipo === 'Rastreio' || tipo === 'AFA') && (!horaFormatoValido(String(cfgDraft.horaInicial || '')) || !horaFormatoValido(String(cfgDraft.horaFinal || '')))) {
@@ -25657,7 +25760,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     const lista = marcacoesSelecionadasLista();
     if (!lista.length) return;
     const n = lista.length;
-    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar permanentemente ${n > 1 ? `as ${n} marcações selecionadas` : 'a marcação selecionada'}? Esta ação não pode ser desfeita!`, async () => {
+    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar ${n > 1 ? `as ${n} marcações selecionadas` : 'a marcação selecionada'}? Vai para o Lixo, de onde ainda pode ser recuperado.`, async () => {
       for (const m of lista) {
         const ok = await dbDeleteMarcacao(m.id);
         if (ok) marcacoes = marcacoes.filter(x => x.id !== m.id);
@@ -25843,11 +25946,17 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     }
   }
 
-  function bloquearVaga(grupo, hora, vagaExistente) {
+  function bloquearVaga(grupo, hora, vagaExistenteOriginal) {
     confirmDialog('Tens a certeza de que pretendes bloquear esta vaga?', async () => {
+      // AUDITORIA 2026-09-29: relê a vaga do servidor antes de bloquear — um colega pode ter acabado de marcar
+      // alguém nela (antes o bloqueio passava por cima dessa marcação).
+      await releMarcacoesDoServidor();
+      const mesmaHora = (x) => (x.grupoVaga || 'principal') === (grupo || 'principal') && normalizarHora(x.hora) === normalizarHora(hora);
+      const vagaExistente = vagaExistenteOriginal ? (marcacoes.find(x => x.id === vagaExistenteOriginal.id) || null) : (marcacoes.find(x => mesmaHora(x) && vagaVazia(x)) || null);
+      if (marcacoes.some(x => mesmaHora(x) && !vagaVazia(x))) { showToast('Esta vaga acabou de ser ocupada ou bloqueada por um colega — atualizei a grelha.', 'error'); render(); return; }
       const payload = { eventoId: currentEvento.id, hora, grupoVaga: grupo, tipoLinha: 'bloqueado', estado: '', responsavel: currentUserName() };
       const created = vagaExistente
-        ? await dbUpdateMarcacao(vagaExistente.id, payload)
+        ? await dbUpdateMarcacao(vagaExistente.id, payload, vagaExistente.updatedAt || undefined)
         : await dbInsertMarcacao(payload);
       if (created) {
         marcacoes = vagaExistente ? marcacoes.map(x => x.id === created.id ? created : x) : [...marcacoes, created];
@@ -25857,6 +25966,15 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
   }
   function desbloquearVaga(m) {
     confirmDialog('Tens a certeza de que pretendes desbloquear esta vaga?', async () => {
+      // AUDITORIA 2026-09-29: numa hora da grelha automática, a vaga volta a ficar LIVRE (a linha mantém-se) —
+      // apagá-la deixava a hora sem registo (sem lápis nem cadeado). Encaixes fora da grelha continuam a sair.
+      const daGrelha = slotsDoGrupoDe(m).map(normalizarHora).includes(normalizarHora(m.hora));
+      if (daGrelha) {
+        const upd = await dbUpdateMarcacao(m.id, { tipoLinha: 'vaga', estado: '' }, m.updatedAt || undefined);
+        if (upd) { marcacoes = marcacoes.map(x => x.id === upd.id ? upd : x); if (onSaved) onSaved(); render(); }
+        else showDbErrorToast('Não foi possível desbloquear a vaga');
+        return;
+      }
       const ok = await dbDeleteMarcacao(m.id);
       if (ok) { marcacoes = marcacoes.filter(x => x.id !== m.id); if (onSaved) onSaved(); render(); }
       else showDbErrorToast('Não foi possível desbloquear a vaga');
@@ -26795,7 +26913,7 @@ function buildOrcamentosPage(container, goTo) {
     if (selectedOrcIds.size === 0) return;
     const ids = [...selectedOrcIds];
     const plural = ids.length > 1;
-    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar permanentemente ${ids.length} orçamento${plural ? 's' : ''} selecionado${plural ? 's' : ''}? Esta ação não pode ser desfeita!`, async () => {
+    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar ${ids.length} orçamento${plural ? 's' : ''} selecionado${plural ? 's' : ''}? Vai para o Lixo, de onde ainda pode ser recuperado.`, async () => {
       const apagados = await bulkSoftDelete('orcamentos', ids);
       STATE.orcamentos = STATE.orcamentos.filter(r => !apagados.has(r.id));
       selectedOrcIds = new Set([...selectedOrcIds].filter(id => !apagados.has(id)));
@@ -26987,7 +27105,7 @@ function buildDesafiosPage(container, goTo, embedded) {
     if (selectedIds.size === 0) return;
     const ids = [...selectedIds];
     const plural = ids.length > 1;
-    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar permanentemente ${ids.length} prémio${plural ? 's' : ''} selecionado${plural ? 's' : ''}? Esta ação não pode ser desfeita!`, async () => {
+    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar ${ids.length} prémio${plural ? 's' : ''} selecionado${plural ? 's' : ''}? Vai para o Lixo, de onde ainda pode ser recuperado.`, async () => {
       const apagados = await bulkSoftDelete('desafios', ids);
       STATE.desafios = STATE.desafios.filter(r => !apagados.has(r.id));
       selectedIds = new Set([...selectedIds].filter(id => !apagados.has(id)));
@@ -27013,7 +27131,7 @@ function buildDesafiosPage(container, goTo, embedded) {
       const ativo = desafioAtivo(d);
       let diasTexto = '';
       if (ativo && d.dataFim) {
-        const dias = Math.ceil((new Date(`${d.dataFim}T00:00:00`) - new Date(`${hoje}T00:00:00`)) / 86400000);
+        const dias = Math.round((new Date(`${d.dataFim}T00:00:00`) - new Date(`${hoje}T00:00:00`)) / 86400000); // round: mudança de hora (AUDITORIA 2026-09-29)
         if (dias > 0) diasTexto = `${dias} dia${dias === 1 ? '' : 's'} restante${dias === 1 ? '' : 's'}`;
         else if (dias === 0) diasTexto = 'Termina hoje';
       }
@@ -27158,7 +27276,7 @@ function buildObjetivosPage(container, goTo, embedded) {
     if (selectedIds.size === 0) return;
     const ids = [...selectedIds];
     const plural = ids.length > 1;
-    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar permanentemente ${ids.length} objetivo${plural ? 's' : ''} selecionado${plural ? 's' : ''}? Esta ação não pode ser desfeita!`, async () => {
+    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar ${ids.length} objetivo${plural ? 's' : ''} selecionado${plural ? 's' : ''}? Vai para o Lixo, de onde ainda pode ser recuperado.`, async () => {
       const apagados = await bulkSoftDelete('objetivos', ids);
       STATE.objetivos = STATE.objetivos.filter(r => !apagados.has(r.id));
       selectedIds = new Set([...selectedIds].filter(id => !apagados.has(id)));
@@ -27475,14 +27593,25 @@ function normalizarDataParaComparacao(valor) {
 // que a regra genérica classificaria mal — nunca substitui uma escolha
 // manual (ver generoEscolhidoManualmente em buildGeneroUtenteField), é só
 // a sugestão inicial.
+// AUDITORIA 2026-09-29: só nomes masculinos que ACABAM em "a" fazem sentido aqui (os outros nunca eram
+// apanhados pela regra); e faltava a lista inversa — nomes femininos que NÃO acabam em "a" (Inês, Beatriz…)
+// eram deduzidos como masculinos nas declarações.
 const NOMES_MASCULINOS_EXCECAO_TERMINADOS_EM_A = [
-  'Manuel', 'Daniel', 'Gabriel', 'Rafael', 'Ezequiel', 'Ismael', 'Samuel',
-  'Josué', 'Luca', 'Nicola', 'Andrea', 'Elia', 'Costa',
+  'Luca', 'Nicola', 'Andrea', 'Elia', 'Joshua', 'Borja', 'Mustafa',
+];
+const NOMES_FEMININOS_EXCECAO = [
+  'Inês', 'Ines', 'Beatriz', 'Isabel', 'Raquel', 'Lurdes', 'Conceição', 'Conceicao', 'Rute', 'Ruth', 'Carmen', 'Mercedes',
+  'Leonor', 'Matilde', 'Irene', 'Alice', 'Liliane', 'Denise', 'Jaqueline', 'Madalena', 'Noémi', 'Noemi', 'Graciete',
+  'Ester', 'Esther', 'Judite', 'Ivone', 'Aline', 'Céline', 'Celine', 'Rosemary', 'Mariane',
+  'Nazaré', 'Nazare', 'Assunção', 'Assuncao', 'Glória', 'Gloria', 'Guadalupe', 'Arlete', 'Luz', 'Dores',
+  'Zoe', 'Zoé', 'Chloé', 'Chloe', 'Leonie', 'Salomé', 'Salome', 'Íris', 'Iris', 'Yasmin',
+  'Kelly', 'Nicole', 'Ingrid', 'Miriam', 'Mirian', 'Marlene', 'Charlene', 'Solange',
 ];
 function deduzirGeneroPorNome(nomeCompleto) {
   const primeiro = primeiroNomeDe(nomeCompleto);
   if (!primeiro) return null;
   if (NOMES_MASCULINOS_EXCECAO_TERMINADOS_EM_A.some(x => x.toLowerCase() === primeiro.toLowerCase())) return 'Masculino';
+  if (NOMES_FEMININOS_EXCECAO.some(x => x.toLowerCase() === primeiro.toLowerCase())) return 'Feminino';
   return /a$/i.test(primeiro) ? 'Feminino' : 'Masculino';
 }
 // Chamado ao sair do campo Nome do Utente, nos 3 formulários de
@@ -28291,7 +28420,7 @@ async function dbEliminarDocumentoEmitido(id) {
 async function dbFetchDocumentosEmitidos() {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível.'; return []; }
   try {
-    const { data, error } = await sb.from('documentos_emitidos').select('*').order('created_at', { ascending: false });
+    const { data, error } = await supabaseLerPaginado(() => sb.from('documentos_emitidos').select('*').order('created_at', { ascending: false }).order('id', { ascending: false }));
     if (error) { lastDbError = error.message; console.error('[Supabase] erro ao ler documentos_emitidos:', error.message); return []; }
     return (data || []).map(rowToRecord).map(normalizarDocumentoEmitidoLido);
   } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error('[Supabase] erro de rede ao ler documentos_emitidos:', formatarErroSeguro(e)); return []; }
@@ -28305,7 +28434,12 @@ function parseJSONSafe(str) {
 // e mantém STATE.documentosEmitidos sempre sincronizado a seguir.
 async function gravarOuAtualizarDocumento(editingId, registo) {
   const resultado = editingId ? await dbAtualizarDocumentoEmitido(editingId, registo) : await dbInserirDocumentoEmitido(registo);
-  if (resultado) STATE.documentosEmitidos = await dbFetchDocumentosEmitidos();
+  if (resultado) {
+    // AUDITORIA 2026-09-29: a releitura devolve [] quando falha — nunca esvazia o Histórico por uma falha de rede.
+    lastDbError = '';
+    const lista = await dbFetchDocumentosEmitidos();
+    if (lista.length || !lastDbError) STATE.documentosEmitidos = lista;
+  }
   return resultado;
 }
 
@@ -29444,7 +29578,9 @@ async function gerarBackupCompleto() {
   ];
   const resultados = await Promise.all(todosPedidos.map(async ([key, tabela]) => {
     try {
-      const { data, error } = await sb.from(tabela).select('*');
+      // Paginado (máx. 1000 linhas por pedido no Supabase); se a tabela não tiver "id", lê sem ordem.
+      let { data, error } = await supabaseLerPaginado(() => sb.from(tabela).select('*').order('id', { ascending: true }));
+      if (error && /column .*id.* does not exist|42703/i.test(error.message || '')) ({ data, error } = await sb.from(tabela).select('*'));
       if (error) return [key, { erro: error.message }];
       return [key, sanitizarSupabase(data || [])];
     } catch (e) {
@@ -32074,10 +32210,13 @@ function escalaHorasTrabalhadasDia({ dia, colaboradorId, semanaId, diaKey, ausen
     : 0;
   const trabalha = !!dia && !ausente && escalaTipoEfetivoDia(dia.tipo, colaboradorId) === 'normal' && !!dia.entrada && !!dia.saida;
   if (!trabalha) return Math.round(reivindicadas * 100) / 100;
-  const extra = escalaHeHorasEfetivo(dia) + (dia.heHorasBanco || 0);
+  // AUDITORIA 2026-09-29: respeita a correção do Banco de Horas feita pela Direção (bancoHorasCorrigido) —
+  // antes lia sempre o valor em bruto, e o rodapé do dia não batia com o saldo.
+  const bancoDia = escalaBancoHorasGanhoUsadoDoDia(dia);
+  const extra = escalaHeHorasEfetivo(dia) + bancoDia.ganho;
   const turno = escalaDiaHoraExtraSemTurno(dia)
     ? 0
-    : Math.max(0, escalaCalcularHorasComPausa(dia.entrada, dia.saida, dia.pausaInicio, dia.pausaFim) - (dia.bancoHorasDesconto || 0));
+    : Math.max(0, escalaCalcularHorasComPausa(dia.entrada, dia.saida, dia.pausaInicio, dia.pausaFim) - bancoDia.usado);
   return Math.round((turno + extra + reivindicadas) * 100) / 100;
 }
 // Escala cromática das horas de um dia: até 8h verde; acima de 8h e até 9h
@@ -32116,7 +32255,7 @@ function escalaFormatarHorasComSinal(valor) {
 function escalaRangeHoraTurno(entrada, saida) {
   const hIni = parseInt(String(entrada || '').split(':')[0], 10);
   let hFim = parseInt(String(saida || '').split(':')[0], 10);
-  if (saida === '00:00') hFim = 24; // "00:00" como saída = meia-noite, fim do dia
+  if (saida === '00:00' || saida === '24:00') hFim = 24; // "00:00"/"24:00" como saída = meia-noite, fim do dia
   if (isNaN(hIni) || isNaN(hFim) || hFim <= hIni) return null;
   return { min: hIni, max: Math.min(hFim, 23) };
 }
@@ -32610,9 +32749,9 @@ const GRANULARIDADE_MINUTOS_FORMACAO = ['00', '15', '30', '45'];
 // Turno/Encomenda continuam exclusivas do motor de Tarefas Comuns.
 const ESCALA_TIPOS_PEDIDO_SEMANA = [
   { key: 'nota', label: 'Aviso / Nota Geral', icon: '💬', ajuda: 'Um aviso à equipa, ou qualquer outra informação partilhada que não se encaixa nos tipos abaixo.' },
-  { key: 'tarefa', label: 'Atribuição de Tarefa', icon: '⭐', ajuda: 'Pede que uma tarefa sua (Conferência, Reunião ou Outra) seja agendada num dia/horário específico — ao ser validado, fica logo atribuída no horário oficial, sem precisar de edição manual.' },
+  { key: 'tarefa', label: 'Atribuição de Tarefa', icon: '⭐', ajuda: 'Pede que uma tarefa tua (Conferência, Reunião ou Outra) seja agendada num dia/horário específico — ao ser validado, fica logo atribuída no horário oficial, sem precisar de edição manual.' },
   { key: 'troca', label: 'Troca de Turno', icon: '⇄', ajuda: 'Informa uma troca de turno já combinada com um colega. Fica registado para constância (inclusive no PDF do horário), mas a grelha oficial continua a editar-se manualmente.' },
-  { key: 'banco', label: 'Descontar Horas de Banco', icon: '🕒', ajuda: 'Pede para descontar horas do seu saldo de Banco de Horas (ex: sair mais cedo num dia). Fica registado como pedido — a Direção é que ajusta depois o horário e o saldo.' },
+  { key: 'banco', label: 'Descontar Horas de Banco', icon: '🕒', ajuda: 'Pede para descontar horas do teu saldo de Banco de Horas (ex: sair mais cedo num dia). Fica registado como pedido — a Direção é que ajusta depois o horário e o saldo.' },
 ];
 function escalaPedidoTipoInfo(tipoKey) { return ESCALA_TIPOS_PEDIDO_SEMANA.find(t => t.key === tipoKey) || ESCALA_TIPOS_PEDIDO_SEMANA[0]; }
 // Tarefas MANUAIS elegíveis para o pedido "Atribuição de Tarefa" — nunca
@@ -32868,6 +33007,11 @@ function escalaTarefasAtivasAgora() {
     const linha = semana.dados[codigo];
     const dia = linha && linha.dias ? linha.dias[diaKey] : null;
     if (!dia || dia.tipo !== 'normal') return;
+    // AUDITORIA 2026-09-29: quem está MESMO nesta posição hoje (Grupo B, trocas) e nunca alguém ausente.
+    const hojeISOAtivas = dateToISO(agora);
+    const ocupanteId = escalaOcupanteRealDoCodigo(semana.dados, codigo, diaKey, hojeISOAtivas);
+    if (ocupanteId === null || ocupanteId === undefined) return; // posição cedida numa troca / sem ninguém
+    if (escalaAusenciaDoDia(ocupanteId, hojeISOAtivas) || escalaAusenciaDoDia(String(ocupanteId), hojeISOAtivas)) return;
     // Um item por TAREFA realmente a decorrer neste minuto (2026-08-17,
     // bug reportado: "Encomenda da Tarde" 18:00-19:00 continuava a
     // aparecer como "Em Curso Agora" às 20:05, já mais de 1h depois de
@@ -32894,8 +33038,8 @@ function escalaTarefasAtivasAgora() {
       ativas.push({
         codigo,
         tarefa: t,
-        colaboradorNome: (dia && dia.colaboradorNome) || (linha && linha.colaboradorNome) || '',
-        colaboradorId: (dia && dia.colaboradorId) || (linha && linha.colaboradorId) || null,
+        colaboradorNome: nomeUtilizadorOuVazio(ocupanteId) || (dia && dia.colaboradorNome) || (linha && linha.colaboradorNome) || '',
+        colaboradorId: ocupanteId,
         dia,
       });
     });
@@ -33014,8 +33158,11 @@ function escalaTarefasHojeEquipa() {
     const dia = linha && linha.dias ? linha.dias[diaKey] : null;
     if (!dia || dia.tipo !== 'normal') return;
     const daRotacaoB = mapaRotacaoBHoje[codigo];
-    const nomeColaborador = dia.colaboradorNome || (daRotacaoB && daRotacaoB.colaboradorNome) || (linha && linha.colaboradorNome) || '';
-    const colaboradorId = dia.colaboradorId || (daRotacaoB && daRotacaoB.utilizadorId) || (linha && linha.colaboradorId) || null;
+    // AUDITORIA 2026-09-29: ocupante real (troca validada = null na posição cedida) e nunca alguém ausente hoje.
+    const colaboradorId = escalaOcupanteRealDoCodigo(semana.dados, codigo, diaKey, hojeISO);
+    if (colaboradorId === null || colaboradorId === undefined) return;
+    if (escalaAusenciaDoDia(colaboradorId, hojeISO) || escalaAusenciaDoDia(String(colaboradorId), hojeISO)) return;
+    const nomeColaborador = nomeUtilizadorOuVazio(colaboradorId) || dia.colaboradorNome || (daRotacaoB && daRotacaoB.colaboradorNome) || (linha && linha.colaboradorNome) || '';
     escalaTarefasDoDia(dia).forEach(t => {
       if (!t.inicio || !t.fim) return;
       const familia = ESCALA_FAMILIAS_TAREFA_HOME.find(f => f.tipos.includes(t.tipo));
@@ -33159,36 +33306,27 @@ function descarregarICSSemanaPessoal(semana) {
   // nunca fosse a legenda de nenhum código) como exportar para o
   // calendário pessoal os turnos do COLEGA de rotação nos dias que não
   // são seus.
-  const codigosMeus = Object.keys(semana.dados || {}).filter(cod => {
-    const linhaCod = semana.dados[cod];
-    if (linhaCod.colaboradorId === activeUser.id) return true;
-    return ESCALA_DIAS.some(d => linhaCod.dias && linhaCod.dias[d.key] && linhaCod.dias[d.key].colaboradorId === activeUser.id);
-  });
-  if (!codigosMeus.length) { showToast('Não está atribuído a nenhuma posição nesta semana.', 'info'); return; }
+  // AUDITORIA 2026-09-29: dia a dia pela mesma função do resto da app (escalaVagaDoColaboradorNoDia — Grupo B,
+  // trocas validadas e ausências). Antes, quem cedia um turno numa troca exportava na mesma o turno do colega, e
+  // saídas "24:00" ou depois da meia-noite geravam eventos inválidos.
   const eventos = [];
   const agora = formatarCarimboICS(new Date());
-  codigosMeus.forEach(codigo => {
-    const linha = semana.dados[codigo];
-    ESCALA_DIAS.forEach(d => {
-      let dia = linha.dias[d.key] || { tipo: 'folga' };
-      // BUG CORRIGIDO 2026-09-03 (mesma causa raiz de buildVistaPessoal —
-      // ver comentário completo lá): a guarda antiga só reagia a uma
-      // marcação explícita de ausência, que numa semana normal nunca
-      // existe — substituída por escalaCodigoDaPessoaNoDia, que sabe
-      // sempre o código certo do dia via a rotação ao vivo do Grupo B.
+  let temPosicao = false;
+  ESCALA_DIAS.forEach(d => {
       const dataDoDia = escalaDataDoDia(semana.semanaInicio, d.key);
-      const codigoResolvidoHoje = escalaCodigoDaPessoaNoDia(semana.dados, d.key, activeUser.id, dataDoDia);
-      if (codigoResolvidoHoje !== null && codigoResolvidoHoje !== codigo) dia = { tipo: 'folga' };
-      const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, activeUser.id);
-      if (tipoEfetivo !== 'normal' || !dia.entrada || !dia.saida) return;
-      if (escalaAusenciaDoDia(activeUser.id, dataDoDia)) return;
+      if (escalaCelulaColaboradorNoDia(semana, d.key, activeUser.id)) temPosicao = true;
+      const vaga = escalaVagaDoColaboradorNoDia(semana, d.key, activeUser.id);
+      if (!vaga) return;
+      const codigo = vaga.codigo;
+      const dia = vaga.dia;
       let dataFimISO = dataDoDia;
-      // "00:00" como saída = meia-noite do dia seguinte (mesma convenção
-      // já usada no resto do módulo — ver comentários da Timeline).
-      if (dia.saida === '00:00') {
-        const dObj = new Date(dataDoDia + 'T00:00:00');
+      let horaFim = dia.saida;
+      // "00:00"/"24:00" (meia-noite) ou uma saída antes da entrada = termina no dia seguinte.
+      if (dia.saida === '00:00' || dia.saida === '24:00' || dia.saida <= dia.entrada) {
+        const dObj = new Date(dataDoDia + 'T12:00:00');
         dObj.setDate(dObj.getDate() + 1);
         dataFimISO = dateToISO(dObj);
+        if (dia.saida === '24:00') horaFim = '00:00';
       }
       const partesDescricao = [];
       if (dia.pausaInicio && dia.pausaFim) partesDescricao.push(`Pausa: ${dia.pausaInicio}-${dia.pausaFim}`);
@@ -33201,15 +33339,14 @@ function descarregarICSSemanaPessoal(semana) {
         `UID:sigajuncal-${semana.id}-${codigo}-${d.key}@sigajuncal`,
         `DTSTAMP:${agora}`,
         `DTSTART:${formatarDataHoraICS(dataDoDia, dia.entrada)}`,
-        `DTEND:${formatarDataHoraICS(dataFimISO, dia.saida)}`,
+        `DTEND:${formatarDataHoraICS(dataFimISO, horaFim)}`,
         `SUMMARY:${escaparTextoICS('Farmácia Juncal — Turno')}`,
         `LOCATION:${escaparTextoICS('Farmácia Juncal')}`,
         ...(partesDescricao.length ? [`DESCRIPTION:${escaparTextoICS(partesDescricao.join('\n'))}`] : []),
         'END:VEVENT',
       ].join('\r\n'));
-    });
   });
-  if (!eventos.length) { showToast('Sem turnos de trabalho nesta semana para exportar (só Folgas/Férias/ausências).', 'info'); return; }
+  if (!eventos.length) { showToast(temPosicao ? 'Sem turnos de trabalho nesta semana para exportar (só Folgas/Férias/ausências).' : 'Não estás atribuído(a) a nenhuma posição nesta semana.', 'info'); return; }
   const conteudo = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//SigaJuncal//Horario//PT', 'CALSCALE:GREGORIAN', ...eventos, 'END:VCALENDAR'].join('\r\n');
   const blob = new Blob([conteudo], { type: 'text/calendar;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -34452,8 +34589,10 @@ function escalaJanelaAniversario(colaborador, ano) {
   const mes = partes[1], dia = partes[2];
   if (!mes || !dia) return null;
   const aniversario = new Date(Number(ano), mes - 1, dia, 12);
-  const inicio = new Date(aniversario); inicio.setMonth(inicio.getMonth() - 1);
-  const fim = new Date(aniversario); fim.setMonth(fim.getMonth() + 1);
+  // AUDITORIA 2026-09-29: ±1 mês sem transbordar (aniversário a 31/03 → início a 28/02, não 03/03).
+  const mesesDesloc = (base, delta) => { const d = new Date(base.getFullYear(), base.getMonth() + delta, 1, 12); d.setDate(Math.min(base.getDate(), new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())); return d; };
+  const inicio = mesesDesloc(new Date(aniversario), -1);
+  const fim = mesesDesloc(new Date(aniversario), 1);
   return { inicio: dateToISO(inicio), fim: dateToISO(fim) };
 }
 function escalaSaldoAnual(utilizadorId, ano) {
@@ -35141,7 +35280,7 @@ async function escalaGerarOuAbrirSemana(semanaInicioISO, variante) {
         const apagouFantasma = await dbPermanentDelete('escalaSemanas', fantasma.id);
         if (apagouFantasma) {
           const retry = await dbInsert('escalaSemanas', payload);
-          if (retry) { STATE.escalaSemanas = [retry, ...STATE.escalaSemanas]; return { semana: retry, criada: true, vagasLibertadas, vagasComCobertura }; }
+          if (retry) { STATE.escalaSemanas = [retry, ...STATE.escalaSemanas]; try { await trocasReaplicarNaSemana(retry); } catch (e) { /* nunca impede */ } return { semana: escalaSemanaPorInicio(semanaInicioISO) || retry, criada: true, vagasLibertadas, vagasComCobertura }; }
         }
       }
     } catch (e) { console.error('[Horários] erro ao limpar rascunho eliminado antes de regenerar:', formatarErroSeguro(e)); }
@@ -36030,7 +36169,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
         const iniMinT = escalaMinutosAbsolutos(inicioT, false), fimMinT = escalaMinutosAbsolutos(fimT, true);
         const dentroDeUmSegmentoT = escalaSegmentosTurnoAbsolutos({ entrada, saida, pausaInicio, pausaFim }).some(seg => iniMinT >= seg.inicioMin && fimMinT <= seg.fimMin);
         if (!dentroDeUmSegmentoT) {
-          errorEl.textContent = 'Esse intervalo ultrapassa a Pausa/Almoço do turno — ajuste o Início/Fim de cada Tarefa para caber só no período em que a pessoa está mesmo a trabalhar.';
+          errorEl.textContent = 'Esse intervalo ultrapassa a Pausa/Almoço do turno — ajusta o Início/Fim de cada Tarefa para caber só no período em que a pessoa está mesmo a trabalhar.';
           errorEl.style.display = '';
           return;
         }
@@ -36067,7 +36206,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
         const semanaParaColisao = (STATE.escalaSemanas || []).find(s => s.id === semana.id) || semana;
         const colisaoT = escalaTarefaColisao(semanaParaColisao, diaKey, tipoT, inicioT, fimT, codigoVaga);
         if (colisaoT) {
-          errorEl.textContent = `${escalaTarefaInfo(tipoT)?.label || 'Esta tarefa'} já está atribuída a ${colisaoT.nome} nesse horário (${colisaoT.inicio}-${colisaoT.fim}). Ajuste o Início/Fim para não sobrepor.`;
+          errorEl.textContent = `${escalaTarefaInfo(tipoT)?.label || 'Esta tarefa'} já está atribuída a ${colisaoT.nome} nesse horário (${colisaoT.inicio}-${colisaoT.fim}). Ajusta o Início/Fim para não sobrepor.`;
           errorEl.style.display = '';
           return;
         }
@@ -36106,6 +36245,9 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       }
       return validos;
     }
+    // AUDITORIA 2026-09-29: quem não gere o Banco de Horas mantém o desconto já gravado — as horas líquidas do
+    // turno continuam descontadas (antes gravava as horas brutas e o total da semana subia).
+    if (!podeBancoHoras && tipo === 'normal' && bancoHorasDesconto > 0) horas = Math.max(0, Math.round((horas - bancoHorasDesconto) * 100) / 100);
     if (podeBancoHoras && tipo === 'banco') {
       // Dia inteiro sem horário — só o valor único de horas a descontar,
       // nunca os blocos de Início/Fim (esses só fazem sentido dentro de um
@@ -36206,7 +36348,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
       // Melhor esforço — nunca bloqueia nem atrasa o fecho do modal,
       // mesmo que a sincronização com o calendário de Férias falhe.
-      if (colaboradorIdCelula) escalaSincronizarAusenciaComGerador(colaboradorIdCelula, linha.colaboradorNome, ehPrestadorCelula, dataISOCelula, tipo);
+      if (colaboradorIdCelula) escalaSincronizarAusenciaComGerador(colaboradorIdCelula, nomeUtilizadorOuVazio(colaboradorIdCelula) || linha.colaboradorNome, ehPrestadorCelula, dataISOCelula, tipo);
       fechar();
       onSaved();
     } else {
@@ -36335,7 +36477,10 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       showDbErrorToast('Não foi possível trocar o horário');
     }
   }
-  const candidatosTroca = candidatosTrocaTurno();
+  // AUDITORIA 2026-09-29: só se troca um TURNO normal — com férias/baixa/banco nesta célula, a troca movia a
+  // ausência para o colega (sem registo formal) e o turno "desaparecia".
+  const celulaEhTurnoNormal = (diaAtual.tipo || 'normal') === 'normal' && !!diaAtual.entrada && !!diaAtual.saida && !ausenciaCelula;
+  const candidatosTroca = celulaEhTurnoNormal ? candidatosTrocaTurno() : [];
   let trocarTurnoUI = null;
   if (candidatosTroca.length) {
     const trocarSelect = h('select', { class: 'select', style: 'font-size:12px;max-width:180px;display:none;' }, [
@@ -36347,7 +36492,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       trocarSelect.value = '';
       if (!codigo2) return;
       const alvo = candidatosTroca.find(c => c.codigo === codigo2);
-      const nomeAtual = (diaAtual.colaboradorNome || linha.colaboradorNome) || 'esta posição';
+      const nomeAtual = nomeUtilizadorOuVazio(colaboradorIdCelula) || (diaAtual.colaboradorNome || linha.colaboradorNome) || 'esta posição';
       confirmDialog(`Trocar o horário deste dia entre ${nomeAtual} e ${alvo.nome}?`,
         () => requireAuth(() => trocarTurnoCom(codigo2, alvo.nome)), { confirmLabel: 'Sim, trocar' });
     });
@@ -36363,7 +36508,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
   const panel = h('div', { class: 'modal-panel' }, [
     h('h3', { class: 'page-eyebrow', style: 'margin:0 0 4px;display:flex;align-items:center;gap:8px;color:var(--pharm-800);font-size:15px;text-transform:none;letter-spacing:0;' }, [
       escalaBadgePosicao(codigoVaga, escalaGrupoDoCodigo(codigoVaga)),
-      h('span', {}, (diaAtual.colaboradorNome || linha.colaboradorNome) || 'Vaga por preencher'),
+      h('span', {}, nomeUtilizadorOuVazio(colaboradorIdCelula) || (diaAtual.colaboradorNome || linha.colaboradorNome) || 'Vaga por preencher'), // AUDITORIA 2026-09-29: quem está MESMO na célula (Grupo B)
       trocarTurnoUI,
     ]),
     h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;font-weight:700;' }, `${diaInfo ? diaInfo.label : diaKey}, ${formatDate(dataISOCelula)}`),
@@ -36461,6 +36606,7 @@ const TROCAS_TIPO_TEXTO = {
   troca: 'Troca de turno', anterior_app: 'Dívida já existente (registada pela Direção)',
   compensacao_banco: 'Compensação com Banco de Horas', acerto: 'Acerto da Direção',
 };
+function nomeUtilizadorOuVazio(id) { const u = (STATE.usuarios || []).find(x => String(x.id) === String(id)); return u ? (u.nomeCompleto || u.username || '') : ''; }
 function trocasNomeUtilizador(id) {
   const u = (STATE.usuarios || []).find(x => String(x.id) === String(id));
   return u ? (u.nomeCompleto || u.username) : 'Colaborador';
@@ -36520,7 +36666,8 @@ function trocasSaldosTodosOsPares() {
 function trocasEfeitoBancoHoras(uid, depoisDeISO) {
   let ganho = 0, usado = 0;
   trocasMovimentosValidados().filter(m => m.tipo === 'compensacao_banco').forEach(m => {
-    const data = String(m.validadoEm || m.createdAt || '').slice(0, 10);
+    const carimbo = m.validadoEm || m.createdAt || '';
+    const data = carimbo && !isNaN(new Date(carimbo)) ? dateToISO(new Date(carimbo)) : String(carimbo).slice(0, 10); // data LOCAL (AUDITORIA 2026-09-29)
     if (depoisDeISO && data && data <= depoisDeISO) return;
     const hrs = Number(m.horas) || 0;
     if (String(m.credorId) === String(uid)) ganho += hrs;
@@ -36939,8 +37086,12 @@ function trocaPartesParaHorario(t) {
   if (t.diaB) partes.push({ dia: t.diaB, ini: t.inicioB, fim: t.fimB, de: t.colegaId, para: t.autorId });
   return partes;
 }
-async function trocaAplicarNoHorario(t) {
-  const partes = trocaPartesParaHorario(t);
+async function trocaAplicarNoHorario(t, opts) {
+  // opts.soDatas: [ini, fim] — aplica só as partes dessas datas (semana regenerada; AUDITORIA 2026-09-29: uma troca
+  // entre duas semanas falhava toda porque a parte da OUTRA semana já estava aplicada).
+  let partes = trocaPartesParaHorario(t);
+  if (opts && opts.soDatas) partes = partes.filter(p => p.dia >= opts.soDatas[0] && p.dia <= opts.soDatas[1]);
+  if (!partes.length) return { ok: true };
   const hojeSeg = escalaSegundaFeiraDaSemanaDeISO(todayISO());
   const mesmoDia = partes.length === 2 && partes[0].dia === partes[1].dia;
   const alvos = [];
@@ -37024,7 +37175,7 @@ async function trocasReaplicarNaSemana(semana) {
   let n = 0;
   for (const t of (STATE.escalaTrocas || []).filter(x => !x.eliminado && x.estado === 'validada' && x.aplicadoHorario && (dentro(x.diaA) || dentro(x.diaB)))) {
     try {
-      const r = await trocaAplicarNoHorario(t);
+      const r = await trocaAplicarNoHorario(t, { soDatas: [ini, fim] });
       if (r.ok) n += 1;
       else await trocaAtualizar(t, { aplicadoHorario: false, aplicacaoNota: `Semana gerada de novo — por aplicar à mão: ${r.motivo}` });
     } catch (e) { console.warn('[Trocas] não foi possível reaplicar:', formatarErroSeguro(e)); }
@@ -37087,7 +37238,8 @@ async function trocaAnular(trocaOriginal) {
   if (!souDirecaoHorariosGlobal()) return { erro: 'Só a Direção pode anular trocas.' };
   const troca = await trocaRecarregar(trocaOriginal);
   if (troca.estado !== 'validada') return { erro: `Esta troca já não está validada (${trocaEstadoEfetivoTexto(troca).toLowerCase()}).` };
-  const desfeito = troca.aplicadoHorario ? await trocaDesfazerNoHorario(troca) : { ok: true, porAjustar: [] };
+  // Procura sempre células marcadas com esta troca (mesmo que a aplicação tenha ficado a meio) — é idempotente.
+  const desfeito = await trocaDesfazerNoHorario(troca);
   if (!desfeito.ok) return { erro: 'Não foi possível repor o horário — tenta outra vez.' };
   for (const m of (STATE.escalaTrocasMovimentos || []).filter(x => !x.eliminado && String(x.trocaId) === String(troca.id))) {
     await trocasAtualizarMovimento(m, { eliminado: true });
@@ -38226,7 +38378,7 @@ function buildHorariosPage(container, goTo) {
     const updated = await dbUpdate('escalaSemanas', semana.id, { estado: 'rascunho', publicadoEm: null, publicadoPor: null });
     if (updated) {
       STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
-      showToast(`Horário de volta a Rascunho — ${visivel ? 'a equipa continua a vê-lo, mas já não como oficial' : 'deixou de ser visível à equipa'}. Publique de novo quando terminar de editar.`, 'success');
+      showToast(`Horário de volta a Rascunho — ${visivel ? 'a equipa continua a vê-lo, mas já não como oficial' : 'deixou de ser visível à equipa'}. Publica de novo quando terminares de editar.`, 'success');
     } else escalaShowErro('Não foi possível reverter o horário para rascunho');
     rerender();
   }
@@ -39650,7 +39802,7 @@ function buildHorariosPage(container, goTo) {
   async function guardarReivindicacao(bloco, semana) {
     if (!activeUser || reivindicarSaving) return;
     const dataDoDia = escalaDataDoDia(semana.semanaInicio, bloco.diaKey);
-    if (escalaAusenciaDoDia(activeUser.id, dataDoDia)) { reivindicarError = 'Está registado como ausente nesse dia — não é possível reivindicar horas extra.'; rerender(); return; }
+    if (escalaAusenciaDoDia(activeUser.id, dataDoDia)) { reivindicarError = 'Estás registado(a) como ausente nesse dia — não é possível reivindicar horas extra.'; rerender(); return; }
     const { horaInicio, horaFim } = reivindicarDraft;
     if (!/^\d{1,2}:\d{2}$/.test(horaInicio) || !/^\d{1,2}:\d{2}$/.test(horaFim)) { reivindicarError = 'Indica Início e Fim no formato HH:MM.'; rerender(); return; }
     const ini = escalaMinutosAbsolutos(horaInicio, false), fim = escalaMinutosAbsolutos(horaFim, true);
@@ -39710,7 +39862,7 @@ function buildHorariosPage(container, goTo) {
       const updated = await dbUpdate('escalaHorasExtraReivindicacoes', reivindicacao.id, { ativo: false });
       if (updated) {
         STATE.escalaHorasExtraReivindicacoes = STATE.escalaHorasExtraReivindicacoes.map(r => r.id === updated.id ? updated : r);
-        showToast(souDono ? 'Desistiu dessa hora extra.' : `Reivindicação de ${reivindicacao.utilizadorNome || 'colaborador'} retirada.`, 'success');
+        showToast(souDono ? 'Desististe dessa hora extra.' : `Reivindicação de ${reivindicacao.utilizadorNome || 'colaborador'} retirada.`, 'success');
         if (activeUser) {
           notificarDirecaoHorasExtra(reivindicacao, bloco, activeUser,
             souDono ? 'desistiu de' : `retirou a reivindicação de ${reivindicacao.utilizadorNome || 'um colaborador'} em`, !souDono);
@@ -40407,7 +40559,7 @@ function buildHorariosPage(container, goTo) {
     // bloqueando erradamente outras atribuições nesse horário morto.
     const iniMin = escalaMinutosAbsolutos(inicio, false), fimMin = escalaMinutosAbsolutos(fim, true);
     const dentroDeUmSegmento = escalaSegmentosTurnoAbsolutos(alvo.dia).some(seg => iniMin >= seg.inicioMin && fimMin <= seg.fimMin);
-    if (!dentroDeUmSegmento) { atribuicaoRapidaError = 'Esse intervalo ultrapassa a Pausa/Almoço do turno — ajuste o Início/Fim para caber só no período em que a pessoa está mesmo a trabalhar.'; rerender(); return; }
+    if (!dentroDeUmSegmento) { atribuicaoRapidaError = 'Esse intervalo ultrapassa a Pausa/Almoço do turno — ajusta o Início/Fim para caber só no período em que a pessoa está mesmo a trabalhar.'; rerender(); return; }
     const tarefasAtuais = escalaTarefasDoDia(alvo.dia);
     if (tarefasAtuais.length >= 3) { atribuicaoRapidaError = 'Este turno já tem o máximo de 3 tarefas — remove uma primeiro no Editor de Dia.'; rerender(); return; }
     // Bloqueio de sobreposição ENTRE tarefas do MESMO turno (2026-08-17,
@@ -40422,7 +40574,7 @@ function buildHorariosPage(container, goTo) {
     // Turno e Encomendas nunca podem ter 2 pessoas em simultâneo — ver
     // TIPOS_TAREFA_SEM_SOBREPOSICAO/escalaTarefaColisao.
     const colisao = escalaTarefaColisao(semana, diaKey, tipo, inicio, fim, null, null);
-    if (colisao) { atribuicaoRapidaError = `${escalaTarefaInfo(tipo)?.label || 'Esta tarefa'} já está atribuída a ${colisao.nome} nesse horário (${colisao.inicio}-${colisao.fim}). Ajuste o Início/Fim para não sobrepor.`; rerender(); return; }
+    if (colisao) { atribuicaoRapidaError = `${escalaTarefaInfo(tipo)?.label || 'Esta tarefa'} já está atribuída a ${colisao.nome} nesse horário (${colisao.inicio}-${colisao.fim}). Ajusta o Início/Fim para não sobrepor.`; rerender(); return; }
     const novasTarefas = [...tarefasAtuais, { tipo, outro: outroFinal, inicio, fim }];
     const novoDados = JSON.parse(JSON.stringify(semana.dados));
     const primeiraTarefa = novasTarefas[0];
@@ -40923,7 +41075,7 @@ function buildHorariosPage(container, goTo) {
     if (!temAlgumaPosicaoNaSemana) {
       const hojeNaSemana = ESCALA_DIAS.some(d => escalaDataDoDia(semana.semanaInicio, d.key) === todayISO());
       const pontoSemPosicao = hojeNaSemana ? buildPontoWidget(rerender, null) : null;
-      const avisoSemPosicao = EmptyState('Não está atribuído a nenhuma posição nesta semana.');
+      const avisoSemPosicao = EmptyState('Não estás atribuído(a) a nenhuma posição nesta semana.');
       return pontoSemPosicao ? h('div', { style: 'display:flex;flex-direction:column;gap:16px;' }, [pontoSemPosicao, avisoSemPosicao]) : avisoSemPosicao;
     }
     const wrap = h('div', { style: 'display:flex;flex-direction:column;gap:16px;' });
@@ -41777,7 +41929,7 @@ function buildHorariosPage(container, goTo) {
         h('p', { class: 'modal-title', style: 'margin:0;' }, feriasEditandoId ? '✎ Editar Período' : '🏖️ Marcar Férias / Ausência'),
         closeBtn,
       ]),
-      h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, feriasEditandoId ? 'Ajuste a tipologia, as datas ou as observações e guarde.' : 'Predefinido a partir do dia escolhido (bloco de 5 dias úteis se for Segunda-feira, ou só esse dia) — ajuste as datas e a tipologia livremente.'),
+      h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, feriasEditandoId ? 'Ajusta a tipologia, as datas ou as observações e guarda.' : 'Predefinido a partir do dia escolhido (bloco de 5 dias úteis se for Segunda-feira, ou só esse dia) — ajuste as datas e a tipologia livremente.'),
       buildFormPedidoFerias(),
     ]);
     overlay.appendChild(panel);
@@ -42171,7 +42323,7 @@ function buildHorariosPage(container, goTo) {
           const entradaEfetivaDia = escalaEntradaEfetivaDia(dia);
           const saidaEfetivaDia = escalaSaidaEfetivaDia(dia);
           if (entradaEfetivaDia === '08:00') { s.aberturas += 1; escalaEmpurrarDetalheEstatistica(s, 'aberturas', dataISO, `Entrada 08:00 · turno ${rotuloTurno}`); }
-          if (saidaEfetivaDia === '00:00') { s.fechos += 1; escalaEmpurrarDetalheEstatistica(s, 'fechos', dataISO, `Saída 00:00 · turno ${rotuloTurno}`); }
+          if (saidaEfetivaDia === '00:00' || saidaEfetivaDia === '24:00') { s.fechos += 1; escalaEmpurrarDetalheEstatistica(s, 'fechos', dataISO, `Saída 00:00 · turno ${rotuloTurno}`); }
           if (saidaEfetivaDia === '22:00') { s.saidas22 += 1; escalaEmpurrarDetalheEstatistica(s, 'saidas22', dataISO, `Saída 22:00 · turno ${rotuloTurno}`); }
           if (saidaEfetivaDia === '23:00') { s.saidas23 += 1; escalaEmpurrarDetalheEstatistica(s, 'saidas23', dataISO, `Saída 23:00 · turno ${rotuloTurno}`); }
           // "Contabilizar apenas as ocorrências" (pedido explícito
@@ -42274,7 +42426,7 @@ function buildHorariosPage(container, goTo) {
       if (!statsPorData[chave]) {
         let desde = null;
         if (dataSaldo) { const d = new Date(dataSaldo + 'T12:00:00'); d.setDate(d.getDate() + 1); desde = dateToISO(d); }
-        statsPorData[chave] = escalaCalcularEstatisticasPeriodo({ desde, ate: null });
+        statsPorData[chave] = escalaCalcularEstatisticasPeriodo({ desde, ate: todayISO() }); // AUDITORIA 2026-09-29: saldo ATUAL = até hoje (antes já descontava dias de semanas futuras publicadas)
       }
       return statsPorData[chave];
     };
@@ -42609,7 +42761,7 @@ function buildHorariosPage(container, goTo) {
       ]),
       h('p', { class: 'field-helper-text', style: 'margin:0 0 4px;' }, `A mostrar: ${intervalo.label} — calculado só a partir de semanas já publicadas, só para colaboradores do Quadro (Prestadores de Serviço não entram nesta contagem).`),
       ...cartoes,
-      buildCartaoSaldoBancoHoras(colaboradores),
+      buildCartaoSaldoBancoHoras(usuariosQuadroAtivos()), // AUDITORIA 2026-09-29: o saldo de Banco de Horas é de TODOS (a exclusão só vale para os indicadores)
     ]);
   }
   // Cria uma exceção de sobreposição diretamente (sem passar pelo
@@ -42956,7 +43108,13 @@ function buildHorariosPage(container, goTo) {
     const id = String(utilizadorId || '');
     const ordem = escalaOrdemColaboradoresFerias();
     let idx = ordem.indexOf(id);
-    if (idx === -1) idx = ordem.length; // ainda sem registos carregados — cor de reserva determinística
+    if (idx === -1) {
+      // AUDITORIA 2026-09-29: quem não tem férias registadas recebia TODOS a mesma cor (ordem.length). Agora
+      // cada um fica com uma posição própria, a seguir às de quem tem férias, pela ordem da lista de utilizadores.
+      const semFerias = (STATE.usuarios || []).map(u => String(u.id)).filter(x => !ordem.includes(x));
+      const pos = semFerias.indexOf(id);
+      idx = ordem.length + (pos === -1 ? 0 : pos);
+    }
     if (idx < ESCALA_PALETA_CORES_COLABORADOR.length) return ESCALA_PALETA_CORES_COLABORADOR[idx];
     return escalaCorExtraGerada(idx - ESCALA_PALETA_CORES_COLABORADOR.length);
   }
@@ -43227,7 +43385,7 @@ function buildHorariosPage(container, goTo) {
     const draft = pedidoEspecialDraft;
     if (!draft.dataInicio || !draft.dataFim) { pedidoEspecialFormError = 'Indica a Data de Início e a Data de Fim.'; rerender(); return; }
     if (draft.dataFim < draft.dataInicio) { pedidoEspecialFormError = 'A Data de Fim não pode ser anterior à Data de Início.'; rerender(); return; }
-    if (draft.motivo === 'outro' && !draft.outroMotivo.trim()) { pedidoEspecialFormError = 'Descreva o motivo em "Outro".'; rerender(); return; }
+    if (draft.motivo === 'outro' && !draft.outroMotivo.trim()) { pedidoEspecialFormError = 'Descreve o motivo em "Outro".'; rerender(); return; }
     pedidoEspecialFormError = ''; pedidoEspecialSaving = true; rerender();
     const colaborador = (STATE.usuarios || []).find(u => String(u.id) === String(draft.colaboradorId));
     const payload = {
@@ -43267,7 +43425,7 @@ function buildHorariosPage(container, goTo) {
     const motivoSelect = h('select', { class: 'select' }, ESCALA_MOTIVOS_PEDIDO_ESPECIAL.map(m => h('option', { value: m.key, selected: draft.motivo === m.key ? 'selected' : undefined }, m.label)));
     motivoSelect.value = draft.motivo;
     motivoSelect.addEventListener('change', () => { draft.motivo = motivoSelect.value; rerender(); });
-    const outroInput = h('input', { class: 'input', placeholder: 'Descreva o motivo...', maxlength: '80' }); outroInput.value = draft.outroMotivo;
+    const outroInput = h('input', { class: 'input', placeholder: 'Descreve o motivo...', maxlength: '80' }); outroInput.value = draft.outroMotivo;
     outroInput.addEventListener('input', () => { draft.outroMotivo = outroInput.value; });
     const obsInput = h('textarea', { class: 'textarea', rows: '2', placeholder: 'Observações (opcional)...' }); obsInput.value = draft.observacoes;
     obsInput.addEventListener('input', () => { draft.observacoes = obsInput.value; });
@@ -43411,7 +43569,7 @@ function buildHorariosPage(container, goTo) {
     const draft = disponibilidadeDraft;
     if (!draft.data) { disponibilidadeFormError = 'Escolhe a Data.'; rerender(); return; }
     if ((draft.horaInicio && !draft.horaFim) || (!draft.horaInicio && draft.horaFim)) {
-      disponibilidadeFormError = 'Preenche a Hora de Início e a Hora de Fim, ou deixe as duas em branco (disponível o dia inteiro).';
+      disponibilidadeFormError = 'Preenche a Hora de Início e a Hora de Fim, ou deixa as duas em branco (disponível o dia inteiro).';
       rerender(); return;
     }
     if (draft.horaInicio && draft.horaFim && draft.horaFim <= draft.horaInicio) {
@@ -43771,8 +43929,8 @@ function buildHorariosPage(container, goTo) {
     return usuariosQuadroAtivos().filter(u => !idsNaLista.has(u.id) && !nomesNaLista.has((u.nomeCompleto || u.username || '').trim()));
   }
   async function adicionarPrioridade(utilizadorId) {
-    const utilizador = usuariosQuadroForaDaPrioridade().find(u => u.id === utilizadorId);
-    if (!utilizador) return;
+    const utilizador = usuariosQuadroForaDaPrioridade().find(u => String(u.id) === String(utilizadorId)); // AUDITORIA 2026-09-29: o valor vem de um <select> (texto)
+    if (!utilizador) { escalaShowErro('Escolhe primeiro um colaborador válido.'); return; }
     const max = (STATE.escalaPrioridadeFerias || []).reduce((m, x) => Math.max(m, x.ordem || 0), 0);
     const created = await dbInsert('escalaPrioridadeFerias', { ordem: max + 1, nome: utilizador.nomeCompleto || utilizador.username, utilizadorId: utilizador.id });
     if (created) { STATE.escalaPrioridadeFerias = [...(STATE.escalaPrioridadeFerias || []), created]; prioridadeDraft = {}; }
@@ -45170,7 +45328,7 @@ function buildHorariosPage(container, goTo) {
       varianteSelect.addEventListener('change', () => { varianteSelecionada = varianteSelect.value; });
       const gerarBtn = h('button', {
         class: 'btn-fab tone-green', disabled: (gerando || semConfiguracao) ? 'disabled' : undefined,
-        title: semConfiguracao ? 'Configure primeiro as Posições em "Gerir Posições".' : (gerando ? 'A gerar…' : 'Gerar Rascunho'),
+        title: semConfiguracao ? 'Configura primeiro as Posições em "Gerir Posições".' : (gerando ? 'A gerar…' : 'Gerar Rascunho'),
         'aria-label': 'Gerar Rascunho',
         onclick: () => { if (semConfiguracao) return; requireAuth(criarOuAbrirSemana); },
       }, Icon('plus', { size: 18, strokeWidth: 2.4 }));
@@ -45238,7 +45396,7 @@ function buildHorariosPage(container, goTo) {
         style: 'display:flex;gap:10px;align-items:flex-start;background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;line-height:1.5;',
       }, [
         Icon('alert', { size: 16, strokeWidth: 2.2 }),
-        h('span', {}, 'Ainda não existem Posições ou elementos na Rotação configurados. Por favor, aceda a "Gerir Posições" para configurar os turnos base antes de gerar a semana.'),
+        h('span', {}, 'Ainda não existem Posições ou elementos na Rotação configurados. Por favor, acede a "Gerir Posições" para configurar os turnos base antes de gerar a semana.'),
       ]));
     }
     wrap.appendChild(buildBarraGestaoSemana(semana, semConfiguracao));
@@ -45487,7 +45645,7 @@ function buildHorariosPage(container, goTo) {
     });
     // Fecho — igualdade estrita: saída marcada como "00:00" (24:00) no
     // turno normal, OU um bloco de heIntervalos a terminar às 00:00.
-    const contagemFecho = turnosDia.filter(d => d.saida === '00:00' || (d.heIntervalos || []).some(iv => iv.fim === '00:00')).length;
+    const contagemFecho = turnosDia.filter(d => d.saida === '00:00' || d.saida === '24:00' || (d.heIntervalos || []).some(iv => iv.fim === '00:00' || iv.fim === '24:00')).length; // AUDITORIA 2026-09-29: "24:00" também é fecho
     if (contagemFecho !== 2) alertas.push({ nivel: 'aviso', texto: `⚠️ Fecho (24:00) com ${contagemFecho} pessoa${contagemFecho === 1 ? '' : 's'} (ideal: 2)` });
     return alertas;
   }
@@ -46620,7 +46778,9 @@ function buildMapa48hPage(container, goTo) {
       return;
     }
     formError = '';
-    draft.responsavel = currentUserName();
+    // AUDITORIA 2026-09-29: editar já não substitui quem criou o registo (mesma regra dos outros módulos).
+    if (!editingId) draft.responsavel = currentUserName();
+    else draft.ultimaAtualizacaoPor = valorUltimaAtualizacao();
     normalizeNameFields(draft);
     saving = true; rerender();
     if (editingId) {
@@ -46657,7 +46817,7 @@ function buildMapa48hPage(container, goTo) {
     if (selectedIds.size === 0) return;
     const ids = [...selectedIds];
     const plural = ids.length > 1;
-    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar permanentemente ${ids.length} registo${plural ? 's' : ''} selecionado${plural ? 's' : ''}? Esta ação não pode ser desfeita!`, async () => {
+    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar ${ids.length} registo${plural ? 's' : ''} selecionado${plural ? 's' : ''}? Vai para o Lixo, de onde ainda pode ser recuperado.`, async () => {
       const apagados = await bulkSoftDelete('mapa48h', ids);
       STATE.mapa48h = STATE.mapa48h.filter(r => !apagados.has(r.id));
       selectedIds = new Set([...selectedIds].filter(id => !apagados.has(id)));
@@ -46940,7 +47100,11 @@ function abrirModalVacinacaoAtrasadas(itensIniciais, onFechar) {
         if (updated) { STATE.vacinacaoMarcacoes = STATE.vacinacaoMarcacoes.map(x => x.id === m.id ? updated : x); itens = itens.filter(x => x.id !== m.id); renderLista(); }
         else { administrarBtn.disabled = false; cancelarBtn.disabled = false; showDbErrorToast('Não foi possível atualizar a marcação'); }
       }
-      administrarBtn.addEventListener('click', () => requireAuth(() => aplicar({ estado: 'Administrada', administradoPor: m.administradoPor || currentUserName() })));
+      administrarBtn.addEventListener('click', () => requireAuth(async () => {
+        const bloqueio = await vacinacaoBloqueioAdministrarRepetida(m);
+        if (bloqueio) { showToast(bloqueio, 'error'); return; }
+        aplicar({ estado: 'Administrada', administradoPor: m.administradoPor || currentUserName() });
+      }));
       cancelarBtn.addEventListener('click', () => requireAuth(() => aplicar({ estado: 'Cancelada' })));
       const contactoEl = m.contacto
         ? h('a', { href: `tel:${m.contacto}`, style: 'color:var(--pharm-700);text-decoration:none;font-weight:700;' }, `📞 ${formatarTelefonePT(m.contacto)}`)
@@ -47052,6 +47216,59 @@ async function vacinacaoMarcacoesNoServidor(campanhaId, dataISO, hora, excluirId
     if (error) { console.warn('[Vacinação] verificação de vaga no servidor falhou:', error.message); return null; }
     return (data || []).filter(r => String(r.id) !== String(excluirId || ''));
   } catch (e) { console.warn('[Vacinação] verificação de vaga no servidor falhou:', formatarErroSeguro(e)); return null; }
+}
+// 2026-09-29 (Hugo: "uma pessoa não se pode vacinar duas vezes na mesma campanha para a mesma vacina"): antes de
+// gravar, lê do SERVIDOR as marcações desta campanha da mesma pessoa (pelo Nº de Utente ou pelo contacto) — apanha
+// também o que um colega gravou há segundos noutro posto. Devolve null se não foi possível verificar.
+async function vacinacaoMesmaPessoaNoServidor(campanhaId, dados, excluirId) {
+  if (!sb || !campanhaId) return null;
+  const limpar = (v) => String(v || '').trim().replace(/["(),]/g, '');
+  const numero = limpar(dados.numeroUtente), contacto = limpar(dados.contacto);
+  const filtros = [];
+  if (numero && vacinacaoNumeroUtenteComparavel(numero)) filtros.push(`numero_utente.eq."${numero}"`);
+  if (contacto) filtros.push(`contacto.eq."${contacto}"`);
+  if (!filtros.length) return [];
+  try {
+    const { data, error } = await comTimeoutSupabase(sb.from(TABLES.vacinacaoMarcacoes)
+      .select('id, nome, contacto, numero_utente, gripe, covid, estado, data, hora, tipo_linha, campanha_id')
+      .eq('campanha_id', campanhaId).eq('eliminado', false)
+      .or(filtros.join(','))
+      .limit(50), 8000);
+    if (error) { console.warn('[Vacinação] verificação de duplicados no servidor falhou:', error.message); return null; }
+    return (data || []).map(rowToRecord).filter(r => String(r.id) !== String(excluirId || '') && r.estado !== 'Cancelada' && !vacinacaoEhBloqueio(r));
+  } catch (e) { console.warn('[Vacinação] verificação de duplicados no servidor falhou:', formatarErroSeguro(e)); return null; }
+}
+// Vacinas (Gripe/COVID) que esta pessoa já tem marcadas ou administradas nesta campanha, a partir de uma lista.
+function vacinacaoVacinasRepetidas(dados, lista) {
+  const numero = vacinacaoNumeroUtenteComparavel(dados.numeroUtente);
+  const nome = normalizarTexto(dados.nome).trim();
+  const contacto = String(dados.contacto || '').trim();
+  const mesmaPessoa = (r) => (numero && vacinacaoNumeroUtenteComparavel(r.numeroUtente) === numero)
+    || (nome && contacto && normalizarTexto(r.nome).trim() === nome && String(r.contacto || '').trim() === contacto);
+  const repetidas = [];
+  (lista || []).filter(mesmaPessoa).forEach(r => {
+    if (dados.gripe && r.gripe) repetidas.push({ vacina: 'Gripe', registo: r });
+    if (dados.covid && r.covid) repetidas.push({ vacina: 'COVID', registo: r });
+  });
+  return repetidas;
+}
+// Antes de dar como Administrada: a mesma vacina já foi administrada a esta pessoa noutra marcação da campanha?
+async function vacinacaoBloqueioAdministrarRepetida(m) {
+  const outrasAdministradas = (lista) => (lista || []).filter(r => String(r.id) !== String(m.id) && r.estado === 'Administrada');
+  let rep = vacinacaoVacinasRepetidas(m, outrasAdministradas(STATE.vacinacaoMarcacoes.filter(x => x.campanhaId === m.campanhaId)));
+  if (!rep.length) { const srv = await vacinacaoMesmaPessoaNoServidor(m.campanhaId, m, m.id); if (srv) rep = vacinacaoVacinasRepetidas(m, outrasAdministradas(srv)); }
+  if (!rep.length) return null;
+  const vac = [...new Set(rep.map(x => x.vacina))].join(' e ');
+  return `⛔ ${m.nome || 'Esta pessoa'} já tem ${vac} administrada nesta campanha (${formatDate(rep[0].registo.data)}). A mesma vacina não pode ser dada duas vezes — cancela esta marcação ou tira-lhe essa vacina.`;
+}
+function vacinacaoTextoVacinasRepetidas(repetidas) {
+  const porVacina = {};
+  repetidas.forEach(x => { if (!porVacina[x.vacina]) porVacina[x.vacina] = x.registo; });
+  const partes = Object.keys(porVacina).map(v => {
+    const r = porVacina[v];
+    return `${v} (${r.estado === 'Administrada' ? 'já administrada' : 'já marcada'} a ${formatDate(r.data)}${r.hora ? ' às ' + r.hora : ''})`;
+  });
+  return `⛔ Esta pessoa já tem, nesta campanha: ${partes.join(' e ')}. A mesma vacina não pode ser dada duas vezes na mesma campanha — se for para mudar o dia ou a hora, edita a marcação que já existe. (Pode fazer a Gripe e a COVID em dias diferentes, ou as duas no mesmo dia.)`;
 }
 // (2) Atualização ao vivo — ver registarAtualizadorAoVivo (mecanismo
 // partilhado por todas as agendas, 2026-09-28).
@@ -47235,7 +47452,7 @@ function buildVacinacaoPage(container, goTo) {
   function marcacaoVazia() { return Object.assign(emptyRecord(vacinacaoMarcacaoSchema), { campanhaId, data: agendaDiaSelecionado || todayISO(), hora: pad2(Math.floor(VACINACAO_HORA_DEFAULT_INICIO / 60)) + ':' + pad2(VACINACAO_HORA_DEFAULT_INICIO % 60) }); }
   function openNewMarcacao(prefill) {
     marcacaoDraft = Object.assign(marcacaoVazia(), prefill || {});
-    marcacaoEditId = null; marcacaoFormError = ''; showMarcacaoForm = true; showEsperaPicker = false; rerender();
+    marcacaoEditId = null; marcacaoOrigemEsperaId = null; marcacaoFormError = ''; showMarcacaoForm = true; showEsperaPicker = false; rerender(); // AUDITORIA 2026-09-29: nunca herda a origem da marcação anterior
   }
   function openEditMarcacao(m) { marcacaoDraft = Object.assign({}, m); marcacaoEditId = m.id; marcacaoOrigemEsperaId = null; marcacaoFormError = ''; showMarcacaoForm = true; showEsperaPicker = false; rerender(); }
   function cancelMarcacaoForm() { showMarcacaoForm = false; marcacaoFormError = ''; marcacaoOrigemEsperaId = null; showEsperaPicker = false; rerender(); }
@@ -47322,7 +47539,13 @@ function buildVacinacaoPage(container, goTo) {
     if (!marcacaoEditId && !marcacaoDraft.colaboradorFarmacia) {
       const idadeMarcacao = vacinacaoCalcularIdade(marcacaoDraft.dataNascimento, marcacaoDraft.data);
       if (idadeMarcacao !== null && idadeMarcacao > 84) {
-        marcacaoFormError = '⚠️ Não é possível criar esta marcação direta: idade acima dos 84 anos deve realizar a vacinação no Centro de Saúde onde está inscrito(a). Se se tratar de um(a) colaborador(a) da farmácia, assinale "Colaborador da Farmácia Juncal".';
+        marcacaoFormError = '⚠️ Não é possível criar esta marcação direta: idade acima dos 84 anos deve realizar a vacinação no Centro de Saúde onde está inscrito(a). Se se tratar de um(a) colaborador(a) da farmácia, assinala "Colaborador da Farmácia Juncal".';
+        rerender();
+        return;
+      }
+      if (idadeMarcacao !== null && idadeMarcacao < 60 && marcacaoDraft.covid && marcacaoOrigemEsperaId) {
+        // AUDITORIA 2026-09-29: veio da Lista de Espera — já lá está; não se duplica, só se fecha o formulário.
+        marcacaoFormError = '⚠️ Esta pessoa tem menos de 60 anos — sem indicação inicial para a vacina COVID. Mantém-se na Lista de Espera.';
         rerender();
         return;
       }
@@ -47335,7 +47558,7 @@ function buildVacinacaoPage(container, goTo) {
           });
           if (created) {
             STATE.vacinacaoListaEspera = [created, ...STATE.vacinacaoListaEspera];
-            showMarcacaoForm = false; marcacaoFormError = '';
+            showMarcacaoForm = false; marcacaoFormError = ''; marcacaoOrigemEsperaId = null;
             showToast(`${marcacaoDraft.nome || 'Utente'} adicionado(a) à Lista de Espera.`, 'success');
             rerender();
           } else showDbErrorToast('Não foi possível adicionar à Lista de Espera');
@@ -47386,17 +47609,19 @@ function buildVacinacaoPage(container, goTo) {
         return;
       }
     }
-    // Deteção de duplicados: mesma pessoa já marcada noutro dia, ou já
-    // vacinada nesta época — nunca bloqueia, só pede confirmação explícita
-    // (marcacaoDraft.forcarDuplicado fica true depois de confirmado, para
-    // não voltar a perguntar ao reenviar o mesmo formulário).
-    if (!marcacaoDraft.forcarDuplicado) {
-      const dup = vacinacaoBuscarDuplicados(campanhaId, marcacaoDraft, marcacaoEditId, marcacaoOrigemEsperaId);
-      const avisoTxt = vacinacaoAvisoDuplicadoTexto(dup);
-      if (avisoTxt) {
-        confirmDialog(`⚠️ ${avisoTxt}`, () => { marcacaoDraft.forcarDuplicado = true; submitMarcacao(); }, { confirmLabel: 'Continuar Mesmo Assim' });
-        return;
+    // 2026-09-29: a MESMA vacina nunca duas vezes na mesma campanha (marcada ou administrada) — bloqueia sempre.
+    // Verifica primeiro o que está no ecrã e depois o servidor (o que um colega gravou há segundos noutro posto).
+    // Gripe num dia e COVID noutro (ou as duas juntas) continua permitido.
+    if (marcacaoDraft.gripe || marcacaoDraft.covid) {
+      const locais = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.id !== marcacaoEditId && m.estado !== 'Cancelada' && !vacinacaoEhBloqueio(m));
+      let repetidas = vacinacaoVacinasRepetidas(marcacaoDraft, locais);
+      if (!repetidas.length) {
+        marcacaoSaving = true; rerender();
+        const doServidor = await vacinacaoMesmaPessoaNoServidor(campanhaId, marcacaoDraft, marcacaoEditId);
+        marcacaoSaving = false;
+        if (doServidor) repetidas = vacinacaoVacinasRepetidas(marcacaoDraft, doServidor);
       }
+      if (repetidas.length) { marcacaoFormError = vacinacaoTextoVacinasRepetidas(repetidas); rerender(); return; }
     }
     marcacaoFormError = '';
     if (!marcacaoEditId) marcacaoDraft.responsavel = currentUserName();
@@ -47491,6 +47716,8 @@ function buildVacinacaoPage(container, goTo) {
       // "administradoPor" nasce sempre com quem está a confirmar agora,
       // mas fica editável depois no formulário (ver vacinacaoMarcacaoSchema)
       // para o caso de ter sido outro colega a dar mesmo a vacina.
+      const bloqueio = await vacinacaoBloqueioAdministrarRepetida(m);
+      if (bloqueio) { showToast(bloqueio, 'error'); return; }
       const updated = await dbUpdate('vacinacaoMarcacoes', m.id, { estado: 'Administrada', administradoPor: m.administradoPor || currentUserName() });
       if (updated) { STATE.vacinacaoMarcacoes = STATE.vacinacaoMarcacoes.map(x => x.id === m.id ? updated : x); marcacaoSelectedIds = new Set(); showMarcacaoForm = false; rerender(); }
       else showDbErrorToast('Não foi possível concluir a marcação');
@@ -47515,7 +47742,7 @@ function buildVacinacaoPage(container, goTo) {
     if (marcacaoSelectedIds.size === 0) return;
     const ids = [...marcacaoSelectedIds];
     const plural = ids.length > 1;
-    confirmDialog(`Tens a certeza de que queres eliminar permanentemente ${ids.length} marcação${plural ? 'ões' : ''} selecionada${plural ? 's' : ''}? Esta ação não pode ser desfeita!`, async () => {
+    confirmDialog(`Tens a certeza de que queres eliminar ${ids.length} marcaç${plural ? 'ões' : 'ão'} selecionada${plural ? 's' : ''}? Vai para o Lixo, de onde ainda pode ser recuperado.`, async () => {
       const apagados = await bulkSoftDelete('vacinacaoMarcacoes', ids);
       STATE.vacinacaoMarcacoes = STATE.vacinacaoMarcacoes.filter(m => !apagados.has(m.id));
       marcacaoSelectedIds = new Set(); showMarcacaoForm = false; rerender();
@@ -47527,7 +47754,7 @@ function buildVacinacaoPage(container, goTo) {
   // selecionada na tabela (pedido explícito 2026-08-11).
   function removeMarcacaoUnica(m) {
     if (!m || isEnfermeiro()) return;
-    confirmDialog('Tens a certeza de que queres eliminar permanentemente esta marcação? Esta ação não pode ser desfeita!', async () => {
+    confirmDialog('Tens a certeza de que queres eliminar esta marcação? Vai para o Lixo, de onde ainda pode ser recuperado.', async () => {
       const apagados = await bulkSoftDelete('vacinacaoMarcacoes', [m.id]);
       STATE.vacinacaoMarcacoes = STATE.vacinacaoMarcacoes.filter(x => !apagados.has(x.id));
       marcacaoSelectedIds = new Set(); showMarcacaoForm = false; rerender();
@@ -47592,7 +47819,7 @@ function buildVacinacaoPage(container, goTo) {
     if (!isMasterUser() || encomendaSelectedIds.size === 0) return;
     const ids = [...encomendaSelectedIds];
     const plural = ids.length > 1;
-    confirmDialog(`Tens a certeza de que queres eliminar permanentemente ${ids.length} encomenda${plural ? 's' : ''} selecionada${plural ? 's' : ''}?`, async () => {
+    confirmDialog(`Tens a certeza de que queres eliminar ${ids.length} encomenda${plural ? 's' : ''} selecionada${plural ? 's' : ''}?`, async () => {
       const apagados = await bulkSoftDelete('vacinacaoEncomendas', ids);
       STATE.vacinacaoEncomendas = STATE.vacinacaoEncomendas.filter(e => !apagados.has(e.id));
       encomendaSelectedIds = new Set(); showEncomendaForm = false; rerender();
@@ -47690,7 +47917,7 @@ function buildVacinacaoPage(container, goTo) {
     if (!esperaEditId) {
       const idadeEspera = vacinacaoCalcularIdade(esperaDraft.dataNascimento);
       if (idadeEspera !== null && idadeEspera > 84) {
-        esperaFormError = '⚠️ Não é possível adicionar à Lista de Espera: idade acima dos 84 anos deve realizar a vacinação (Gripe e COVID) no Centro de Saúde onde está inscrito(a). Tratando-se de um(a) colaborador(a) da farmácia, crie diretamente uma Marcação (não passa pela Lista de Espera).';
+        esperaFormError = '⚠️ Não é possível adicionar à Lista de Espera: idade acima dos 84 anos deve realizar a vacinação (Gripe e COVID) no Centro de Saúde onde está inscrito(a). Tratando-se de um(a) colaborador(a) da farmácia, cria diretamente uma Marcação (não passa pela Lista de Espera).';
         rerender();
         return;
       }
@@ -47782,7 +48009,7 @@ function buildVacinacaoPage(container, goTo) {
   function cancelResponsavelForm() { showResponsavelForm = false; responsavelFormError = ''; rerender(); }
   async function submitResponsavel() {
     if (responsavelSaving) return; // trava duplo-submissão (ver nota em submit() de Entregas)
-    if (!String(responsavelDraft.nome || '').trim()) { responsavelFormError = 'Por favor, escolha um Responsável.'; rerender(); return; }
+    if (!String(responsavelDraft.nome || '').trim()) { responsavelFormError = 'Por favor, escolhe um Responsável.'; rerender(); return; }
     if (!responsavelDraft.data) { responsavelFormError = 'Por favor, escolhe um dia (só dias já abertos).'; rerender(); return; }
     responsavelFormError = '';
     // dataInicio/dataFim continuam a ser as colunas reais gravadas na BD —
@@ -47867,7 +48094,7 @@ function buildVacinacaoPage(container, goTo) {
         if (!r.horaInicio && !r.horaFim) return true;
         // Horário da tarefa: início incluído, fim excluído (a vaga das 13:00 já é de quem entra às 13:00).
         if (r.origem === 'horario') return (!r.horaInicio || hora >= r.horaInicio) && (!r.horaFim || hora < r.horaFim);
-        return (!r.horaInicio || hora >= r.horaInicio) && (!r.horaFim || hora <= r.horaFim);
+        return (!r.horaInicio || hora >= r.horaInicio) && (!r.horaFim || hora < r.horaFim); // AUDITORIA 2026-09-29: fim exclusivo, como os períodos do horário (nunca 2 responsáveis na vaga de fronteira)
       });
   }
 
@@ -48392,7 +48619,7 @@ function buildVacinacaoPage(container, goTo) {
     if (!registo) return;
     const temAtiva = STATE.vacinacaoMarcacoes.some(m => m.campanhaId === campanhaId && m.data === dateISO && m.estado !== 'Cancelada' && !vacinacaoEhBloqueio(m));
     if (temAtiva) {
-      confirmDialog('Impossível fechar o dia: é necessário primeiro concluir, cancelar ou eliminar todas as marcações ativas para esta data.', () => {}, { confirmLabel: 'Entendido' });
+      confirmDialog('Impossível fechar o dia: tem marcações (pendentes ou já administradas). Só se pode fechar um dia sem marcações — cancela ou elimina primeiro as pendentes.', () => {}, { confirmLabel: 'Entendido' });
       return;
     }
     const nomeAbriu = registo.responsavel || 'alguém da equipa';
@@ -48641,6 +48868,42 @@ function buildVacinacaoPage(container, goTo) {
     porAbrir: { bg: '#fff', border: '#cbd5e1', texto: '#334155' },
     hoje: '#1e3a8a',
   };
+  // Resumo de um dia para o balão do calendário da Vacinação.
+  function resumoDiaVacinacao(dateISO, aberto, isSunday) {
+    const DIAS = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
+    const dObj = new Date(dateISO + 'T12:00:00');
+    const passado = dateISO < todayISO();
+    const cab = `${DIAS[dObj.getDay()]}, ${formatDate(dateISO).slice(0, 5)} · ${aberto ? (passado ? 'Dia passado' : 'Aberto') : 'Por abrir'}`;
+    const doDiaTodas = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO);
+    const bloqueadas = doDiaTodas.filter(m => vacinacaoEhBloqueio(m)).length;
+    const reais = doDiaTodas.filter(m => !vacinacaoEhBloqueio(m));
+    const ativas = reais.filter(m => m.estado !== 'Cancelada');
+    const canceladas = reais.length - ativas.length;
+    if (!aberto && !ativas.length) return `${cab}${isSunday ? '\nDomingo — pede confirmação ao abrir.' : '\nAinda não foi aberto — sem marcações.'}`;
+    const linhas = [cab];
+    if (!ativas.length) linhas.push('Sem marcações.');
+    else {
+      const administradas = ativas.filter(m => m.estado === 'Administrada').length;
+      const porDar = ativas.length - administradas;
+      const gripe = ativas.filter(m => m.gripe).length, covid = ativas.filter(m => m.covid).length;
+      linhas.push(`👥 ${ativas.length} pessoa${ativas.length === 1 ? '' : 's'} — ${porDar} por vacinar · ${administradas} já vacinada${administradas === 1 ? '' : 's'}`);
+      linhas.push(`💉 Gripe ${gripe} · COVID ${covid} = ${gripe + covid} vacina${gripe + covid === 1 ? '' : 's'}`);
+      if (covid) {
+        const falta = vacinacaoFaltamParaMultiploSeis(covid);
+        const frascos = Math.ceil(covid / 6);
+        linhas.push(falta ? `⚠️ COVID: ${frascos} frasco${frascos === 1 ? '' : 's'} — falta${falta === 1 ? '' : 'm'} ${falta} para completar o último` : `✅ COVID: ${frascos} frasco${frascos === 1 ? '' : 's'} completo${frascos === 1 ? '' : 's'}`);
+      }
+      const horas = ativas.map(m => normalizarHora(m.hora)).filter(Boolean).sort();
+      if (horas.length) linhas.push(`🕐 ${horas.length === 1 ? `Às ${horas[0]}` : `Da ${horas[0]} às ${horas[horas.length - 1]}`}`);
+    }
+    if (canceladas) linhas.push(`✖ ${canceladas} cancelada${canceladas === 1 ? '' : 's'}`);
+    if (bloqueadas) linhas.push(`🔒 ${bloqueadas} vaga${bloqueadas === 1 ? '' : 's'} bloqueada${bloqueadas === 1 ? '' : 's'}`);
+    try {
+      const nomes = [...new Set(responsaveisNoDia(dateISO).map(r => String(r.nome || '').trim()).filter(Boolean))];
+      if (nomes.length) linhas.push(`👤 Responsáve${nomes.length === 1 ? 'l' : 'is'}: ${nomes.join(', ')}`);
+    } catch (e) { /* sem responsáveis */ }
+    return linhas.join('\n');
+  }
   function buildMiniMes(ano, mes0) {
     const firstDay = new Date(ano, mes0, 1);
     const startWeekday = (firstDay.getDay() + 6) % 7;
@@ -48677,9 +48940,12 @@ function buildVacinacaoPage(container, goTo) {
       const cell = h('div', {
         class: 'vac-dia' + (isToday ? ' vac-dia-hoje' : ''),
         style: `aspect-ratio:1/1;border-radius:6px;background:${c.bg};cursor:pointer;display:flex;align-items:center;justify-content:center;${estiloHoje}${estiloPassado}`,
-        title: doDia.length ? `${doDia.length} marcação${doDia.length > 1 ? 'ões' : ''}` + (avisoMultiplo ? ` · ⚠️ COVID: ${covidDoDia} (não múltiplo de 6)` : ' · ✅ COVID em múltiplo de 6') : (aberto ? 'Dia aberto, sem marcações' : (isSunday ? 'Domingo — pede confirmação ao abrir' : undefined)),
       }, String(d));
-      cell.addEventListener('click', () => { agendaDiaSelecionado = dateISO; marcacaoSelectedIds = new Set(); rerender(); });
+      // 2026-09-29 (Hugo: "hover nos dias com agenda aberta resumir a informação"): resumo do dia no balão
+      // flutuante da app (rato). No telemóvel o toque abre logo o dia, como sempre.
+      cell.addEventListener('mouseenter', () => { try { mostrarTooltipFlutuante(cell, resumoDiaVacinacao(dateISO, aberto, isSunday)); } catch (e) { /* nunca parte o calendário */ } });
+      cell.addEventListener('mouseleave', () => { try { esconderTooltipFlutuante(); } catch (e) { /* ignora */ } });
+      cell.addEventListener('click', () => { try { esconderTooltipFlutuante(); } catch (e) { /* ignora */ } agendaDiaSelecionado = dateISO; marcacaoSelectedIds = new Set(); rerender(); });
       cells.push(cell);
     }
     const weekdayRow = h('div', { class: 'vac-mes-semana', style: 'display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:3px;' },
@@ -48749,7 +49015,7 @@ function buildVacinacaoPage(container, goTo) {
     const vagasRestantes = livresReais.length - (livresReais.some(sl => sl.hora === marcacaoDraft.hora) ? 1 : 0);
     if (vagasRestantes >= faltam) return null;
     return h('div', { class: 'card card-pad', style: 'margin-bottom:14px;background:#fffbeb;border-color:#fde68a;' }, h('p', { style: 'margin:0;font-size:13px;' },
-      `⚠️ Neste dia há ${covidNoDia} marcaç${covidNoDia > 1 ? 'ões' : 'ão'} de COVID — falta${faltam > 1 ? 'm' : ''} ${faltam} para completar um frasco de 6 doses, e já não sobram vagas suficientes no dia para lá chegar (evitar quebra). Esta marcação é só de Gripe: pondere marcar para outro dia, guardando esta vaga para alguém que também queira COVID (ou Gripe + COVID).`));
+      `⚠️ Neste dia há ${covidNoDia} marcaç${covidNoDia > 1 ? 'ões' : 'ão'} de COVID — falta${faltam > 1 ? 'm' : ''} ${faltam} para completar um frasco de 6 doses, e já não sobram vagas suficientes no dia para lá chegar (evitar quebra). Esta marcação é só de Gripe: pondera marcar para outro dia, guardando esta vaga para alguém que também queira COVID (ou Gripe + COVID).`));
   }
   function buildAgendaTab() {
     const wrap = h('div', {});
@@ -48830,9 +49096,11 @@ function buildVacinacaoPage(container, goTo) {
       h('button', { class: 'tab-btn', onclick: () => { agendaView = 'calendario'; rerender(); } }, [Icon('calendar', { size: 14 }), h('span', {}, 'Calendário')]),
       h('button', { class: 'tab-btn active' }, [Icon('clipboard', { size: 14 }), h('span', {}, 'Lista Completa')]),
     ]));
-    const pendentesCount = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.estado === 'Pendente').length;
-    const administradasCount = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.estado === 'Administrada').length;
-    const canceladasCount = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.estado === 'Cancelada').length;
+    // AUDITORIA 2026-09-29: os números dos separadores usam exatamente o mesmo critério da lista (sem vagas bloqueadas).
+    const baseContagem = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && !vacinacaoEhBloqueio(m));
+    const pendentesCount = baseContagem.filter(m => m.estado !== 'Administrada' && m.estado !== 'Cancelada').length;
+    const administradasCount = baseContagem.filter(m => m.estado === 'Administrada').length;
+    const canceladasCount = baseContagem.filter(m => m.estado === 'Cancelada').length;
     wrap.appendChild(h('div', { class: 'tabs-row' }, [
       h('button', { class: 'tab-btn tone-blue' + (marcacaoTab === 'pendentes' ? ' active' : ''), onclick: () => { marcacaoTab = 'pendentes'; marcacaoSelectedIds = new Set(); rerender(); } }, [
         Icon('clock', { size: 14 }), h('span', {}, 'Pendentes'), h('span', { class: 'tab-count' }, String(pendentesCount)),
@@ -48887,19 +49155,24 @@ function buildVacinacaoPage(container, goTo) {
     const cards = periodos.map(p => {
       const c = vacinacaoContarPeriodo(campanha, p.desde, p.ate);
       const num = (v, cls) => h('td', { class: 'vac-contagem-num' + (v ? ` ${cls}` : ' zero') }, String(v));
-      const linha = (rotulo, cls, total, gripe, covid) => h('tr', {}, [
+      // 2026-09-29 (Hugo: "distingue pessoas e vacinas; o total deve ser a soma Gripe + COVID"):
+      // Pessoas = marcações (cada pessoa uma vez); Total = vacinas (Gripe + COVID).
+      const linha = (rotulo, cls, pessoas, gripe, covid) => h('tr', {}, [
         h('th', { scope: 'row' }, [h('span', { class: `vac-contagem-ponto ${cls}` }), rotulo]),
-        total === null ? h('td', { class: 'vac-contagem-num zero' }, '—') : num(total, cls), num(gripe, cls), num(covid, cls),
+        pessoas === null ? h('td', { class: 'vac-contagem-num zero' }, '—') : num(pessoas, cls), num(gripe, cls), num(covid, cls),
+        h('td', { class: 'vac-contagem-num vac-contagem-total' + ((gripe + covid) ? ` ${cls}` : ' zero') }, String(gripe + covid)),
       ]);
+      const vacinasAdministradas = c.administradasGripe + c.administradasCovid;
+      const vacinasPendentes = c.pendentesGripe + c.pendentesCovid;
       return h('div', { class: 'card card-pad vac-contagem' }, [
         h('div', { class: 'vac-contagem-topo' }, [
           h('span', { class: 'vac-contagem-periodo' }, p.label),
           h('span', { class: 'vac-contagem-detalhe' }, p.detalhe),
         ]),
-        h('p', { class: 'vac-contagem-destaque' }, [h('b', {}, String(c.administradas)), ` administrada${c.administradas === 1 ? '' : 's'}`,
-          h('span', {}, ` · ${c.pendentes} pendente${c.pendentes === 1 ? '' : 's'}`)]),
+        h('p', { class: 'vac-contagem-destaque' }, [h('b', {}, String(vacinasAdministradas)), ` vacina${vacinasAdministradas === 1 ? '' : 's'} administrada${vacinasAdministradas === 1 ? '' : 's'}`,
+          h('span', {}, ` · ${vacinasPendentes} por dar (${c.pendentes} pessoa${c.pendentes === 1 ? '' : 's'})`)]),
         h('table', { class: 'vac-contagem-tabela' }, [
-          h('thead', {}, h('tr', {}, [h('th', {}, ''), h('th', { title: 'Número de marcações (pessoas)' }, 'Total'), h('th', {}, 'Gripe'), h('th', {}, 'COVID')])),
+          h('thead', {}, h('tr', {}, [h('th', {}, ''), h('th', { title: 'Marcações — cada pessoa conta uma vez' }, 'Pessoas'), h('th', {}, 'Gripe'), h('th', {}, 'COVID'), h('th', { title: 'Vacinas: Gripe + COVID' }, 'Total')])),
           h('tbody', {}, [
             linha('Administradas', 'verde', c.administradas, c.administradasGripe, c.administradasCovid),
             linha('Pendentes', 'laranja', c.pendentes, c.pendentesGripe, c.pendentesCovid),
@@ -48907,7 +49180,7 @@ function buildVacinacaoPage(container, goTo) {
             linha('Quebras', 'vermelho', null, c.quebraGripe, c.quebraCovid),
           ]),
         ]),
-        h('p', { class: 'vac-contagem-nota' }, 'Total = marcações (pessoas). Gripe e COVID contam vacinas — uma marcação pode ter as duas.'),
+        h('p', { class: 'vac-contagem-nota' }, 'Pessoas = marcações (cada pessoa conta uma vez). Total = vacinas (Gripe + COVID) — quem leva as duas conta 2.'),
       ]);
     });
     return h('div', { class: 'quick-grid hub-tier-row vac-contagem-grelha', style: 'margin-bottom:16px;' }, cards);
@@ -48916,8 +49189,8 @@ function buildVacinacaoPage(container, goTo) {
     const n = vacinacaoNecessidadeEncomenda(campanha);
     if (!n.faltamGripe && !n.faltamCovid) return null;
     const linhas = [];
-    if (n.faltamGripe) linhas.push(`Gripe: ${n.pendentesGripe} marcação${n.pendentesGripe !== 1 ? 'ões' : ''} pendente${n.pendentesGripe !== 1 ? 's' : ''} + ${n.esperaGripe} na lista de espera = ${n.necessidadeGripe} necessário${n.necessidadeGripe !== 1 ? 's' : ''}, para ${n.stockGripe} em stock${n.aCaminhoGripe ? ` + ${n.aCaminhoGripe} já encomendado(s) a caminho` : ''} — falta encomendar pelo menos mais ${n.faltamGripe}.`);
-    if (n.faltamCovid) linhas.push(`COVID: ${n.pendentesCovid} marcação${n.pendentesCovid !== 1 ? 'ões' : ''} pendente${n.pendentesCovid !== 1 ? 's' : ''} + ${n.esperaCovid} na lista de espera = ${n.necessidadeCovid} necessário${n.necessidadeCovid !== 1 ? 's' : ''}, para ${n.stockCovid} em stock${n.aCaminhoCovid ? ` + ${n.aCaminhoCovid} já encomendado(s) a caminho` : ''} — falta encomendar pelo menos mais ${n.faltamCovid}.`);
+    if (n.faltamGripe) linhas.push(`Gripe: ${n.pendentesGripe} marcaç${n.pendentesGripe !== 1 ? 'ões' : 'ão'} pendente${n.pendentesGripe !== 1 ? 's' : ''} + ${n.esperaGripe} na lista de espera = ${n.necessidadeGripe} necessário${n.necessidadeGripe !== 1 ? 's' : ''}, para ${n.stockGripe} em stock${n.aCaminhoGripe ? ` + ${n.aCaminhoGripe} já encomendado(s) a caminho` : ''} — falta encomendar pelo menos mais ${n.faltamGripe}.`);
+    if (n.faltamCovid) linhas.push(`COVID: ${n.pendentesCovid} marcaç${n.pendentesCovid !== 1 ? 'ões' : 'ão'} pendente${n.pendentesCovid !== 1 ? 's' : ''} + ${n.esperaCovid} na lista de espera = ${n.necessidadeCovid} necessário${n.necessidadeCovid !== 1 ? 's' : ''}, para ${n.stockCovid} em stock${n.aCaminhoCovid ? ` + ${n.aCaminhoCovid} já encomendado(s) a caminho` : ''} — falta encomendar pelo menos mais ${n.faltamCovid}.`);
     return h('div', { class: 'card card-pad', style: 'margin-bottom:16px;background:#fef2f2;border-color:#fecaca;' }, [
       h('p', { style: 'margin:0 0 4px;font-size:13px;font-weight:700;' }, '⚠️ Stock insuficiente para as marcações já feitas + Lista de Espera'),
       ...linhas.map(l => h('p', { style: 'margin:0;font-size:13px;' }, l)),
@@ -49283,7 +49556,7 @@ function buildVacinacaoPage(container, goTo) {
     estado.modalAberto = true;
     abrirModalVacinacaoAtrasadas(itens, (idsIgnorados) => {
       estado.modalAberto = false;
-      estado.ignoradas = new Set(idsIgnorados);
+      (idsIgnorados || []).forEach(id => estado.ignoradas.add(id)); // AUDITORIA 2026-09-29: junta (antes substituía e as já ignoradas voltavam)
     });
   }
   const watcherVacinacaoAtrasadas = setInterval(verificarVacinacaoAtrasadas, 60000);
@@ -50078,7 +50351,7 @@ function abrirModalEntregasAtrasadas(itensIniciais, opts) {
       h('button', { class: 'close-btn', onclick: fechar, title: 'Fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
     ]),
     h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' },
-      `${itens.length > 1 ? 'Estas entregas já passaram' : 'Esta entrega já passou'} mais de 2 horas do fim do bloco horário e continuam PENDENTES — confirma ou revê.`),
+      `${itens.length > 1 ? 'Estas entregas já passaram' : 'Esta entrega já passou'} mais de 2 horas do fim do bloco horário e ${itens.length > 1 ? 'continuam' : 'continua'} PENDENTE${itens.length > 1 ? 'S' : ''} — confirma ou revê.`),
     h('div', { style: 'max-height:56vh;overflow-y:auto;display:flex;flex-direction:column;gap:10px;' }, [listaEl]),
     h('div', { class: 'form-actions', style: 'margin-top:6px;' }, [fecharTudoBtn]),
   ]);
@@ -50500,6 +50773,7 @@ function buildEmpresasParceirasPage(container, goTo, farmaciaAtiva) {
 // valores por omissão no logout (ver manualLogout/clearSessionSilently)
 // para a sessão seguinte — eventualmente doutro colega, no mesmo
 // dispositivo — não herdar o contexto (nem o formulário) de quem saiu.
+const ENTREGAS_POPUP_ATRASADAS = { aberto: false, silenciadoAte: 0 };
 let entregasContextoMemorizado = { farmaciaAtiva: null, activeTab: 'pendentes', searchQuery: '', showForm: false, editingId: null, draft: null };
 /* =================================================================
    ENTREGAS — CÁLCULO AUTOMÁTICO DE DISTÂNCIA (pedido explícito 2026-09-17,
@@ -50748,8 +51022,9 @@ function pontoLimiteSaidaJornada(entrada) {
   const turno = pontoTurnoPlaneado(entrada.utilizadorId, entrada.data);
   let limite;
   if (turno) {
-    const base = new Date(entrada.data + 'T00:00:00').getTime();
-    limite = base + (escalaMinutosAbsolutos(turno.saida, true) * 60 + PONTO_MARGEM_SAIDA_HORAS * 3600) * 1000;
+    // AUDITORIA 2026-09-29: hora local construída com new Date(a, m, d, 0, minutos) — certa também no dia da mudança de hora.
+    const [pa, pm, pd] = entrada.data.split('-').map(Number);
+    limite = new Date(pa, pm - 1, pd, 0, escalaMinutosAbsolutos(turno.saida, true)).getTime() + PONTO_MARGEM_SAIDA_HORAS * 3600 * 1000;
     limite = Math.max(limite, inicio + 2 * 3600 * 1000); // entrou já depois da hora — ainda dá margem
   } else {
     limite = inicio + PONTO_SEM_TURNO_MAX_HORAS * 3600 * 1000;
@@ -50970,7 +51245,8 @@ function buildPontoWidget(rerender, diaHoje) {
   // essa saída agora (ficaria com a hora de hoje) — avisa-se a Direção.
   if (jornada.esquecida) {
     const esq = jornada.esquecida;
-    const jaAvisou = (STATE.gavetaRecados || []).some(r => r.referenciaTabela === 'ponto_registos' && String(r.referenciaId) === String(esq.id) && String(r.remetenteId) === String(activeUser.id));
+    // AUDITORIA 2026-09-29: só conta o aviso de SAÍDA ESQUECIDA (o aviso automático de picagem pendente, com a mesma referência, não).
+    const jaAvisou = (STATE.gavetaRecados || []).some(r => r.referenciaTabela === 'ponto_registos' && String(r.referenciaId) === String(esq.id) && String(r.remetenteId) === String(activeUser.id) && /esqueceu-se de picar a saída/.test(r.mensagem || ''));
     const avisarBtn = h('button', { class: 'btn btn-secondary', type: 'button', style: 'font-size:12.5px;padding:6px 12px;margin-top:6px;', disabled: jaAvisou ? 'disabled' : undefined }, jaAvisou ? 'Direção já avisada' : 'Avisar a Direção');
     avisarBtn.addEventListener('click', () => requireAuth(async () => {
       avisarBtn.setAttribute('disabled', 'disabled');
@@ -51081,8 +51357,8 @@ function buildPontoWidget(rerender, diaHoje) {
     if (acaoTipo !== 'saida' || !jornada.entrada) { seguir(); return; }
     const turno = pontoTurnoPlaneado(activeUser.id, jornada.data);
     if (!turno) { seguir(); return; }
-    const base = new Date(jornada.data + 'T00:00:00').getTime();
-    const fimTurno = base + escalaMinutosAbsolutos(turno.saida, true) * 60000;
+    const [ja, jm, jd] = jornada.data.split('-').map(Number);
+    const fimTurno = new Date(ja, jm - 1, jd, 0, escalaMinutosAbsolutos(turno.saida, true)).getTime(); // certo na mudança de hora (AUDITORIA 2026-09-29)
     const faltaMin = Math.round((fimTurno - Date.now()) / 60000);
     if (faltaMin <= 45) { seguir(); return; }
     const pausaTxt = turno.pausaInicio && turno.pausaFim ? ` e tens pausa das ${turno.pausaInicio} às ${turno.pausaFim}` : '';
@@ -51600,7 +51876,7 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
       // OUTRA entrega, sem relação nenhuma com a que acabou de gravar) saltar
       // logo por cima, interpreta-o como sinal de que a gravação falhou e
       // repete a ação — o que gera duplicados (pedido explícito 2026-08-12).
-      popupAtrasadasSilenciadoAte = Math.max(popupAtrasadasSilenciadoAte, Date.now() + POPUP_ATRASADAS_GRACA_POS_FORM_MS);
+      ENTREGAS_POPUP_ATRASADAS.silenciadoAte = Math.max(ENTREGAS_POPUP_ATRASADAS.silenciadoAte, Date.now() + POPUP_ATRASADAS_GRACA_POS_FORM_MS);
     }
     showFormAnteriorParaGracaPopup = showForm;
     // Guarda o estado do formulário em memória (não em localStorage) no
@@ -51632,8 +51908,8 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
   // Tarde" só silencia a REABERTURA AUTOMÁTICA por 10 min — nunca remove o
   // banner, que continua a refletir o estado real até haver uma resolução
   // (Confirmar Entrega ou a entrega deixar de estar pendente por outra via).
-  let popupAtrasadasAberto = false;
-  let popupAtrasadasSilenciadoAte = 0;
+  // AUDITORIA 2026-09-29: estado do popup guardado fora da página (ENTREGAS_POPUP_ATRASADAS) — cada redesenho por
+  // Realtime criava uma página nova com o "silêncio" a zero e o popup voltava a saltar.
   const ATRASADAS_SILENCIO_MS = 10 * 60 * 1000;
   // Folga curta aplicada logo depois de o formulário fechar (ver rerender)
   // — só o suficiente para o "Queres gerar/imprimir?" e afins terminarem sem
@@ -51651,7 +51927,7 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
         const updated = await dbUpdate('entregas', r.id, patch);
         if (updated) { STATE.entregas = STATE.entregas.map(x => x.id === r.id ? updated : x); onSucesso(); rerender(); }
         else { showDbErrorToast('Não foi possível marcar como entregue'); onFalha(); }
-      });
+      }, () => onFalha());
       return;
     }
     const updated = await dbUpdate('entregas', r.id, { estadoEntrega: 'Entregue', horaEntregaReal: new Date().toISOString() });
@@ -51665,7 +51941,7 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
     rerender();
   }
   function abrirPopupAtrasadas() {
-    if (!farmaciaAtiva || popupAtrasadasAberto) return;
+    if (!farmaciaAtiva || ENTREGAS_POPUP_ATRASADAS.aberto) return;
     // Nunca interrompe quem está a meio do preenchimento (Nova Entrega ou
     // edição) — mesmo que seja a pessoa a clicar no banner manualmente,
     // abrir este popup por cima do formulário só causaria confusão sobre o
@@ -51673,23 +51949,23 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
     if (showForm) return;
     const atrasadas = entregasAtrasadasPosPrazo(farmaciaAtiva);
     if (!atrasadas.length) return;
-    popupAtrasadasAberto = true;
+    ENTREGAS_POPUP_ATRASADAS.aberto = true;
     abrirModalEntregasAtrasadas(atrasadas, {
       onConfirmarEntrega: confirmarEntregaAtrasada,
       onVerDetalhes: abrirDetalhesEntregaAtrasada,
-      onFechar: () => { popupAtrasadasAberto = false; popupAtrasadasSilenciadoAte = Date.now() + ATRASADAS_SILENCIO_MS; },
+      onFechar: () => { ENTREGAS_POPUP_ATRASADAS.aberto = false; ENTREGAS_POPUP_ATRASADAS.silenciadoAte = Date.now() + ATRASADAS_SILENCIO_MS; },
     });
   }
   function verificarEntregasAtrasadasAuto(chamadaInicial) {
     if (!container.isConnected) { clearInterval(watcherAtrasadas); return; }
     if (!farmaciaAtiva) return;
-    if (popupAtrasadasAberto) return;
+    if (ENTREGAS_POPUP_ATRASADAS.aberto) return;
     // Formulário aberto (Nova Entrega/edição) — nunca verifica nem abre o
     // popup automático enquanto isso durar; abrirPopupAtrasadas() já tem o
     // mesmo guard, mas cortar aqui também poupa o rerender() do banner a
     // meio do preenchimento, que só faria "piscar" o ecrã sem necessidade.
     if (showForm) return;
-    if (Date.now() >= popupAtrasadasSilenciadoAte) abrirPopupAtrasadas();
+    if (Date.now() >= ENTREGAS_POPUP_ATRASADAS.silenciadoAte) abrirPopupAtrasadas();
     // Na 1ª verificação (500ms depois de montar a página), o build() inicial
     // já desenhou o banner com os dados/hora exatos desse momento — voltar a
     // chamar rerender() aqui só para repetir o mesmo conteúdo é que causava
@@ -51704,7 +51980,7 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
     // Mesmo sem abrir o popup (silenciado, ou nada de novo), o banner tem
     // de refletir sempre a passagem do tempo — sem isto só apareceria à
     // próxima ação do utilizador, que pode nunca vir a acontecer.
-    if (!popupAtrasadasAberto) rerender();
+    if (!ENTREGAS_POPUP_ATRASADAS.aberto) rerender();
   }
   const watcherAtrasadas = setInterval(verificarEntregasAtrasadasAuto, 60000);
   setTimeout(() => verificarEntregasAtrasadasAuto(true), 500);
@@ -51881,14 +52157,14 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
         let helperText;
         if (sabado) helperText = 'Data de Sábado — bloco fixado automaticamente, sem outras opções disponíveis.';
         else if (draft.urgente) helperText = '🚨 Modo Urgente ativo — podes escolher qualquer bloco, mesmo já expirado para hoje.';
-        else if (entregaBlocoExpirado(draft.blocoHorario, draft.dataEntrega)) helperText = 'Este bloco já expirou para hoje — assinale "URGENTE" para o manter.';
+        else if (entregaBlocoExpirado(draft.blocoHorario, draft.dataEntrega)) helperText = 'Este bloco já expirou para hoje — assinala "URGENTE" para o manter.';
         return Object.assign({}, f, {
           options: opcoes,
           optionLabels,
           helperText,
           onChange: () => {
             if (entregaBlocoExpirado(draft.blocoHorario, draft.dataEntrega) && !draft.urgente) {
-              showToast('Este bloco horário já expirou para o dia de hoje. Para realizar uma entrega fora de prazo/imediata, deve assinalar a opção "URGENTE — Entrega Imediata".', 'error');
+              showToast('Este bloco horário já expirou para o dia de hoje. Para uma entrega fora de prazo/imediata, assinala a opção "URGENTE — Entrega Imediata".', 'error');
               draft.blocoHorario = '';
             }
             rerender();
@@ -52213,8 +52489,12 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
     }
     const formatoInvalido = checkFieldFormats(draft, entregasSchema);
     if (formatoInvalido) { formError = formatoInvalido; rerender(); return; }
-    if (entregaBlocoExpirado(draft.blocoHorario, draft.dataEntrega) && !draft.urgente) {
-      showToast('Este bloco horário já expirou para o dia de hoje. Para realizar uma entrega fora de prazo/imediata, deve assinalar a opção "URGENTE — Entrega Imediata".', 'error');
+    // AUDITORIA 2026-09-29: na EDIÇÃO só se exige URGENTE se o bloco ou a data mudaram — corrigir a morada ou as
+    // observações de uma entrega de hoje já atrasada ficava bloqueado.
+    const originalEntrega = editingId ? (STATE.entregas || []).find(x => x.id === editingId) : null;
+    const blocoOuDataMudou = !originalEntrega || originalEntrega.blocoHorario !== draft.blocoHorario || originalEntrega.dataEntrega !== draft.dataEntrega;
+    if (blocoOuDataMudou && entregaBlocoExpirado(draft.blocoHorario, draft.dataEntrega) && !draft.urgente) {
+      showToast('Este bloco horário já expirou para o dia de hoje. Para uma entrega fora de prazo/imediata, assinala a opção "URGENTE — Entrega Imediata".', 'error');
       return;
     }
     formError = '';
@@ -52374,7 +52654,7 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
     if (selectedIds.size === 0) return;
     const ids = [...selectedIds];
     const plural = ids.length > 1;
-    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar permanentemente ${ids.length} registo de entrega${plural ? 's' : ''} selecionado${plural ? 's' : ''}? Esta ação não pode ser desfeita!`, async () => {
+    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar ${ids.length} registo de entrega${plural ? 's' : ''} selecionado${plural ? 's' : ''}? Vai para o Lixo, de onde ainda pode ser recuperado.`, async () => {
       const apagados = await bulkSoftDelete('entregas', ids);
       STATE.entregas = STATE.entregas.filter(r => !apagados.has(r.id));
       selectedIds = new Set([...selectedIds].filter(id => !apagados.has(id)));
@@ -52757,7 +53037,7 @@ function buildRecolhasPage(container, goTo) {
     if (selectedIds.size === 0) return;
     const ids = [...selectedIds];
     const plural = ids.length > 1;
-    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar permanentemente ${ids.length} registo de recolha${plural ? 's' : ''} selecionado${plural ? 's' : ''}? Esta ação não pode ser desfeita!`, async () => {
+    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar ${ids.length} registo de recolha${plural ? 's' : ''} selecionado${plural ? 's' : ''}? Vai para o Lixo, de onde ainda pode ser recuperado.`, async () => {
       const apagados = await bulkSoftDelete('recolhas', ids);
       STATE.recolhas = STATE.recolhas.filter(r => !apagados.has(r.id));
       selectedIds = new Set([...selectedIds].filter(id => !apagados.has(id)));
@@ -52922,7 +53202,7 @@ function buildConsumiveisPage(container, goTo) {
     if (selectedIds.size === 0) return;
     const ids = [...selectedIds];
     const plural = ids.length > 1;
-    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar permanentemente ${ids.length} registo${plural ? 's' : ''} de consumível${plural ? 'eis' : ''} selecionado${plural ? 's' : ''}? Esta ação não pode ser desfeita!`, async () => {
+    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar ${ids.length} registo${plural ? 's' : ''} de consumível${plural ? 'eis' : ''} selecionado${plural ? 's' : ''}? Vai para o Lixo, de onde ainda pode ser recuperado.`, async () => {
       const apagados = await bulkSoftDelete('consumiveis', ids);
       STATE.consumiveis = STATE.consumiveis.filter(r => !apagados.has(r.id));
       selectedIds = new Set([...selectedIds].filter(id => !apagados.has(id)));
@@ -53043,7 +53323,7 @@ function buildTarefasPage(container, goTo) {
     if (!isMasterUser() || selectedIds.size === 0) return;
     const ids = [...selectedIds];
     const plural = ids.length > 1;
-    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar permanentemente ${ids.length} tarefa${plural ? 's' : ''} selecionada${plural ? 's' : ''}? Esta ação não pode ser desfeita!`, async () => {
+    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar ${ids.length} tarefa${plural ? 's' : ''} selecionada${plural ? 's' : ''}? Vai para o Lixo, de onde ainda pode ser recuperado.`, async () => {
       const apagados = await bulkSoftDelete('tarefas', ids);
       STATE.tarefas = STATE.tarefas.filter(t => !apagados.has(t.id));
       selectedIds = new Set([...selectedIds].filter(id => !apagados.has(id)));
@@ -53295,7 +53575,7 @@ function buildFormacoesPage(container, goTo) {
     if (!idsPermitidos.length) { showToast('Só podes eliminar as formações que registaste.', 'error'); return; }
     if (idsPermitidos.length < ids.length) showToast('Só serão eliminadas as formações que registou — as restantes ficam de fora.', 'info');
     const plural = idsPermitidos.length > 1;
-    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar permanentemente ${idsPermitidos.length} registo de formação${plural ? 's' : ''} selecionado${plural ? 's' : ''}? Esta ação não pode ser desfeita!`, async () => {
+    confirmDialog(`ATENÇÃO: Tens a certeza de que queres eliminar ${idsPermitidos.length} registo${plural ? 's' : ''} de formação selecionado${plural ? 's' : ''}? Vai para o Lixo, de onde ainda pode ser recuperado.`, async () => {
       const formacoesAApagar = STATE.formacoes.filter(f => idsPermitidos.includes(f.id));
       const apagados = await bulkSoftDelete('formacoes', idsPermitidos);
       // Horário (2026-09-25): retira as tarefas "Formação" que vieram destas formações (semanas não passadas).
@@ -55006,7 +55286,10 @@ async function loadAllData() {
       // leitura nova seja adicionada sem essa sanitização embutida.
       keys.forEach((k, i) => { const novos = sanitizarSupabase(results[i]); guardarVersoesUltrapassadas(k, STATE[k], novos); STATE[k] = novos; });
     }
-    guardarCacheLocalEstado();
+    // AUDITORIA 2026-09-29: com a cópia local em uso, mantém-se a data em que ela foi feita DE RAIZ — antes cada
+    // arranque renovava a data e, com a app aberta todos os dias, nunca mais havia leitura completa (registos
+    // apagados em definitivo noutro posto nunca desapareciam). Assim há uma leitura completa a cada 24 h.
+    guardarCacheLocalEstado(cache ? cache.savedAtCliente : null);
     normalizarTipoPremioDesafios();
     // Os 5 pedidos secundários (financeiro, mensagem do dia, chat,
     // documentos emitidos, gaveta de recados) são independentes entre si —
@@ -57459,7 +57742,10 @@ function showUserLoginScreen(onSuccess, opts) {
       // reautenticação (ex: Escape/clique fora), não o formulário em si;
       // este continua aberto e com tudo o que já escreveu, tal como pedido
       // — nunca se navega para a Página Inicial neste caso.
-      if (!preservarEcra && STATE.page !== 'home') { STATE.page = 'home'; render(); }
+      // AUDITORIA 2026-09-29: se a sessão EXPIROU e a pessoa cancela, o ecrã de quem estava (Horários,
+      // Financeiro, Entregas…) não fica visível e utilizável sem sessão — volta à Página Inicial.
+      if (preservarEcra) { utilizadorSessaoExpiradaId = null; reporContextosDeSessao(); STATE.page = 'home'; render(); }
+      else if (STATE.page !== 'home') { STATE.page = 'home'; render(); }
     }
   }
   function onKeydown(e) { if (e.key === 'Escape') close(); }
@@ -57545,6 +57831,14 @@ function showUserLoginScreen(onSuccess, opts) {
     // que tinha ficado pendente antes do requireAuth) — o render() a
     // seguir é a ÚNICA repintura completa deste fluxo de login.
     onSuccess();
+    // AUDITORIA 2026-09-29: só se preserva o ecrã quando é a MESMA pessoa a voltar a entrar — outra pessoa nunca
+    // herda o ecrã (nem o rascunho de Entregas, nem o cartão de ponto) de quem estava antes.
+    if (preservarEcra && String(u.id) !== String(utilizadorSessaoExpiradaId)) {
+      preservarEcra = false;
+      reporContextosDeSessao();
+      STATE.page = 'home';
+    }
+    utilizadorSessaoExpiradaId = null;
     if (preservarEcra) {
       // Reautenticação silenciosa (sessão expirou sozinha por inatividade
       // enquanto a pessoa tinha um formulário aberto): NUNCA reconstruir a
@@ -57800,6 +58094,7 @@ const INACTIVITY_LIMIT_PRESTADOR_MS = 60 * 60 * 1000; // 1 hora (3600s) — só 
 let inactivityTimer = null;
 function resetInactivityTimer() {
   if (inactivityTimer) clearTimeout(inactivityTimer);
+  adiamentoExpiracaoDesde = 0; // houve atividade — o limite de adiamento recomeça
   if (modoTesteAtivo) return; // bloqueio automático suspenso pelo Modo de Teste do Administrador
   // Telemóvel/Tablet: sessão nunca expira por inatividade, seja qual for o
   // perfil (ver explicação completa no comentário acima desta função).
@@ -57809,6 +58104,13 @@ function resetInactivityTimer() {
   const limite = isPrestadorServico() ? INACTIVITY_LIMIT_PRESTADOR_MS : INACTIVITY_LIMIT_MS;
   inactivityTimer = setTimeout(clearSessionSilently, limite);
 }
+// AUDITORIA 2026-09-29: contexto dos módulos que nunca deve passar de uma pessoa para outra.
+function reporContextosDeSessao() {
+  entregasContextoMemorizado = { farmaciaAtiva: null, activeTab: 'pendentes', searchQuery: '', showForm: false, editingId: null, draft: null };
+  horariosContextoMemorizado = { activeTab: 'pessoal', semanaSelecionadaData: null, viewModeGerador: 'vertical', viewModeEquipa: 'vertical', viewModePessoal: 'semana', mesPessoalData: null, colaboradorValidacaoId: null, mesValidacaoData: null };
+}
+let adiamentoExpiracaoDesde = 0;
+let utilizadorSessaoExpiradaId = null; // quem estava com sessão quando esta expirou por inatividade
 function clearSessionSilently() {
   if (!activeUser) return;
   // Se a pessoa está mesmo a trabalhar num formulário/modal aberto (ex: o
@@ -57819,14 +58121,19 @@ function clearSessionSilently() {
   // mesmo de estar ocupada (ver uiEstaOcupada). Sem isto, o pop-up de
   // login voltava a aparecer por cima do formulário de tempos a tempos,
   // mesmo com dados ainda por gravar.
-  if (uiEstaOcupada()) {
+  // AUDITORIA 2026-09-29: o adiamento tem limite (15 min) — um popup que se abre sozinho (ex: entregas atrasadas)
+  // num posto partilhado deixava a sessão aberta para sempre.
+  if (uiEstaOcupada() && (!adiamentoExpiracaoDesde || Date.now() - adiamentoExpiracaoDesde < 15 * 60 * 1000)) {
+    if (!adiamentoExpiracaoDesde) adiamentoExpiracaoDesde = Date.now();
     inactivityTimer = setTimeout(clearSessionSilently, 5000);
     return;
   }
+  adiamentoExpiracaoDesde = 0;
   // Antes de limpar a sessão, propaga o marcador de "última leitura" do
   // chat para a chave de convidado — a contagem de não lidas continua
   // correta no ecrã de "Retomar Sessão", sem recontar o que já foi visto.
   propagarChatLastReadParaConvidado();
+  utilizadorSessaoExpiradaId = activeUser.id;
   activeUser = null;
   activeUserPin = null;
   pontoLimparMemoria(); // 2026-09-25: as picagens de uma pessoa nunca ficam em memória depois de sair
