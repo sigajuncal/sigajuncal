@@ -3271,6 +3271,14 @@
   .sasu-topo{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin:0 0 8px;}
   .sasu-topo-direita{display:flex;align-items:center;gap:8px;flex-shrink:0;}
   .sasu-card .sasu-info-btn{position:static;}
+  /* Cadeado COVID do dia (Vacinação, 2026-09-29) */
+  .vac-cadeado-covid{display:inline-flex;align-items:center;gap:5px;flex-shrink:0;font:inherit;font-size:11px;font-weight:800;
+    letter-spacing:.02em;padding:3px 9px;border-radius:999px;border:1px solid var(--pharm-200);background:#fff;color:var(--pharm-500);cursor:pointer;
+    transition:background .15s ease,color .15s ease,border-color .15s ease;}
+  .vac-cadeado-covid:hover{border-color:var(--pharm-400);color:var(--pharm-800);}
+  .vac-cadeado-covid.ativo{background:#fef2f2;border-color:#fca5a5;color:#b91c1c;}
+  .vac-cadeado-covid.ativo:hover{background:#fee2e2;}
+  .vac-cadeado-covid[disabled]{opacity:.45;cursor:not-allowed;}
   .presenca-aviso{margin:0 0 12px;padding:10px 14px;border:1px solid #fdba74;background:#fff7ed;color:#9a3412;border-radius:12px;font-size:13px;line-height:1.45;}
   /* Vacinação: vaga com um colega a marcar neste momento (presença, 2026-09-29) */
   .agenda-slot-a-marcar{background:#fff7ed;}
@@ -48190,6 +48198,20 @@ function buildVacinacaoPage(container, goTo) {
       rerender();
       return;
     }
+    // Cadeado COVID do dia (2026-09-29): confirma primeiro no servidor o estado do dia (um colega pode tê-lo
+    // ativado há segundos noutro posto) — 1 linha, só quando a marcação leva COVID.
+    if (marcacaoDraft.covid && marcacaoDraft.data) {
+      marcacaoSaving = true; rerender();
+      await refrescarLinhasDoServidor('agendaDias',
+        q => q.eq('prestador_key', vacinacaoPrestadorKey()).eq('data', marcacaoDraft.data),
+        d => d.prestadorKey === vacinacaoPrestadorKey() && d.data === marcacaoDraft.data);
+      marcacaoSaving = false;
+    }
+    if (vacinacaoMarcacaoBloqueadaPorCovid(marcacaoDraft, marcacaoEditId)) {
+      marcacaoFormError = vacinacaoTextoCovidBloqueada(marcacaoDraft.data);
+      rerender();
+      return;
+    }
     // Verificação de elegibilidade por idade — só se aplica à CRIAÇÃO de
     // marcações diretas novas (nunca à edição de uma marcação já
     // existente): editar Observações, Estado ou Hora de uma marcação
@@ -48894,12 +48916,33 @@ function buildVacinacaoPage(container, goTo) {
     const quebraGripe = quebrasDoDia.reduce((s, q) => s + (Number(q.qtdGripe) || 0), 0);
     const quebraCovid = quebrasDoDia.reduce((s, q) => s + (Number(q.qtdCovid) || 0), 0);
     const faltamMultiplo = vacinacaoFaltamParaMultiploSeis(agendadasCovid);
-    function cartao(titulo, linhas) {
+    function cartao(titulo, linhas, extraTitulo) {
       return h('div', { class: 'card card-pad' }, [
-        h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;' }, titulo),
+        h('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 8px;' }, [
+          h('p', { class: 'field-helper-text', style: 'margin:0;font-weight:800;text-transform:uppercase;letter-spacing:.03em;' }, titulo),
+          extraTitulo || null,
+        ].filter(Boolean)),
         h('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;' }, linhas),
       ]);
     }
+    // Cadeado COVID do dia (ver vacinacaoCovidBloqueadoNoDia): clique ativa/desativa; o hover explica.
+    const covidFechada = vacinacaoCovidBloqueadoNoDia(dateISO);
+    const regDia = vacinacaoDiaAbertoRegisto(dateISO);
+    const cadeadoCovid = h('button', {
+      type: 'button',
+      class: 'vac-cadeado-covid' + (covidFechada ? ' ativo' : ''),
+      'aria-pressed': covidFechada ? 'true' : 'false',
+      'aria-label': covidFechada ? 'Desbloquear marcações COVID neste dia' : 'Bloquear novas marcações COVID neste dia',
+      disabled: regDia ? undefined : 'disabled',
+    }, [Icon(covidFechada ? 'lockClosed' : 'lockOpen', { size: 13, strokeWidth: 2.3 }), h('span', {}, covidFechada ? 'COVID fechada' : 'COVID')]);
+    const dicaCadeado = !regDia
+      ? 'Abre o dia para poderes bloquear as marcações COVID.'
+      : covidFechada
+        ? `COVID FECHADA neste dia${regDia.covidBloqueadoPor ? ` (por ${regDia.covidBloqueadoPor})` : ''}.\nNinguém consegue criar marcações com COVID neste dia — evita abrir frascos a mais e ter quebras.\nAs marcações COVID já feitas mantêm-se.\nClica para DESBLOQUEAR.`
+        : 'Bloquear novas marcações COVID neste dia.\nQuando os frascos já estão certos (ex: múltiplo de 6), ativa o cadeado: ninguém consegue marcar mais COVID neste dia até alguém desbloquear.\nA Gripe continua a poder ser marcada.\nClica para ATIVAR.';
+    cadeadoCovid.addEventListener('mouseenter', () => { try { mostrarTooltipFlutuante(cadeadoCovid, dicaCadeado); } catch (e) { cadeadoCovid.title = dicaCadeado; } });
+    cadeadoCovid.addEventListener('mouseleave', () => { try { esconderTooltipFlutuante(); } catch (e) { /* ignora */ } });
+    cadeadoCovid.addEventListener('click', (e) => { e.stopPropagation(); try { esconderTooltipFlutuante(); } catch (er) { /* ignora */ } requireAuth(() => alternarCovidBloqueadoNoDia(dateISO)); });
     const multiploCard = h('div', { class: 'card card-pad', style: faltamMultiplo === 0 ? 'background:#ecfdf5;border-color:#86efac;' : 'background:#fffbeb;border-color:#fde68a;' }, [
       h('p', { class: 'field-helper-text', style: 'margin:0 0 6px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;' }, 'Múltiplo de 6 — COVID'),
       h('p', { style: 'margin:0;font-size:13px;font-weight:600;' }, faltamMultiplo === 0
@@ -48909,8 +48952,8 @@ function buildVacinacaoPage(container, goTo) {
     return h('div', { style: 'display:flex;flex-direction:column;gap:14px;width:100%;' }, [
       cartao('Agendadas Neste Dia', [
         h('span', { class: 'badge badge-blue' }, `Gripe: ${agendadasGripe}`),
-        h('span', { class: 'badge badge-blue' }, `COVID: ${agendadasCovid}`),
-      ]),
+        h('span', { class: 'badge ' + (covidFechada ? 'badge-gray' : 'badge-blue'), title: covidFechada ? 'COVID fechada neste dia para novas marcações' : '' }, [covidFechada ? Icon('lockClosed', { size: 11, strokeWidth: 2.4 }) : null, ` COVID: ${agendadasCovid}`].filter(Boolean)),
+      ], cadeadoCovid),
       cartao('Administradas Neste Dia', [
         h('span', { class: 'badge badge-green' }, `Gripe: ${administradasGripe}`),
         h('span', { class: 'badge badge-green' }, `COVID: ${administradasCovid}`),
@@ -49146,6 +49189,7 @@ function buildVacinacaoPage(container, goTo) {
         ? `✅ COVID: ${marcadas} pessoa${marcadas > 1 ? 's' : ''} marcada${marcadas > 1 ? 's' : ''} — múltiplo exato de 6 (${marcadas / 6} frasco${marcadas / 6 > 1 ? 's' : ''}), sem desperdício previsto.`
         : `⚠️ COVID: ${marcadas} pessoa${marcadas > 1 ? 's' : ''} marcada${marcadas > 1 ? 's' : ''} — faltam ${faltam} para completar múltiplo de 6. Ajuste (marcar mais via Lista de Espera ou desmarcar) fica ao critério do Responsável pela Vacinação.`);
     }
+    if (vacinacaoCovidBloqueadoNoDia(dateISO)) blocos.push('🔒 COVID fechada neste dia — não se aceitam novas marcações COVID (desbloqueia no cadeado de «Agendadas neste dia»).');
     // (2026-09-28) Enquanto ainda há COVID por administrar nesse dia, o
     // frasco aberto ainda vai ser usado — antes aparecia logo "quebra
     // prevista" a meio do dia, o que não era verdade.
@@ -49264,6 +49308,45 @@ function buildVacinacaoPage(container, goTo) {
   }
   function vacinacaoDiaAbertoRegisto(dateISO) { return agendaDiaAbertoRegisto(vacinacaoPrestadorKey(), dateISO); }
   function vacinacaoDiaAberto(dateISO) { return agendaDiaAberto(vacinacaoPrestadorKey(), dateISO); }
+  // ---- Cadeado COVID por dia (2026-09-29, Hugo: "bloquear novas marcações de covid... para evitar marcar e depois
+  // ter de fazer quebras"): fica guardado no próprio registo do dia aberto (farmacia_agenda_dias.covid_bloqueado),
+  // por isso é igual em todos os postos (chega pelo Realtime). Ativo → impossível criar marcações com COVID nesse
+  // dia (nem acrescentar COVID a uma marcação, nem mudar para lá uma marcação com COVID) até alguém o desativar.
+  // Começa sempre desativado.
+  function vacinacaoCovidBloqueadoNoDia(dateISO) {
+    const reg = dateISO ? vacinacaoDiaAbertoRegisto(dateISO) : null;
+    return !!(reg && reg.covidBloqueado);
+  }
+  // A marcação (draft) ficaria a acrescentar uma COVID a um dia com o cadeado ativo?
+  function vacinacaoMarcacaoBloqueadaPorCovid(draft, editId) {
+    if (!draft || !draft.covid || !draft.data || !vacinacaoCovidBloqueadoNoDia(draft.data)) return false;
+    if (editId) {
+      const original = STATE.vacinacaoMarcacoes.find(m => m.id === editId);
+      // Já era COVID nesse mesmo dia (ex: corrigir o contacto) → não acrescenta nada, deixa gravar.
+      if (original && original.covid && original.data === draft.data && original.estado !== 'Cancelada') return false;
+    }
+    return true;
+  }
+  function vacinacaoTextoCovidBloqueada(dateISO) {
+    const reg = vacinacaoDiaAbertoRegisto(dateISO);
+    const quem = reg && reg.covidBloqueadoPor ? ` por ${reg.covidBloqueadoPor}` : '';
+    return `🔒 COVID fechada neste dia${quem} — já não se aceitam novas marcações com a vacina COVID em ${formatDate(dateISO)} (evita abrir frascos que depois dão quebra). Marca a COVID noutro dia, marca só a Gripe, ou desbloqueia o cadeado em «Agendadas neste dia».`;
+  }
+  async function alternarCovidBloqueadoNoDia(dateISO) {
+    const reg = vacinacaoDiaAbertoRegisto(dateISO);
+    if (!reg) { showToast('Abre primeiro o dia para poderes bloquear a COVID.', 'error'); return; }
+    const novo = !reg.covidBloqueado;
+    const updated = await dbUpdate('agendaDias', reg.id, { covidBloqueado: novo, covidBloqueadoPor: novo ? currentUserName() : '' });
+    if (!updated) { showDbErrorToast('Não foi possível alterar o bloqueio da COVID'); return; }
+    if (!!updated.covidBloqueado !== novo) {
+      // A coluna ainda não existe no Supabase (a gravação "limpa" colunas desconhecidas) — nada ficou guardado.
+      showToast('Falta preparar a base de dados para este cadeado (ficheiro sigajuncal_vacinacao_covid_cadeado.sql). Nada foi alterado.', 'error');
+      return;
+    }
+    STATE.agendaDias = STATE.agendaDias.map(d => d.id === updated.id ? updated : d);
+    showToast(novo ? `COVID bloqueada em ${formatDate(dateISO)} — já não se aceitam novas marcações COVID neste dia.` : `COVID desbloqueada em ${formatDate(dateISO)} — voltam a aceitar-se marcações COVID.`, 'success');
+    rerender();
+  }
   // true quando a marcação (nova, ou editada PARA outro dia) cai num dia
   // ainda por abrir. Editar uma marcação sem lhe mudar o dia nunca fica
   // bloqueado (ex: dia entretanto fechado, marcações antigas).
@@ -49588,6 +49671,7 @@ function buildVacinacaoPage(container, goTo) {
     }
     if (canceladas) linhas.push(`Canceladas: ${canceladas}`);
     if (bloqueadas) linhas.push(`Vagas bloqueadas: ${bloqueadas}`);
+    if (vacinacaoCovidBloqueadoNoDia(dateISO)) linhas.push('COVID fechada: sem novas marcações COVID');
     try {
       const nomes = [...new Set(responsaveisNoDia(dateISO).map(r => String(r.nome || '').trim()).filter(Boolean))];
       if (nomes.length) linhas.push(`Responsáve${nomes.length === 1 ? 'l' : 'is'}: ${nomes.join(', ')}`);
@@ -49719,6 +49803,9 @@ function buildVacinacaoPage(container, goTo) {
         if (f.name === 'dataNascimento') return Object.assign({}, f, { onChange: agendarRerenderDataNascimento, helperText: avisoElegibilidadeMarcacao || undefined, helperTone: toneElegibilidadeMarcacao || undefined });
         if (f.name === 'data' && vacinacaoMarcacaoBloqueadaPorDiaFechado(marcacaoDraft, marcacaoEditId)) {
           return Object.assign({}, f, { onChange: () => rerender(), helperText: '🔒 Dia por abrir — não é possível marcar. Abre o dia na Agenda («Abrir Dia») ou escolhe um dia já aberto.', helperTone: 'orange' });
+        }
+        if (f.name === 'covid' && vacinacaoCovidBloqueadoNoDia(marcacaoDraft.data)) {
+          return Object.assign({}, f, { onChange: () => rerender(), helperText: vacinacaoMarcacaoBloqueadaPorCovid(marcacaoDraft, marcacaoEditId) ? '🔒 COVID fechada neste dia — não é possível gravar com COVID.' : '🔒 COVID fechada neste dia para novas marcações.', helperTone: 'orange' });
         }
         if (f.name === 'data' || f.name === 'gripe' || f.name === 'covid' || f.name === 'colaboradorFarmacia') return Object.assign({}, f, { onChange: () => rerender() });
         return f;
