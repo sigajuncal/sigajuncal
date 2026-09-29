@@ -3271,6 +3271,12 @@
   .sasu-topo{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin:0 0 8px;}
   .sasu-topo-direita{display:flex;align-items:center;gap:8px;flex-shrink:0;}
   .sasu-card .sasu-info-btn{position:static;}
+  .presenca-aviso{margin:0 0 12px;padding:10px 14px;border:1px solid #fdba74;background:#fff7ed;color:#9a3412;border-radius:12px;font-size:13px;line-height:1.45;}
+  /* Vacinação: vaga com um colega a marcar neste momento (presença, 2026-09-29) */
+  .agenda-slot-a-marcar{background:#fff7ed;}
+  .agenda-slot-a-marcar-label{color:#c2410c;font-weight:700;font-style:italic;animation:vacAMarcar 1.6s ease-in-out infinite;}
+  @keyframes vacAMarcar{0%,100%{opacity:1;}50%{opacity:.55;}}
+  @media (prefers-reduced-motion: reduce){.agenda-slot-a-marcar-label{animation:none;}}
   .sasu-estado{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:800;white-space:nowrap;
     background:#fff;border:1px solid #bae6fd;border-radius:99px;padding:3px 10px 3px 8px;cursor:default;}
   .sasu-estado-ponto{width:7px;height:7px;border-radius:50%;flex-shrink:0;position:relative;}
@@ -7446,8 +7452,12 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     bookBtn.addEventListener('click', () => requireAuth(() => openEditarMarcacao(m)));
     const removeBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Remover esta vaga', 'aria-label': 'Remover esta vaga' }, Icon('trash', { size: 12, strokeWidth: 2.2 }));
     removeBtn.addEventListener('click', () => requireAuth(() => removerVagaLivreAgenda(m)));
-    return h('div', { class: 'agenda-slot-row agenda-slot-livre agenda-vaga-futura' + (ehEncaixe ? ' agenda-slot-encaixe' : '') }, [
-      h('span', { class: 'agenda-slot-hora' }, hora + (ehEncaixe ? ' · Encaixe' : '')), h('span', { class: 'agenda-slot-label cell-muted' }, 'Vaga livre'),
+    const aMarcar = presencaMarcacaoNaVaga('agenda', prestadorKey, dateISO, hora);
+    return h('div', { class: 'agenda-slot-row agenda-slot-livre agenda-vaga-futura' + (ehEncaixe ? ' agenda-slot-encaixe' : '') + (aMarcar.length ? ' agenda-slot-a-marcar' : '') }, [
+      h('span', { class: 'agenda-slot-hora' }, hora + (ehEncaixe ? ' · Encaixe' : '')),
+      aMarcar.length
+        ? h('span', { class: 'agenda-slot-label agenda-slot-a-marcar-label' }, `${presencaNomes(aMarcar)} a marcar…`)
+        : h('span', { class: 'agenda-slot-label cell-muted' }, 'Vaga livre'),
       h('div', { class: 'row-actions' }, [bookBtn, removeBtn]),
     ]);
   }
@@ -7735,11 +7745,25 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     if (onSaved) onSaved(); // calendário por trás (cores do dia) também fica certo
     return 'feito';
   });
+  // Presença "a marcar" (2026-09-29): quem tem o formulário aberto anuncia a vaga; os colegas veem "Nome a
+  // marcar…" nessa vaga e um aviso se abrirem a mesma. Ao abrir o dia relê-se do servidor só esta agenda/dia.
+  const avisoPresencaAgenda = presencaAvisoEl();
+  const horaFormAgenda = () => (formDraft && formDraft.hora && horaFormatoValido(normalizarHora(formDraft.hora)) ? normalizarHora(formDraft.hora) : '');
+  const presencaDesteDia = (o) => o.m === 'agenda' && o.a === String(prestadorKey) && o.d === dateISO;
+  presencaAtivaNoModal(() => overlay.isConnected,
+    () => (showForm && !isPast ? { m: 'agenda', a: prestadorKey, d: dateISO, h: horaFormAgenda(), e: !!formDraft.editId } : null),
+    (mudouPresenca, anteriores) => {
+      const hf = horaFormAgenda();
+      presencaPreencherAviso(avisoPresencaAgenda, showForm && hf ? presencaMarcacaoNaVaga('agenda', prestadorKey, dateISO, hf).filter(o => o.h) : [], `esta mesma vaga (${hf})`);
+      if (mudouPresenca && [...(anteriores || []), ...PRESENCA_MARCACOES.outros].some(presencaDesteDia)
+        && !showForm && !saving && !perguntandoMotivo && modalLivreParaRedesenhar(overlay)) render();
+    });
+  agendaRelerDiaDoServidor(prestadorKey, dateISO, false);
   function renderInternoAgendaDia() {
     renderHeaderAcoes();
     clear(bodyEl);
     clear(footerEl);
-    if (showForm) { bodyEl.appendChild(buildForm()); sincronizarBarraSelecao(); return; }
+    if (showForm) { bodyEl.appendChild(avisoPresencaAgenda); bodyEl.appendChild(buildForm()); sincronizarBarraSelecao(); return; }
     sincronizarBarraSelecao();
 
     const marcacoes = marcacoesDoDia();
@@ -7770,9 +7794,12 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
         } else {
           const blockBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Bloquear vaga', 'aria-label': 'Bloquear vaga' }, Icon('lockClosed', { size: 12, strokeWidth: 2.2 }));
           blockBtn.addEventListener('click', () => requireAuth(() => bloquearVaga(hora)));
-          node = h('div', { class: 'agenda-slot-row agenda-slot-livre agenda-vaga-futura' }, [
+          const aMarcar = presencaMarcacaoNaVaga('agenda', prestadorKey, dateISO, hora);
+          node = h('div', { class: 'agenda-slot-row agenda-slot-livre agenda-vaga-futura' + (aMarcar.length ? ' agenda-slot-a-marcar' : '') }, [
             h('span', { class: 'agenda-slot-hora' }, hora),
-            h('span', { class: 'agenda-slot-label cell-muted' }, 'Vaga livre'),
+            aMarcar.length
+              ? h('span', { class: 'agenda-slot-label agenda-slot-a-marcar-label', title: 'Um colega tem o formulário desta vaga aberto neste momento' }, `${presencaNomes(aMarcar)} a marcar…`)
+              : h('span', { class: 'agenda-slot-label cell-muted' }, 'Vaga livre'),
             h('div', { class: 'row-actions' }, [bookBtn, blockBtn]),
           ]);
         }
@@ -26125,6 +26152,27 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
         });
     overlay.appendChild(barraSelecaoEl);
   }
+  // Presença "a marcar" (2026-09-29) — mesma proteção da Vacinação/Agendas: a vaga do formulário aberto é
+  // anunciada (evento + grupo + hora); os colegas veem "Nome a marcar…" e um aviso se abrirem a mesma vaga.
+  // Quando um colega sai de uma vaga deste dia, relêem-se as vagas (o Realtime do dia pode ter falhado).
+  const avisoPresencaEvento = presencaAvisoEl();
+  const horaFormEvento = () => {
+    if (!showForm) return '';
+    const hf = showForm.encaixe || showForm.editar ? normalizarHora(formDraft.hora || '') : showForm.hora;
+    return hf && horaFormatoValido(hf) ? hf : '';
+  };
+  const ambitoEvento = (grupo) => `${currentEvento ? currentEvento.id : ''}:${grupo || 'principal'}`;
+  presencaAtivaNoModal(() => overlay.isConnected,
+    () => (showForm && currentEvento && !isPast ? { m: 'evento', a: ambitoEvento(showForm.grupo), d: dateISO, h: horaFormEvento(), e: !!showForm.editar } : null),
+    (mudouPresenca, anteriores) => {
+      const hf = horaFormEvento();
+      presencaPreencherAviso(avisoPresencaEvento, showForm && currentEvento && hf ? presencaMarcacaoNaVaga('evento', ambitoEvento(showForm.grupo), dateISO, hf).filter(o => o.h) : [], `esta mesma vaga (${hf})`);
+      if (!mudouPresenca || !currentEvento) return;
+      const doEvento = (o) => o.m === 'evento' && String(o.a).split(':')[0] === String(currentEvento.id);
+      const saiu = (anteriores || []).filter(doEvento).some(x => !PRESENCA_MARCACOES.outros.some(o => o.k === x.k && o.a === x.a && o.h === x.h));
+      if (saiu) setTimeout(async () => { if (!overlay.isConnected) return; await releMarcacoesDoServidor(); agendarRedesenhoTempoRealEvento(40); }, 1500);
+      else if ([...(anteriores || []), ...PRESENCA_MARCACOES.outros].some(doEvento)) agendarRedesenhoTempoRealEvento(40);
+    });
   function abrirNovaMarcacao(grupo, hora, vagaExistente) {
     formDraft = { nomeCliente: '', nFicha: '', contacto: '', observacoes: '', aviso: false };
     formError = ''; showForm = { grupo, hora, encaixe: false, vagaId: vagaExistente ? vagaExistente.id : null }; render();
@@ -26640,8 +26688,12 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
         blockBtn.addEventListener('click', () => requireAuth(() => bloquearVaga(grupo, hora, m)));
         acoes.push(blockBtn);
       }
-      return h('div', { class: 'agenda-slot-row agenda-slot-livre agenda-vaga-futura' + classeExtra }, [
-        h('span', { class: 'agenda-slot-hora' }, hora + sufixo), h('span', { class: 'agenda-slot-label cell-muted' }, 'Vaga livre'),
+      const aMarcar = currentEvento ? presencaMarcacaoNaVaga('evento', ambitoEvento(grupo), dateISO, hora) : [];
+      return h('div', { class: 'agenda-slot-row agenda-slot-livre agenda-vaga-futura' + classeExtra + (aMarcar.length ? ' agenda-slot-a-marcar' : '') }, [
+        h('span', { class: 'agenda-slot-hora' }, hora + sufixo),
+        aMarcar.length
+          ? h('span', { class: 'agenda-slot-label agenda-slot-a-marcar-label', title: 'Um colega tem o formulário desta vaga aberto neste momento' }, `${presencaNomes(aMarcar)} a marcar…`)
+          : h('span', { class: 'agenda-slot-label cell-muted' }, 'Vaga livre'),
         h('div', { class: 'row-actions' }, acoes),
       ]);
     }
@@ -26766,7 +26818,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       return;
     }
     if (loadingMarc) { bodyEl.appendChild(EmptyState('A carregar vagas…')); return; }
-    if (showForm) { bodyEl.appendChild(buildBookingForm()); return; }
+    if (showForm) { bodyEl.appendChild(avisoPresencaEvento); bodyEl.appendChild(buildBookingForm()); return; }
 
     const infoLinhas = [];
     if (currentEvento.tipoEvento === 'Rastreio') infoLinhas.push(`Tipo: ${currentEvento.subtipoRastreio || '—'}`);
@@ -47022,6 +47074,7 @@ function buildSegurancaPage(container, goTo) {
 /* =================================================================
    MAPA 48H (agendamento do aparelho único)
 ================================================================= */
+let mapa48hPresencaGeracao = 0; // só a instância mais recente da página anuncia/ouve a presença
 function buildMapa48hPage(container, goTo) {
   let activeTab = 'pendentes'; // 'pendentes' | 'historico'
   let searchQuery = '';
@@ -47030,6 +47083,32 @@ function buildMapa48hPage(container, goTo) {
 
   function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
   function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
+
+  // Presença (2026-09-29, mesma proteção das restantes marcações): quem tem o formulário aberto anuncia a Data de
+  // Início; como o aparelho é único (72h entre exames), avisa-se quem estiver a registar um exame a menos de 3 dias
+  // dessa data. Quando o colega fecha o formulário, relêem-se os registos à volta de hoje e a lista atualiza-se.
+  const avisoPresencaMapa = presencaAvisoEl();
+  const diasEntreISO = (a, b) => Math.round((new Date(a + 'T12:00:00') - new Date(b + 'T12:00:00')) / 86400000);
+  const minhaGeracaoPresenca = ++mapa48hPresencaGeracao;
+  presencaAtivaNoModal(() => minhaGeracaoPresenca === mapa48hPresencaGeracao && container.isConnected && STATE.page === 'mapa48h',
+    () => (showForm && draft && draft.dataInicio ? { m: 'mapa48h', a: 'aparelho', d: draft.dataInicio, h: '', e: !!editingId } : null),
+    (mudouPresenca, anteriores) => {
+      const outros = showForm && draft && draft.dataInicio
+        ? PRESENCA_MARCACOES.outros.filter(o => o.m === 'mapa48h' && Math.abs(diasEntreISO(o.d, draft.dataInicio)) < MAPA48H_INTERVALO_DIAS)
+        : [];
+      presencaPreencherAviso(avisoPresencaMapa, outros, `um exame MAPA 48H com início a ${outros.length ? formatDate(outros[0].d) : ''} (o aparelho é único)`,
+        'Combina com o colega antes de gravar — se ambos gravarem datas a menos de 3 dias, só o primeiro registo fica.');
+      if (!mudouPresenca) return;
+      const saiu = (anteriores || []).some(x => x.m === 'mapa48h' && !PRESENCA_MARCACOES.outros.some(o => o.k === x.k && o.m === 'mapa48h'));
+      if (!saiu) return;
+      setTimeout(async () => {
+        if (!container.isConnected || STATE.page !== 'mapa48h') return;
+        const de = new Date(); de.setDate(de.getDate() - 7);
+        const deISO = dateToISO(de);
+        const ok = await refrescarLinhasDoServidor('mapa48h', q => q.gte('data_inicio', deISO), r => r.dataInicio && r.dataInicio >= deISO && !String(r.id).startsWith('local-'));
+        if (ok && !showForm && !saving && !uiEstaOcupada()) rerender();
+      }, 1500);
+    });
 
   function openNew(prefill) {
     prefill = prefill || {};
@@ -47283,6 +47362,7 @@ function buildMapa48hPage(container, goTo) {
     wrap.appendChild(withBackButton(buildPageHeader('heartPulseClock', 'Mapa 48H', 'Agendamento do aparelho MAPA — aparelho único da farmácia.', STATE.mapa48h.length), goTo, showForm ? cancel : undefined));
 
     if (showForm) {
+      wrap.appendChild(avisoPresencaMapa);
       // buildRecordFormEstreito (2026-08-17, pedido explícito — "mapa
       // desalinhado com o restante da app"): formulário curto (9 campos,
       // maioria xs/sm) usava buildRecordForm simples (sem limite de
@@ -47567,6 +47647,150 @@ async function vacinacaoMarcacoesNoServidor(campanhaId, dataISO, hora, excluirId
     return (data || []).filter(r => String(r.id) !== String(excluirId || ''));
   } catch (e) { console.warn('[Vacinação] verificação de vaga no servidor falhou:', formatarErroSeguro(e)); return null; }
 }
+// ---- Vacinação: "quem está a marcar agora" + releitura do dia (2026-09-29) ----
+// Relato da Lúcia: dois colegas a marcar ao mesmo tempo em postos diferentes — um só descobria no fim (erro ao
+// gravar) e a marcação do colega não aparecia no ecrã até fechar e abrir a app. Três camadas, todas leves:
+//  (1) PRESENÇA: quem tem o formulário de marcação aberto anuncia só {nome, dia, hora} num canal de presença do
+//      Realtime (mensagens minúsculas, nada vem da base de dados). Os outros postos veem "Ana a marcar…" nessa
+//      vaga e, se abrirem a mesma, um aviso logo no formulário — antes de preencher tudo.
+//  (2) RELEITURA DO DIA: ao abrir um dia da agenda ou o formulário, e quando um colega sai de uma vaga (acabou
+//      de gravar ou desistiu), relê-se do servidor SÓ as marcações desse dia (dezenas de linhas, poucos KB) —
+//      o ecrã fica certo mesmo que o Realtime da tabela falhe.
+//  (3) As verificações no servidor antes/depois de gravar (acima) continuam a ser a garantia final.
+// Presença partilhada por TODAS as marcações da app (Vacinação, Agendas de serviços, Eventos/AFA, Mapa 48h —
+// 2026-09-29, Hugo: "garantir a mesma proteção nas restantes marcações"). Cada posto anuncia no máximo UMA vaga de
+// cada vez: { k: id do separador, n: primeiro nome, m: módulo, a: âmbito (campanha / agenda / evento), d: dia, h: hora }.
+const PRESENCA_MARCACOES = { id: Math.random().toString(36).slice(2, 10), canal: null, pronto: false, meu: null, outros: [], ouvintes: new Set(), releitura: {} };
+const VAC_PRESENCA = PRESENCA_MARCACOES; // nome antigo (Vacinação)
+const VAC_DIA_RELIDO_EM = new Map();
+const VAC_DIA_RELEITURA_TIMERS = new Map();
+async function vacinacaoRelerDiaDoServidor(campanhaId, dataISO, forcar) {
+  if (!sb || !campanhaId || !dataISO) return false;
+  const chave = `${campanhaId}|${dataISO}`;
+  if (!forcar && Date.now() - (VAC_DIA_RELIDO_EM.get(chave) || 0) < 20000) return false; // no máximo 1 releitura por dia a cada 20 s
+  VAC_DIA_RELIDO_EM.set(chave, Date.now());
+  const antes = JSON.stringify(STATE.vacinacaoMarcacoes.filter(m => String(m.campanhaId) === String(campanhaId) && m.data === dataISO).map(m => [m.id, m.updatedAt, m.estado, m.hora]).sort());
+  const ok = await refrescarLinhasDoServidor('vacinacaoMarcacoes',
+    (q) => q.eq('campanha_id', campanhaId).eq('data', dataISO),
+    (r) => String(r.campanhaId) === String(campanhaId) && r.data === dataISO && !String(r.id).startsWith('local-'));
+  if (!ok) return false;
+  const depois = JSON.stringify(STATE.vacinacaoMarcacoes.filter(m => String(m.campanhaId) === String(campanhaId) && m.data === dataISO).map(m => [m.id, m.updatedAt, m.estado, m.hora]).sort());
+  if (antes !== depois) { STATE.ultimaAtualizacaoEm = new Date().toISOString(); notificarAtualizadoresAoVivo('vacinacaoMarcacoes'); return true; }
+  return false;
+}
+function vacinacaoAgendarReleituraDia(campanhaId, dataISO, ms) {
+  const chave = `${campanhaId}|${dataISO}`;
+  clearTimeout(VAC_DIA_RELEITURA_TIMERS.get(chave));
+  VAC_DIA_RELEITURA_TIMERS.set(chave, setTimeout(() => { VAC_DIA_RELEITURA_TIMERS.delete(chave); vacinacaoRelerDiaDoServidor(campanhaId, dataISO, true); }, ms));
+}
+// Agendas de serviços: relê do servidor só as marcações de UMA agenda num dia (poucas linhas).
+const AGENDA_DIA_RELIDO_EM = new Map();
+async function agendaRelerDiaDoServidor(prestadorKey, dataISO, forcar) {
+  if (!sb || !prestadorKey || !dataISO) return false;
+  const chave = `${prestadorKey}|${dataISO}`;
+  if (!forcar && Date.now() - (AGENDA_DIA_RELIDO_EM.get(chave) || 0) < 20000) return false;
+  AGENDA_DIA_RELIDO_EM.set(chave, Date.now());
+  const assinar = () => JSON.stringify((STATE.agendaMarcacoes || []).filter(m => m.prestadorKey === prestadorKey && m.data === dataISO).map(m => [m.id, m.updatedAt, m.estado, m.hora]).sort());
+  const antes = assinar();
+  const ok = await refrescarLinhasDoServidor('agendaMarcacoes',
+    q => q.eq('prestador_key', prestadorKey).eq('data', dataISO),
+    m => m.prestadorKey === prestadorKey && m.data === dataISO && !String(m.id).startsWith('local-'));
+  if (ok && antes !== assinar()) { STATE.ultimaAtualizacaoEm = new Date().toISOString(); notificarAtualizadoresAoVivo('agendaMarcacoes'); return true; }
+  return false;
+}
+PRESENCA_MARCACOES.releitura.vac = (a, d) => vacinacaoAgendarReleituraDia(a, d, 1500);
+PRESENCA_MARCACOES.releitura.agenda = (a, d) => setTimeout(() => agendaRelerDiaDoServidor(a, d, true), 1500);
+function presencaMarcacoesLigar() {
+  const P = PRESENCA_MARCACOES;
+  if (!sb || P.canal || typeof sb.channel !== 'function') return;
+  try {
+    const canal = sb.channel('marcacoes-a-preencher', { config: { presence: { key: P.id } } });
+    if (typeof canal.presenceState !== 'function' || typeof canal.track !== 'function') return;
+    canal.on('presence', { event: 'sync' }, () => {
+      const estado = canal.presenceState() || {};
+      const anteriores = P.outros;
+      P.outros = Object.entries(estado).filter(([k]) => k !== P.id)
+        .flatMap(([, metas]) => (Array.isArray(metas) ? metas : [])).filter(o => o && o.m && o.a && o.d);
+      // Colega que deixou uma vaga (gravou ou desistiu) → relê esse dia daqui a pouco (a gravação já terminou).
+      anteriores.filter(x => !P.outros.some(o => o.k === x.k && o.m === x.m && o.a === x.a && o.d === x.d && o.h === x.h))
+        .forEach(x => { const fn = P.releitura[x.m]; if (fn) { try { fn(x.a, x.d); } catch (e) { /* ignora */ } } });
+      P.ouvintes.forEach(fn => { try { fn(anteriores); } catch (e) { /* ignora */ } });
+    });
+    canal.subscribe((estado) => {
+      P.pronto = estado === 'SUBSCRIBED';
+      if (P.pronto && P.meu) Promise.resolve(canal.track(P.meu)).catch(() => {});
+    });
+    P.canal = canal;
+  } catch (e) { P.canal = null; console.warn('[Marcações] presença indisponível:', formatarErroSeguro(e)); }
+}
+// info = { m: módulo, a: âmbito, d: 'YYYY-MM-DD', h: 'HH:MM' (opcional), e: é edição } — null deixa de anunciar.
+function presencaMarcacaoAnunciar(info) {
+  const P = PRESENCA_MARCACOES;
+  const nome = activeUser ? (String(activeUser.nomeCompleto || activeUser.username || '').trim().split(/\s+/)[0] || 'Um colega') : 'Um colega';
+  const novo = info && info.m && info.a && info.d ? { k: P.id, n: nome, m: info.m, a: String(info.a), d: info.d, h: info.h || '', e: info.e ? 1 : 0 } : null;
+  if (JSON.stringify(novo) === JSON.stringify(P.meu)) return;
+  P.meu = novo;
+  if (novo) presencaMarcacoesLigar();
+  const canal = P.canal;
+  if (!canal || !P.pronto) return;
+  try { Promise.resolve(novo ? canal.track(novo) : canal.untrack()).catch(() => {}); } catch (e) { /* ignora */ }
+}
+function presencaMarcacaoNaVaga(modulo, ambito, dataISO, hora) {
+  return PRESENCA_MARCACOES.outros.filter(o => o.m === modulo && o.a === String(ambito) && o.d === dataISO && (!hora || o.h === hora));
+}
+function presencaNomes(lista) { return [...new Set(lista.map(o => o.n))].join(' e '); }
+// Aviso para o topo de um formulário: preenche/esconde `el` conforme há colegas na mesma vaga.
+function presencaPreencherAviso(el, outros, textoVaga, sufixo) {
+  const assinatura = outros.map(o => o.k + o.h).join('|');
+  if (el.dataset.assinatura === assinatura) return;
+  el.dataset.assinatura = assinatura;
+  el.textContent = '';
+  el.style.display = outros.length ? '' : 'none';
+  if (!outros.length) return;
+  el.appendChild(h('strong', {}, `${presencaNomes(outros)} ${new Set(outros.map(o => o.n)).size > 1 ? 'estão' : 'está'} neste momento a marcar ${textoVaga}.`));
+  el.appendChild(h('span', {}, ' ' + (sufixo || 'Combina com o colega ou escolhe outra hora — se ambos gravarem, só a primeira marcação fica.')));
+}
+function presencaAvisoEl() {
+  return h('div', { class: 'presenca-aviso', role: 'status', style: 'display:none;' });
+}
+// Compatibilidade com a Vacinação (nomes originais).
+function vacPresencaLigar() { presencaMarcacoesLigar(); }
+function vacPresencaAnunciar(info) {
+  presencaMarcacaoAnunciar(info && info.c ? { m: 'vac', a: info.c, d: info.d, h: info.h, e: info.e } : null);
+}
+function vacPresencaNaVaga(campanhaId, dataISO, hora) { return presencaMarcacaoNaVaga('vac', campanhaId, dataISO, hora); }
+// Chamado por render(): ao sair de uma página com marcações deixa logo de anunciar a vaga (os modais de dia
+// — Agendas/Eventos — deixam de anunciar ao fechar, ver presencaAtivaNoModal).
+function vacPresencaSairSeForaDaPagina() {
+  try {
+    const P = PRESENCA_MARCACOES;
+    if (!P.meu) return;
+    if (P.meu.m === 'vac' && STATE.page !== 'vacinacao') presencaMarcacaoAnunciar(null);
+    if (P.meu.m === 'mapa48h' && STATE.page !== 'mapa48h') presencaMarcacaoAnunciar(null);
+  } catch (e) { /* ainda não inicializado */ }
+}
+// Liga um modal/página à presença: `obterVaga()` devolve a vaga do formulário aberto (ou null); a cada 1,5 s
+// anuncia-a (só envia quando muda) e chama `aoMudar()` para atualizar avisos. Pára sozinho quando `vivo()` é falso.
+function presencaAtivaNoModal(vivo, obterVaga, aoMudar) {
+  presencaMarcacoesLigar();
+  let meu = false;
+  const passo = () => {
+    if (!vivo()) {
+      clearInterval(timer); PRESENCA_MARCACOES.ouvintes.delete(ouvinte);
+      if (meu) presencaMarcacaoAnunciar(null);
+      return;
+    }
+    const vaga = obterVaga();
+    meu = !!vaga;
+    if (vaga) presencaMarcacaoAnunciar(vaga);
+    else if (PRESENCA_MARCACOES.meu && ['agenda', 'evento'].includes(PRESENCA_MARCACOES.meu.m)) presencaMarcacaoAnunciar(null);
+    if (aoMudar) aoMudar(false);
+  };
+  const ouvinte = (anteriores) => { if (vivo() && aoMudar) aoMudar(true, anteriores); };
+  PRESENCA_MARCACOES.ouvintes.add(ouvinte);
+  const timer = setInterval(passo, 1500);
+  return passo;
+}
 // 2026-09-29 (Hugo: "uma pessoa não se pode vacinar duas vezes na mesma campanha para a mesma vacina"): antes de
 // gravar, lê do SERVIDOR as marcações desta campanha da mesma pessoa (pelo Nº de Utente ou pelo contacto) — apanha
 // também o que um colega gravou há segundos noutro posto. Devolve null se não foi possível verificar.
@@ -47681,6 +47905,8 @@ function vacinacaoTextoVacinasRepetidas(repetidas) {
 // (2) Atualização ao vivo — ver registarAtualizadorAoVivo (mecanismo
 // partilhado por todas as agendas, 2026-09-28).
 let vacinacaoAtualizadorAoVivo = null; // registo ativo da página de Vacinação
+let vacinacaoOuvintePresenca = null; // ouvinte ativo da presença "a marcar" (ver VAC_PRESENCA)
+let vacinacaoPresencaTimer = null;
 function buildVacinacaoPage(container, goTo) {
   // A campanha da temporada corrente já nasce escolhida automaticamente —
   // nunca é preciso passar pelo ecrã de escolha só para lá chegar (ver
@@ -47769,6 +47995,41 @@ function buildVacinacaoPage(container, goTo) {
       rerender();
       return 'feito';
     });
+  // Presença "a marcar" (2026-09-29, ver VAC_PRESENCA): liga o canal, anuncia a vaga do formulário aberto (verificado
+  // a cada 1,5 s — só envia algo quando a vaga muda) e atualiza os avisos quando um colega entra/sai de uma vaga.
+  vacPresencaLigar();
+  if (vacinacaoOuvintePresenca) VAC_PRESENCA.ouvintes.delete(vacinacaoOuvintePresenca);
+  vacinacaoOuvintePresenca = () => {
+    if (!container.isConnected || STATE.page !== 'vacinacao') return;
+    const avisoEl = container.querySelector('.vac-presenca-aviso');
+    if (avisoEl) preencherAvisoPresencaMarcacao(avisoEl);
+    if (showCampanhaForm || showMarcacaoForm || showEncomendaForm || showQuebraForm || showEsperaForm || showResponsavelForm) return;
+    if (agendaDiaSelecionado && activeSubTab === 'agenda' && !uiEstaOcupada()) rerender();
+  };
+  VAC_PRESENCA.ouvintes.add(vacinacaoOuvintePresenca);
+  function anunciarVagaAtual() {
+    if (showMarcacaoForm && marcacaoDraft && campanhaId) vacPresencaAnunciar({ c: campanhaId, d: marcacaoDraft.data, h: marcacaoDraft.hora, e: !!marcacaoEditId });
+    else vacPresencaAnunciar(null);
+  }
+  clearInterval(vacinacaoPresencaTimer);
+  vacinacaoPresencaTimer = setInterval(() => {
+    if (!container.isConnected || STATE.page !== 'vacinacao') { clearInterval(vacinacaoPresencaTimer); vacPresencaAnunciar(null); return; }
+    anunciarVagaAtual();
+    const avisoEl = container.querySelector('.vac-presenca-aviso');
+    if (avisoEl) preencherAvisoPresencaMarcacao(avisoEl);
+  }, 1500);
+  function preencherAvisoPresencaMarcacao(el) {
+    const outros = showMarcacaoForm && marcacaoDraft ? vacPresencaNaVaga(campanhaId, marcacaoDraft.data, marcacaoDraft.hora) : [];
+    const assinatura = outros.map(o => o.n + o.h).join('|');
+    if (el.dataset.assinatura === assinatura) return;
+    el.dataset.assinatura = assinatura;
+    el.textContent = '';
+    el.style.display = outros.length ? '' : 'none';
+    if (!outros.length) return;
+    const nomes = [...new Set(outros.map(o => o.n))].join(' e ');
+    el.appendChild(h('strong', {}, `${nomes} ${outros.length > 1 ? 'estão' : 'está'} neste momento a marcar esta mesma vaga (${marcacaoDraft.hora}).`));
+    el.appendChild(h('span', {}, ' Combina com o colega ou escolhe outra hora — se ambos gravarem, só a primeira marcação fica.'));
+  }
   // A campanha ATUALMENTE em vigor (hoje dentro de dataInicio-dataFim)
   // fica sempre em primeiro lugar, qualquer que seja a data — as
   // restantes (passadas ou futuras já semeadas) seguem-se por ordem
@@ -47861,9 +48122,11 @@ function buildVacinacaoPage(container, goTo) {
   function openNewMarcacao(prefill) {
     marcacaoDraft = Object.assign(marcacaoVazia(), prefill || {});
     marcacaoEditId = null; marcacaoOrigemEsperaId = null; marcacaoFormError = ''; showMarcacaoForm = true; showEsperaPicker = false; rerender(); // AUDITORIA 2026-09-29: nunca herda a origem da marcação anterior
+    anunciarVagaAtual();
+    if (marcacaoDraft.data) vacinacaoRelerDiaDoServidor(campanhaId, marcacaoDraft.data, false);
   }
   function openEditMarcacao(m) { marcacaoDraft = Object.assign({}, m); marcacaoEditId = m.id; marcacaoOrigemEsperaId = null; marcacaoFormError = ''; showMarcacaoForm = true; showEsperaPicker = false; rerender(); }
-  function cancelMarcacaoForm() { showMarcacaoForm = false; marcacaoFormError = ''; marcacaoOrigemEsperaId = null; showEsperaPicker = false; rerender(); }
+  function cancelMarcacaoForm() { showMarcacaoForm = false; marcacaoFormError = ''; marcacaoOrigemEsperaId = null; showEsperaPicker = false; rerender(); anunciarVagaAtual(); }
   // Escolher alguém da Lista de Espera DE DENTRO do formulário de Nova
   // Marcação já aberto (ver showEsperaPicker) — preenche automaticamente
   // Nome/Contacto/Vacinas/Data de Nascimento SEM apagar Data/Hora se já
@@ -47998,6 +48261,7 @@ function buildVacinacaoPage(container, goTo) {
       marcacaoSaving = false;
       if (noServidor && noServidor.length) {
         marcacaoFormError = `Um colega acabou de ocupar a vaga das ${marcacaoDraft.hora} deste dia (${noServidor[0].nome || 'sem nome'}). Escolhe outra hora — ex: ${vacinacaoSomarMinutos(marcacaoDraft.hora, 1)}.`;
+        await vacinacaoRelerDiaDoServidor(campanhaId, marcacaoDraft.data, true); // traz já a marcação do colega para este ecrã
         rerender();
         return;
       }
@@ -48058,6 +48322,7 @@ function buildVacinacaoPage(container, goTo) {
             STATE.vacinacaoMarcacoes = STATE.vacinacaoMarcacoes.filter(m => m.id !== created.id);
             ok = false;
             marcacaoFormError = `Um colega marcou ${anterior.nome || 'outra pessoa'} para as ${created.hora} no mesmo instante — esta marcação não ficou gravada. Escolhe outra hora — ex: ${vacinacaoSomarMinutos(created.hora, 1)}.`;
+            await vacinacaoRelerDiaDoServidor(campanhaId, created.data, true);
           }
         }
       }
@@ -48077,6 +48342,8 @@ function buildVacinacaoPage(container, goTo) {
       // dia por abrir já não aceita marcações, ver
       // vacinacaoMarcacaoBloqueadaPorDiaFechado no início desta função.)
       showMarcacaoForm = false;
+      anunciarVagaAtual();
+      if (marcacaoDraft && marcacaoDraft.data) vacinacaoRelerDiaDoServidor(campanhaId, marcacaoDraft.data, true);
     }
     rerender();
   }
@@ -48789,9 +49056,12 @@ function buildVacinacaoPage(container, goTo) {
       bookBtn.addEventListener('click', (e) => { e.stopPropagation(); requireAuth(() => openNewMarcacao({ data: dateISO, hora })); });
       const blockBtn = h('button', { class: 'btn-fab-sm tone-gray', title: 'Indisponibilizar vaga', 'aria-label': 'Indisponibilizar vaga' }, Icon('lockClosed', { size: 12, strokeWidth: 2.2 }));
       blockBtn.addEventListener('click', (e) => { e.stopPropagation(); requireAuth(() => bloquearVagaVacinacao(dateISO, hora)); });
-      return h('div', { class: 'agenda-slot-row agenda-slot-livre agenda-vaga-futura' }, [
+      const aMarcar = vacPresencaNaVaga(campanhaId, dateISO, hora);
+      return h('div', { class: 'agenda-slot-row agenda-slot-livre agenda-vaga-futura' + (aMarcar.length ? ' agenda-slot-a-marcar' : '') }, [
         h('span', { class: 'agenda-slot-hora' }, hora),
-        h('span', { class: 'agenda-slot-label cell-muted' }, 'Vaga livre'),
+        aMarcar.length
+          ? h('span', { class: 'agenda-slot-label agenda-slot-a-marcar-label', title: 'Um colega tem o formulário desta vaga aberto neste momento' }, `${[...new Set(aMarcar.map(o => o.n))].join(' e ')} a marcar…`)
+          : h('span', { class: 'agenda-slot-label cell-muted' }, 'Vaga livre'),
         buildRespPeriodoBadge(hora),
         h('div', { class: 'row-actions' }, [bookBtn, blockBtn]),
       ]);
@@ -49166,6 +49436,7 @@ function buildVacinacaoPage(container, goTo) {
     ]);
   }
   function buildAgendaDiaView(dateISO) {
+    vacinacaoRelerDiaDoServidor(campanhaId, dateISO, false); // no máximo 1× a cada 20 s por dia — ecrã sempre certo
     const wrap = h('div', {});
     const cabecalho = h('div', { style: 'display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px;' }, [
       h('button', { class: 'btn btn-secondary', onclick: () => { agendaDiaSelecionado = null; marcacaoSelectedIds = new Set(); rerender(); } }, [Icon('arrowleft', { size: 14, strokeWidth: 2.4 }), ' Voltar ao Calendário']),
@@ -49452,6 +49723,9 @@ function buildVacinacaoPage(container, goTo) {
         if (f.name === 'data' || f.name === 'gripe' || f.name === 'covid' || f.name === 'colaboradorFarmacia') return Object.assign({}, f, { onChange: () => rerender() });
         return f;
       });
+      const avisoPresenca = h('div', { class: 'card card-pad vac-presenca-aviso', role: 'status', style: 'display:none;margin-bottom:14px;background:#fff7ed;border-color:#fdba74;font-size:13px;color:#9a3412;' });
+      preencherAvisoPresencaMarcacao(avisoPresenca);
+      wrap.appendChild(avisoPresenca);
       const aviso = buildAvisoFrascoNaMarcacao();
       if (aviso) wrap.appendChild(aviso);
       // Escolher da Lista de Espera — só faz sentido numa marcação NOVA
@@ -54970,6 +55244,7 @@ function render() {
   // mouseleave alguma vez disparar nele, deixando o balão preto preso e
   // flutuante no ecrã.
   esconderTooltipSidebarForcado();
+  vacPresencaSairSeForaDaPagina();
   // Mesmo bug, mesmo tratamento — mas para o OUTRO tooltip flutuante
   // partilhado (mostrarTooltipFlutuante/esconderTooltipFlutuante),
   // usado pelas caixas de Banco de Horas/Hora Extra da Timeline e por
