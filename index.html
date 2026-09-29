@@ -32206,7 +32206,7 @@ function escalaFormatarHoras(valor) {
 // que pode ficar desatualizado depois de arrastar/redimensionar na Timeline).
 function escalaHorasTrabalhadasDia({ dia, colaboradorId, semanaId, diaKey, ausente }) {
   const reivindicadas = (semanaId && colaboradorId)
-    ? escalaReivindicacoesDoColaboradorNoDia(semanaId, diaKey, colaboradorId).reduce((s, r) => s + escalaCalcularHoras(r.intervaloInicio, r.intervaloFim), 0)
+    ? escalaReivindicacoesDoColaboradorNoDia(semanaId, diaKey, colaboradorId).reduce((s, r) => s + escalaHorasReivindicacao(r), 0)
     : 0;
   const trabalha = !!dia && !ausente && escalaTipoEfetivoDia(dia.tipo, colaboradorId) === 'normal' && !!dia.entrada && !!dia.saida;
   if (!trabalha) return Math.round(reivindicadas * 100) / 100;
@@ -33548,6 +33548,18 @@ function escalaTodosBlocosHorasExtraFuturos() {
   });
   resultado.sort((a, b) => a.dataISO.localeCompare(b.dataISO) || String(a.bloco.horaInicio).localeCompare(String(b.bloco.horaInicio)));
   return resultado;
+}
+// 2026-09-29 (Hugo: "a pausa dentro de um bloco de Horas Extra não deve contar"): horas de uma reivindicação de
+// Horas Extra descontando a parte que cai dentro da pausa do bloco (tal como nos turnos normais).
+function escalaHorasReivindicacao(r) {
+  if (!r) return 0;
+  const brutas = escalaCalcularHoras(r.intervaloInicio, r.intervaloFim);
+  const bloco = (STATE.escalaHorasExtra || []).find(b => String(b.id) === String(r.blocoId));
+  if (!bloco || !bloco.pausaInicio || !bloco.pausaFim) return brutas;
+  const ini = escalaMinutosAbsolutos(r.intervaloInicio, false), fim = escalaMinutosAbsolutos(r.intervaloFim, true);
+  const pi = escalaMinutosAbsolutos(bloco.pausaInicio, false), pf = escalaMinutosAbsolutos(bloco.pausaFim, true);
+  const sobrepostos = Math.max(0, Math.min(fim, pf) - Math.max(ini, pi));
+  return Math.max(0, Math.round((brutas - sobrepostos / 60) * 100) / 100);
 }
 function escalaReivindicacoesDoBloco(blocoId) {
   // CORRIGIDO 2026-08-30 (BUG GRAVE, Hugo: "continuava a contabilizar as
@@ -35379,11 +35391,21 @@ function escalaTotalHorasLinha(linha, semanaId) {
     // dias (turno normal + bloco de HE separado a seguir) mantém-se
     // exatamente como antes.
     const contaComoHoraExtraSemTurno = escalaDiaHoraExtraSemTurno(dia);
-    let total = soma + (dia.tipo === 'normal' && !contaComoHoraExtraSemTurno ? (dia.horas || 0) : 0) + escalaHeHorasEfetivo(dia) + (dia.heHorasBanco || 0);
+    // 2026-09-29 (Hugo: "corrige sim"): mesma regra das horas por baixo de cada dia (escalaHorasTrabalhadasDia) —
+    // turno com pausa MENOS o Banco de Horas usado, MAIS Hora Extra e Banco ganho, sempre com as correções feitas
+    // pela Direção. Antes somava dia.horas (gravado na altura) e ignorava correções posteriores do Banco de Horas.
+    const bancoDia = escalaBancoHorasGanhoUsadoDoDia(dia);
+    let horasTurno = 0;
+    if (dia.tipo === 'normal' && !contaComoHoraExtraSemTurno) {
+      horasTurno = (dia.entrada && dia.saida)
+        ? Math.max(0, escalaCalcularHorasComPausa(dia.entrada, dia.saida, dia.pausaInicio, dia.pausaFim) - bancoDia.usado)
+        : (dia.horas || 0);
+    }
+    let total = soma + horasTurno + escalaHeHorasEfetivo(dia) + bancoDia.ganho;
     if (semanaId) {
       const colaboradorIdDoDia = dia.colaboradorId || linha.colaboradorId;
       const reivindicadas = escalaReivindicacoesDoColaboradorNoDia(semanaId, d.key, colaboradorIdDoDia);
-      total += reivindicadas.reduce((s, r) => s + escalaCalcularHoras(r.intervaloInicio, r.intervaloFim), 0);
+      total += reivindicadas.reduce((s, r) => s + escalaHorasReivindicacao(r), 0);
     }
     return total;
   }, 0);
@@ -41391,7 +41413,7 @@ function buildHorariosPage(container, goTo) {
       // para poder entrar tanto no texto do horário (badge "+XhHE") como
       // na coluna/total "Horas Extra" mais abaixo — mesmo padrão já
       // aplicado a escalaTotalHorasLinha e à Estatística "Horas Extra".
-      const heReivindicadoDia = (semanaVisivel && semanaDoDia) ? escalaReivindicacoesDoColaboradorNoDia(semanaDoDia.id, diaKey, colaboradorId).reduce((soma, r) => soma + escalaCalcularHoras(r.intervaloInicio, r.intervaloFim), 0) : 0;
+      const heReivindicadoDia = (semanaVisivel && semanaDoDia) ? escalaReivindicacoesDoColaboradorNoDia(semanaDoDia.id, diaKey, colaboradorId).reduce((soma, r) => soma + escalaHorasReivindicacao(r), 0) : 0;
       let texto, classeExtra = '';
       if (!semanaDoDia) { texto = '—'; }
       else if (!semanaVisivel) { texto = 'Por confirmar'; }
@@ -42278,7 +42300,7 @@ function buildHorariosPage(container, goTo) {
           // manuais do editor).
           const reivindicadasDoDia = escalaReivindicacoesDoColaboradorNoDia(semana.id, d.key, uid);
           if (reivindicadasDoDia.length) {
-            const horasReivindicadas = reivindicadasDoDia.reduce((soma, r) => soma + escalaCalcularHoras(r.intervaloInicio, r.intervaloFim), 0);
+            const horasReivindicadas = reivindicadasDoDia.reduce((soma, r) => soma + escalaHorasReivindicacao(r), 0);
             if (horasReivindicadas > 0) {
               s.horasExtra += horasReivindicadas;
               escalaEmpurrarDetalheEstatistica(s, 'horasExtra', dataISO, `+${escalaFormatarHorasDecimal(horasReivindicadas)} · Horas Extra reivindicadas (${reivindicadasDoDia.map(r => `${r.intervaloInicio}-${r.intervaloFim}`).join(', ')})`);
@@ -46232,7 +46254,7 @@ function buildHorariosPage(container, goTo) {
         title: `${nome || 'Colaborador'} — sem turno atribuído hoje, só Hora Extra reivindicada`,
       }, [h('span', {}, '⚡ '), h('span', {}, nomeCurtoDesambiguado(nome) || 'Hora Extra')]);
       const trilho = h('div', { class: 'escala-vertical-trilho' }, construirBlocosHEOverlay(itens));
-      const horasVirtual = Math.round(itens.reduce((s, r) => s + escalaCalcularHoras(r.intervaloInicio, r.intervaloFim), 0) * 100) / 100;
+      const horasVirtual = Math.round(itens.reduce((s, r) => s + escalaHorasReivindicacao(r), 0) * 100) / 100;
       return h('div', { class: 'escala-vertical-coluna escala-vertical-coluna-virtual' }, [titulo, trilho,
         buildRodapeHorasDia(horasVirtual, `${nome || 'Colaborador'}\nHora Extra reivindicada: ${escalaFormatarHoras(horasVirtual)}`)]);
     });
@@ -47100,11 +47122,8 @@ function abrirModalVacinacaoAtrasadas(itensIniciais, onFechar) {
         if (updated) { STATE.vacinacaoMarcacoes = STATE.vacinacaoMarcacoes.map(x => x.id === m.id ? updated : x); itens = itens.filter(x => x.id !== m.id); renderLista(); }
         else { administrarBtn.disabled = false; cancelarBtn.disabled = false; showDbErrorToast('Não foi possível atualizar a marcação'); }
       }
-      administrarBtn.addEventListener('click', () => requireAuth(async () => {
-        const bloqueio = await vacinacaoBloqueioAdministrarRepetida(m);
-        if (bloqueio) { showToast(bloqueio, 'error'); return; }
-        aplicar({ estado: 'Administrada', administradoPor: m.administradoPor || currentUserName() });
-      }));
+      administrarBtn.addEventListener('click', () => requireAuth(() => abrirConfirmacaoAdministracaoVacina(m,
+        (extra) => aplicar(Object.assign({ estado: 'Administrada', administradoPor: m.administradoPor || currentUserName() }, extra)))));
       cancelarBtn.addEventListener('click', () => requireAuth(() => aplicar({ estado: 'Cancelada' })));
       const contactoEl = m.contacto
         ? h('a', { href: `tel:${m.contacto}`, style: 'color:var(--pharm-700);text-decoration:none;font-weight:700;' }, `📞 ${formatarTelefonePT(m.contacto)}`)
@@ -47243,8 +47262,14 @@ function vacinacaoVacinasRepetidas(dados, lista) {
   const numero = vacinacaoNumeroUtenteComparavel(dados.numeroUtente);
   const nome = normalizarTexto(dados.nome).trim();
   const contacto = String(dados.contacto || '').trim();
-  const mesmaPessoa = (r) => (numero && vacinacaoNumeroUtenteComparavel(r.numeroUtente) === numero)
-    || (nome && contacto && normalizarTexto(r.nome).trim() === nome && String(r.contacto || '').trim() === contacto);
+  // O Nº de Utente é a identificação que manda: com os dois números preenchidos, só conta como a mesma pessoa se
+  // forem iguais (duas pessoas com o mesmo nome e contacto — ex: casal — nunca se confundem). Sem número de um dos
+  // lados (muitas vezes só se sabe no dia, pelo Cartão de Cidadão), usa-se nome + contacto.
+  const mesmaPessoa = (r) => {
+    const numR = vacinacaoNumeroUtenteComparavel(r.numeroUtente);
+    if (numero && numR) return numero === numR;
+    return !!(nome && contacto && normalizarTexto(r.nome).trim() === nome && String(r.contacto || '').trim() === contacto);
+  };
   const repetidas = [];
   (lista || []).filter(mesmaPessoa).forEach(r => {
     if (dados.gripe && r.gripe) repetidas.push({ vacina: 'Gripe', registo: r });
@@ -47252,14 +47277,66 @@ function vacinacaoVacinasRepetidas(dados, lista) {
   });
   return repetidas;
 }
-// Antes de dar como Administrada: a mesma vacina já foi administrada a esta pessoa noutra marcação da campanha?
+// Antes de dar como Administrada: a mesma vacina já foi dada (ou está marcada noutro dia) a esta pessoa nesta campanha?
+// Verifica o que está no ecrã e o servidor. Devolve o texto do bloqueio, ou null.
 async function vacinacaoBloqueioAdministrarRepetida(m) {
-  const outrasAdministradas = (lista) => (lista || []).filter(r => String(r.id) !== String(m.id) && r.estado === 'Administrada');
-  let rep = vacinacaoVacinasRepetidas(m, outrasAdministradas(STATE.vacinacaoMarcacoes.filter(x => x.campanhaId === m.campanhaId)));
-  if (!rep.length) { const srv = await vacinacaoMesmaPessoaNoServidor(m.campanhaId, m, m.id); if (srv) rep = vacinacaoVacinasRepetidas(m, outrasAdministradas(srv)); }
+  const outras = (lista) => (lista || []).filter(r => String(r.id) !== String(m.id) && r.estado !== 'Cancelada' && !vacinacaoEhBloqueio(r));
+  let rep = vacinacaoVacinasRepetidas(m, outras(STATE.vacinacaoMarcacoes.filter(x => x.campanhaId === m.campanhaId)));
+  if (!rep.length) { const srv = await vacinacaoMesmaPessoaNoServidor(m.campanhaId, m, m.id); if (srv) rep = vacinacaoVacinasRepetidas(m, outras(srv)); }
   if (!rep.length) return null;
+  const administradas = rep.filter(x => x.registo.estado === 'Administrada');
+  if (administradas.length) {
+    const vac = [...new Set(administradas.map(x => x.vacina))].join(' e ');
+    return `${m.nome || 'Esta pessoa'} já tem ${vac} administrada nesta campanha (${formatDate(administradas[0].registo.data)}). A mesma vacina não pode ser dada duas vezes — cancela esta marcação ou tira-lhe essa vacina.`;
+  }
   const vac = [...new Set(rep.map(x => x.vacina))].join(' e ');
-  return `⛔ ${m.nome || 'Esta pessoa'} já tem ${vac} administrada nesta campanha (${formatDate(rep[0].registo.data)}). A mesma vacina não pode ser dada duas vezes — cancela esta marcação ou tira-lhe essa vacina.`;
+  return `${m.nome || 'Esta pessoa'} tem outra marcação por vacinar com ${vac} (${formatDate(rep[0].registo.data)}${rep[0].registo.hora ? ' às ' + rep[0].registo.hora : ''}). Cancela primeiro a marcação que está a mais.`;
+}
+// 2026-09-29 (Hugo: "deve ser garantido pela confirmação do número de utente"): ao dar a vacina, confirma-se o
+// Nº de Utente (do Cartão de Cidadão, que a pessoa traz no dia) e a verificação de "mesma vacina duas vezes" faz-se
+// por esse número, no ecrã e no servidor. onConfirmar(patchExtra) recebe { numeroUtente } quando foi preenchido.
+function abrirConfirmacaoAdministracaoVacina(m, onConfirmar) {
+  const overlay = h('div', { class: 'modal-overlay' });
+  const fechar = () => { document.removeEventListener('keydown', onKey); overlay.remove(); };
+  const onKey = (e) => { if (e.key === 'Escape') fechar(); };
+  document.addEventListener('keydown', onKey);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay && cliqueComecouEm(overlay)) fechar(); });
+  const numInput = h('input', { class: 'input', type: 'text', inputmode: 'numeric', maxlength: '9', placeholder: '9 dígitos', value: String(m.numeroUtente || '').replace(/\s+/g, '') });
+  numInput.addEventListener('input', () => { numInput.value = numInput.value.replace(/\D/g, '').slice(0, 9); erroEl.textContent = ''; });
+  const erroEl = h('p', { class: 'form-error', style: 'margin:0 0 8px;' });
+  const confirmar = h('button', { class: 'btn btn-primary', type: 'button' }, 'Confirmar vacinação');
+  const semNumero = h('button', { class: 'btn-link', type: 'button', style: 'font-size:12.5px;' }, 'A pessoa não tem Nº de Utente');
+  const executar = async (comNumero) => {
+    let numero = '';
+    if (comNumero) {
+      numero = vacinacaoNumeroUtenteComparavel(numInput.value);
+      if (!numero) { erroEl.textContent = 'Indica um Nº de Utente válido (9 dígitos, do Cartão de Cidadão).'; numInput.focus(); return; }
+    }
+    confirmar.setAttribute('disabled', 'disabled'); semNumero.setAttribute('disabled', 'disabled');
+    confirmar.textContent = 'A verificar…';
+    const candidato = Object.assign({}, m, numero ? { numeroUtente: numero } : {});
+    const bloqueio = await vacinacaoBloqueioAdministrarRepetida(candidato);
+    if (bloqueio) {
+      erroEl.textContent = bloqueio;
+      confirmar.removeAttribute('disabled'); semNumero.removeAttribute('disabled'); confirmar.textContent = 'Confirmar vacinação';
+      return;
+    }
+    fechar();
+    onConfirmar(numero && numero !== vacinacaoNumeroUtenteComparavel(m.numeroUtente) ? { numeroUtente: numero } : {});
+  };
+  confirmar.addEventListener('click', () => requireAuth(() => executar(true)));
+  semNumero.addEventListener('click', () => requireAuth(() => executar(false)));
+  numInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); confirmar.click(); } });
+  overlay.appendChild(h('div', { class: 'modal-panel', style: 'max-width:440px;width:100%;' }, [
+    h('h3', { class: 'modal-title', style: 'margin:0 0 4px;' }, 'Confirmar vacinação'),
+    h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;' }, `${m.nome || 'Utente'} · ${vacinacaoLabelVacinas(m)} · ${formatDate(m.data)}${m.hora ? ' às ' + m.hora : ''}`),
+    h('div', { class: 'field', style: 'margin:0 0 6px;' }, [h('label', {}, 'Nº de Utente (Cartão de Cidadão)'), numInput]),
+    h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, 'Confirma o número no cartão. Serve para garantir que a mesma vacina não é dada duas vezes nesta campanha.'),
+    erroEl,
+    h('div', { class: 'form-actions', style: 'align-items:center;' }, [confirmar, h('button', { class: 'btn btn-secondary', type: 'button', onclick: fechar }, 'Cancelar'), semNumero]),
+  ]));
+  document.body.appendChild(overlay);
+  setTimeout(() => { try { numInput.focus(); } catch (e) { /* ignora */ } }, 50);
 }
 function vacinacaoTextoVacinasRepetidas(repetidas) {
   const porVacina = {};
@@ -47712,17 +47789,15 @@ function buildVacinacaoPage(container, goTo) {
     }, { danger: true, confirmLabel: 'Cancelar Marcação' });
   }
   function marcarAdministrada(m) {
-    confirmDialog(`Confirmar que a(s) vacina(s) (${vacinacaoLabelVacinas(m)}) foram administradas a ${m.nome || 'este utente'}?`, async () => {
-      // "administradoPor" nasce sempre com quem está a confirmar agora,
-      // mas fica editável depois no formulário (ver vacinacaoMarcacaoSchema)
-      // para o caso de ter sido outro colega a dar mesmo a vacina.
-      const bloqueio = await vacinacaoBloqueioAdministrarRepetida(m);
-      if (bloqueio) { showToast(bloqueio, 'error'); return; }
-      const updated = await dbUpdate('vacinacaoMarcacoes', m.id, { estado: 'Administrada', administradoPor: m.administradoPor || currentUserName() });
+    // 2026-09-29: confirmação com o Nº de Utente (ver abrirConfirmacaoAdministracaoVacina).
+    // "administradoPor" nasce com quem está a confirmar agora, mas fica editável depois no formulário.
+    abrirConfirmacaoAdministracaoVacina(m, async (extra) => {
+      const updated = await dbUpdate('vacinacaoMarcacoes', m.id, Object.assign({ estado: 'Administrada', administradoPor: m.administradoPor || currentUserName() }, extra));
       if (updated) { STATE.vacinacaoMarcacoes = STATE.vacinacaoMarcacoes.map(x => x.id === m.id ? updated : x); marcacaoSelectedIds = new Set(); showMarcacaoForm = false; rerender(); }
       else showDbErrorToast('Não foi possível concluir a marcação');
-    }, { confirmLabel: 'Confirmar' });
+    });
   }
+
   // Troca de Estado diretamente pelo badge (clicar no badge da grelha de
   // Vagas troca-o por um <select> ali mesmo — mesmo padrão do módulo
   // Pedidos, ver buildEstadoCell) — sem abrir o formulário completo. Nunca
@@ -47730,6 +47805,8 @@ function buildVacinacaoPage(container, goTo) {
   // Administrada continua a preencher "Administrado Por" automaticamente.
   async function aplicarEstadoDiretoMarcacao(m, novoEstado) {
     if (novoEstado === m.estado) return;
+    // Administrada passa sempre pela confirmação do Nº de Utente (2026-09-29).
+    if (novoEstado === 'Administrada') { marcarAdministrada(m); return; }
     const patch = { estado: novoEstado };
     if (novoEstado === 'Administrada') patch.administradoPor = m.administradoPor || currentUserName();
     const updated = await dbUpdate('vacinacaoMarcacoes', m.id, patch);
@@ -48870,37 +48947,41 @@ function buildVacinacaoPage(container, goTo) {
   };
   // Resumo de um dia para o balão do calendário da Vacinação.
   function resumoDiaVacinacao(dateISO, aberto, isSunday) {
+    // Texto sóbrio, sem ícones (2026-09-29, Hugo: "demasiados ícones, confuso e acriançado").
     const DIAS = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
     const dObj = new Date(dateISO + 'T12:00:00');
     const passado = dateISO < todayISO();
-    const cab = `${DIAS[dObj.getDay()]}, ${formatDate(dateISO).slice(0, 5)} · ${aberto ? (passado ? 'Dia passado' : 'Aberto') : 'Por abrir'}`;
+    const cab = `${DIAS[dObj.getDay()]}, ${formatDate(dateISO).slice(0, 5)} — ${aberto ? (passado ? 'dia passado' : 'aberto') : 'por abrir'}`;
     const doDiaTodas = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO);
     const bloqueadas = doDiaTodas.filter(m => vacinacaoEhBloqueio(m)).length;
     const reais = doDiaTodas.filter(m => !vacinacaoEhBloqueio(m));
     const ativas = reais.filter(m => m.estado !== 'Cancelada');
     const canceladas = reais.length - ativas.length;
-    if (!aberto && !ativas.length) return `${cab}${isSunday ? '\nDomingo — pede confirmação ao abrir.' : '\nAinda não foi aberto — sem marcações.'}`;
+    if (!aberto && !ativas.length) return `${cab}\n${isSunday ? 'Domingo: pede confirmação ao abrir.' : 'Sem marcações.'}`;
     const linhas = [cab];
     if (!ativas.length) linhas.push('Sem marcações.');
     else {
       const administradas = ativas.filter(m => m.estado === 'Administrada').length;
-      const porDar = ativas.length - administradas;
+      const porVacinar = ativas.length - administradas;
       const gripe = ativas.filter(m => m.gripe).length, covid = ativas.filter(m => m.covid).length;
-      linhas.push(`👥 ${ativas.length} pessoa${ativas.length === 1 ? '' : 's'} — ${porDar} por vacinar · ${administradas} já vacinada${administradas === 1 ? '' : 's'}`);
-      linhas.push(`💉 Gripe ${gripe} · COVID ${covid} = ${gripe + covid} vacina${gripe + covid === 1 ? '' : 's'}`);
+      const partesPessoas = [];
+      if (porVacinar) partesPessoas.push(`${porVacinar} por vacinar`);
+      if (administradas) partesPessoas.push(`${administradas} vacinada${administradas === 1 ? '' : 's'}`);
+      linhas.push(`Pessoas: ${ativas.length}${partesPessoas.length > 1 ? ` (${partesPessoas.join(', ')})` : (porVacinar ? ' por vacinar' : ` vacinada${administradas === 1 ? '' : 's'}`)}`);
+      linhas.push(`Vacinas: ${gripe + covid} (Gripe ${gripe}, COVID ${covid})`);
       if (covid) {
         const falta = vacinacaoFaltamParaMultiploSeis(covid);
         const frascos = Math.ceil(covid / 6);
-        linhas.push(falta ? `⚠️ COVID: ${frascos} frasco${frascos === 1 ? '' : 's'} — falta${falta === 1 ? '' : 'm'} ${falta} para completar o último` : `✅ COVID: ${frascos} frasco${frascos === 1 ? '' : 's'} completo${frascos === 1 ? '' : 's'}`);
+        linhas.push(`COVID: ${frascos} frasco${frascos === 1 ? '' : 's'}${falta ? `, falta${falta === 1 ? '' : 'm'} ${falta} dose${falta === 1 ? '' : 's'} para completar o último` : ', todos completos'}`);
       }
       const horas = ativas.map(m => normalizarHora(m.hora)).filter(Boolean).sort();
-      if (horas.length) linhas.push(`🕐 ${horas.length === 1 ? `Às ${horas[0]}` : `Da ${horas[0]} às ${horas[horas.length - 1]}`}`);
+      if (horas.length) linhas.push(`Horário: ${horas.length === 1 ? horas[0] : `${horas[0]} – ${horas[horas.length - 1]}`}`);
     }
-    if (canceladas) linhas.push(`✖ ${canceladas} cancelada${canceladas === 1 ? '' : 's'}`);
-    if (bloqueadas) linhas.push(`🔒 ${bloqueadas} vaga${bloqueadas === 1 ? '' : 's'} bloqueada${bloqueadas === 1 ? '' : 's'}`);
+    if (canceladas) linhas.push(`Canceladas: ${canceladas}`);
+    if (bloqueadas) linhas.push(`Vagas bloqueadas: ${bloqueadas}`);
     try {
       const nomes = [...new Set(responsaveisNoDia(dateISO).map(r => String(r.nome || '').trim()).filter(Boolean))];
-      if (nomes.length) linhas.push(`👤 Responsáve${nomes.length === 1 ? 'l' : 'is'}: ${nomes.join(', ')}`);
+      if (nomes.length) linhas.push(`Responsáve${nomes.length === 1 ? 'l' : 'is'}: ${nomes.join(', ')}`);
     } catch (e) { /* sem responsáveis */ }
     return linhas.join('\n');
   }
@@ -49653,7 +49734,7 @@ function buildHorarioSemanaGridPDFDoc(semana) {
     const entry = diasPorDataDoDia(d);
     if (!entry) return soma;
     const { dia, colaboradorId } = entry;
-    const reivindicadas = escalaReivindicacoesDoColaboradorNoDia(semana.id, d.key, colaboradorId).reduce((s, r) => s + escalaCalcularHoras(r.intervaloInicio, r.intervaloFim), 0);
+    const reivindicadas = escalaReivindicacoesDoColaboradorNoDia(semana.id, d.key, colaboradorId).reduce((s, r) => s + escalaHorasReivindicacao(r), 0);
     const tipoEfetivo = escalaTipoEfetivoDia(dia.tipo, colaboradorId);
     if (tipoEfetivo !== 'normal' || !dia.entrada || !dia.saida) return soma + reivindicadas;
     // BUG CORRIGIDO 2026-08-26 — mesma correção de escalaTotalHorasLinha:
