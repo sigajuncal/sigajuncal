@@ -2154,6 +2154,16 @@
 .vac-contagem-ponto.laranja{background:#ea580c;}
 .vac-contagem-ponto.vermelho{background:#dc2626;}
 .vac-contagem-nota{margin:0;font-size:11px;color:var(--pharm-400);}
+.troca-painel{display:flex;flex-direction:column;gap:6px;margin-top:8px;}
+.troca-estado-chip{display:inline-flex;align-items:center;gap:5px;align-self:flex-start;font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:999px;border:1px solid transparent;}
+.troca-estado-chip.verde{background:#f0fdf4;color:#166534;border-color:#bbf7d0;}
+.troca-estado-chip.laranja{background:#fff7ed;color:#9a3412;border-color:#fed7aa;}
+.troca-estado-chip.cinza{background:#f1f5f9;color:#475569;border-color:#e2e8f0;}
+.troca-painel-botoes{display:flex;gap:6px;flex-wrap:wrap;}
+.troca-acao-btn{display:inline-flex;align-items:center;gap:5px;font:inherit;font-size:12px;font-weight:700;padding:5px 10px;border-radius:9px;border:1px solid #fecaca;background:#fff;color:#b91c1c;cursor:pointer;}
+.troca-acao-btn:hover{background:#fef2f2;}
+.trocas-linha-estado{font-size:12.5px;color:var(--pharm-700);padding:8px 10px;border:1px solid var(--pharm-100);border-radius:10px;display:flex;flex-direction:column;gap:2px;}
+.trocas-linha-estado .troca-painel{margin-top:4px;}
 .troca-bloco{padding:10px 12px;border:1px solid #dbe7ef;border-radius:12px;margin-bottom:10px;}
 .troca-chips{display:flex;flex-wrap:wrap;gap:6px;}
 .troca-chip{display:inline-flex;align-items:center;gap:2px;font-size:12px;padding:4px 9px;border-radius:999px;border:1px solid transparent;}
@@ -10582,7 +10592,8 @@ async function reconciliarTarefasGavetaJaDecididas() {
     if (r.referenciaTabela === 'escala_trocas') {
       const t = (STATE.escalaTrocas || []).find(x => String(x.id) === String(r.referenciaId));
       if (!t) return false;
-      return !!t.eliminado || !['aguarda_colega', 'aguarda_direcao'].includes(t.estado);
+      if (String(r.mensagem || '').startsWith(TROCA_PREFIXO_PEDIDO_ANULAR)) return !!t.eliminado || t.estado !== 'validada';
+      return !!t.eliminado || !['aguarda_colega', 'aguarda_direcao'].includes(t.estado) || trocaExpirada(t);
     }
     if (r.referenciaTabela === 'escala_trocas_movimentos') {
       const m = (STATE.escalaTrocasMovimentos || []).find(x => String(x.id) === String(r.referenciaId));
@@ -15079,51 +15090,55 @@ const FRASES_EXTRA_GERAIS = {
 // devolve null — mensagemMotivadoraJuncal cai sempre no comportamento
 // normal por período do dia, nunca fica sem frase.
 function escalaSituacaoTurnoHoje(utilizadorId) {
+  // 2026-09-29 (Hugo: "as frases têm de fazer sentido — folga, férias, prestes a sair, já saí"): além de "dentro do
+  // turno", passa a reconhecer ausências (férias, aniversário, baixa…), folga, turno mais logo, pausa/almoço e turno
+  // já terminado. Usa a mesma deteção do resto da app (escalaVagaDoColaboradorNoDia: Grupo B, trocas, ausências).
   if (!utilizadorId) return null;
   const agora = new Date();
   const hojeISO = dateToISO(agora);
-  if (escalaAusenciaDoDia(utilizadorId, hojeISO)) return null;
-  const segundaISO = escalaSegundaFeiraDaSemanaDeISO(hojeISO);
-  const semana = escalaSemanaPorInicio(segundaISO);
-  if (!semana) return null;
+  const uidN = Number(utilizadorId);
+  const aus = escalaAusenciaDoDia(isNaN(uidN) ? utilizadorId : uidN, hojeISO) || escalaAusenciaDoDia(String(utilizadorId), hojeISO);
+  if (aus) return { estado: 'ausencia', tipo: aus.tipo || 'outras', dataFim: aus.dataFim || hojeISO };
+  const semana = escalaSemanaPorInicio(escalaSegundaFeiraDaSemanaDeISO(hojeISO));
+  if (!semana || semana.eliminado || !semana.dados) return null;
   if (semana.estado !== 'publicado' && !escalaMostrarRascunhosEquipa(semana) && !isMasterUser()) return null;
   const diaKey = escalaDiaKeyDeData(agora);
-  // Vai buscar a célula do PRÓPRIO dia (não só {entrada,saida} de
-  // escalaHorarioProprioNoDia) porque também precisamos de
-  // pausaInicio/pausaFim, para as "horas trabalhadas" não contarem a
-  // Pausa/Almoço como tempo de trabalho — sem isto, alguém com pausa
-  // 13h-14h apareceria com mais 1h de trabalho do que realmente fez.
-  let dia = null;
-  for (const codigo of Object.keys(semana.dados || {})) {
-    const linha = semana.dados[codigo];
-    const candidato = linha && linha.dias && linha.dias[diaKey];
-    if (!candidato || candidato.tipo !== 'normal' || !candidato.entrada || !candidato.saida) continue;
-    const idDoDia = candidato.colaboradorId || linha.colaboradorId;
-    if (String(idDoDia) === String(utilizadorId)) { dia = candidato; break; }
+  const uid = isNaN(uidN) ? utilizadorId : uidN;
+  const vaga = escalaVagaDoColaboradorNoDia(semana, diaKey, uid);
+  if (!vaga) {
+    const cel = escalaCelulaColaboradorNoDia(semana, diaKey, uid);
+    const tipoCel = cel && cel.dia && cel.dia.tipo;
+    if (tipoCel && !['normal', 'folga'].includes(tipoCel)) return { estado: 'ausencia', tipo: tipoCel, dataFim: hojeISO };
+    return { estado: 'folga' };
   }
-  if (!dia) return null;
+  const dia = vaga.dia;
   const entradaMin = escalaMinutosAbsolutos(dia.entrada, false);
   const saidaMin = escalaMinutosAbsolutos(dia.saida, true);
   const agoraMin = agora.getHours() * 60 + agora.getMinutes();
-  if (agoraMin < entradaMin || agoraMin >= saidaMin) return null; // fora do turno agora — sem contexto útil a acrescentar
+  const base = { entrada: dia.entrada, saida: dia.saida };
+  if (agoraMin < entradaMin) return Object.assign(base, { estado: 'antes', minutosParaEntrar: entradaMin - agoraMin });
+  if (agoraMin >= saidaMin) return Object.assign(base, { estado: 'terminado' });
   // Minutos de Pausa/Almoço já decorridos até agora (0 se ainda não chegou
   // à pausa, o intervalo todo se já passou, ou parcial se está a decorrer
   // neste preciso momento) — mesma convenção usada na Timeline (ver
   // escalaSegmentosTurnoAbsolutos).
   let minutosPausaDecorridos = 0;
+  let emPausa = false;
   if (dia.pausaInicio && dia.pausaFim) {
     const pausaInicioMin = escalaMinutosAbsolutos(dia.pausaInicio, false);
     const pausaFimMin = escalaMinutosAbsolutos(dia.pausaFim, true);
     if (agoraMin >= pausaFimMin) minutosPausaDecorridos = pausaFimMin - pausaInicioMin;
-    else if (agoraMin > pausaInicioMin) minutosPausaDecorridos = agoraMin - pausaInicioMin;
+    else if (agoraMin >= pausaInicioMin) { minutosPausaDecorridos = agoraMin - pausaInicioMin; emPausa = true; }
+    base.pausaFim = dia.pausaFim;
   }
   const minutosTrabalhados = Math.max(0, (agoraMin - entradaMin) - minutosPausaDecorridos);
   const minutosParaSair = saidaMin - agoraMin;
   let estado = 'meio';
-  if (minutosParaSair <= 30) estado = 'quase_a_sair'; // prioridade sobre "início", nunca ambos ao mesmo tempo num turno curto
+  if (emPausa) estado = 'pausa';
+  else if (minutosParaSair <= 30) estado = 'quase_a_sair'; // prioridade sobre "início", nunca ambos ao mesmo tempo num turno curto
   else if (minutosTrabalhados <= 20) estado = 'inicio';
   else if (minutosTrabalhados >= 300) estado = 'muitas_horas'; // 5h+ já cumpridas (excluindo Pausa/Almoço)
-  return { entrada: dia.entrada, saida: dia.saida, minutosTrabalhados, minutosParaSair, estado };
+  return Object.assign(base, { minutosTrabalhados, minutosParaSair, estado });
 }
 // Frases que usam o contexto do turno (ver escalaSituacaoTurnoHoje) —
 // {minutos}/{horas} são resolvidos em mensagemMotivadoraJuncal antes de
@@ -15143,6 +15158,56 @@ const FRASES_HORARIO_CONTEXTO = {
     'Já lá vão {horas}h de trabalho hoje — a dedicação nota-se. 💪',
     '{horas}h de turno já cumpridas hoje. Continua tudo a correr bem! 🚀',
     'Um turno já longo hoje ({horas}h e a contar) — obrigado pelo empenho. 🤝',
+  ],
+  pausa: [
+    'Estás em pausa até às {pausaFim} — aproveita para recarregar energias. ☕',
+    'Hora de pausa: descansa bem, voltas às {pausaFim}. 🍽️',
+    'Pausa merecida até às {pausaFim}. O resto do turno espera por ti! ☕',
+  ],
+  antes_breve: [
+    'Entras daqui a {minutosEntrar} minutos, às {entrada} — até já! 👋',
+    'O teu turno começa às {entrada}. Até já na farmácia! 🚗',
+    'Falta pouco para o teu turno das {entrada} — bom caminho! 👋',
+  ],
+  antes: [
+    'Hoje o teu turno é das {entrada} às {saida} — até lá, aproveita! ☀️',
+    'Turno mais logo, das {entrada} às {saida}. Até já! 👋',
+    'Hoje entras às {entrada}. Aproveita o tempo até lá! 🌿',
+  ],
+  terminado: [
+    'Turno de hoje terminado às {saida} — bom descanso, bem merecido! 🌙',
+    'Já saíste às {saida}. Obrigado pelo dia de hoje — descansa bem! 🙌',
+    'Dia de trabalho cumprido. Aproveita o descanso! 🌿',
+  ],
+  folga: [
+    'Hoje é dia de folga — aproveita para descansar e recarregar. 🌿',
+    'Folga hoje! Desliga um bocadinho e aproveita o dia. ☀️',
+    'Dia de folga: bom descanso e até ao próximo turno! 🌿',
+  ],
+  ferias: [
+    'Estás de férias — aproveita e descansa, a farmácia fica em boas mãos! 🏖️',
+    'Boas férias! Desliga, aproveita e volta com energia. 🌴',
+    'Férias são para aproveitar — bom descanso! ☀️',
+  ],
+  aniversario: [
+    'Parabéns! 🎂 Hoje é o teu dia — aproveita-o ao máximo!',
+    'Feliz aniversário! 🎉 Que seja um dia muito especial.',
+  ],
+  extra: [
+    'Hoje é dia de folga extra — aproveita bem! 🌿',
+    'Dia de folga extra: bom descanso! ☀️',
+  ],
+  banco: [
+    'Hoje estás de folga com horas do Banco de Horas — bom descanso! 🌿',
+    'Dia de folga (Banco de Horas) — aproveita! ☀️',
+  ],
+  baixa: [
+    'Estás de baixa — as melhoras! A equipa está a tratar de tudo. 💙',
+    'As melhoras! Descansa, que a equipa trata do resto. 💙',
+  ],
+  ausencia: [
+    'Hoje não estás de serviço — bom dia e até breve! 👋',
+    'Dia fora da farmácia hoje — até breve! 👋',
   ],
 };
 // Mais específico do que FRASES_MOTIVACIONAIS_JUNCAL acima: cada pessoa
@@ -15867,13 +15932,26 @@ function mensagemMotivadoraJuncal(usuario) {
   // abaixo, para não repetir sempre a mesma frase de contexto o turno
   // inteiro.
   const situacao = escalaSituacaoTurnoHoje(usuario.id);
-  if (situacao && FRASES_HORARIO_CONTEXTO[situacao.estado]) {
-    const bancoContexto = FRASES_HORARIO_CONTEXTO[situacao.estado];
-    const seedContexto = `${todayISO()}_${periodo}_${situacao.estado}_${usuario.id}`;
-    const frase = bancoContexto[hashDeterministico(seedContexto) % bancoContexto.length]
-      .replace('{minutos}', String(situacao.minutosParaSair))
-      .replace('{horas}', String(Math.floor(situacao.minutosTrabalhados / 60)));
-    return resolverGeneroTag(frase, genero);
+  if (situacao) {
+    // Chave do banco de frases conforme a situação real de hoje. "meio" (a meio de um turno normal) fica com o
+    // banco geral por período, para não repetir a mesma frase de contexto o turno inteiro.
+    let chave = null;
+    if (situacao.estado === 'ausencia') {
+      chave = { ferias: 'ferias', aniversario: 'aniversario', extra: 'extra', banco: 'banco', baixa: 'baixa' }[situacao.tipo] || 'ausencia';
+    } else if (situacao.estado === 'antes') {
+      chave = situacao.minutosParaEntrar <= 60 ? 'antes_breve' : 'antes';
+    } else if (situacao.estado !== 'meio') chave = situacao.estado;
+    const bancoContexto = chave && FRASES_HORARIO_CONTEXTO[chave];
+    if (bancoContexto) {
+      const seedContexto = `${todayISO()}_${periodo}_${chave}_${usuario.id}`;
+      const frase = bancoContexto[hashDeterministico(seedContexto) % bancoContexto.length]
+        .replace('{minutos}', String(situacao.minutosParaSair))
+        .replace('{horas}', String(Math.floor((situacao.minutosTrabalhados || 0) / 60)))
+        .replace('{minutosEntrar}', String(situacao.minutosParaEntrar))
+        .replace('{entrada}', situacao.entrada || '').replace('{saida}', situacao.saida || '')
+        .replace('{pausaFim}', situacao.pausaFim || '');
+      return resolverGeneroTag(frase, genero);
+    }
   }
   // Prioridade 2: banco de frases PERSONALIZADAS por colaborador nomeado
   // (ver FRASES_COLABORADORES) — mais específico. Prioridade 3 (fallback):
@@ -17223,6 +17301,14 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
         if (!eraPrimeiraVez && (historicoEstavaNoFundo || ultimaEhMinha)) setTimeout(scrollHistoricoParaFim, 0);
       }
       const itens = [];
+      // Trocas: o estado atual e as ações possíveis aparecem só junto da mensagem MAIS RECENTE de cada troca.
+      const ultimoRecadoPorTroca = new Map();
+      mensagens.forEach(x => { if (x.referenciaTabela === 'escala_trocas' && x.referenciaId) ultimoRecadoPorTroca.set(String(x.referenciaId), x.id); });
+      const painelTrocaDoRecado = (x) => {
+        if (x.referenciaTabela !== 'escala_trocas' || ultimoRecadoPorTroca.get(String(x.referenciaId)) !== x.id) return null;
+        const t = (STATE.escalaTrocas || []).find(y => String(y.id) === String(x.referenciaId));
+        return t ? trocaPainelAcoesEl(t, render) : null;
+      };
       mensagens.forEach(r => {
         if (primeiroNaoLidoIdNaThread && String(r.id) === String(primeiroNaoLidoIdNaThread)) {
           itens.push(h('div', { class: 'gaveta-por-ler-divisor', role: 'separator' }, [h('span', {}, 'Por ler')]));
@@ -17308,16 +17394,25 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
           if (r.referenciaTabela === 'escala_trocas' && !souEuRemetente && !concluida) {
             const troca = (STATE.escalaTrocas || []).find(x => String(x.id) === String(r.referenciaId));
             const agir = (fn, okTxt) => requireAuth(async () => { const res = await fn(); if (res.erro) showToast(res.erro, 'error'); else { showToast(okTxt(res), 'success'); render(); } });
-            if (troca && troca.estado === 'aguarda_colega' && String(troca.colegaId) === String(activeUser.id)) {
+            if (troca && troca.estado === 'aguarda_colega' && String(troca.colegaId) === String(activeUser.id) && !trocaExpirada(troca)) {
               const b1 = botaoAcaoGaveta('aprovar', 'Aceitar troca');
               const b2 = botaoAcaoGaveta('rejeitar', 'Recusar');
               b1.addEventListener('click', () => agir(() => trocaResponderColega(troca, true), () => 'Troca aceite — segue para validação da Direção.'));
               b2.addEventListener('click', () => agir(() => trocaResponderColega(troca, false), () => 'Troca recusada.'));
               acoes.push(b1, b2);
-            } else if (troca && troca.estado === 'aguarda_direcao' && souDirecaoHorariosGlobal()) {
+            } else if (troca && troca.estado === 'validada' && souDirecaoHorariosGlobal() && String(r.mensagem || '').startsWith(TROCA_PREFIXO_PEDIDO_ANULAR)) {
+              const b1 = botaoAcaoGaveta('aprovar', 'Anular troca', 'undo');
+              const b2 = botaoAcaoGaveta('rejeitar', 'Manter troca');
+              b1.addEventListener('click', () => confirmDialog('Anular esta troca validada? O horário volta ao que era nos dias que ainda não passaram e as horas saem das contas entre colegas. Os dois são avisados.', () => agir(() => trocaAnular(troca), (res) => res.porAjustar && res.porAjustar.length ? `Troca anulada. Confirma à mão: ${res.porAjustar.join('; ')}.` : 'Troca anulada.'), { danger: true, confirmLabel: 'Anular troca' }));
+              b2.addEventListener('click', () => agir(() => trocaManterAposPedido(troca), () => 'Troca mantida — os dois foram avisados.'));
+              acoes.push(b1, b2);
+            } else if (troca && troca.estado === 'aguarda_direcao' && souDirecaoHorariosGlobal() && !trocaExpirada(troca)) {
               // Tipo de troca sempre visível à Direção, mesmo em recados
               // antigos (o texto do recado é fixo, isto é calculado ao vivo).
               acoes.push(trocaTipoBadge(troca));
+              const valG = trocaValidarRegisto(troca);
+              const avG = trocaAvisosEl({ erros: valG.erros, avisos: valG.avisos });
+              if (avG) acoes.push(avG);
               const b1 = botaoAcaoGaveta('aprovar', 'Validar troca');
               const b2 = botaoAcaoGaveta('rejeitar', 'Rejeitar');
               b1.addEventListener('click', () => agir(() => trocaDecidirDirecao(troca, true), (res) => res.aplicacao && !res.aplicacao.ok ? `Troca validada. Horário por ajustar à mão: ${res.aplicacao.motivo}.` : 'Troca validada e horário atualizado.'));
@@ -17418,6 +17513,7 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
               // agora num contentor próprio (flex+gap+margin-top, ver CSS
               // .gaveta-tarefa-card-acoes), nunca mais junto ao texto.
               acoes.length ? h('div', { class: 'gaveta-tarefa-card-acoes' }, acoes) : null,
+              painelTrocaDoRecado(r),
             ]),
           ]);
         }
@@ -17433,6 +17529,7 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
               // tarefas, aqui como "lida"). Pedido explícito 2026-08-13.
               (souEuRemetente && r.tratado) ? h('span', { class: 'gaveta-bolha-vista', title: r.tratadoEm ? `Vista em ${formatDateTime(r.tratadoEm)}` : undefined }, ' · Vista') : null,
             ]),
+            painelTrocaDoRecado(r),
           ]),
         ]);
       }
@@ -35012,7 +35109,11 @@ async function escalaGerarOuAbrirSemana(semanaInicioISO, variante) {
   const { dados, vagasLibertadas, vagasComCobertura } = escalaConstruirDadosSemana(semanaInicioISO, varianteFinal);
   const payload = { semanaInicio: semanaInicioISO, estado: 'rascunho', variante: varianteFinal, observacoes: '', tarefas: '', dados, criadoPor: currentUserName() };
   const created = await dbInsert('escalaSemanas', payload);
-  if (created) { STATE.escalaSemanas = [created, ...STATE.escalaSemanas]; return { semana: created, criada: true, vagasLibertadas, vagasComCobertura }; }
+  if (created) {
+    STATE.escalaSemanas = [created, ...STATE.escalaSemanas];
+    try { await trocasReaplicarNaSemana(created); } catch (e) { /* nunca impede a criação da semana */ }
+    return { semana: escalaSemanaPorInicio(semanaInicioISO) || created, criada: true, vagasLibertadas, vagasComCobertura };
+  }
   // 2) A inserção falhou. Antes de mais, cobre o caso de a mesma semana ter
   // sido eliminada (soft delete — ver dbDelete) e depois pedida outra vez:
   // o registo antigo continua na tabela com eliminado=true, e a restrição
@@ -35388,6 +35489,14 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
         `Colaborador com ${ESCALA_TIPOS_DIA.find(t => t.key === ausenciaCelula.tipo) ? ESCALA_TIPOS_DIA.find(t => t.key === ausenciaCelula.tipo).label : 'ausência'} registada nesta data.`)
     : null;
   const overrideCheckbox = podeOverride ? h('input', { type: 'checkbox', checked: overrideAtivo ? 'checked' : undefined }) : null;
+  // Trocas neste dia (2026-09-29): o editor avisa que mexer aqui não muda a troca nem as contas.
+  const trocasDaCelula = (STATE.escalaTrocas || []).filter(t => !t.eliminado && (t.estado === 'validada' || (trocaEmAberto(t) && !trocaExpirada(t)))
+    && (t.diaA === dataISOCelula || t.diaB === dataISOCelula)
+    && (String(diaAtual.trocaId) === String(t.id) || [String(t.autorId), String(t.colegaId)].includes(String(colaboradorIdCelula))));
+  const trocaBannerCelula = trocasDaCelula.length ? h('div', { class: 'troca-validacao troca-validacao-aviso', style: 'grid-column:1/-1;margin:0 0 8px;' }, trocasDaCelula.map(t => h('div', {},
+    t.estado === 'validada'
+      ? `⇄ Troca validada neste dia: ${trocaDescricao(t)} Se mudares aqui quem trabalha ou as horas, a troca e as contas entre colegas não mudam sozinhas — se deixar de se aplicar, anula-a em Contas entre colegas.`
+      : `⇄ Troca por decidir neste dia (${trocaEstadoTexto(t).toLowerCase()}): ${trocaDescricao(t)} Se alterares este dia, a app volta a verificar a troca quando for aceite/validada.`))) : null;
   const overrideRow = podeOverride ? h('label', { class: 'field span2', style: 'display:flex;align-items:center;gap:8px;flex-direction:row;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:8px 12px;' }, [
     overrideCheckbox,
     h('span', { style: 'font-weight:700;color:#92400e;' }, 'Tornar Disponível neste Dia (Override) — atribui turno sem alterar a marcação de Férias/Ausências'),
@@ -36252,6 +36361,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     h('p', { class: 'field-helper-text', style: 'margin:0 0 14px;font-weight:700;' }, `${diaInfo ? diaInfo.label : diaKey}, ${formatDate(dataISOCelula)}`),
     h('div', { class: 'form-grid' }, [
       overrideBanner,
+      trocaBannerCelula,
       overrideRow,
       h('div', { class: 'field span2' }, [h('label', {}, 'Tipo'), tipoSelect]),
       avisoOrigemHESemTurno,
@@ -36674,8 +36784,10 @@ async function trocaAtualizar(troca, patch) {
   return updated;
 }
 // ---- Resposta do colega ----
-async function trocaResponderColega(troca, aceitar) {
-  if (String(troca.colegaId) !== String(activeUser.id) || troca.estado !== 'aguarda_colega') return { erro: 'Esta troca já não está à espera da tua resposta.' };
+async function trocaResponderColega(trocaOriginal, aceitar) {
+  const troca = await trocaRecarregar(trocaOriginal);
+  if (String(troca.colegaId) !== String(activeUser.id) || troca.estado !== 'aguarda_colega') return { erro: `Esta troca já não está à espera da tua resposta (${trocaEstadoEfetivoTexto(troca).toLowerCase()}).` };
+  if (aceitar && trocaExpirada(troca)) return { erro: 'O dia desta troca já passou — já não pode ser aceite.' };
   if (aceitar) { const v = trocaValidarRegisto(troca); if (v.erros.length) return { erro: `Esta troca já não é possível: ${v.erros.join(' ')} Recusa-a e combinem outra.` }; }
   const updated = await trocaAtualizar(troca, { estado: aceitar ? 'aguarda_direcao' : 'recusada_colega', colegaRespondeuEm: new Date().toISOString() });
   if (!updated) return { erro: `Não foi possível guardar a resposta. ${lastDbError || ''}`.trim() };
@@ -36688,6 +36800,130 @@ async function trocaResponderColega(troca, aceitar) {
     await trocasEnviarRecado(updated.autorId, `${trocasNomeUtilizador(updated.colegaId)} recusou a tua proposta de troca (${formatDate(updated.diaA)}).`, 'mensagem', 'escala_trocas', updated.id);
   }
   return { troca: updated };
+}
+// ---- Ciclo de vida das trocas (2026-09-29, Hugo: "possibilidade de reverter tanto pelos intervenientes como pela
+// Direção? torna infalível"). Estados: aguarda_colega → aguarda_direcao → validada; saídas: recusada_colega,
+// rejeitada, anulada (desistência, cancelamento ou anulação). Uma troca por decidir cujo 1.º dia já passou fica
+// "Expirada" (calculado, nunca gravado) e já não pode ser aceite nem validada. Antes de qualquer decisão, a app
+// relê a troca do servidor (e a gravação usa o bloqueio de edição simultânea) — duas pessoas a decidir ao mesmo
+// tempo nunca geram duas decisões.
+const TROCA_PREFIXO_PEDIDO_ANULAR = 'Pedido para anular troca validada';
+function trocaPrimeiroDia(t) { return [t && t.diaA, t && t.diaB].filter(Boolean).sort()[0] || ''; }
+function trocaEmAberto(t) { return !!t && !t.eliminado && ['aguarda_colega', 'aguarda_direcao'].includes(t.estado); }
+function trocaExpirada(t) { return trocaEmAberto(t) && trocaPrimeiroDia(t) < todayISO(); }
+function trocaEstadoEfetivoTexto(t) { return trocaExpirada(t) ? 'Expirada (o dia passou sem decisão)' : trocaEstadoTexto(t); }
+function trocaSouParticipante(t) { return !!activeUser && !!t && [String(t.autorId), String(t.colegaId)].includes(String(activeUser.id)); }
+function trocaPodeDesistir(t) {
+  if (!trocaEmAberto(t) || trocaExpirada(t) || !trocaSouParticipante(t)) return false;
+  return t.estado === 'aguarda_direcao' || String(t.autorId) === String(activeUser.id);
+}
+function trocaPodePedirAnulacao(t) { return !!t && !t.eliminado && t.estado === 'validada' && trocaSouParticipante(t) && trocaPrimeiroDia(t) >= todayISO(); }
+function trocaPedidosAnulacaoAbertos(t) {
+  return (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_trocas' && String(r.referenciaId) === String(t.id)
+    && (r.tipo || 'mensagem') === 'tarefa' && !r.tratado && String(r.mensagem || '').startsWith(TROCA_PREFIXO_PEDIDO_ANULAR));
+}
+async function trocaRecarregar(t) {
+  try {
+    const f = await dbFetchOne('escalaTrocas', t.id);
+    if (f) { STATE.escalaTrocas = (STATE.escalaTrocas || []).map(x => String(x.id) === String(f.id) ? f : x); return f; }
+  } catch (e) { /* sem rede: segue com a cópia local — a gravação continua protegida pelo bloqueio de edição */ }
+  return (STATE.escalaTrocas || []).find(x => String(x.id) === String(t.id)) || t;
+}
+function trocaDiasTexto(t) { return `${formatDate(t.diaA)}${t.diaB && t.diaB !== t.diaA ? ` e ${formatDate(t.diaB)}` : ''}`; }
+// Um dos intervenientes desiste (autor antes ou depois de o colega aceitar; colega depois de ter aceitado).
+async function trocaDesistir(troca) {
+  const t = await trocaRecarregar(troca);
+  if (!trocaPodeDesistir(t)) return { erro: 'Esta troca já não pode ser cancelada por ti — já foi decidida ou o dia já passou.' };
+  const eraDirecao = t.estado === 'aguarda_direcao';
+  const upd = await trocaAtualizar(t, { estado: 'anulada', validadoPor: `${currentUserName()} (desistiu)`, validadoEm: new Date().toISOString() });
+  if (!upd) return { erro: `Não foi possível gravar. ${lastDbError || ''}`.trim() };
+  await marcarTratadasTarefasReferencia('escala_trocas', upd.id);
+  const outro = String(upd.autorId) === String(activeUser.id) ? upd.colegaId : upd.autorId;
+  const txt = `${currentUserName()} desistiu da troca de ${trocaDiasTexto(upd)} — fica sem efeito${eraDirecao ? ' e já não precisa de validação' : ''}.`;
+  await trocasEnviarRecado(outro, txt, 'mensagem', 'escala_trocas', upd.id);
+  if (eraDirecao) for (const u of trocasDestinatariosDirecao([upd.autorId, upd.colegaId])) await trocasEnviarRecado(u.id, txt, 'mensagem', 'escala_trocas', upd.id);
+  return { troca: upd };
+}
+// A Direção cancela uma troca que ainda está à espera do colega (ou que expirou sem decisão).
+async function trocaCancelarPelaDirecao(troca) {
+  if (!souDirecaoHorariosGlobal()) return { erro: 'Só a Direção pode cancelar trocas.' };
+  const t = await trocaRecarregar(troca);
+  if (!trocaEmAberto(t)) return { erro: 'Esta troca já foi decidida.' };
+  const upd = await trocaAtualizar(t, { estado: 'anulada', validadoPor: `${currentUserName()} (cancelou)`, validadoEm: new Date().toISOString() });
+  if (!upd) return { erro: `Não foi possível gravar. ${lastDbError || ''}`.trim() };
+  await marcarTratadasTarefasReferencia('escala_trocas', upd.id);
+  const txt = `A troca de ${trocaDiasTexto(upd)} (${trocasNomeUtilizador(upd.autorId)} ↔ ${trocasNomeUtilizador(upd.colegaId)}) foi cancelada pela Direção${trocaExpirada(t) ? ' — o dia passou sem decisão' : ''}.`;
+  await trocasEnviarRecado(upd.autorId, txt, 'mensagem', 'escala_trocas', upd.id);
+  await trocasEnviarRecado(upd.colegaId, txt, 'mensagem', 'escala_trocas', upd.id);
+  return { troca: upd };
+}
+// Um interveniente pede à Direção para anular uma troca JÁ validada (antes do dia).
+async function trocaPedirAnulacao(troca, motivo) {
+  const t = await trocaRecarregar(troca);
+  if (!trocaPodePedirAnulacao(t)) return { erro: 'Só se pode pedir para anular uma troca validada antes do dia da troca.' };
+  if (trocaPedidosAnulacaoAbertos(t).length) return { erro: 'Já há um pedido para anular esta troca — aguarda a decisão da Direção.' };
+  const m = String(motivo || '').trim();
+  const txt = `${TROCA_PREFIXO_PEDIDO_ANULAR} — ${currentUserName()} pede para anular: ${trocaDescricao(t)}${m ? `\nMotivo: ${m}` : ''}\nSe for anulada, o horário volta ao que era e as horas saem das contas entre colegas.`;
+  const dest = trocasDestinatariosDirecao([t.autorId, t.colegaId]);
+  let enviados = 0;
+  for (const u of dest) { if (await trocasEnviarRecado(u.id, txt, 'tarefa', 'escala_trocas', t.id)) enviados += 1; }
+  if (!enviados) return { erro: `Não foi possível enviar o pedido. ${lastDbError || ''}`.trim() };
+  const outro = String(t.autorId) === String(activeUser.id) ? t.colegaId : t.autorId;
+  await trocasEnviarRecado(outro, `${currentUserName()} pediu à Direção para anular a troca de ${trocaDiasTexto(t)}${m ? ` (motivo: ${m})` : ''}. Até a Direção decidir, a troca mantém-se.`, 'mensagem', 'escala_trocas', t.id);
+  return { ok: true };
+}
+// A Direção decide manter a troca depois de um pedido de anulação.
+async function trocaManterAposPedido(troca) {
+  if (!souDirecaoHorariosGlobal()) return { erro: 'Só a Direção pode decidir.' };
+  const t = await trocaRecarregar(troca);
+  const pedidos = trocaPedidosAnulacaoAbertos(t);
+  const resultados = await Promise.all(pedidos.map(r => dbMarcarRecadoTratado(r.id)));
+  resultados.forEach(u => { if (u) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === u.id ? u : x); });
+  const txt = `A Direção decidiu manter a troca de ${trocaDiasTexto(t)} (${trocasNomeUtilizador(t.autorId)} ↔ ${trocasNomeUtilizador(t.colegaId)}) — continua válida.`;
+  await trocasEnviarRecado(t.autorId, txt, 'mensagem', 'escala_trocas', t.id);
+  await trocasEnviarRecado(t.colegaId, txt, 'mensagem', 'escala_trocas', t.id);
+  return { troca: t };
+}
+// Estado + ações de uma troca, para mostrar junto do recado mais recente dessa troca na Gaveta.
+function trocaPainelAcoesEl(t, aoMudar, opts) {
+  if (!t) return null;
+  opts = opts || {};
+  const agir = (fn, ok) => requireAuth(async () => { const res = await fn(); if (res && res.erro) showToast(res.erro, 'error'); else { showToast(ok, 'success'); if (aoMudar) aoMudar(); } });
+  const botoes = [];
+  if (trocaPodeDesistir(t)) {
+    const b = h('button', { type: 'button', class: 'troca-acao-btn' }, [Icon('x', { size: 13, strokeWidth: 2.4 }), h('span', {}, t.estado === 'aguarda_colega' ? 'Retirar proposta' : 'Desistir da troca')]);
+    b.addEventListener('click', () => confirmDialog('Desistir desta troca? Fica sem efeito e os outros são avisados.', () => agir(() => trocaDesistir(t), 'Troca cancelada.'), { danger: true, confirmLabel: 'Desistir' }));
+    botoes.push(b);
+  }
+  if (trocaPodePedirAnulacao(t) && !trocaPedidosAnulacaoAbertos(t).length) {
+    const b = h('button', { type: 'button', class: 'troca-acao-btn' }, [Icon('undo', { size: 13, strokeWidth: 2.4 }), h('span', {}, 'Pedir para anular')]);
+    b.addEventListener('click', () => abrirModalPedirAnulacaoTroca(t, aoMudar));
+    botoes.push(b);
+  }
+  const estadoCls = t.estado === 'validada' ? 'verde' : (trocaEmAberto(t) && !trocaExpirada(t) ? 'laranja' : 'cinza');
+  const pedidoAberto = t.estado === 'validada' && trocaPedidosAnulacaoAbertos(t).length;
+  if (opts.semEstado && !botoes.length) return null;
+  return h('div', { class: 'troca-painel' }, [
+    opts.semEstado ? null : h('span', { class: `troca-estado-chip ${estadoCls}` }, [Icon('trocaColegas', { size: 12, strokeWidth: 2.4 }), h('span', {}, `Estado atual: ${trocaEstadoEfetivoTexto(t)}${pedidoAberto ? ' · pedido de anulação por decidir' : ''}`)]),
+    botoes.length ? h('div', { class: 'troca-painel-botoes' }, botoes) : null,
+  ]);
+}
+function abrirModalPedirAnulacaoTroca(t, aoMudar) {
+  trocasAbrirModal('Pedir para anular a troca', (corpo, fechar) => {
+    const motivo = h('textarea', { class: 'textarea', rows: '2', placeholder: 'ex: já não preciso da troca' });
+    const erroEl = h('p', { class: 'form-error', style: 'margin:0 0 8px;' });
+    const enviar = h('button', { class: 'btn btn-primary', type: 'button' }, 'Enviar pedido à Direção');
+    enviar.addEventListener('click', () => requireAuth(async () => {
+      enviar.setAttribute('disabled', 'disabled');
+      const res = await trocaPedirAnulacao(t, motivo.value);
+      if (res.erro) { erroEl.textContent = res.erro; enviar.removeAttribute('disabled'); return; }
+      showToast('Pedido enviado à Direção. Até decidir, a troca mantém-se.', 'success'); fechar(); if (aoMudar) aoMudar();
+    }));
+    corpo.append(h('p', { class: 'field-helper-text', style: 'margin:0 0 10px;' }, trocaDescricao(t)),
+      h('p', { class: 'field-helper-text', style: 'margin:0 0 10px;' }, 'A troca já foi validada, por isso só a Direção a pode anular. Se for anulada, o horário volta ao que era e as horas saem das contas entre colegas. O colega também é avisado.'),
+      trocasCampo('Motivo (opcional)', motivo), erroEl,
+      h('div', { class: 'form-actions' }, [enviar, h('button', { class: 'btn btn-secondary', type: 'button', onclick: fechar }, 'Cancelar')]));
+  });
 }
 // ---- Aplicar/desfazer no horário (só turnos completos, semanas não passadas) ----
 function trocaPartesParaHorario(t) {
@@ -36705,7 +36941,7 @@ async function trocaAplicarNoHorario(t) {
     if (info.erro) return { ok: false, motivo: `${formatDate(p.dia)}: ${info.erro}` };
     if (!info.completo) return { ok: false, motivo: `${formatDate(p.dia)}: é só parte do turno — ajustar o horário à mão` };
     if (info.semana.semanaInicio < hojeSeg) return { ok: false, motivo: `${formatDate(p.dia)}: semana já passada (histórico congelado)` };
-    if (escalaAusenciaDoDia(p.para, p.dia)) return { ok: false, motivo: `${formatDate(p.dia)}: ${trocasNomeUtilizador(p.para)} tem uma ausência registada nesse dia` };
+    if (trocaAusenciaNoDia(p.para, p.dia)) return { ok: false, motivo: `${formatDate(p.dia)}: ${trocasNomeUtilizador(p.para)} tem uma ausência registada nesse dia` };
     if (!mesmoDia && escalaVagaDoColaboradorNoDia(info.semana, info.diaKey, p.para)) return { ok: false, motivo: `${formatDate(p.dia)}: ${trocasNomeUtilizador(p.para)} já tem turno nesse dia — ajustar à mão` };
     alvos.push({ p, info });
   }
@@ -36740,29 +36976,52 @@ async function trocaAplicarNoHorario(t) {
   return { ok: true };
 }
 async function trocaDesfazerNoHorario(t) {
-  const hojeSeg = escalaSegundaFeiraDaSemanaDeISO(todayISO());
-  for (const sem of (STATE.escalaSemanas || []).filter(s => s.semanaInicio >= hojeSeg)) {
+  const hoje = todayISO();
+  const hojeSeg = escalaSegundaFeiraDaSemanaDeISO(hoje);
+  const envolvidos = new Set([String(t.autorId), String(t.colegaId)]);
+  const porAjustar = [];
+  for (const sem of (STATE.escalaSemanas || []).filter(x => !x.eliminado && x.semanaInicio >= hojeSeg)) {
     let mudou = false;
     const dados = JSON.parse(JSON.stringify(sem.dados || {}));
     Object.keys(dados).forEach(cod => {
       Object.keys((dados[cod] && dados[cod].dias) || {}).forEach(dk => {
         const dia = dados[cod].dias[dk];
-        if (dia && String(dia.trocaId) === String(t.id)) {
-          const antes = dia.colaboradorIdAntesTroca;
-          const novo = Object.assign({}, dia);
-          delete novo.trocaId; delete novo.colaboradorIdAntesTroca;
-          if (antes === null || antes === undefined) delete novo.colaboradorId; else novo.colaboradorId = antes;
-          dados[cod].dias[dk] = novo; mudou = true;
-        }
+        if (!dia || String(dia.trocaId) !== String(t.id)) return;
+        const dataISO = escalaDataDoDia(sem.semanaInicio, dk);
+        if (dataISO < hoje) { porAjustar.push(`${formatDate(dataISO)} já passou — fica como foi`); return; }
+        const novo = Object.assign({}, dia);
+        const antes = dia.colaboradorIdAntesTroca;
+        delete novo.trocaId; delete novo.colaboradorIdAntesTroca;
+        // Célula alterada à mão depois da troca (outra pessoa lá) → não se repõe por cima dessa alteração.
+        const intacta = dia.colaboradorId === null || dia.colaboradorId === undefined || envolvidos.has(String(dia.colaboradorId));
+        if (intacta) { if (antes === null || antes === undefined) delete novo.colaboradorId; else novo.colaboradorId = antes; }
+        else porAjustar.push(`${formatDate(dataISO)} (${cod}) foi alterado depois da troca`);
+        dados[cod].dias[dk] = novo; mudou = true;
       });
     });
     if (mudou) {
       const updated = await dbUpdate('escalaSemanas', sem.id, { dados }, { base: sem });
-      if (!updated) return { ok: false };
-      STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === updated.id ? updated : s);
+      if (!updated) return { ok: false, porAjustar };
+      STATE.escalaSemanas = STATE.escalaSemanas.map(s2 => s2.id === updated.id ? updated : s2);
     }
   }
-  return { ok: true };
+  return { ok: true, porAjustar };
+}
+// Semana (re)gerada de raiz (ex: rascunho eliminado e gerado outra vez): volta a aplicar as trocas validadas desses dias.
+async function trocasReaplicarNaSemana(semana) {
+  if (!semana || !semana.semanaInicio) return 0;
+  const ini = semana.semanaInicio;
+  const fim = (() => { const d = new Date(ini + 'T12:00:00'); d.setDate(d.getDate() + 6); return dateToISO(d); })();
+  const dentro = (d) => !!d && d >= ini && d <= fim;
+  let n = 0;
+  for (const t of (STATE.escalaTrocas || []).filter(x => !x.eliminado && x.estado === 'validada' && x.aplicadoHorario && (dentro(x.diaA) || dentro(x.diaB)))) {
+    try {
+      const r = await trocaAplicarNoHorario(t);
+      if (r.ok) n += 1;
+      else await trocaAtualizar(t, { aplicadoHorario: false, aplicacaoNota: `Semana gerada de novo — por aplicar à mão: ${r.motivo}` });
+    } catch (e) { console.warn('[Trocas] não foi possível reaplicar:', formatarErroSeguro(e)); }
+  }
+  return n;
 }
 async function trocasCriarMovimento(mov) {
   const criado = await dbInsert('escalaTrocasMovimentos', Object.assign({ criadoPor: currentUserName() }, mov));
@@ -36775,9 +37034,11 @@ async function trocasAtualizarMovimento(m, patch) {
   return updated;
 }
 // ---- Decisão da Direção ----
-async function trocaDecidirDirecao(troca, validar) {
+async function trocaDecidirDirecao(trocaOriginal, validar) {
   if (!souDirecaoHorariosGlobal()) return { erro: 'Só a Direção (Hugo Cunha / Paulo Freitas) pode validar trocas.' };
-  if (troca.estado !== 'aguarda_direcao') return { erro: 'Esta troca já não está à espera de validação.' };
+  const troca = await trocaRecarregar(trocaOriginal);
+  if (troca.estado !== 'aguarda_direcao') return { erro: `Esta troca já não está à espera de validação (${trocaEstadoEfetivoTexto(troca).toLowerCase()}${troca.validadoPor ? ` — ${troca.validadoPor}` : ''}).` };
+  if (validar && trocaExpirada(troca)) return { erro: 'O dia desta troca já passou — já não pode ser validada. Rejeita-a ou cancela-a.' };
   const envolvidos = [String(troca.autorId), String(troca.colegaId)];
   if (envolvidos.includes(String(activeUser.id)) && trocasDestinatariosDirecao(envolvidos).some(u => String(u.id) !== String(activeUser.id))) {
     return { erro: 'Estás envolvido nesta troca — tem de ser a outra pessoa da Direção a validar.' };
@@ -36807,25 +37068,30 @@ async function trocaDecidirDirecao(troca, validar) {
   const aplic = await trocaAplicarNoHorario(upd);
   upd = await trocaAtualizar(upd, { aplicadoHorario: aplic.ok, aplicacaoNota: aplic.ok ? 'Turnos trocados no horário automaticamente.' : `Por aplicar à mão: ${aplic.motivo}` }) || upd;
   await marcarTratadasTarefasReferencia('escala_trocas', upd.id);
-  const txt = `A troca foi validada pela Direção: ${trocaDescricao(upd)}${aplic.ok ? ' O horário já foi atualizado.' : ''}`;
+  const txt = `A troca foi validada pela Direção: ${trocaDescricao(upd)}${aplic.ok ? ' O horário já foi atualizado.' : ''}\nSe precisares de a desfazer, podes pedir à Direção para a anular até ao dia da troca.`;
   await trocasEnviarRecado(upd.autorId, txt, 'mensagem', 'escala_trocas', upd.id);
   await trocasEnviarRecado(upd.colegaId, txt, 'mensagem', 'escala_trocas', upd.id);
   return { troca: upd, aplicacao: aplic };
 }
-// Direção anula uma troca já validada: devolve o horário e retira o movimento da conta-corrente.
-async function trocaAnular(troca) {
+// Direção anula uma troca já validada: devolve o horário (só nos dias que ainda não passaram e só nas células que
+// ninguém alterou depois) e retira as horas da conta-corrente.
+async function trocaAnular(trocaOriginal) {
   if (!souDirecaoHorariosGlobal()) return { erro: 'Só a Direção pode anular trocas.' };
-  const desfeito = troca.aplicadoHorario ? await trocaDesfazerNoHorario(troca) : { ok: true };
+  const troca = await trocaRecarregar(trocaOriginal);
+  if (troca.estado !== 'validada') return { erro: `Esta troca já não está validada (${trocaEstadoEfetivoTexto(troca).toLowerCase()}).` };
+  const desfeito = troca.aplicadoHorario ? await trocaDesfazerNoHorario(troca) : { ok: true, porAjustar: [] };
   if (!desfeito.ok) return { erro: 'Não foi possível repor o horário — tenta outra vez.' };
   for (const m of (STATE.escalaTrocasMovimentos || []).filter(x => !x.eliminado && String(x.trocaId) === String(troca.id))) {
     await trocasAtualizarMovimento(m, { eliminado: true });
   }
-  const upd = await trocaAtualizar(troca, { estado: 'anulada', aplicadoHorario: false });
+  const notaHorario = (desfeito.porAjustar || []).length ? `Horário por confirmar à mão: ${desfeito.porAjustar.join('; ')}` : (troca.aplicadoHorario ? 'Horário reposto automaticamente.' : '');
+  const upd = await trocaAtualizar(troca, { estado: 'anulada', aplicadoHorario: false, aplicacaoNota: notaHorario, validadoPor: `${currentUserName()} (anulou)`, validadoEm: new Date().toISOString() });
   if (!upd) return { erro: `Não foi possível gravar. ${lastDbError || ''}`.trim() };
-  const txt = `A troca de ${formatDate(upd.diaA)} (${trocasNomeUtilizador(upd.autorId)} ↔ ${trocasNomeUtilizador(upd.colegaId)}) foi anulada pela Direção.`;
+  await marcarTratadasTarefasReferencia('escala_trocas', upd.id);
+  const txt = `A troca de ${trocaDiasTexto(upd)} (${trocasNomeUtilizador(upd.autorId)} ↔ ${trocasNomeUtilizador(upd.colegaId)}) foi anulada pela Direção.${troca.aplicadoHorario ? ((desfeito.porAjustar || []).length ? ' O horário vai ser acertado pela Direção.' : ' O horário voltou ao que era.') : ''} As horas saíram das contas entre colegas.`;
   await trocasEnviarRecado(upd.autorId, txt, 'mensagem', 'escala_trocas', upd.id);
   await trocasEnviarRecado(upd.colegaId, txt, 'mensagem', 'escala_trocas', upd.id);
-  return { troca: upd };
+  return { troca: upd, porAjustar: desfeito.porAjustar || [] };
 }
 // ---- Compensação com Banco de Horas (pedida por quem deve; validada pela Direção) ----
 async function trocasPedirCompensacaoBanco(credorId, horas, nota) {
@@ -37216,8 +37482,9 @@ function buildCartaoTrocasPessoal(rerender) {
   const uid = String(activeUser.id);
   const saldos = trocasSaldosDoUtilizador(uid);
   const trocas = (STATE.escalaTrocas || []).filter(t => !t.eliminado && (String(t.autorId) === uid || String(t.colegaId) === uid));
-  const aResponder = trocas.filter(t => t.estado === 'aguarda_colega' && String(t.colegaId) === uid);
-  const emCurso = trocas.filter(t => ['aguarda_colega', 'aguarda_direcao'].includes(t.estado) && !(t.estado === 'aguarda_colega' && String(t.colegaId) === uid));
+  const aResponder = trocas.filter(t => t.estado === 'aguarda_colega' && String(t.colegaId) === uid && !trocaExpirada(t));
+  const emCurso = trocas.filter(t => ['aguarda_colega', 'aguarda_direcao'].includes(t.estado) && !(t.estado === 'aguarda_colega' && String(t.colegaId) === uid && !trocaExpirada(t)))
+    .filter(t => !trocaExpirada(t) || trocaPrimeiroDia(t) >= dateToISO(new Date(Date.now() - 7 * 864e5))); // expiradas só aparecem uma semana
   const compPend = (STATE.escalaTrocasMovimentos || []).filter(m => !m.eliminado && m.estado === 'pendente' && (String(m.devedorId) === uid || String(m.credorId) === uid));
   const linhas = [];
   saldos.forEach(s => {
@@ -37239,7 +37506,17 @@ function buildCartaoTrocasPessoal(rerender) {
       h('span', {}, [h('b', {}, 'Proposta para ti: '), trocaDescricao(t)]), trocaAvisosEl({ erros: val.erros, avisos: val.avisos }), h('div', { style: 'display:flex;gap:6px;' }, [aceitar, recusar]),
     ]));
   });
-  emCurso.forEach(t => linhas.push(h('p', { class: 'cell-muted', style: 'margin:0;font-size:12.5px;' }, `⏳ ${trocaEstadoTexto(t)}: troca de ${formatDate(t.diaA)} com ${trocasNomeUtilizador(String(t.autorId) === uid ? t.colegaId : t.autorId)}`)));
+  emCurso.forEach(t => linhas.push(h('div', { class: 'trocas-linha-estado' }, [
+    h('span', {}, `${trocaExpirada(t) ? '⌛' : '⏳'} ${trocaEstadoEfetivoTexto(t)}: troca de ${trocaDiasTexto(t)} com ${trocasNomeUtilizador(String(t.autorId) === uid ? t.colegaId : t.autorId)}`),
+    trocaPainelAcoesEl(t, rerender, { semEstado: true }),
+  ])));
+  // Trocas validadas ainda por acontecer — cada interveniente pode pedir à Direção para anular.
+  trocas.filter(t => t.estado === 'validada' && trocaPrimeiroDia(t) >= todayISO())
+    .sort((a, b) => trocaPrimeiroDia(a).localeCompare(trocaPrimeiroDia(b)))
+    .forEach(t => linhas.push(h('div', { class: 'trocas-linha-estado' }, [
+      h('span', {}, `✅ Validada: troca de ${trocaDiasTexto(t)} com ${trocasNomeUtilizador(String(t.autorId) === uid ? t.colegaId : t.autorId)}`),
+      trocaPainelAcoesEl(t, rerender, { semEstado: true }),
+    ])));
   compPend.forEach(m => linhas.push(h('p', { class: 'cell-muted', style: 'margin:0;font-size:12.5px;' }, `⏳ Compensação com Banco de Horas (${trocasHorasTexto(m.horas)}, ${trocasNomeUtilizador(m.devedorId)} → ${trocasNomeUtilizador(m.credorId)}) aguarda validação da Direção`)));
   if (!linhas.length) linhas.push(h('p', { class: 'cell-muted', style: 'margin:0;font-size:12.5px;' }, 'Sem trocas nem horas em aberto com colegas.'));
   // 2026-09-28 (Hugo: "botão de trocas mais evidente, ícone maior à esquerda, alguma cor"): cartão com
@@ -37284,6 +37561,7 @@ function buildVistaGestaoTrocas(rerender) {
   ]));
   // Pendentes
   const pendTrocas = (STATE.escalaTrocas || []).filter(t => !t.eliminado && t.estado === 'aguarda_direcao');
+  const esperaColega = (STATE.escalaTrocas || []).filter(t => !t.eliminado && t.estado === 'aguarda_colega');
   const pendMov = (STATE.escalaTrocasMovimentos || []).filter(m => !m.eliminado && m.estado === 'pendente');
   const itens = [];
   pendTrocas.forEach(t => {
@@ -37291,6 +37569,14 @@ function buildVistaGestaoTrocas(rerender) {
     const r = h('button', { class: 'btn btn-secondary', type: 'button', style: 'font-size:12px;padding:5px 10px;' }, iconeTexto('x', 'Rejeitar', { tom: 'nao' }));
     const decidir = (sim) => requireAuth(async () => { const res = await trocaDecidirDirecao(t, sim); if (res.erro) showToast(res.erro, 'error'); else { showToast(sim ? (res.aplicacao && !res.aplicacao.ok ? `Troca validada. Horário por ajustar à mão: ${res.aplicacao.motivo}.` : 'Troca validada e horário atualizado.') : 'Troca rejeitada.', sim && res.aplicacao && !res.aplicacao.ok ? 'info' : 'success'); rerender(); } });
     v.addEventListener('click', () => decidir(true)); r.addEventListener('click', () => decidir(false));
+    if (trocaExpirada(t)) {
+      const arquivar = h('button', { class: 'btn btn-secondary', type: 'button', style: 'font-size:12px;padding:5px 10px;' }, iconeTexto('x', 'Cancelar (expirada)', { tom: 'nao' }));
+      arquivar.addEventListener('click', () => requireAuth(async () => { const res = await trocaCancelarPelaDirecao(t); if (res.erro) showToast(res.erro, 'error'); else { showToast('Troca cancelada — os dois foram avisados.', 'success'); rerender(); } }));
+      itens.push(h('div', { style: 'padding:10px;border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc;font-size:13px;display:flex;flex-direction:column;gap:6px;' }, [
+        h('span', { class: 'badge badge-gray', style: 'align-self:flex-start;' }, '⌛ Expirada — o dia passou sem decisão'), h('span', {}, trocaDescricao(t)), h('div', { style: 'display:flex;gap:6px;' }, [arquivar]),
+      ]));
+      return;
+    }
     const valDir = trocaValidarRegisto(t);
     itens.push(h('div', { style: 'padding:10px;border:1px solid #fde2c4;border-radius:10px;background:#fffaf3;font-size:13px;display:flex;flex-direction:column;gap:6px;' }, [trocaTipoBadge(t), h('span', {}, trocaDescricao(t)), trocaAvisosEl({ erros: valDir.erros, avisos: valDir.avisos, infos: valDir.infos }), t.nota ? h('span', { class: 'cell-muted' }, `Nota: ${t.nota}`) : null, h('div', { style: 'display:flex;gap:6px;' }, [v, r])]));
   });
@@ -37301,6 +37587,20 @@ function buildVistaGestaoTrocas(rerender) {
     v.addEventListener('click', () => decidir(true)); r.addEventListener('click', () => decidir(false));
     itens.push(h('div', { style: 'padding:10px;border:1px solid #fde2c4;border-radius:10px;background:#fffaf3;font-size:13px;display:flex;flex-direction:column;gap:6px;' }, [h('span', {}, `${trocasNomeUtilizador(m.devedorId)} paga ${trocasHorasTexto(m.horas)} a ${trocasNomeUtilizador(m.credorId)} com Banco de Horas`), m.nota ? h('span', { class: 'cell-muted' }, `Nota: ${m.nota}`) : null, h('div', { style: 'display:flex;gap:6px;' }, [v, r])]));
   });
+  if (esperaColega.length) {
+    wrap.appendChild(h('div', { class: 'card card-pad' }, [
+      h('h3', { class: 'dash-card-title', style: 'margin:0 0 4px;' }, iconeTexto('hourglass', 'À espera da resposta do colega', { titulo: true })),
+      h('p', { class: 'field-helper-text', style: 'margin:0 0 10px;' }, 'Propostas que ainda não chegaram à Direção. Podes cancelá-las se deixarem de fazer sentido (os dois são avisados).'),
+      h('div', { style: 'display:flex;flex-direction:column;gap:8px;' }, esperaColega.map(t => {
+        const cancelar = h('button', { class: 'btn btn-secondary', type: 'button', style: 'font-size:12px;padding:5px 10px;' }, iconeTexto('x', 'Cancelar', { tom: 'nao' }));
+        cancelar.addEventListener('click', () => requireAuth(() => confirmDialog('Cancelar esta proposta de troca? Os dois são avisados.', async () => { const res = await trocaCancelarPelaDirecao(t); if (res.erro) showToast(res.erro, 'error'); else { showToast('Proposta cancelada.', 'success'); rerender(); } }, { danger: true, confirmLabel: 'Cancelar proposta' })));
+        return h('div', { style: 'padding:10px;border:1px solid #e2e8f0;border-radius:10px;font-size:13px;display:flex;flex-direction:column;gap:6px;' }, [
+          h('span', { class: 'badge ' + (trocaExpirada(t) ? 'badge-gray' : 'badge-orange'), style: 'align-self:flex-start;' }, trocaEstadoEfetivoTexto(t)),
+          h('span', {}, trocaDescricao(t)), h('div', { style: 'display:flex;gap:6px;' }, [cancelar]),
+        ]);
+      })),
+    ]));
+  }
   wrap.appendChild(h('div', { class: 'card card-pad' }, [
     h('h3', { class: 'dash-card-title', style: 'margin:0 0 10px;' }, iconeTexto('trocaColegas', 'Trocas por validar', { titulo: true })),
     itens.length ? h('div', { style: 'display:flex;flex-direction:column;gap:8px;' }, itens) : h('p', { class: 'cell-muted', style: 'margin:0;' }, 'Nada por validar.'),
@@ -37314,13 +37614,13 @@ function buildVistaGestaoTrocas(rerender) {
     h('h3', { class: 'dash-card-title', style: 'margin:0 0 10px;' }, iconeTexto('bookOpen', 'Histórico', { titulo: true })),
     (hist.length || movHist.length) ? h('div', { style: 'display:flex;flex-direction:column;gap:6px;font-size:12.5px;' }, [
       ...hist.map(t => {
-        const kids = [h('b', {}, `${trocaEstadoTexto(t)} · `), trocaDescricao(t)];
+        const kids = [h('b', {}, `${trocaEstadoEfetivoTexto(t)}${t.validadoPor ? ` (${t.validadoPor})` : ''} · `), trocaDescricao(t)];
         if (t.aplicacaoNota && t.estado === 'validada') kids.push(h('span', { class: 'cell-muted' }, ` (${t.aplicacaoNota})`));
         const linha = h('div', { style: 'padding:6px 0;border-bottom:1px solid var(--pharm-100);' }, kids);
         if (t.estado === 'validada') {
           const anular = h('button', { class: 'btn-link', type: 'button', style: 'margin-left:8px;font-size:12px;' }, 'Anular');
-          anular.addEventListener('click', () => requireAuth(() => confirmDialog('Anular esta troca? O horário volta ao que era (se tinha sido trocado automaticamente) e as horas saem da conta-corrente.', async () => {
-            const res = await trocaAnular(t); if (res.erro) showToast(res.erro, 'error'); else { showToast('Troca anulada.', 'success'); rerender(); }
+          anular.addEventListener('click', () => requireAuth(() => confirmDialog('Anular esta troca? O horário volta ao que era nos dias que ainda não passaram (se tinha sido trocado automaticamente) e as horas saem das contas entre colegas. Os dois são avisados.', async () => {
+            const res = await trocaAnular(t); if (res.erro) showToast(res.erro, 'error'); else { showToast(res.porAjustar && res.porAjustar.length ? `Troca anulada. Confirma à mão: ${res.porAjustar.join('; ')}.` : 'Troca anulada.', 'success'); rerender(); }
           }, { danger: true, confirmLabel: 'Anular' })));
           linha.appendChild(anular);
         }
