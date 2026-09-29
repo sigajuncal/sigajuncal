@@ -4922,6 +4922,20 @@
   .dianoite-hora{font-size:10.5px;font-weight:700;font-variant-numeric:tabular-nums;}
   .dianoite-hora-rotulo{font-size:8.5px;font-weight:600;}
   .dianoite-estrelas circle{animation:dianoite-cintilar 3.5s ease-in-out infinite;}
+  /* Tempo animado no cartão Dia/Noite (2026-09-29) — só transform/opacity em grupos inteiros (leve). */
+  .dn-tempo .dn-nuvem{animation:dnNuvem 90s linear infinite;}
+  @keyframes dnNuvem{from{transform:translateX(var(--dx0,-90px));}to{transform:translateX(var(--dx1,430px));}}
+  .dn-tempo .dn-queda{animation:dnQueda 1.2s linear infinite;}
+  @keyframes dnQueda{from{transform:translate(0,0);}to{transform:translate(var(--dx,0px),var(--dy,112px));}}
+  .dn-tempo .dn-balanco{animation:dnBalanco 3.8s ease-in-out infinite alternate;}
+  @keyframes dnBalanco{from{transform:translateX(-5px);}to{transform:translateX(5px);}}
+  .dn-tempo .dn-nevoa{animation:dnNevoa 22s ease-in-out infinite alternate;}
+  @keyframes dnNevoa{from{transform:translateX(calc(var(--dx,20px) * -1));}to{transform:translateX(var(--dx,20px));}}
+  .dn-tempo .dn-relampago{opacity:0;animation:dnRelampago 12s linear infinite;}
+  @keyframes dnRelampago{0%,86%{opacity:0;}87%{opacity:.16;}88%{opacity:.03;}89.5%{opacity:.11;}92%,100%{opacity:0;}}
+  .dn-tempo .dn-raio{opacity:0;animation:dnRaio 12s linear infinite;}
+  @keyframes dnRaio{0%,86.5%{opacity:0;}87%{opacity:.55;}88%{opacity:.08;}89.5%{opacity:.4;}91%,100%{opacity:0;}}
+  @media (prefers-reduced-motion: reduce){ .dn-tempo *{animation:none !important;} }
   @keyframes dianoite-cintilar{0%,100%{opacity:.9;}50%{opacity:.3;}}
   @media (prefers-reduced-motion: reduce){ .dianoite-estrelas circle{animation:none;} }
   .escoar-card{min-height:0;}
@@ -33309,15 +33323,17 @@ function escalaTarefaTexto(dia) {
 // moverTooltipColaborador — segue o cursor a cada mousemove, sempre por
 // cima do ponteiro), para os dois tipos de tooltip na Timeline se
 // comportarem sempre da mesma forma.
+// `texto` pode ser uma função (2026-09-29): o texto é lido no momento em que o aviso abre (ex: o tempo, que muda).
 function instalarTooltipContaHoras(el, texto) {
-  el.addEventListener('mouseenter', (e) => { mostrarTooltipColaborador(texto); moverTooltipColaborador(e); });
+  const ler = () => (typeof texto === 'function' ? texto() : texto);
+  el.addEventListener('mouseenter', (e) => { mostrarTooltipColaborador(ler()); moverTooltipColaborador(e); });
   el.addEventListener('mousemove', moverTooltipColaborador);
   el.addEventListener('mouseleave', esconderTooltipColaborador);
-  el.addEventListener('focus', () => mostrarTooltipColaborador(texto));
+  el.addEventListener('focus', () => mostrarTooltipColaborador(ler()));
   el.addEventListener('blur', esconderTooltipColaborador);
   el.addEventListener('click', (e) => {
     e.stopPropagation();
-    mostrarTooltipColaborador(texto);
+    mostrarTooltipColaborador(ler());
     moverTooltipColaborador(e);
   });
 }
@@ -57460,6 +57476,36 @@ function meteoDescricao(codigo) {
   if (c >= 95) return 'trovoada';
   return '';
 }
+// Descrição por extenso dos códigos WMO do Open-Meteo (campo current.weather_code) — só para o aviso (tooltip).
+function meteoDescricaoCompleta(codigo) {
+  const c = Number(codigo);
+  const mapa = {
+    0: 'Céu limpo', 1: 'Céu pouco nublado', 2: 'Céu parcialmente nublado', 3: 'Céu encoberto',
+    45: 'Nevoeiro', 48: 'Nevoeiro com geada',
+    51: 'Chuvisco fraco', 53: 'Chuvisco moderado', 55: 'Chuvisco forte', 56: 'Chuvisco gelado fraco', 57: 'Chuvisco gelado forte',
+    61: 'Chuva fraca', 63: 'Chuva moderada', 65: 'Chuva forte', 66: 'Chuva gelada fraca', 67: 'Chuva gelada forte',
+    71: 'Neve fraca', 73: 'Neve moderada', 75: 'Neve forte', 77: 'Grãos de neve',
+    80: 'Aguaceiros fracos', 81: 'Aguaceiros moderados', 82: 'Aguaceiros fortes',
+    85: 'Aguaceiros de neve fracos', 86: 'Aguaceiros de neve fortes',
+    95: 'Trovoada', 96: 'Trovoada com granizo fraco', 99: 'Trovoada com granizo forte',
+  };
+  return mapa[c] || (meteoDescricao(c) ? meteoDescricao(c).charAt(0).toUpperCase() + meteoDescricao(c).slice(1) : '');
+}
+// Cena animada do cartão Dia/Noite para cada código WMO: tipo + intensidade (1 fraca … 3 forte).
+function meteoCena(codigo) {
+  const c = Number(codigo);
+  if (codigo === null || codigo === undefined || !Number.isFinite(c)) return null;
+  if (c === 0) return { tipo: 'limpo', int: 0 };
+  if (c === 1 || c === 2) return { tipo: 'nuvens', int: c };
+  if (c === 3) return { tipo: 'encoberto', int: 3 };
+  if (c === 45 || c === 48) return { tipo: 'nevoeiro', int: c === 48 ? 2 : 1 };
+  if (c >= 51 && c <= 57) return { tipo: 'chuvisco', int: (c === 51 || c === 56) ? 1 : (c === 53 ? 2 : 3) };
+  if (c >= 61 && c <= 67) return { tipo: 'chuva', int: (c === 61 || c === 66) ? 1 : (c === 63 ? 2 : 3) };
+  if (c >= 80 && c <= 82) return { tipo: 'aguaceiros', int: c - 79 };
+  if ((c >= 71 && c <= 77) || c === 85 || c === 86) return { tipo: 'neve', int: (c === 71 || c === 77 || c === 85) ? 1 : (c === 73 ? 2 : 3) };
+  if (c >= 95) return { tipo: 'trovoada', int: c === 95 ? 2 : 3 };
+  return null;
+}
 function meteoLerGuardada() {
   try { const m = JSON.parse(localStorage.getItem(METEO_CHAVE) || 'null'); return m && typeof m.temperatura === 'number' ? m : null; } catch (e) { return null; }
 }
@@ -57578,6 +57624,160 @@ function buildWidgetDiaNoite() {
   const sol = el('circle', { r: '8.5', fill: '#fbbf24', stroke: '#f59e0b', 'stroke-width': '1.5' });
   const lua = el('circle', { r: '8', fill: '#e5e7eb', mask: `url(#${uid}Lua)` });
   svg.append(glow, sol, lua);
+  // ---- Tempo animado (2026-09-29, Hugo: "a própria animação do cartão passa a representar o tempo atual") ----
+  // Camada só no céu (recortada acima do horizonte), por cima do sol/lua e por BAIXO de todo o texto. Junto ao topo
+  // (relógio e temperatura) uma máscara esbate as partículas e um véu suave (claro de dia, escuro à noite) garante a
+  // leitura; os relâmpagos também ficam esbatidos aí. Tudo SVG/CSS, poucos elementos animados (grupos inteiros, não
+  // gota a gota). "Reduzir movimento" ligado → cena parada.
+  const tempoClipRect = el('rect', { x: 0, y: 0, width: W, height: HOR });
+  const tempoClip = el('clipPath', { id: `${uid}TempoClip` }); tempoClip.append(tempoClipRect);
+  const gradMasc = el('linearGradient', { id: `${uid}TempoMascGrad`, x1: '0', y1: '0', x2: '0', y2: '1' });
+  gradMasc.append(el('stop', { offset: '0', 'stop-color': '#2e2e2e' }), el('stop', { offset: '0.55', 'stop-color': '#9a9a9a' }), el('stop', { offset: '1', 'stop-color': '#ffffff' }));
+  const tempoMascara = el('mask', { id: `${uid}TempoMasc`, maskUnits: 'userSpaceOnUse', x: '-60', y: '-2000', width: String(W + 120), height: String(2000 + HOR + 20) });
+  const mascFundo = el('rect', { x: -60, y: -2000, width: W + 120, height: 2000 + HOR + 20, fill: '#fff' });
+  const mascTopo = el('rect', { x: -60, y: 0, width: W + 120, height: 50, fill: `url(#${uid}TempoMascGrad)` });
+  tempoMascara.append(mascFundo, mascTopo);
+  const gradVeu = el('linearGradient', { id: `${uid}Veu`, x1: '0', y1: '0', x2: '0', y2: '1' });
+  const veuA = el('stop', { offset: '0' }), veuB = el('stop', { offset: '1' });
+  gradVeu.append(veuA, veuB);
+  const gradDeck = el('linearGradient', { id: `${uid}Deck`, x1: '0', y1: '0', x2: '0', y2: '1' });
+  const deckA = el('stop', { offset: '0' }), deckB = el('stop', { offset: '1' });
+  gradDeck.append(deckA, deckB);
+  const gradNevoa = el('linearGradient', { id: `${uid}Nevoa`, x1: '0', y1: '0', x2: '1', y2: '0' });
+  const nevoaA = el('stop', { offset: '0' }), nevoaB = el('stop', { offset: '0.5' }), nevoaC = el('stop', { offset: '1' });
+  gradNevoa.append(nevoaA, nevoaB, nevoaC);
+  const desfoqueNevoa = el('filter', { id: `${uid}Desfoque`, x: '-10%', y: '-200%', width: '120%', height: '500%' });
+  desfoqueNevoa.append(el('feGaussianBlur', { stdDeviation: '3.2' }));
+  defs.append(tempoClip, gradMasc, tempoMascara, gradVeu, gradDeck, gradNevoa, desfoqueNevoa);
+  const camadaTempo = el('g', { class: 'dn-tempo', 'clip-path': `url(#${uid}TempoClip)`, 'pointer-events': 'none', 'aria-hidden': 'true' });
+  const camadaTempoInterna = el('g', { mask: `url(#${uid}TempoMasc)` });
+  camadaTempo.append(camadaTempoInterna);
+  const veu = el('rect', { x: 0, y: 0, width: W, height: 52, fill: `url(#${uid}Veu)`, 'pointer-events': 'none' });
+  svg.append(camadaTempo, veu);
+  let cardRef = null;
+  let assinaturaTempo = '';
+  let extraAtual = 0; // céu extra por cima quando o cartão cresce (ver ajustarAltura)
+  const aleat = (i) => { const v = Math.sin(i * 12.9898 + 78.233) * 43758.5453; return v - Math.floor(v); };
+  // Nuvem sóbria: 3 bolhas sobre uma base arredondada (0…70 de largura, base em y=0); a opacidade vai no grupo.
+  const nuvemForma = (cor) => {
+    const gg = el('g', { fill: cor });
+    gg.append(el('circle', { cx: 20, cy: -9, r: 11 }), el('circle', { cx: 38, cy: -16, r: 15 }), el('circle', { cx: 57, cy: -8, r: 10 }), el('rect', { x: 8, y: -10, width: 60, height: 10, rx: 5 }));
+    return gg;
+  };
+  const desenharTempo = (cena, eDia) => {
+    const topo = -extraAtual, alturaCeu = HOR + extraAtual;
+    tempoClipRect.setAttribute('y', topo); tempoClipRect.setAttribute('height', alturaCeu);
+    mascTopo.setAttribute('y', topo);
+    veu.setAttribute('y', topo);
+    veuA.setAttribute('stop-color', eDia ? 'rgba(255,255,255,0.5)' : 'rgba(5,10,28,0.55)');
+    veuB.setAttribute('stop-color', eDia ? 'rgba(255,255,255,0)' : 'rgba(5,10,28,0)');
+    const assinatura = `${cena ? cena.tipo + cena.int : '-'}|${eDia ? 1 : 0}|${extraAtual}`;
+    if (assinatura === assinaturaTempo) return;
+    assinaturaTempo = assinatura;
+    camadaTempoInterna.textContent = '';
+    if (!cena || cena.tipo === 'limpo') return;
+    const carregado = cena.tipo !== 'nuvens';
+    const escuro = cena.tipo === 'trovoada';
+    // Cores (sóbrias) conforme o dia/noite e o peso do céu
+    const corNuvem = eDia ? (escuro ? '#aeb8c4' : carregado ? '#e6eaef' : '#ffffff') : (carregado ? '#56627f' : '#8b98b8');
+    const corNuvemTras = eDia ? (escuro ? '#939fad' : carregado ? '#cbd3dc' : '#ffffff') : (carregado ? '#3f4a66' : '#6f7c9c');
+    const opNuvem = eDia ? (carregado ? 0.92 : 0.88) : (carregado ? 0.78 : 0.32);
+    const opNuvemTras = eDia ? (carregado ? 0.85 : 0.55) : (carregado ? 0.7 : 0.22);
+    const nuvem = (i, xFrac, yFrac, esc, frente) => {
+      const dur = 70 + aleat(i + 3) * 60 - (frente ? 10 : 0);
+      const mov = el('g', { class: 'dn-nuvem' });
+      mov.style.setProperty('--dx0', `${(-80 * esc).toFixed(0)}px`);
+      mov.style.setProperty('--dx1', `${W + 10}px`);
+      mov.style.animationDuration = `${dur.toFixed(1)}s`;
+      mov.style.animationDelay = `${(-xFrac * dur).toFixed(1)}s`;
+      const pos = el('g', { transform: `translate(0 ${(topo + yFrac * alturaCeu).toFixed(1)}) scale(${esc.toFixed(2)})`, opacity: String(frente ? opNuvem : opNuvemTras) });
+      pos.appendChild(nuvemForma(frente ? corNuvem : corNuvemTras));
+      mov.appendChild(pos);
+      return mov;
+    };
+    const juntar = (...nos) => nos.forEach(n => camadaTempoInterna.appendChild(n));
+    // Teto de nuvens (céu encoberto / com precipitação): faixa suave no topo
+    if (carregado && cena.tipo !== 'nevoeiro') {
+      deckA.setAttribute('stop-color', eDia ? (escuro ? 'rgba(120,133,148,0.75)' : 'rgba(205,213,222,0.8)') : 'rgba(40,48,70,0.8)');
+      deckB.setAttribute('stop-color', eDia ? 'rgba(205,213,222,0)' : 'rgba(40,48,70,0)');
+      juntar(el('rect', { x: 0, y: topo, width: W, height: alturaCeu * 0.55, fill: `url(#${uid}Deck)` }));
+    }
+    // Nuvens a passar (mais e maiores quando está encoberto)
+    const planoNuvens = cena.tipo === 'nuvens'
+      ? (cena.int === 1 ? [[0.15, 0.30, 0.9, 1], [0.62, 0.52, 0.7, 0]] : [[0.05, 0.28, 1.0, 1], [0.35, 0.55, 0.75, 0], [0.62, 0.22, 0.85, 1], [0.85, 0.48, 0.65, 0]])
+      : cena.tipo === 'nevoeiro'
+        ? [[0.2, 0.35, 1.1, 0], [0.7, 0.3, 1.0, 0]]
+        : cena.tipo === 'encoberto'
+          ? [[0.0, 0.22, 1.25, 0], [0.22, 0.42, 1.05, 1], [0.45, 0.18, 1.3, 1], [0.66, 0.4, 1.0, 0], [0.84, 0.25, 1.2, 1], [0.95, 0.5, 0.85, 0]]
+          : [[0.05, 0.2, 1.15, 1], [0.3, 0.36, 0.95, 0], [0.55, 0.16, 1.2, 1], [0.8, 0.32, 1.0, 1]];
+    planoNuvens.forEach(([xf, yf, esc, frente], i) => juntar(nuvem(i + 1, xf, yf, esc, !!frente)));
+    // Nevoeiro: véu geral + faixas de névoa a deslizar devagar
+    if (cena.tipo === 'nevoeiro') {
+      const corN = eDia ? 'rgba(255,255,255,' : 'rgba(185,198,222,';
+      nevoaA.setAttribute('stop-color', `${corN}0)`); nevoaB.setAttribute('stop-color', `${corN}${eDia ? 0.5 : 0.24})`); nevoaC.setAttribute('stop-color', `${corN}0)`);
+      juntar(el('rect', { x: 0, y: topo, width: W, height: alturaCeu, fill: eDia ? 'rgba(255,255,255,0.2)' : 'rgba(170,185,210,0.08)' }));
+      const faixas = el('g', { filter: `url(#${uid}Desfoque)` });
+      juntar(faixas);
+      [[0.38, 9, 20], [0.56, 12, 26], [0.72, 11, 18], [0.87, 14, 23]].forEach(([yf, alt, dur], i) => {
+        const faixa = el('rect', { class: 'dn-nevoa', x: -W * 0.3, y: (topo + yf * alturaCeu).toFixed(1), width: W * 1.6, height: alt * (cena.int === 2 ? 1.3 : 1), rx: alt / 2, fill: `url(#${uid}Nevoa)` });
+        faixa.style.setProperty('--dx', `${18 + i * 6}px`);
+        faixa.style.animationDuration = `${dur}s`;
+        faixa.style.animationDelay = `${-(i * 4.5)}s`;
+        faixas.appendChild(faixa);
+      });
+    }
+    // Precipitação: um só grupo animado com duas cópias empilhadas (ciclo contínuo, sem saltos)
+    const queda = (n, desenhar, dur, dx) => {
+      const anim = el('g', { class: 'dn-queda' });
+      anim.style.setProperty('--dy', `${alturaCeu.toFixed(0)}px`);
+      anim.style.setProperty('--dx', `${dx.toFixed(0)}px`);
+      anim.style.animationDuration = `${dur}s`;
+      [0, -1].forEach(k => {
+        const copia = el('g', { transform: `translate(${(k * dx).toFixed(1)} ${(k * alturaCeu).toFixed(1)})` }); // cópia de cima: entra onde a 1.ª sai
+        for (let i = 0; i < n; i++) copia.appendChild(desenhar(i));
+        anim.appendChild(copia);
+      });
+      return anim;
+    };
+    if (['chuvisco', 'chuva', 'aguaceiros', 'trovoada'].includes(cena.tipo)) {
+      const perfil = cena.tipo === 'chuvisco'
+        ? { n: [18, 26, 34][cena.int - 1], comp: 3.5, larg: 0.7, dur: 2.4, op: 0.5 }
+        : cena.tipo === 'chuva'
+          ? { n: [26, 40, 56][cena.int - 1], comp: 7, larg: 0.9, dur: 1.15, op: 0.55 }
+          : cena.tipo === 'aguaceiros'
+            ? { n: [34, 50, 68][cena.int - 1], comp: 8.5, larg: 1.05, dur: 0.85, op: 0.6 }
+            : { n: 58, comp: 8.5, larg: 1.05, dur: 0.85, op: 0.6 };
+      const inclin = 0.3;
+      const corGota = eDia ? (escuro ? '#4f6278' : '#5d7a97') : '#aebbd8';
+      const larguraFaixa = W + inclin * alturaCeu + 20;
+      const gota = (i) => {
+        const x = -10 + aleat(i + 11) * larguraFaixa, y = topo + aleat(i + 211) * alturaCeu;
+        return el('line', { x1: x.toFixed(1), y1: y.toFixed(1), x2: (x - inclin * perfil.comp).toFixed(1), y2: (y + perfil.comp).toFixed(1) });
+      };
+      const grupo = el('g', { stroke: corGota, 'stroke-width': String(perfil.larg), 'stroke-linecap': 'round', opacity: String(perfil.op) });
+      grupo.appendChild(queda(perfil.n, gota, perfil.dur, -inclin * alturaCeu));
+      juntar(grupo);
+    }
+    if (cena.tipo === 'neve') {
+      const n = [22, 34, 48][cena.int - 1];
+      const floco = (i) => el('circle', { cx: (aleat(i + 31) * (W + 20) - 10).toFixed(1), cy: (topo + aleat(i + 131) * alturaCeu).toFixed(1), r: (0.9 + aleat(i + 7) * 1.1).toFixed(2) });
+      const balanco = el('g', { class: 'dn-balanco', fill: '#ffffff', opacity: eDia ? '0.9' : '0.8' });
+      balanco.appendChild(queda(n, floco, [11, 9, 7][cena.int - 1], 0));
+      juntar(balanco);
+    }
+    // Trovoada: clarão suave e ocasional + raio discreto, longe do texto (e sempre esbatido pela máscara no topo)
+    if (cena.tipo === 'trovoada') {
+      juntar(el('rect', { class: 'dn-relampago', x: 0, y: topo, width: W, height: alturaCeu, fill: '#ffffff' }));
+      const rx = W * 0.7, ry0 = topo + alturaCeu * 0.34, ry1 = HOR - 22;
+      const passo = (ry1 - ry0) / 4;
+      const raio = el('polyline', {
+        class: 'dn-raio', fill: 'none', stroke: '#fff4c7', 'stroke-width': '1.4', 'stroke-linejoin': 'round', 'stroke-linecap': 'round',
+        points: [[rx, ry0], [rx - 6, ry0 + passo], [rx + 2, ry0 + passo * 1.6], [rx - 5, ry0 + passo * 2.6], [rx + 1, ry0 + passo * 3.1], [rx - 4, ry1]].map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' '),
+      });
+      juntar(raio);
+    }
+    if (cardRef && cardRef.isConnected) { try { ancorarAnimacoesAoTempo(camadaTempo); } catch (e) { /* ignora */ } }
+  };
   const txtRelogio = el('text', { x: 14, y: 30, class: 'dianoite-relogio', 'data-volatil': '1' });
   const txtEstado = el('text', { x: W - 14, y: 22, 'text-anchor': 'end', class: 'dianoite-estado', 'data-volatil': '1' });
   const txtEsq = el('text', { x: 12, y: HOR + 21, 'text-anchor': 'start', class: 'dianoite-hora' });
@@ -57585,6 +57785,12 @@ function buildWidgetDiaNoite() {
   const txtEsqRot = el('text', { x: 12, y: HOR + 32, 'text-anchor': 'start', class: 'dianoite-hora-rotulo' });
   const txtDirRot = el('text', { x: W - 12, y: HOR + 32, 'text-anchor': 'end', class: 'dianoite-hora-rotulo' });
   svg.append(txtRelogio, txtEstado, txtEsq, txtDir, txtEsqRot, txtDirRot);
+  // Contorno suave por trás do texto do topo (sombra) — legível sobre qualquer céu, nuvem ou gota.
+  [txtRelogio, txtEstado].forEach(t => { t.setAttribute('paint-order', 'stroke'); t.setAttribute('stroke-linejoin', 'round'); t.setAttribute('stroke-width', '3'); });
+  // Zona de toque/hover da temperatura (maior do que o próprio texto) — mostra a descrição por extenso do tempo.
+  const alvoTempo = el('rect', { x: W - 150, y: 0, width: 150, height: 34, fill: 'transparent', style: 'cursor:help;' });
+  svg.appendChild(alvoTempo);
+  let textoTempo = '';
   const alvoDetalhe = el('circle', { r: '16', fill: 'transparent', style: 'cursor:pointer;' });
   svg.appendChild(alvoDetalhe);
   let textoDetalhe = '';
@@ -57628,51 +57834,70 @@ function buildWidgetDiaNoite() {
     ledsCruz.querySelectorAll('circle').forEach(l => l.setAttribute('fill', aberta ? '#6dffa0' : (eDia ? '#b6c0cc' : '#4a5570')));
     halo.style.display = aberta ? '' : 'none';
     farmaciaEstadoTexto = aberta ? 'Farmácia aberta (08:00 – 00:00)' : 'Farmácia fechada — abre às 08:00';
+    // Tempo atual (Open-Meteo, código WMO) → cena animada; sem dados recentes, céu limpo como antes.
+    const meteoAtual = meteoLerGuardada();
+    const meteoValida = !!(meteoAtual && Date.now() - meteoAtual.em < 3 * 60 * 60 * 1000);
+    const cena = meteoValida ? meteoCena(meteoAtual.codigo) : null;
+    const ceuCarregado = !!cena && !['limpo', 'nuvens'].includes(cena.tipo);
+    const ceuEscuro = !!cena && cena.tipo === 'trovoada';
     // céu
-    if (eDia) { ceuTopo.setAttribute('stop-color', crepusculo ? '#8fb8e8' : '#6fb7ea'); ceuBase.setAttribute('stop-color', crepusculo ? '#ffd4a3' : '#dff1fc'); }
+    if (eDia && ceuCarregado) {
+      ceuTopo.setAttribute('stop-color', ceuEscuro ? '#6d7c8e' : '#8fa1b4'); ceuBase.setAttribute('stop-color', ceuEscuro ? '#b3bdc8' : (crepusculo ? '#e2cdb8' : '#d6dee6'));
+    } else if (eDia) { ceuTopo.setAttribute('stop-color', crepusculo ? '#8fb8e8' : '#6fb7ea'); ceuBase.setAttribute('stop-color', crepusculo ? '#ffd4a3' : '#dff1fc'); }
+    else if (ceuCarregado) { ceuTopo.setAttribute('stop-color', ceuEscuro ? '#0f1524' : '#131b2d'); ceuBase.setAttribute('stop-color', ceuEscuro ? '#252c3d' : '#2b3550'); }
     else { ceuTopo.setAttribute('stop-color', '#0d1b38'); ceuBase.setAttribute('stop-color', '#2b3f6b'); }
     chao.setAttribute('fill', eDia ? '#eef3f0' : '#1b2946');
     horizonte.setAttribute('stroke', eDia ? '#9fb3c4' : '#6b7fa6');
     arcoTodo.setAttribute('stroke', eDia ? 'rgba(18,50,74,0.28)' : 'rgba(255,255,255,0.28)');
     arcoFeito.setAttribute('stroke', eDia ? '#f59e0b' : '#cbd5e1');
-    estrelas.style.display = eDia ? 'none' : '';
+    estrelas.style.display = (eDia || ceuCarregado) ? 'none' : '';
+    estrelas.style.opacity = cena && cena.tipo === 'nuvens' ? '0.6' : '';
     const pts = []; for (let i = 0; i <= 40; i++) pts.push(bez((i / 40) * t));
     arcoFeito.setAttribute('d', 'M' + pts.map(p => `${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(' L'));
     const [x, y] = bez(t);
     [glow, sol].forEach(c => { c.setAttribute('cx', x.toFixed(1)); c.setAttribute('cy', y.toFixed(1)); c.style.display = eDia ? '' : 'none'; });
     lua.setAttribute('cx', x.toFixed(1)); lua.setAttribute('cy', y.toFixed(1)); lua.style.display = eDia ? 'none' : '';
+    // Céu encoberto/precipitação/nevoeiro: o sol e a lua ficam velados (sem brilho).
+    glow.style.opacity = ceuCarregado ? '0' : ''; sol.style.opacity = ceuCarregado ? '0.4' : ''; lua.style.opacity = ceuCarregado ? '0.35' : '';
+    desenharTempo(cena, eDia);
     luaBranco.setAttribute('cx', x.toFixed(1)); luaBranco.setAttribute('cy', y.toFixed(1));
     luaPreto.setAttribute('cx', (x + 4).toFixed(1)); luaPreto.setAttribute('cy', (y - 3).toFixed(1));
     alvoDetalhe.setAttribute('cx', x.toFixed(1)); alvoDetalhe.setAttribute('cy', y.toFixed(1));
     // textos
     const corTexto = eDia ? '#12324a' : '#f1f5f9', corSuave = eDia ? '#46627a' : '#c7d2fe';
     txtRelogio.textContent = hhmm(agora); txtRelogio.setAttribute('fill', corTexto);
-    const meteo = meteoLerGuardada();
-    if (meteo && Date.now() - meteo.em < 3 * 60 * 60 * 1000) {
-      const desc = meteoDescricao(meteo.codigo);
-      txtEstado.textContent = `${Math.round(meteo.temperatura)} °C${desc ? ' · ' + desc : ''}`;
+    const meteo = meteoAtual;
+    const haloTexto = eDia ? 'rgba(255,255,255,0.75)' : 'rgba(6,12,30,0.7)';
+    txtRelogio.setAttribute('stroke', haloTexto);
+    if (meteoValida) {
+      // Só a temperatura (2026-09-29): o estado do tempo passa a estar na animação; por extenso fica no aviso.
+      txtEstado.textContent = `${Math.round(meteo.temperatura)} °C`;
       txtEstado.setAttribute('class', 'dianoite-estado dianoite-temperatura');
+      const desc = meteoDescricaoCompleta(meteo.codigo);
+      textoTempo = `${desc ? desc + ' · ' : ''}${Math.round(meteo.temperatura)} °C em S. Félix da Marinha (atualizado às ${hhmm(new Date(meteo.em))})`;
     } else {
       txtEstado.textContent = eDia ? `faltam ${duracaoTxt(fim - agora)} de sol` : `nascer do sol às ${hhmm(fim)}`;
       txtEstado.setAttribute('class', 'dianoite-estado');
+      textoTempo = `Nascer do sol ${hhmm(hoje.nascer)} · Pôr do sol ${hhmm(hoje.por)} (sem dados do tempo neste momento)`;
     }
-    txtEstado.setAttribute('fill', corSuave);
+    txtEstado.setAttribute('fill', eDia ? corTexto : corSuave);
+    txtEstado.setAttribute('stroke', haloTexto);
     txtEsq.textContent = hhmm(inicio); txtDir.textContent = hhmm(fim);
     txtEsqRot.textContent = eDia ? 'nascer do sol' : 'pôr do sol'; txtDirRot.textContent = eDia ? 'pôr do sol' : 'nascer do sol';
     [txtEsq, txtDir].forEach(tx => tx.setAttribute('fill', corTexto));
     [txtEsqRot, txtDirRot].forEach(tx => tx.setAttribute('fill', corSuave));
     textoDetalhe = `${farmaciaEstadoTexto} · Nascer do sol ${hhmm(hoje.nascer)} · Pôr do sol ${hhmm(hoje.por)} · ${Math.floor((hoje.por - hoje.nascer) / 3600000)}h${pad2(Math.round(((hoje.por - hoje.nascer) % 3600000) / 60000))} de luz hoje`
-      + (meteo ? ` · S. Félix da Marinha: ${Math.round(meteo.temperatura)} °C${meteoDescricao(meteo.codigo) ? ', ' + meteoDescricao(meteo.codigo) : ''} (atualizado às ${hhmm(new Date(meteo.em))})` : '');
+      + (meteo ? ` · S. Félix da Marinha: ${Math.round(meteo.temperatura)} °C${meteoDescricaoCompleta(meteo.codigo) ? ', ' + meteoDescricaoCompleta(meteo.codigo).toLowerCase() : ''} (atualizado às ${hhmm(new Date(meteo.em))})` : '');
   };
   atualizar();
   // Temperatura: pede (se a guardada tiver mais de 30 min) e volta a desenhar quando chegar.
   meteoObter().then(atualizar);
-  // Detalhe também ao passar o rato na temperatura (canto superior direito)
-  txtEstado.style.cursor = 'pointer';
-  txtEstado.addEventListener('mouseenter', mostrarDetalheDN(txtEstado));
-  txtEstado.addEventListener('click', mostrarDetalheDN(txtEstado));
-  txtEstado.addEventListener('mouseleave', () => { try { esconderTooltipFlutuante(); } catch (e) { /* ignora */ } });
+  // Descrição do tempo por extenso ao passar o rato ou tocar na temperatura (mesmo aviso dos Horários — reage a toque).
+  txtEstado.style.cursor = 'help';
+  instalarTooltipContaHoras(txtEstado, () => textoTempo);
+  instalarTooltipContaHoras(alvoTempo, () => textoTempo);
   const card = h('div', { class: 'dianoite-card' }, [svg]);
+  cardRef = card;
   const meteoTemporizador = setInterval(() => { if (!card.isConnected) { clearInterval(meteoTemporizador); return; } if (document.visibilityState !== 'hidden') meteoObter().then(atualizar); }, 5 * 60 * 1000);
   const relogio = setInterval(() => { if (!card.isConnected) { clearInterval(relogio); return; } atualizar(); }, 30000);
   // Ciclo dos efeitos da cruz de LEDs (para sozinho quando o cartão sai da página).
@@ -57702,7 +57927,6 @@ function buildWidgetDiaNoite() {
   // altura do card do dia e noite para ocupar esse espaço"): na coluna do meio do topo o cartão estica até ao fundo
   // da linha; o desenho acompanha, com mais céu por cima (o chão, a farmácia e as horas ficam no mesmo sítio e nada
   // fica deformado). O relógio e a temperatura sobem com o topo do céu.
-  let extraAtual = 0;
   const ajustarAltura = (extra) => {
     extra = Math.max(0, Math.round(extra));
     if (Math.abs(extra - extraAtual) < 1) return;
@@ -57711,7 +57935,7 @@ function buildWidgetDiaNoite() {
     ceuRect.setAttribute('y', -extra); ceuRect.setAttribute('height', HOR + extra);
     recorteRect.setAttribute('y', -extra); recorteRect.setAttribute('height', 150 + extra);
     estrelas.querySelectorAll('circle').forEach(c => { const y0 = Number(c.dataset.y0); c.setAttribute('cy', (-extra + y0 * (HOR + extra) / HOR).toFixed(1)); });
-    txtRelogio.setAttribute('y', 30 - extra); txtEstado.setAttribute('y', 22 - extra);
+    txtRelogio.setAttribute('y', 30 - extra); txtEstado.setAttribute('y', 22 - extra); alvoTempo.setAttribute('y', -extra);
     // Arco do sol/lua mais alto na mesma medida (2026-09-26, Hugo: "tornar o arco do dia mais alto para compensar e
     // não ficar tanto céu vazio"): o topo do arco sobe exatamente o que o céu cresceu — fica sempre à mesma distância
     // do topo do cartão; as pontas continuam no horizonte (nascer e pôr do sol).
