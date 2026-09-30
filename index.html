@@ -826,6 +826,12 @@
       margin:0 !important;padding:0 !important;overflow:hidden !important;background:#fff !important;
       -webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;
     }
+    /* 2026-09-30 (Hugo: "espaços coloridos no fim dos documentos... não quero gastar mais tinta"): o fundo da app
+       (cor/padrão da Personalização, injetado com !important) ganhava ao branco e pintava o resto da última folha.
+       Seletores mais específicos → na impressão o fundo é SEMPRE branco, sem padrão. */
+    html:root, html body, html #root, html .app-shell, html .main, html .page-container{
+      background:#fff !important;background-color:#fff !important;background-image:none !important;
+    }
     /* ---- Motor de Impressão Global — ISOLAMENTO RÍGIDO ----
        Existe agora um ÚNICO container de impressão em toda a app
        (#app-print-area, ver prepararImpressaoGlobal() no JS). Antes havia
@@ -3271,6 +3277,17 @@
   .sasu-topo{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin:0 0 8px;}
   .sasu-topo-direita{display:flex;align-items:center;gap:8px;flex-shrink:0;}
   .sasu-card .sasu-info-btn{position:static;}
+  /* Pesquisa dentro do dia da Vacinação (2026-09-30) */
+  .vac-pesquisa-dia-resultados{display:flex;flex-direction:column;gap:4px;max-height:260px;overflow-y:auto;}
+  .vac-pesquisa-dia-item{display:grid;grid-template-columns:52px minmax(0,1.2fr) minmax(0,2fr) auto;align-items:center;gap:10px;width:100%;
+    text-align:left;font:inherit;font-size:13px;background:var(--pharm-50);border:1px solid var(--pharm-100);border-radius:10px;padding:7px 10px;cursor:pointer;}
+  .vac-pesquisa-dia-item:hover{border-color:var(--pharm-300);background:#fff;}
+  .vac-pesquisa-dia-item.cancelada{opacity:.6;}
+  .vac-pesquisa-dia-hora{font-weight:800;font-variant-numeric:tabular-nums;color:var(--pharm-700);}
+  .vac-pesquisa-dia-nome{font-weight:700;color:var(--pharm-900);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .vac-pesquisa-dia-extra{color:var(--pharm-500);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  @media (max-width:640px){ .vac-pesquisa-dia-item{grid-template-columns:44px minmax(0,1fr) auto;} .vac-pesquisa-dia-extra{display:none;} }
+  .vac-pesquisa-destaque{box-shadow:0 0 0 3px #f59e0b !important;transition:box-shadow .3s ease;}
   /* Lista de Espera da Vacinação: cabe sempre na largura do ecrã (2026-09-29) */
   .tabela-espera{table-layout:fixed;width:100%;}
   .tabela-espera th,.tabela-espera td{overflow:hidden;text-overflow:ellipsis;padding-left:10px;padding-right:10px;}
@@ -28530,7 +28547,10 @@ function buildListaMultiPaginaDoc({ cabecalho, colunas, linhas, linhasPrimeira, 
       celulas.map((cel, ci) => {
         const col = colunas[ci] || {};
         const trunc = col.nowrap ? 'white-space:nowrap !important;overflow:hidden !important;text-overflow:ellipsis !important;' : '';
-        return h('td', { style: bordaCel + `text-align:${col.align || 'left'};` + trunc, title: col.nowrap ? String(cel || '') : undefined }, cel);
+        // col.quebra (2026-09-30): texto comprido (ex: Observações) quebra DENTRO da célula, em letra mais pequena —
+        // nunca sai para fora da tabela (a regra geral td{white-space:nowrap} da app deixava-o transbordar).
+        const quebra = col.quebra ? 'white-space:normal !important;overflow-wrap:anywhere;word-break:break-word;font-size:8.5px;line-height:1.25;height:auto;' : '';
+        return h('td', { style: bordaCel + `text-align:${col.align || 'left'};` + trunc + quebra, title: col.nowrap ? String(cel || '') : undefined }, cel);
       }));
   }
   if (!linhas.length) {
@@ -47988,6 +48008,7 @@ function buildVacinacaoPage(container, goTo) {
   let agendaView = 'calendario'; // calendario | lista
   let agendaDiaVista = 'grelha'; // grelha (vagas, como a Agenda de Serviços) | tabela (detalhe completo)
   let agendaDiaSelecionado = null; // dateISO — quando definido, mostra a agenda desse dia
+  let pesquisaDiaVacinacao = { data: null, texto: '' }; // pesquisa dentro do dia aberto (nome, contacto, Nº de Utente)
   // Escolher alguém da Lista de Espera DE DENTRO do formulário de Nova
   // Marcação (pedido explícito 2026-08-11 — substitui o antigo botão
   // "Marcar" na própria Lista de Espera, que trocava de separador sem
@@ -48154,7 +48175,8 @@ function buildVacinacaoPage(container, goTo) {
   /* ============ AGENDA (MARCAÇÕES) ============ */
   function marcacaoVazia() { return Object.assign(emptyRecord(vacinacaoMarcacaoSchema), { campanhaId, data: agendaDiaSelecionado || todayISO(), hora: pad2(Math.floor(VACINACAO_HORA_DEFAULT_INICIO / 60)) + ':' + pad2(VACINACAO_HORA_DEFAULT_INICIO % 60) }); }
   function openNewMarcacao(prefill) {
-    marcacaoDraft = Object.assign(marcacaoVazia(), prefill || {});
+    // Responsável pelo Registo já preenchido com quem tem a sessão iniciada (2026-09-30) — também no "Adicionar Encaixe".
+    marcacaoDraft = Object.assign(marcacaoVazia(), prefill || {}, { responsavel: currentUserName() });
     marcacaoEditId = null; marcacaoOrigemEsperaId = null; marcacaoFormError = ''; showMarcacaoForm = true; showEsperaPicker = false; rerender(); // AUDITORIA 2026-09-29: nunca herda a origem da marcação anterior
     anunciarVagaAtual();
     if (marcacaoDraft.data) vacinacaoRelerDiaDoServidor(campanhaId, marcacaoDraft.data, false);
@@ -48877,7 +48899,7 @@ function buildVacinacaoPage(container, goTo) {
     const estadoBadge = m.estado === 'Administrada' ? h('span', { class: 'badge badge-green' }, 'ADMINISTRADA')
       : m.estado === 'Cancelada' ? h('span', { class: 'badge badge-red' }, 'CANCELADA')
       : h('span', { class: 'badge badge-orange' }, 'PENDENTE');
-    const row = h('tr', { class: 'selectable-row' + (selected ? ' row-selected' : '') }, [
+    const row = h('tr', { class: 'selectable-row' + (selected ? ' row-selected' : ''), 'data-marcacao-id': String(m.id) }, [
       buildSelectionCheckbox(m.id, marcacaoSelectedIds, toggleMarcacaoSelect),
       h('td', {}, formatDate(m.data)),
       h('td', {}, m.hora || '—'),
@@ -49077,7 +49099,7 @@ function buildVacinacaoPage(container, goTo) {
             ? h('span', { class: 'agenda-slot-responsavel', title: 'Administrada por (definitivo)' }, m.administradoPor)
             : buildRespPeriodoBadge(hora))
         : buildRespPeriodoBadge(hora);
-      const row = h('div', { class: 'agenda-slot-row agenda-slot-ocupado selectable-row' + (selecionada ? ' row-selected' : '') }, [
+      const row = h('div', { class: 'agenda-slot-row agenda-slot-ocupado selectable-row' + (selecionada ? ' row-selected' : ''), 'data-marcacao-id': String(m.id) }, [
         h('span', { class: 'agenda-slot-hora' }, [hora, ehEncaixe ? h('span', { class: 'badge-encaixe', title: 'Encaixe — fora da grelha fixa de 10 em 10 minutos' }, 'ENCAIXE') : null]),
         h('span', { class: 'agenda-slot-label cell-strong' }, [
           h('span', { class: 'agenda-slot-nome' }, m.nome || '—'),
@@ -49449,19 +49471,21 @@ function buildVacinacaoPage(container, goTo) {
     return buildListaMultiPaginaDoc({
       cabecalho,
       colunas: [
-        { label: '✓', width: '6%', align: 'center' },
-        { label: 'Hora', width: '10%', align: 'center' },
-        { label: 'Nome', width: '26%', align: 'left', nowrap: true },
-        { label: 'Contacto', width: '16%', align: 'center' },
-        { label: 'Vacina(s)', width: '16%', align: 'center' },
-        { label: 'Estado', width: '14%', align: 'center' },
-        { label: 'Observações', width: '12%', align: 'left', nowrap: true },
+        { label: '✓', width: '5%', align: 'center' },
+        { label: 'Hora', width: '8%', align: 'center' },
+        { label: 'Nome', width: '25%', align: 'left', nowrap: true },
+        { label: 'Contacto', width: '13%', align: 'center' },
+        { label: 'Vacina(s)', width: '12%', align: 'center' },
+        { label: 'Estado', width: '11%', align: 'center' },
+        { label: 'Observações', width: '26%', align: 'left', quebra: true },
       ],
       linhas: lista.map(m => [
         h('span', { style: 'display:inline-block;width:11px;height:11px;border:1.3px solid #000;' }),
         m.hora || '—', m.nome || '—', m.contacto ? formatarTelefonePT(m.contacto) : '—',
-        vacinacaoLabelVacinas(m), m.estado || '—', m.observacoes || '—',
+        vacinacaoLabelVacinas(m), m.estado || '—', (m.observacoes && String(m.observacoes).trim()) || '—',
       ]),
+      // Observações completas (quebram dentro da célula, letra pequena): cada ~55 caracteres conta como mais 1 linha.
+      pesosLinhas: lista.map(m => Math.max(1, Math.ceil(String((m.observacoes || '').trim()).length / 55))),
       linhasPrimeira: 34,
       linhasResto: 42,
       semDadosTexto: 'Sem marcações para este dia.',
@@ -49490,7 +49514,7 @@ function buildVacinacaoPage(container, goTo) {
         { label: 'Idade', width: '8%', align: 'center' },
         { label: 'Contacto', width: '13%', align: 'center' },
         { label: 'Vacina(s)', width: '13%', align: 'center' },
-        { label: 'Observações', width: '28%', align: 'left' },
+        { label: 'Observações', width: '28%', align: 'left', quebra: true },
       ],
       linhas: lista.map(e => {
         const idade = vacinacaoCalcularIdade(e.dataNascimento);
@@ -49504,9 +49528,9 @@ function buildVacinacaoPage(container, goTo) {
           (e.observacoes && e.observacoes.trim()) ? e.observacoes.trim() : '—',
         ];
       }),
-      // Observações quebram linha (não se cortam) — cada ~45 caracteres
+      // Observações quebram linha dentro da célula (letra pequena, não se cortam) — cada ~60 caracteres
       // conta como mais uma linha de altura na paginação.
-      pesosLinhas: lista.map(e => Math.max(1, Math.ceil(String((e.observacoes || '').trim()).length / 45))),
+      pesosLinhas: lista.map(e => Math.max(1, Math.ceil(String((e.observacoes || '').trim()).length / 60))),
       linhasPrimeira: 30,
       linhasResto: 38,
       semDadosTexto: 'Lista de espera vazia.',
@@ -49543,6 +49567,54 @@ function buildVacinacaoPage(container, goTo) {
       h('span', { class: 'badge ' + (aberto ? 'badge-green' : 'badge-gray'), style: 'margin-left:4px;' }, aberto ? 'DIA ABERTO' : 'DIA POR ABRIR'),
       buildIconeResponsaveisDoDia(dateISO),
     ]);
+  }
+  // Pesquisa no dia aberto (2026-09-30, Hugo: "barra de pesquisa em cada dia da vacinação... nome, contacto, número
+  // de utente"): filtra enquanto se escreve (sem acentos, contacto/Nº de Utente com ou sem espaços) e mostra os
+  // resultados logo por baixo — só a lista de resultados se atualiza, a escrita nunca é interrompida. Clicar num
+  // resultado seleciona essa marcação e leva até ela na grelha/tabela (Editar fica logo disponível em baixo).
+  function buildPesquisaDoDiaVacinacao(dateISO) {
+    if (pesquisaDiaVacinacao.data !== dateISO) pesquisaDiaVacinacao = { data: dateISO, texto: '' };
+    const input = h('input', { class: 'input', type: 'search', placeholder: 'Pesquisar neste dia por nome, contacto ou Nº de Utente…', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Pesquisar marcações deste dia' });
+    input.value = pesquisaDiaVacinacao.texto;
+    const resultados = h('div', { class: 'vac-pesquisa-dia-resultados' });
+    const soDigitos = (v) => String(v || '').replace(/\D/g, '');
+    function desenharResultados() {
+      clear(resultados);
+      const q = String(pesquisaDiaVacinacao.texto || '').trim();
+      if (!q) return;
+      const qTexto = normalizarTexto(q), qDigitos = soDigitos(q);
+      const lista = STATE.vacinacaoMarcacoes
+        .filter(m => m.campanhaId === campanhaId && m.data === dateISO && !vacinacaoEhBloqueio(m))
+        .filter(m => normalizarTexto(m.nome || '').includes(qTexto)
+          || (qDigitos.length >= 3 && (soDigitos(m.contacto).includes(qDigitos) || soDigitos(m.numeroUtente).includes(qDigitos))))
+        .sort((a, b) => (a.hora || '').localeCompare(b.hora || ''));
+      if (!lista.length) { resultados.appendChild(h('p', { class: 'field-helper-text', style: 'margin:8px 2px 0;' }, 'Nenhuma marcação neste dia corresponde à pesquisa.')); return; }
+      resultados.appendChild(h('p', { class: 'field-helper-text', style: 'margin:8px 2px 4px;' }, `${lista.length} resultado${lista.length === 1 ? '' : 's'} neste dia`));
+      lista.forEach(m => {
+        const linha = h('button', { type: 'button', class: 'vac-pesquisa-dia-item' + (m.estado === 'Cancelada' ? ' cancelada' : '') }, [
+          h('span', { class: 'vac-pesquisa-dia-hora' }, m.hora || '—'),
+          h('span', { class: 'vac-pesquisa-dia-nome' }, m.nome || '—'),
+          h('span', { class: 'vac-pesquisa-dia-extra' }, [vacinacaoLabelVacinas(m), m.contacto ? formatarTelefonePT(m.contacto) : '', m.numeroUtente ? `Utente ${m.numeroUtente}` : ''].filter(Boolean).join(' · ')),
+          h('span', { class: 'badge ' + (m.estado === 'Administrada' ? 'badge-green' : m.estado === 'Cancelada' ? 'badge-gray' : 'badge-orange') }, (m.estado || 'Pendente').toUpperCase()),
+        ]);
+        linha.addEventListener('click', () => {
+          marcacaoSelectedIds = new Set([m.id]);
+          rerender();
+          requestAnimationFrame(() => {
+            const alvo = container.querySelector(`[data-marcacao-id="${String(m.id)}"]`);
+            if (!alvo) return;
+            alvo.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            alvo.classList.add('vac-pesquisa-destaque');
+            setTimeout(() => alvo.classList.remove('vac-pesquisa-destaque'), 1800);
+          });
+        });
+        resultados.appendChild(linha);
+      });
+    }
+    input.addEventListener('input', () => { pesquisaDiaVacinacao.texto = input.value; desenharResultados(); });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Escape') { input.value = ''; pesquisaDiaVacinacao.texto = ''; desenharResultados(); } });
+    desenharResultados();
+    return h('div', { class: 'card card-pad vac-pesquisa-dia', style: 'margin-bottom:12px;' }, [input, resultados]);
   }
   function buildAgendaDiaView(dateISO) {
     vacinacaoRelerDiaDoServidor(campanhaId, dateISO, false); // no máximo 1× a cada 20 s por dia — ecrã sempre certo
@@ -49595,6 +49667,7 @@ function buildVacinacaoPage(container, goTo) {
           `${q.hora || '—'} · ${q.qtdGripe ? `Gripe ${q.qtdGripe}` : ''}${q.qtdGripe && q.qtdCovid ? ' · ' : ''}${q.qtdCovid ? `COVID ${q.qtdCovid}` : ''}${q.motivo ? ` — ${q.motivo}` : ''} (${q.responsavel || '—'})`)),
       ]));
     }
+    wrap.appendChild(buildPesquisaDoDiaVacinacao(dateISO));
     wrap.appendChild(h('div', { class: 'tabs-row', style: 'margin-bottom:10px;' }, [
       h('button', { class: 'tab-btn' + (agendaDiaVista === 'grelha' ? ' active' : ''), onclick: () => { agendaDiaVista = 'grelha'; marcacaoSelectedIds = new Set(); rerender(); } }, [Icon('calendar', { size: 14 }), h('span', {}, 'Vagas')]),
       h('button', { class: 'tab-btn' + (agendaDiaVista === 'tabela' ? ' active' : ''), onclick: () => { agendaDiaVista = 'tabela'; marcacaoSelectedIds = new Set(); rerender(); } }, [Icon('clipboard', { size: 14 }), h('span', {}, 'Tabela Detalhada')]),
