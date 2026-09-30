@@ -4451,6 +4451,11 @@
   .gaveta-filtros-row{display:flex;flex-wrap:nowrap;gap:6px;margin-top:10px;}
   .gaveta-filtros-row .tab-btn{flex:1;justify-content:center;padding:7px 4px;font-size:11px;gap:4px;white-space:nowrap;}
   .gaveta-filtros-row .tab-btn .tab-count{font-size:9.5px;padding:1px 5px;}
+  /* Gaveta: conversa com algo novo por ver (2026-09-30) */
+  .gaveta-contacto-item.gaveta-contacto-novo{background:#eff6ff;box-shadow:inset 3px 0 0 #2563eb;}
+  .gaveta-novo-pill{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:999px;background:#2563eb;color:#fff;
+    font-size:9.5px;font-weight:800;letter-spacing:.04em;vertical-align:middle;}
+  .gaveta-contacto-preview.tone-novo{color:#1d4ed8;font-weight:700;}
   /* Controlo "Selecionar Todos" / "Desselecionar Todos" — alternador bem
      definido (checkbox global estilizada + rótulo + contador X/Y), nunca
      um texto solto. */
@@ -17716,6 +17721,12 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
             }
             return true;
           })
+          // Conversas com algo NOVO (o que acendeu o número da Gaveta) aparecem primeiro — 2026-09-30.
+          .sort((a, b) => {
+            const na = recadosDaThread(a.outroId).some(r => NAO_VISTOS_AO_ABRIR.has(r.id)) ? 1 : 0;
+            const nb = recadosDaThread(b.outroId).some(r => NAO_VISTOS_AO_ABRIR.has(r.id)) ? 1 : 0;
+            return nb - na;
+          })
           .forEach(c => {
             const souEuRemetente = String(c.ultima.remetenteId) === String(activeUser.id);
             const prefixo = souEuRemetente ? 'Tu: ' : '';
@@ -17729,9 +17740,25 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
             // direção — enviada por mim a aguardar confirmação, ou
             // recebida por mim a aguardar a minha ação).
             const ultimaPendente = !c.ultima.tratado && (c.ultima.tipo || 'mensagem') === 'tarefa';
-            itens.push(buildContactoItem(c.outroId, nomeUtilizador(c.outroId),
+            const itemConversa = buildContactoItem(c.outroId, nomeUtilizador(c.outroId),
               { texto: prefixo + (c.ultima.mensagem || ''), tipo: c.ultima.tipo, pendente: ultimaPendente, pendentes: c.pendentes, souEuRemetente }, false,
-              ultimaEhTarefaPendenteParaMim ? c.ultima : null));
+              ultimaEhTarefaPendenteParaMim ? c.ultima : null);
+            // "Novo" (2026-09-30, Hugo: "nova notificação mas não sei a que se refere"): a conversa com o que ainda não
+            // tinhas visto quando abriste a Gaveta fica destacada, com uma etiqueta NOVO e o texto do que chegou —
+            // até entrares nela.
+            const novosDaConversa = recadosDaThread(c.outroId).filter(r => NAO_VISTOS_AO_ABRIR.has(r.id))
+              .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+            if (novosDaConversa.length) {
+              itemConversa.classList.add('gaveta-contacto-novo');
+              const nomeEl = itemConversa.querySelector('.gaveta-contacto-nome');
+              if (nomeEl) nomeEl.appendChild(h('span', { class: 'gaveta-novo-pill', title: 'Chegou desde a última vez que abriste a Gaveta' }, novosDaConversa.length > 1 ? `${novosDaConversa.length} NOVOS` : 'NOVO'));
+              const prevEl = itemConversa.querySelector('.gaveta-contacto-preview');
+              const r0 = novosDaConversa[0];
+              const textoNovo = ((r0.tipo || 'mensagem') === 'tarefa' ? '📋 ' : '') + gavetaTextoRecado(r0.mensagem || '');
+              if (prevEl) { prevEl.textContent = textoNovo; prevEl.classList.add('tone-novo'); }
+              itemConversa.title = `Novo: ${gavetaTextoRecado(r0.mensagem || '')}`;
+            }
+            itens.push(itemConversa);
           });
       }
       const vazioTexto = streamFiltro === 'concluidas' ? 'Ainda sem tarefas concluídas.' : (streamFiltro === 'pendentes' ? 'Sem nada pendente — tudo em dia!' : 'Sem colegas encontrados.');
@@ -25703,6 +25730,7 @@ function buildDiaEspecialModal(dateISO, evento, onSaved) {
 function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
   const overlay = h('div', { class: 'modal-overlay' });
   let canalTempoRealEvento = null, canalTempoRealEventoId = null; // Realtime só das vagas deste dia, enquanto o modal está aberto (2026-09-28)
+  let canalTempoRealEventoEstado = ''; // 'SUBSCRIBED' quando o canal está mesmo ligado (Egress: evita releituras)
   let tempoRealEventoTimer = null;
   function close() { document.removeEventListener('keydown', onKeydown); if (barraSelecaoEl) { barraSelecaoEl.remove(); barraSelecaoEl = null; } desligarTempoRealEvento(); overlay.remove(); }
   function onKeydown(e) { if (e.key === 'Escape') close(); }
@@ -25791,7 +25819,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
           else marcacoes = [...marcacoes, reg];
           agendarRedesenhoTempoRealEvento(40);
         })
-        .subscribe();
+        .subscribe((estado) => { canalTempoRealEventoEstado = estado; });
     } catch (e) { canalTempoRealEvento = null; console.warn('[Eventos] tempo real indisponível:', formatarErroSeguro(e)); }
   }
   function desligarTempoRealEvento() {
@@ -26219,7 +26247,8 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       if (!mudouPresenca || !currentEvento) return;
       const doEvento = (o) => o.m === 'evento' && String(o.a).split(':')[0] === String(currentEvento.id);
       const saiu = (anteriores || []).filter(doEvento).some(x => !PRESENCA_MARCACOES.outros.some(o => o.k === x.k && o.a === x.a && o.h === x.h));
-      if (saiu) setTimeout(async () => { if (!overlay.isConnected) return; await releMarcacoesDoServidor(); agendarRedesenhoTempoRealEvento(40); }, 1500);
+      // Egress: com o canal do dia ligado, a vaga gravada pelo colega já chegou sozinha — só relê se estiver em baixo.
+      if (saiu && canalTempoRealEventoEstado !== 'SUBSCRIBED') setTimeout(async () => { if (!overlay.isConnected) return; await releMarcacoesDoServidor(); agendarRedesenhoTempoRealEvento(40); }, 1500);
       else if ([...(anteriores || []), ...PRESENCA_MARCACOES.outros].some(doEvento)) agendarRedesenhoTempoRealEvento(40);
     });
   function abrirNovaMarcacao(grupo, hora, vagaExistente) {
@@ -47154,7 +47183,7 @@ function buildMapa48hPage(container, goTo) {
         'Combina com o colega antes de gravar — se ambos gravarem datas a menos de 3 dias, só o primeiro registo fica.');
       if (!mudouPresenca) return;
       const saiu = (anteriores || []).some(x => x.m === 'mapa48h' && !PRESENCA_MARCACOES.outros.some(o => o.k === x.k && o.m === 'mapa48h'));
-      if (!saiu) return;
+      if (!saiu || realtimeAtivo('mapa48h')) return; // Egress: com o Realtime ligado o registo já chegou sozinho
       setTimeout(async () => {
         if (!container.isConnected || STATE.page !== 'mapa48h') return;
         const de = new Date(); de.setDate(de.getDate() - 7);
@@ -47720,8 +47749,11 @@ const VAC_DIA_RELIDO_EM = new Map();
 const VAC_DIA_RELEITURA_TIMERS = new Map();
 async function vacinacaoRelerDiaDoServidor(campanhaId, dataISO, forcar) {
   if (!sb || !campanhaId || !dataISO) return false;
+  // Egress (2026-09-30): com o Realtime da tabela ligado, as marcações dos colegas já chegam sozinhas — a releitura
+  // só acontece quando é mesmo precisa (conflito detetado ao gravar = forcar) ou quando o Realtime está em baixo.
+  if (forcar !== true && realtimeAtivo('vacinacaoMarcacoes')) return false;
   const chave = `${campanhaId}|${dataISO}`;
-  if (!forcar && Date.now() - (VAC_DIA_RELIDO_EM.get(chave) || 0) < 20000) return false; // no máximo 1 releitura por dia a cada 20 s
+  if (!forcar && Date.now() - (VAC_DIA_RELIDO_EM.get(chave) || 0) < 60000) return false; // sem Realtime: no máximo 1 releitura por dia a cada 60 s
   VAC_DIA_RELIDO_EM.set(chave, Date.now());
   const antes = JSON.stringify(STATE.vacinacaoMarcacoes.filter(m => String(m.campanhaId) === String(campanhaId) && m.data === dataISO).map(m => [m.id, m.updatedAt, m.estado, m.hora]).sort());
   const ok = await refrescarLinhasDoServidor('vacinacaoMarcacoes',
@@ -47741,8 +47773,9 @@ function vacinacaoAgendarReleituraDia(campanhaId, dataISO, ms) {
 const AGENDA_DIA_RELIDO_EM = new Map();
 async function agendaRelerDiaDoServidor(prestadorKey, dataISO, forcar) {
   if (!sb || !prestadorKey || !dataISO) return false;
+  if (realtimeAtivo('agendaMarcacoes')) return false; // Egress: com o Realtime ligado as mudanças já chegam sozinhas
   const chave = `${prestadorKey}|${dataISO}`;
-  if (!forcar && Date.now() - (AGENDA_DIA_RELIDO_EM.get(chave) || 0) < 20000) return false;
+  if (!forcar && Date.now() - (AGENDA_DIA_RELIDO_EM.get(chave) || 0) < 60000) return false;
   AGENDA_DIA_RELIDO_EM.set(chave, Date.now());
   const assinar = () => JSON.stringify((STATE.agendaMarcacoes || []).filter(m => m.prestadorKey === prestadorKey && m.data === dataISO).map(m => [m.id, m.updatedAt, m.estado, m.hora]).sort());
   const antes = assinar();
@@ -47752,7 +47785,8 @@ async function agendaRelerDiaDoServidor(prestadorKey, dataISO, forcar) {
   if (ok && antes !== assinar()) { STATE.ultimaAtualizacaoEm = new Date().toISOString(); notificarAtualizadoresAoVivo('agendaMarcacoes'); return true; }
   return false;
 }
-PRESENCA_MARCACOES.releitura.vac = (a, d) => vacinacaoAgendarReleituraDia(a, d, 1500);
+// Colega saiu de uma vaga: só se relê o dia se o Realtime estiver em baixo (senão a marcação já chegou sozinha).
+PRESENCA_MARCACOES.releitura.vac = (a, d) => { if (!realtimeAtivo('vacinacaoMarcacoes')) vacinacaoAgendarReleituraDia(a, d, 1500); };
 PRESENCA_MARCACOES.releitura.agenda = (a, d) => setTimeout(() => agendaRelerDiaDoServidor(a, d, true), 1500);
 function presencaMarcacoesLigar() {
   const P = PRESENCA_MARCACOES;
@@ -48414,7 +48448,7 @@ function buildVacinacaoPage(container, goTo) {
       // vacinacaoMarcacaoBloqueadaPorDiaFechado no início desta função.)
       showMarcacaoForm = false;
       anunciarVagaAtual();
-      if (marcacaoDraft && marcacaoDraft.data) vacinacaoRelerDiaDoServidor(campanhaId, marcacaoDraft.data, true);
+      if (marcacaoDraft && marcacaoDraft.data && !realtimeAtivo('vacinacaoMarcacoes')) vacinacaoRelerDiaDoServidor(campanhaId, marcacaoDraft.data, 'depois-de-gravar');
     }
     rerender();
   }
@@ -56181,6 +56215,8 @@ async function ortopediaMigrarFornecedorAntigo() {
     }
   } catch (e) { /* silencioso de propósito — ver comentário acima */ }
 }
+const LEITURA_COMPLETA_SEM_MARCA_EM = {};
+const TABELAS_SEM_UPDATED_AT_AVISADAS = new Set();
 async function loadAllData() {
   // Rede de segurança final do arranque: mesmo que uma falha inesperada
   // (ex: uma exceção nunca prevista escapar a alguma função individual)
@@ -56218,7 +56254,13 @@ async function loadAllData() {
       keys.forEach(k => { if (!(Array.isArray(STATE[k]) && STATE[k].length)) STATE[k] = cache.tabelas[k] || []; });
       const resultadosDelta = await Promise.all(keys.map(async k => {
         const watermark = watermarkDaTabela(STATE[k]);
-        if (!watermark) return { k, modo: 'completo', dados: await dbFetchAll(k) };
+        // Egress (2026-09-30): tabela com dados mas SEM coluna updated_at não dá para pedir "só o que mudou" — antes
+        // vinha inteira em cada regresso à app. O Realtime já a mantém atualizada; a leitura completa passa a ser só
+        // uma rede de segurança, no máximo de 15 em 15 minutos (o SQL sigajuncal_egress_updated_at.sql resolve de vez).
+        if (!watermark && Array.isArray(STATE[k]) && STATE[k].length && Date.now() - (LEITURA_COMPLETA_SEM_MARCA_EM[k] || 0) < 15 * 60000) {
+          return { k, modo: 'delta', dados: [] };
+        }
+        if (!watermark) { if (Array.isArray(STATE[k]) && STATE[k].length) { LEITURA_COMPLETA_SEM_MARCA_EM[k] = Date.now(); if (!TABELAS_SEM_UPDATED_AT_AVISADAS.has(k)) { TABELAS_SEM_UPDATED_AT_AVISADAS.add(k); console.info(`[Egress] "${TABLES[k]}" não tem updated_at — correr sigajuncal_egress_updated_at.sql`); } } return { k, modo: 'completo', dados: await dbFetchAll(k) }; }
         const delta = await dbFetchAllDesde(k, watermark);
         if (delta === null) return { k, modo: 'completo', dados: await dbFetchAll(k) };
         return { k, modo: 'delta', dados: delta };
@@ -56250,6 +56292,22 @@ async function loadAllData() {
     // apagadas) — isolado na função carregarChat(), que corre como mais um
     // braço do Promise.all, sem quebrar essa ordem interna.
     async function carregarChat() {
+      // Egress (2026-09-30): nos regressos à app, só as mensagens novas desde a última conhecida (o Realtime já
+      // trouxe o resto) — a leitura completa dos 7 dias e a limpeza ficam para o 1.º arranque da sessão.
+      if (EGRESS_ARRANQUE_COMPLETO_FEITO && sb && Array.isArray(STATE.mensagensChat) && STATE.mensagensChat.length) {
+        const ultima = STATE.mensagensChat.reduce((m, r) => (r.createdAt && r.createdAt > m ? r.createdAt : m), '');
+        if (ultima) {
+          try {
+            const { data, error } = await sb.from('mensagens_chat').select('*').gt('created_at', ultima).order('created_at', { ascending: true });
+            if (!error) {
+              const limite = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+              const porId = new Map(STATE.mensagensChat.map(r => [String(r.id), r]));
+              (data || []).map(rowToRecord).forEach(r => porId.set(String(r.id), r));
+              return [...porId.values()].filter(r => !r.createdAt || r.createdAt >= limite).sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+            }
+          } catch (e) { /* cai na leitura completa */ }
+        }
+      }
       await dbCleanupOldChatMessages();
       return dbFetchChat();
     }
@@ -56730,6 +56788,11 @@ function ligarCanalSinaisTabelas() {
     });
   } catch (e) { canalSinaisTabelas = null; console.warn('[Sinais] indisponível:', formatarErroSeguro(e)); }
 }
+// Estado de cada canal Realtime (2026-09-30, Egress): com o canal ligado, as mudanças dos colegas já chegam
+// sozinhas — as releituras de segurança (dia da Vacinação, agenda do dia, Mapa 48H) só são precisas quando o
+// canal NÃO está ligado. Ver realtimeAtivo().
+const CANAIS_RT_ESTADO = {};
+function realtimeAtivo(listKey) { return CANAIS_RT_ESTADO[listKey] === 'SUBSCRIBED'; }
 function subscreverTabelaRealtime(listKey) {
   if (!sb || canaisRealtimeAtivos[listKey] || TABELAS_REALTIME_POR_SINAL.includes(listKey)) return;
   canaisRealtimeAtivos[listKey] = true;
@@ -56757,7 +56820,7 @@ function subscreverTabelaRealtime(listKey) {
       renderOuAdiarSeOcupado();
       notificarAtualizadoresAoVivo(listKey);
     })
-    .subscribe();
+    .subscribe((estado) => { CANAIS_RT_ESTADO[listKey] = estado; });
 }
 function setupRealtime() {
   if (!sb) return;
