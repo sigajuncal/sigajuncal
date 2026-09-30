@@ -10815,7 +10815,7 @@ async function concluirTarefaSemDecisao(r) {
   const direcaoIds = new Set(escalaUsuariosDirecao().map(u => String(u.id)));
   const alvos = (STATE.gavetaRecados || []).filter(x => (x.tipo || 'mensagem') === 'tarefa' && !x.tratado && (
     x.id === r.id || (r.referenciaTabela && x.referenciaTabela === r.referenciaTabela && String(x.referenciaId) === String(r.referenciaId) &&
-      direcaoIds.has(String(x.destinatarioId)) && !/^A Direção /.test(String(x.mensagem || '')))
+      direcaoIds.has(String(x.destinatarioId)) && !ehAvisoDecisaoAoColaborador(x.mensagem))
   ));
   if (!alvos.length) return true;
   const resultados = await Promise.all(alvos.map(x => dbMarcarRecadoTratado(x.id)));
@@ -10866,7 +10866,7 @@ async function reconciliarTarefasGavetaJaDecididas() {
     return false;
   };
   const alvos = (STATE.gavetaRecados || []).filter(r => (r.tipo || 'mensagem') === 'tarefa' && !r.tratado && r.referenciaId &&
-    (direcaoIds.has(String(r.destinatarioId)) || r.referenciaTabela === 'escala_trocas') && !/^A Direção /.test(String(r.mensagem || '')) && jaDecidida(r));
+    (direcaoIds.has(String(r.destinatarioId)) || r.referenciaTabela === 'escala_trocas') && !ehAvisoDecisaoAoColaborador(r.mensagem) && jaDecidida(r));
   if (!alvos.length) return false;
   const agora = new Date().toISOString();
   const idsAlvo = new Set(alvos.map(r => r.id));
@@ -17392,7 +17392,7 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
     STATE.escalaNotasSemana = (STATE.escalaNotasSemana || []).map(n => n.id === r.referenciaId ? updatedNota : n);
     await marcarTratadasTarefasNotaEquipa(r.referenciaId);
     await notificarAutorNotaValidada(updatedNota, true);
-    showToast('Pedido validado pela Direção.', 'success');
+    showToast('Pedido validado.', 'success');
     render();
   }
   // CRIADO 2026-08-26 (pedido explícito de Hugo: "Paulo ou eu temos de
@@ -17883,7 +17883,7 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
           // padrão visual dos outros 2 pares de decisão abaixo, para
           // nunca obrigar a sair da Gaveta e ir a Horários>Pedidos só
           // para rejeitar.
-          if (r.referenciaTabela === 'escala_notas_semana' && !souEuRemetente && !concluida && souDirecaoHorariosGlobal()) {
+          if (r.referenciaTabela === 'escala_notas_semana' && (r.tipo || 'mensagem') === 'tarefa' && !souEuRemetente && !concluida && souDirecaoHorariosGlobal()) {
             const aprovarBtn = botaoAcaoGaveta('aprovar', 'Aprovar');
             aprovarBtn.addEventListener('click', () => requireAuth(() => marcarNotaEquipaVistaViaGaveta(r)));
             const rejeitarBtn = botaoAcaoGaveta('rejeitar', 'Rejeitar');
@@ -33908,6 +33908,37 @@ const NOMES_DIRECAO_HORARIOS = ['Hugo Cunha', 'Paulo Freitas'];
 function escalaUsuariosDirecao() {
   return (STATE.usuarios || []).filter(u => NOMES_DIRECAO_HORARIOS.includes(String(u.nomeCompleto || '').trim()) && usuarioVisivelParaAtual(u));
 }
+// 2026-09-30 (Hugo: "A tua picagem foi validada por Hugo ou Paulo, Direção fica mal"): os avisos de uma decisão
+// dizem QUEM decidiu — "pelo Hugo" / "o Paulo" — em vez de "pela Direção". Fora da Direção (não devia acontecer),
+// usa o nome completo sem artigo.
+function decisorPrimeiroNome() {
+  const nome = String(currentUserName() || '').trim();
+  return nome.split(/\s+/)[0] || 'Direção';
+}
+function decisorPor() { return souDirecaoHorariosGlobal() ? `pelo ${decisorPrimeiroNome()}` : `por ${currentUserName() || 'Direção'}`; }
+function decisorSujeito() { return souDirecaoHorariosGlobal() ? `O ${decisorPrimeiroNome()}` : (currentUserName() || 'A Direção'); }
+// Avisos de decisão dirigidos ao colaborador — reconhecidos também pelo formato novo ("O Hugo validou a tua…"),
+// para nunca serem tratados como tarefas da Direção por decidir.
+function ehAvisoDecisaoAoColaborador(mensagem) {
+  const m = String(mensagem || '');
+  return /^A Direção /.test(m) || /^O \S+ (validou|invalidou) a tua hora extra/.test(m);
+}
+// 2026-09-30 (Hugo: "se Paulo resolver algum dos pedidos pendentes que sou eu ou ele que decidem, o outro deve
+// receber notificação da ação tomada"): mensagem nova (não lida → aviso na Gaveta) para o OUTRO elemento da
+// Direção. `excluirIds`: quem já recebeu o aviso por ser o próprio interessado (ex: o Paulo a validar uma picagem
+// do Hugo — o Hugo já é avisado como colaborador, não recebe dois avisos).
+async function avisarOutraDirecaoDaDecisao(texto, referenciaTabela, referenciaId, excluirIds) {
+  if (!activeUser || !souDirecaoHorariosGlobal() || !texto) return;
+  const excluir = new Set([String(activeUser.id), ...(excluirIds || []).filter(x => x !== null && x !== undefined).map(String)]);
+  const destinatarios = escalaUsuariosDirecao().filter(u => !excluir.has(String(u.id)));
+  for (const u of destinatarios) {
+    const criado = await dbInsertRecado({
+      remetenteId: activeUser.id, destinatarioId: u.id, mensagem: texto, tratado: false, tipo: 'mensagem',
+      referenciaTabela: referenciaTabela || null, referenciaId: referenciaId === undefined ? null : referenciaId,
+    });
+    if (criado) STATE.gavetaRecados = [criado, ...(STATE.gavetaRecados || [])];
+  }
+}
 async function notificarDirecaoPedidoEspecial(pedido, acaoTexto) {
   const destinatarios = escalaUsuariosDirecao().filter(u => String(u.id) !== String(pedido.colaboradorId));
   if (!destinatarios.length) return;
@@ -34496,13 +34527,17 @@ async function atualizarNotificacoesHorasExtraReivindicacao(reivindicacao, bloco
   const diaTexto = escalaBlocoHorasExtraDiaTexto(bloco);
   const acaoTexto = reivindicacao.estado === 'validado' ? 'validou' : 'invalidou';
   const mensagem = `${activeUser.nomeCompleto || activeUser.username} ${acaoTexto} a hora extra de ${reivindicacao.utilizadorNome || 'um colaborador'} em ${diaTexto} (${reivindicacao.intervaloInicio}-${reivindicacao.intervaloFim}).`;
-  const existentes = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_horas_extra_reivindicacoes' && String(r.referenciaId) === String(reivindicacao.id));
-  const resultados = await Promise.all(existentes.map(r => dbAtualizarRecado(r.id, { mensagem, tratado: true, tratadoEm: new Date().toISOString() })));
+  // 2026-09-30: as tarefas passam só a "Concluídas" (sem reescrever o texto) e o outro elemento da Direção recebe
+  // uma mensagem nova com a decisão.
+  const existentes = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_horas_extra_reivindicacoes' &&
+    String(r.referenciaId) === String(reivindicacao.id) && (r.tipo || 'mensagem') === 'tarefa' && !r.tratado);
+  const resultados = await Promise.all(existentes.map(r => dbMarcarRecadoTratado(r.id)));
   resultados.forEach(reg => { if (reg) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === reg.id ? reg : x); });
+  await avisarOutraDirecaoDaDecisao(mensagem, 'escala_horas_extra_reivindicacoes', reivindicacao.id, [reivindicacao.utilizadorId]);
   if (reivindicacao.utilizadorId && String(reivindicacao.utilizadorId) !== String(activeUser.id)) {
     const mensagemColaborador = reivindicacao.estado === 'validado'
-      ? `A Direção validou a tua hora extra de ${diaTexto} (${reivindicacao.intervaloInicio}-${reivindicacao.intervaloFim}).`
-      : `A Direção invalidou a tua hora extra de ${diaTexto} (${reivindicacao.intervaloInicio}-${reivindicacao.intervaloFim}) — deixou de contar no teu horário.`;
+      ? `${decisorSujeito()} validou a tua hora extra de ${diaTexto} (${reivindicacao.intervaloInicio}-${reivindicacao.intervaloFim}).`
+      : `${decisorSujeito()} invalidou a tua hora extra de ${diaTexto} (${reivindicacao.intervaloInicio}-${reivindicacao.intervaloFim}) — deixou de contar no teu horário.`;
     const criado = await dbInsertRecado({
       remetenteId: activeUser.id, destinatarioId: reivindicacao.utilizadorId, mensagem: mensagemColaborador,
       tratado: false, tipo: 'tarefa', referenciaTabela: 'escala_horas_extra_reivindicacoes', referenciaId: reivindicacao.id,
@@ -34537,8 +34572,14 @@ async function decidirHorasExtraReivindicacaoViaGaveta(r, novoEstado, onDone) {
 // ao validar, nunca ao reverter, mas o colaborador também precisa de
 // saber se a Direção veio a invalidar a nota depois.
 async function notificarAutorNotaValidada(nota, validada, motivo) {
-  if (!nota || !nota.autorId || String(nota.autorId) === String(activeUser.id)) return;
+  if (!nota) return;
   const resumo = (nota.texto || '').slice(0, 80) + ((nota.texto || '').length > 80 ? '…' : '');
+  // O outro elemento da Direção fica a saber da decisão (2026-09-30).
+  const acaoDirecao = validada ? 'validou o' : motivo === 'rejeitado' ? 'rejeitou o' : 'anulou a validação do';
+  await avisarOutraDirecaoDaDecisao(
+    `${currentUserName()} ${acaoDirecao} pedido de ${nota.autorId ? trocasNomeUtilizador(nota.autorId) : 'um colaborador'} em "Pedidos e Registos da Semana": "${resumo}"`,
+    'escala_notas_semana', nota.id, [nota.autorId]);
+  if (!nota.autorId || String(nota.autorId) === String(activeUser.id)) return;
   // CORRIGIDO 2026-08-29 (pedido explícito de Hugo, "só há botão para
   // aprovar e nenhum para rejeitar" — que causou uma rejeição acidental:
   // 1 único ícone alternava Validar/Não Validar no MESMO sítio, muda de
@@ -34549,10 +34590,10 @@ async function notificarAutorNotaValidada(nota, validada, motivo) {
   // alteração no estado (validadoDirecao=false) passa a ter a palavra
   // certa consoante o botão que a originou.
   const mensagem = validada
-    ? `O teu pedido em "Pedidos e Registos da Semana" foi validado pela Direção: "${resumo}"`
+    ? `O teu pedido em "Pedidos e Registos da Semana" foi validado ${decisorPor()}: "${resumo}"`
     : motivo === 'rejeitado'
-    ? `O teu pedido em "Pedidos e Registos da Semana" foi rejeitado pela Direção: "${resumo}"`
-    : `A validação do teu pedido em "Pedidos e Registos da Semana" foi anulada pela Direção: "${resumo}"`;
+    ? `O teu pedido em "Pedidos e Registos da Semana" foi rejeitado ${decisorPor()}: "${resumo}"`
+    : `A validação do teu pedido em "Pedidos e Registos da Semana" foi anulada ${decisorPor()}: "${resumo}"`;
   // BUG CORRIGIDO (2026-08-18): ver nota em notificarDirecaoPedidoEspecial
   // — mesmo problema, dbInsert('gavetaRecados', ...) falhava sempre.
   // ALTERADO (2026-08-25, pedido explícito): tipo passou de 'tarefa' para
@@ -34659,9 +34700,13 @@ async function atualizarNotificacoesPedidoEspecialDecidido(pedido) {
   const dataTexto = pedido.dataInicio === pedido.dataFim ? formatDate(pedido.dataInicio) : `${formatDate(pedido.dataInicio)} a ${formatDate(pedido.dataFim)}`;
   const acaoTexto = pedido.estado === 'aprovado' ? 'aprovou' : 'rejeitou';
   const mensagem = `${activeUser.nomeCompleto || activeUser.username} ${acaoTexto} o Pedido Especial de ${pedido.colaboradorNome || 'um colaborador'} para ${dataTexto} (${escalaMotivoPedidoTexto(pedido)}).`;
-  const existentes = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_pedidos_especiais' && String(r.referenciaId) === String(pedido.id));
-  const resultados = await Promise.all(existentes.map(r => dbAtualizarRecado(r.id, { mensagem, tratado: true, tratadoEm: new Date().toISOString() })));
+  // 2026-09-30: a tarefa original fica como estava (passa só a "Concluída") e o outro elemento da Direção recebe
+  // uma mensagem NOVA com a decisão — antes o texto da tarefa era reescrito já como concluído, sem aviso nenhum.
+  const existentes = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_pedidos_especiais' &&
+    String(r.referenciaId) === String(pedido.id) && (r.tipo || 'mensagem') === 'tarefa' && !r.tratado);
+  const resultados = await Promise.all(existentes.map(r => dbMarcarRecadoTratado(r.id)));
   resultados.forEach(reg => { if (reg) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === reg.id ? reg : x); });
+  await avisarOutraDirecaoDaDecisao(mensagem, 'escala_pedidos_especiais', pedido.id, [pedido.colaboradorId]);
 }
 // BUG CORRIGIDO 2026-08-22 (pedido explícito, ao confirmar comunicação
 // entre "Pedidos" e Pedidos Especiais): decidir um Pedido Especial só
@@ -34676,8 +34721,8 @@ async function notificarAutorPedidoEspecialDecidido(pedido) {
   if (!pedido || !pedido.colaboradorId || String(pedido.colaboradorId) === String(activeUser.id)) return;
   const dataTexto = pedido.dataInicio === pedido.dataFim ? formatDate(pedido.dataInicio) : `${formatDate(pedido.dataInicio)} a ${formatDate(pedido.dataFim)}`;
   const mensagem = pedido.estado === 'aprovado'
-    ? `O teu Pedido Especial para ${dataTexto} (${escalaMotivoPedidoTexto(pedido)}) foi aprovado pela Direção.`
-    : `O teu Pedido Especial para ${dataTexto} (${escalaMotivoPedidoTexto(pedido)}) foi rejeitado pela Direção.`;
+    ? `O teu Pedido Especial para ${dataTexto} (${escalaMotivoPedidoTexto(pedido)}) foi aprovado ${decisorPor()}.`
+    : `O teu Pedido Especial para ${dataTexto} (${escalaMotivoPedidoTexto(pedido)}) foi rejeitado ${decisorPor()}.`;
   // ALTERADO (2026-08-25, pedido explícito): tipo passou de 'tarefa' para
   // 'mensagem' — mesmo motivo de notificarAutorNotaValidada acima: o
   // colaborador só é avisado do resultado (aprovado/rejeitado), a decisão
@@ -37239,7 +37284,7 @@ function trocaTipoBadge(t) {
   }, direta ? (t.diaB ? conteudoComIconeTroca('TROCA DIRETA · TURNO COMPLETO') : '➡️ CEDÊNCIA · TURNO COMPLETO') : '✂️ TROCA PARCIAL · PARTE DO TURNO');
 }
 function trocaEstadoTexto(t) {
-  return ({ aguarda_colega: 'Aguarda resposta do colega', aguarda_direcao: 'Aguarda validação da Direção', validada: 'Validada', rejeitada: 'Rejeitada pela Direção', recusada_colega: 'Recusada pelo colega', anulada: 'Anulada' })[t.estado] || t.estado;
+  return ({ aguarda_colega: 'Aguarda resposta do colega', aguarda_direcao: 'Aguarda validação da Direção', validada: 'Validada', rejeitada: t.validadoPor ? `Rejeitada por ${t.validadoPor}` : 'Rejeitada pela Direção', recusada_colega: 'Recusada pelo colega', anulada: 'Anulada' })[t.estado] || t.estado;
 }
 /* ---- Validação inteligente das trocas (2026-09-29, Hugo: "a app tem de ser
    inteligente e detetar incongruências — folgas, férias, horários totalmente
@@ -37495,9 +37540,10 @@ async function trocaCancelarPelaDirecao(troca) {
   const upd = await trocaAtualizar(t, { estado: 'anulada', validadoPor: `${currentUserName()} (cancelou)`, validadoEm: new Date().toISOString() });
   if (!upd) return { erro: `Não foi possível gravar. ${lastDbError || ''}`.trim() };
   await marcarTratadasTarefasReferencia('escala_trocas', upd.id);
-  const txt = `A troca de ${trocaDiasTexto(upd)} (${trocasNomeUtilizador(upd.autorId)} ↔ ${trocasNomeUtilizador(upd.colegaId)}) foi cancelada pela Direção${trocaExpirada(t) ? ' — o dia passou sem decisão' : ''}.`;
+  const txt = `A troca de ${trocaDiasTexto(upd)} (${trocasNomeUtilizador(upd.autorId)} ↔ ${trocasNomeUtilizador(upd.colegaId)}) foi cancelada ${decisorPor()}${trocaExpirada(t) ? ' — o dia passou sem decisão' : ''}.`;
   await trocasEnviarRecado(upd.autorId, txt, 'mensagem', 'escala_trocas', upd.id);
   await trocasEnviarRecado(upd.colegaId, txt, 'mensagem', 'escala_trocas', upd.id);
+  await avisarOutraDirecaoDaDecisao(`${currentUserName()} cancelou a troca de ${trocaDiasTexto(upd)} (${trocasNomeUtilizador(upd.autorId)} ↔ ${trocasNomeUtilizador(upd.colegaId)})${trocaExpirada(t) ? ' — o dia passou sem decisão' : ''}.`, 'escala_trocas', upd.id, [upd.autorId, upd.colegaId]);
   return { troca: upd };
 }
 // Um interveniente pede à Direção para anular uma troca JÁ validada (antes do dia).
@@ -37522,9 +37568,10 @@ async function trocaManterAposPedido(troca) {
   const pedidos = trocaPedidosAnulacaoAbertos(t);
   const resultados = await Promise.all(pedidos.map(r => dbMarcarRecadoTratado(r.id)));
   resultados.forEach(u => { if (u) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === u.id ? u : x); });
-  const txt = `A Direção decidiu manter a troca de ${trocaDiasTexto(t)} (${trocasNomeUtilizador(t.autorId)} ↔ ${trocasNomeUtilizador(t.colegaId)}) — continua válida.`;
+  const txt = `${decisorSujeito()} decidiu manter a troca de ${trocaDiasTexto(t)} (${trocasNomeUtilizador(t.autorId)} ↔ ${trocasNomeUtilizador(t.colegaId)}) — continua válida.`;
   await trocasEnviarRecado(t.autorId, txt, 'mensagem', 'escala_trocas', t.id);
   await trocasEnviarRecado(t.colegaId, txt, 'mensagem', 'escala_trocas', t.id);
+  await avisarOutraDirecaoDaDecisao(`${currentUserName()} recusou o pedido para anular a troca de ${trocaDiasTexto(t)} (${trocasNomeUtilizador(t.autorId)} ↔ ${trocasNomeUtilizador(t.colegaId)}) — a troca mantém-se.`, 'escala_trocas', t.id, [t.autorId, t.colegaId]);
   return { troca: t };
 }
 // Estado + ações de uma troca, para mostrar junto do recado mais recente dessa troca na Gaveta.
@@ -37695,9 +37742,10 @@ async function trocaDecidirDirecao(trocaOriginal, validar) {
     const upd = await trocaAtualizar(troca, { estado: 'rejeitada', validadoPor: currentUserName(), validadoEm: agora });
     if (!upd) return { erro: `Não foi possível gravar. ${lastDbError || ''}`.trim() };
     await marcarTratadasTarefasReferencia('escala_trocas', upd.id);
-    const txt = `A troca de ${formatDate(upd.diaA)} (${trocasNomeUtilizador(upd.autorId)} ↔ ${trocasNomeUtilizador(upd.colegaId)}) foi rejeitada pela Direção.`;
+    const txt = `A troca de ${formatDate(upd.diaA)} (${trocasNomeUtilizador(upd.autorId)} ↔ ${trocasNomeUtilizador(upd.colegaId)}) foi rejeitada ${decisorPor()}.`;
     await trocasEnviarRecado(upd.autorId, txt, 'mensagem', 'escala_trocas', upd.id);
     await trocasEnviarRecado(upd.colegaId, txt, 'mensagem', 'escala_trocas', upd.id);
+    await avisarOutraDirecaoDaDecisao(`${currentUserName()} rejeitou a troca de ${formatDate(upd.diaA)} (${trocasNomeUtilizador(upd.autorId)} ↔ ${trocasNomeUtilizador(upd.colegaId)}).`, 'escala_trocas', upd.id, [upd.autorId, upd.colegaId]);
     return { troca: upd };
   }
   const revalidacao = trocaValidarRegisto(troca);
@@ -37715,9 +37763,10 @@ async function trocaDecidirDirecao(trocaOriginal, validar) {
   const aplic = await trocaAplicarNoHorario(upd);
   upd = await trocaAtualizar(upd, { aplicadoHorario: aplic.ok, aplicacaoNota: aplic.ok ? 'Turnos trocados no horário automaticamente.' : `Por aplicar à mão: ${aplic.motivo}` }) || upd;
   await marcarTratadasTarefasReferencia('escala_trocas', upd.id);
-  const txt = `A troca foi validada pela Direção: ${trocaDescricao(upd)}${aplic.ok ? ' O horário já foi atualizado.' : ''}\nSe precisares de a desfazer, podes pedir à Direção para a anular até ao dia da troca.`;
+  const txt = `A troca foi validada ${decisorPor()}: ${trocaDescricao(upd)}${aplic.ok ? ' O horário já foi atualizado.' : ''}\nSe precisares de a desfazer, podes pedir à Direção para a anular até ao dia da troca.`;
   await trocasEnviarRecado(upd.autorId, txt, 'mensagem', 'escala_trocas', upd.id);
   await trocasEnviarRecado(upd.colegaId, txt, 'mensagem', 'escala_trocas', upd.id);
+  await avisarOutraDirecaoDaDecisao(`${currentUserName()} validou a troca: ${trocaDescricao(upd)}${aplic.ok ? ' O horário já foi atualizado.' : ` Por aplicar à mão: ${aplic.motivo}.`}`, 'escala_trocas', upd.id, [upd.autorId, upd.colegaId]);
   return { troca: upd, aplicacao: aplic };
 }
 // Direção anula uma troca já validada: devolve o horário (só nos dias que ainda não passaram e só nas células que
@@ -37736,9 +37785,10 @@ async function trocaAnular(trocaOriginal) {
   const upd = await trocaAtualizar(troca, { estado: 'anulada', aplicadoHorario: false, aplicacaoNota: notaHorario, validadoPor: `${currentUserName()} (anulou)`, validadoEm: new Date().toISOString() });
   if (!upd) return { erro: `Não foi possível gravar. ${lastDbError || ''}`.trim() };
   await marcarTratadasTarefasReferencia('escala_trocas', upd.id);
-  const txt = `A troca de ${trocaDiasTexto(upd)} (${trocasNomeUtilizador(upd.autorId)} ↔ ${trocasNomeUtilizador(upd.colegaId)}) foi anulada pela Direção.${troca.aplicadoHorario ? ((desfeito.porAjustar || []).length ? ' O horário vai ser acertado pela Direção.' : ' O horário voltou ao que era.') : ''} As horas saíram das contas entre colegas.`;
+  const txt = `A troca de ${trocaDiasTexto(upd)} (${trocasNomeUtilizador(upd.autorId)} ↔ ${trocasNomeUtilizador(upd.colegaId)}) foi anulada ${decisorPor()}.${troca.aplicadoHorario ? ((desfeito.porAjustar || []).length ? ' O horário vai ser acertado pela Direção.' : ' O horário voltou ao que era.') : ''} As horas saíram das contas entre colegas.`;
   await trocasEnviarRecado(upd.autorId, txt, 'mensagem', 'escala_trocas', upd.id);
   await trocasEnviarRecado(upd.colegaId, txt, 'mensagem', 'escala_trocas', upd.id);
+  await avisarOutraDirecaoDaDecisao(`${currentUserName()} anulou a troca de ${trocaDiasTexto(upd)} (${trocasNomeUtilizador(upd.autorId)} ↔ ${trocasNomeUtilizador(upd.colegaId)}).${(desfeito.porAjustar || []).length ? ` Horário por confirmar à mão: ${desfeito.porAjustar.join('; ')}.` : ''}`, 'escala_trocas', upd.id, [upd.autorId, upd.colegaId]);
   return { troca: upd, porAjustar: desfeito.porAjustar || [] };
 }
 // ---- Compensação com Banco de Horas (pedida por quem deve; validada pela Direção) ----
@@ -37767,10 +37817,11 @@ async function trocasDecidirMovimento(mov, validar) {
   if (!upd) return { erro: `Não foi possível gravar. ${lastDbError || ''}`.trim() };
   await marcarTratadasTarefasReferencia('escala_trocas_movimentos', upd.id);
   const txt = validar
-    ? `Compensação validada: ${trocasNomeUtilizador(upd.devedorId)} pagou ${trocasHorasTexto(upd.horas)} a ${trocasNomeUtilizador(upd.credorId)} com Banco de Horas (os dois bancos já foram atualizados).`
-    : `O pedido de compensação de ${trocasHorasTexto(upd.horas)} com Banco de Horas (${trocasNomeUtilizador(upd.devedorId)} → ${trocasNomeUtilizador(upd.credorId)}) foi rejeitado pela Direção.`;
+    ? `Compensação validada ${decisorPor()}: ${trocasNomeUtilizador(upd.devedorId)} pagou ${trocasHorasTexto(upd.horas)} a ${trocasNomeUtilizador(upd.credorId)} com Banco de Horas (os dois bancos já foram atualizados).`
+    : `O pedido de compensação de ${trocasHorasTexto(upd.horas)} com Banco de Horas (${trocasNomeUtilizador(upd.devedorId)} → ${trocasNomeUtilizador(upd.credorId)}) foi rejeitado ${decisorPor()}.`;
   await trocasEnviarRecado(upd.devedorId, txt, 'mensagem', 'escala_trocas_movimentos', upd.id);
   await trocasEnviarRecado(upd.credorId, txt, 'mensagem', 'escala_trocas_movimentos', upd.id);
+  await avisarOutraDirecaoDaDecisao(`${currentUserName()} ${validar ? 'validou' : 'rejeitou'} a compensação de ${trocasHorasTexto(upd.horas)} com Banco de Horas (${trocasNomeUtilizador(upd.devedorId)} → ${trocasNomeUtilizador(upd.credorId)}).`, 'escala_trocas_movimentos', upd.id, [upd.devedorId, upd.credorId]);
   return { movimento: upd };
 }
 // ---- Direção: dívidas anteriores à app / acertos (ficam logo validados) ----
@@ -39318,7 +39369,8 @@ function buildHorariosPage(container, goTo) {
     // notificação já existente referente a este pedido (se houver) em vez
     // de criar sempre uma nova; só cria de novo se ainda não existir
     // nenhuma para essa pessoa (o caso normal na criação do pedido).
-    const existentes = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_notas_semana' && String(r.referenciaId) === String(nota.id));
+    // Só as TAREFAS (pedido à Direção) — nunca os avisos de decisão ao autor/ao outro elemento da Direção.
+    const existentes = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_notas_semana' && String(r.referenciaId) === String(nota.id) && (r.tipo || 'mensagem') === 'tarefa');
     const resultados = await Promise.all(destinatarios.map(async u => {
       const existente = existentes.find(r => String(r.destinatarioId) === String(u.id));
       if (existente) return { tipo: 'update', registo: await dbAtualizarRecado(existente.id, { mensagem, tratado: false, tratadoEm: null }) };
@@ -52107,7 +52159,30 @@ async function pontoCorrigirManual(utilizadorId, dataISO, tipo, hora) {
   const reg = pontoGuardarRegistoNoState(res.registo);
   // Uma picagem pendente corrigida à mão fica aprovada — a tarefa na Gaveta
   // de Hugo/Paulo deixa de fazer sentido.
-  if (reg) await marcarTratadasTarefasReferencia('ponto_registos', reg.id);
+  if (reg) {
+    // Havia um pedido por tratar (picagem pendente / saída esquecida)? O outro elemento da Direção fica a saber.
+    const tarefaAberta = (id, filtro) => (STATE.gavetaRecados || []).some(r => r.referenciaTabela === 'ponto_registos' &&
+      String(r.referenciaId) === String(id) && (r.tipo || 'mensagem') === 'tarefa' && !r.tratado && (!filtro || filtro(r)));
+    let havaPedidoAberto = tarefaAberta(reg.id);
+    await marcarTratadasTarefasReferencia('ponto_registos', reg.id);
+    // Saída esquecida: o aviso aponta para a ENTRADA desse dia — corrigir a saída resolve-o.
+    if (reg.tipo === 'saida') {
+      const entrada = (STATE.pontoRegistos || []).find(x => !x.eliminado && x.tipo === 'entrada' &&
+        String(x.utilizadorId) === String(reg.utilizadorId) && x.data === reg.data);
+      if (entrada && tarefaAberta(entrada.id, r => /esqueceu-se de picar a saída/.test(String(r.mensagem || '')))) {
+        havaPedidoAberto = true;
+        const alvos = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'ponto_registos' && String(r.referenciaId) === String(entrada.id) &&
+          (r.tipo || 'mensagem') === 'tarefa' && !r.tratado && /esqueceu-se de picar a saída/.test(String(r.mensagem || '')));
+        const feitos = await Promise.all(alvos.map(r => dbMarcarRecadoTratado(r.id)));
+        feitos.forEach(u => { if (u) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === u.id ? u : x); });
+      }
+    }
+    if (havaPedidoAberto) {
+      await avisarOutraDirecaoDaDecisao(
+        `${currentUserName()} corrigiu a picagem de ${trocasNomeUtilizador(reg.utilizadorId)}: ${pontoTipoTexto(reg.tipo)} de ${formatDate(reg.data)} às ${reg.horaReal}.`,
+        'ponto_registos', reg.id, [reg.utilizadorId]);
+    }
+  }
   return reg;
 }
 // Tarefas da Gaveta ligadas a um registo (qualquer tabela) — marca todas
@@ -52153,11 +52228,16 @@ async function decidirPicagemPonto(registoId, decisao) {
   const reg = pontoGuardarRegistoNoState(res.registo);
   if (!reg) return null;
   await marcarTratadasTarefasReferencia('ponto_registos', reg.id);
+  const quando = `${pontoTipoTexto(reg.tipo)} de ${formatDate(reg.data)} às ${reg.horaReal}`;
+  if (!res.ja_decidida) {
+    await avisarOutraDirecaoDaDecisao(
+      `${currentUserName()} ${reg.estado === 'rejeitada' ? 'rejeitou' : 'validou'} a picagem de ${trocasNomeUtilizador(reg.utilizadorId)} (${quando})${res.aparelho_associado ? ' e associou o telemóvel a essa pessoa' : ''}.`,
+      'ponto_registos', reg.id, [reg.utilizadorId]);
+  }
   if (!res.ja_decidida && String(reg.utilizadorId) !== String(activeUser.id)) {
-    const quando = `${pontoTipoTexto(reg.tipo)} de ${formatDate(reg.data)} às ${reg.horaReal}`;
     const mensagem = reg.estado === 'rejeitada'
-      ? `A tua picagem (${quando}) foi rejeitada pela Direção. Se foi engano, fala com o Hugo ou o Paulo.`
-      : `A tua picagem (${quando}) foi validada pela Direção.${res.aparelho_associado ? ' Este telemóvel ficou associado a ti — as próximas picagens nele passam a contar logo.' : ''}`;
+      ? `A tua picagem (${quando}) foi rejeitada ${decisorPor()}. Se foi engano, fala com o Hugo ou o Paulo.`
+      : `A tua picagem (${quando}) foi validada ${decisorPor()}.${res.aparelho_associado ? ' Este telemóvel ficou associado a ti — as próximas picagens nele passam a contar logo.' : ''}`;
     const criado = await dbInsertRecado({
       remetenteId: activeUser.id, destinatarioId: reg.utilizadorId, mensagem, tratado: false, tipo: 'mensagem',
       referenciaTabela: 'ponto_registos', referenciaId: reg.id,
