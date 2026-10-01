@@ -2174,6 +2174,8 @@
 .troca-estado-chip.verde{background:#f0fdf4;color:#166534;border-color:#bbf7d0;}
 .troca-estado-chip.laranja{background:#fff7ed;color:#9a3412;border-color:#fed7aa;}
 .troca-estado-chip.cinza{background:#f1f5f9;color:#475569;border-color:#e2e8f0;}
+.troca-estado-chip.vermelho{background:#fef2f2;color:#b91c1c;border-color:#fecaca;}
+.troca-estado-chip.azul{background:#eff6ff;color:#1e40af;border-color:#bfdbfe;}
 .troca-painel-botoes{display:flex;gap:6px;flex-wrap:wrap;}
 .troca-acao-btn{display:inline-flex;align-items:center;gap:5px;font:inherit;font-size:12px;font-weight:700;padding:5px 10px;border-radius:9px;border:1px solid #fecaca;background:#fff;color:#b91c1c;cursor:pointer;}
 .troca-acao-btn:hover{background:#fef2f2;}
@@ -2210,6 +2212,25 @@
 .trocas-cartao-aviso{position:absolute;top:-6px;right:-6px;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:#dc2626;color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;border:2px solid #fff;}
 .trocas-cartao-titulos{flex:1 1 160px;min-width:0;}
 .trocas-cartao-acoes{display:flex;gap:6px;flex-wrap:wrap;}
+/* Histórico das trocas (2026-10-01) */
+.trocas-hist{display:flex;flex-direction:column;gap:8px;}
+.trocas-hist-item{border:1px solid var(--pharm-100);border-radius:12px;padding:10px 12px;background:#fff;display:flex;flex-direction:column;gap:8px;}
+.trocas-hist-topo{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.trocas-hist-pessoas{font-size:13px;font-weight:800;color:var(--pharm-800);}
+.trocas-hist-tipo{margin-left:auto;font-size:11px;font-weight:700;color:var(--pharm-500);background:var(--pharm-50);border-radius:999px;padding:2px 8px;}
+.trocas-hist-partes{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
+.trocas-hist-parte{display:flex;flex-direction:column;gap:1px;padding:6px 9px;border-radius:9px;background:var(--pharm-50);font-size:12px;}
+.trocas-hist-parte.vazia{color:var(--pharm-400);font-style:italic;justify-content:center;}
+.trocas-hist-quem{font-weight:700;color:var(--pharm-700);}
+.trocas-hist-quando{color:var(--pharm-500);}
+.trocas-hist-rodape{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:11.5px;}
+.trocas-hist-ok{font-weight:700;color:#15803d;}
+.trocas-hist-divida{font-weight:700;color:#b45309;}
+.trocas-hist-meta{color:var(--pharm-400);}
+.trocas-hist-nota{font-size:11.5px;color:var(--pharm-500);}
+.trocas-hist-anular{margin-left:auto;display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:999px;border:1px solid #fecaca;background:#fff;color:#b91c1c;font-size:11.5px;font-weight:700;cursor:pointer;}
+.trocas-hist-anular:hover{background:#fef2f2;}
+@media (max-width:640px){ .trocas-hist-partes{grid-template-columns:1fr;} .trocas-hist-tipo{margin-left:0;} }
 /* Cartão "Trocas e Banco de Horas" (2026-10-01) */
 .trocas-cartao-cabecalho{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:12px;}
 .trocas-contas-link{display:inline-flex;align-items:center;gap:5px;flex:0 0 auto;padding:5px 10px;border-radius:999px;border:1px solid var(--pharm-200);background:#fff;color:var(--pharm-700);font-size:12px;font-weight:700;cursor:pointer;}
@@ -34658,7 +34679,7 @@ function escalaSaldoBancoDe(uid) {
   try { const s = ESCALA_FN_SALDO_BANCO ? ESCALA_FN_SALDO_BANCO() : null; return s && s[uid] ? s[uid].saldoAtual : null; } catch (e) { return null; }
 }
 // Horas já descontadas em dias que ainda não chegaram (o saldo "de hoje" ainda não as conta) + pedidos por decidir.
-function escalaBancoComprometido(uid) {
+function escalaBancoComprometido(uid, excluirNotaId) {
   const hoje = todayISO();
   let marcado = 0;
   (STATE.escalaSemanas || []).filter(s => !s.eliminado && s.dados && escalaDataDoDia(s.semanaInicio, 'dom') > hoje).forEach(s => {
@@ -34670,12 +34691,12 @@ function escalaBancoComprometido(uid) {
     });
   });
   const pendente = (STATE.escalaNotasSemana || []).filter(n => n.tipo === 'banco' && String(n.autorId) === String(uid) && n.horaInicio && n.horaFim
-    && (n.dataPedido || '') >= hoje && escalaEstadoPedidoBanco(n) === 'pendente')
-    .reduce((t, n) => { const v = escalaValidarDescontoBanco(n.dataPedido, uid, n.horaInicio, n.horaFim, { pedidoId: n.id }); return t + (v.ok ? v.horas : 0); }, 0);
+    && (n.dataPedido || '') >= hoje && !n.rejeitado && escalaEstadoPedidoBanco(n) === 'pendente' && String(n.id) !== String(excluirNotaId))
+    .reduce((t, n) => t + (escalaCalcularHoras(n.horaInicio, n.horaFim) || 0), 0);
   return { marcado: Math.round(marcado * 100) / 100, pendente: Math.round(pendente * 100) / 100 };
 }
 // Notificação à Direção de um registo de "Pedidos e Registos da Semana" (também usada fora do módulo Horários).
-async function notificarDirecaoNotaEquipaGlobal(nota, acaoTexto) {
+async function notificarDirecaoNotaEquipaGlobal(nota, acaoTexto, extra) {
   if (!activeUser || !nota) return;
   const destinatarios = escalaUsuariosDirecao().filter(u => String(u.id) !== String(activeUser.id));
   const textoNota = String(nota.texto || '');
@@ -34685,7 +34706,7 @@ async function notificarDirecaoNotaEquipaGlobal(nota, acaoTexto) {
     const nomes = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
     return ` — ${nomes[d.getDay()]}, ${formatDate(nota.dataPedido).slice(0, 5)}`;
   })() : '';
-  const mensagem = `${nota.autorNome || 'Um colaborador'} ${acaoTexto} em "Pedidos e Registos da Semana" (semana de ${formatDate(nota.semanaInicio)}${notaDiaTexto}): "${trecho}"`;
+  const mensagem = `${nota.autorNome || 'Um colaborador'} ${acaoTexto} em "Pedidos e Registos da Semana" (semana de ${formatDate(nota.semanaInicio)}${notaDiaTexto}): "${trecho}"${extra ? `\n${extra}` : ''}`;
   const existentes = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_notas_semana' && String(r.referenciaId) === String(nota.id) && (r.tipo || 'mensagem') === 'tarefa');
   const resultados = await Promise.all(destinatarios.map(async u => {
     const existente = existentes.find(r => String(r.destinatarioId) === String(u.id));
@@ -34714,8 +34735,92 @@ async function escalaCriarPedidoBanco(dataISO, ini, fim, notaLivre) {
   if (!criado) return { erro: `Não foi possível enviar o pedido. ${lastDbError || ''}`.trim() };
   if (!criado.horaInicio || !criado.horaFim) return { erro: 'O pedido ficou registado, mas sem as horas (falta uma coluna na base de dados) — fala com o Hugo.' };
   STATE.escalaNotasSemana = [...(STATE.escalaNotasSemana || []), criado];
-  await notificarDirecaoNotaEquipaGlobal(criado, 'pediu para descontar Banco de Horas');
+  const prev = escalaPrevisaoSaldoBanco(activeUser.id, 0);
+  await notificarDirecaoNotaEquipaGlobal(criado, 'pediu para descontar Banco de Horas', prev && prev.depois < 0 ? `Atenção: fica com saldo de Banco de Horas negativo (${escalaFormatarHorasDecimalComSinal(prev.depois)}).` : '');
   return { nota: criado, horas: v.horas };
+}
+// Previsão do saldo de Banco de Horas depois de descontar `horas` (já conta o que está marcado para os próximos dias
+// e os pedidos por decidir). null quando o saldo não está disponível neste ecrã.
+function escalaPrevisaoSaldoBanco(uid, horas, excluirNotaId) {
+  const saldo = escalaSaldoBancoDe(uid);
+  if (saldo === null || saldo === undefined) return null;
+  const comp = escalaBancoComprometido(uid, excluirNotaId);
+  return { saldo, comp, depois: Math.round((saldo - comp.marcado - comp.pendente - (Number(horas) || 0)) * 100) / 100 };
+}
+// Bloco "saldo" para as janelas de pedido — o aviso de saldo negativo fica bem visível (2026-10-01, Hugo: "saldo pode
+// ficar negativo excecionalmente, mas avisar colaborador").
+function escalaBlocoSaldoBanco(uid, horas) {
+  const prev = escalaPrevisaoSaldoBanco(uid, horas);
+  if (!prev) return null;
+  const partes = [`Saldo hoje: ${escalaFormatarHorasDecimalComSinal(prev.saldo)}`];
+  if (prev.comp.marcado > 0) partes.push(`já marcado para os próximos dias: −${escalaFormatarHorasDecimal(prev.comp.marcado)}`);
+  if (prev.comp.pendente > 0) partes.push(`outros pedidos por decidir: −${escalaFormatarHorasDecimal(prev.comp.pendente)}`);
+  partes.push(`depois deste: ${escalaFormatarHorasDecimalComSinal(prev.depois)}`);
+  return h('div', { style: 'display:flex;flex-direction:column;gap:6px;margin:0 0 10px;' }, [
+    h('p', { class: 'field-helper-text', style: 'margin:0;' }, partes.join(' · ')),
+    prev.depois < 0 ? h('div', { class: 'troca-validacao troca-validacao-aviso' }, `⚠️ Ficas com o Banco de Horas negativo (${escalaFormatarHorasDecimalComSinal(prev.depois)}). Só é possível a título excecional — a Direção decide e as horas ficam a compensar mais tarde.`) : null,
+  ]);
+}
+/* ---- Troca + desconto de Banco de Horas no mesmo pedido (2026-10-01, Hugo: "quando alguém quer trabalhar de
+   manhã e sair mais cedo... juntar os dois pedidos") ----
+   O desconto fica num registo tipo 'banco' ligado à troca (escala_notas_semana.troca_id). É decidido JUNTO com a
+   troca: só chega à Direção quando o colega aceita; ao validar a troca, aplica-se o desconto logo a seguir (já no
+   turno novo); rejeitar/recusar/desistir/cancelar a troca deixa-o sem efeito; anular a troca devolve as horas. */
+function trocaPedidoBancoLigado(t) {
+  if (!t) return null;
+  return (STATE.escalaNotasSemana || []).find(n => n.tipo === 'banco' && n.trocaId !== undefined && n.trocaId !== null && String(n.trocaId) === String(t.id)) || null;
+}
+// Turno que `uid` fica a ter em dataISO DEPOIS da troca proposta (segmentos em minutos absolutos).
+function trocaSegsDepoisDaTroca(uid, dataISO, prop) {
+  const sit = trocaSituacaoNoDia(dataISO, uid);
+  let segs = sit.tipo === 'turno' ? sit.segs.map(sg => ({ inicioMin: sg.inicioMin, fimMin: sg.fimMin })) : [];
+  const eAutor = String(uid) === String(prop.autorId), eColega = String(uid) === String(prop.colegaId);
+  if (eAutor && prop.diaA === dataISO) segs = trocaSegsMenos(segs, trocaIntervalo(prop.inicioA, prop.fimA));
+  if (eColega && prop.diaB && prop.diaB === dataISO) segs = trocaSegsMenos(segs, trocaIntervalo(prop.inicioB, prop.fimB));
+  if (eColega && prop.diaA === dataISO) segs = trocaSegsUniao(segs, trocaIntervalo(prop.inicioA, prop.fimA));
+  if (eAutor && prop.diaB && prop.diaB === dataISO) segs = trocaSegsUniao(segs, trocaIntervalo(prop.inicioB, prop.fimB));
+  return segs;
+}
+function trocaValidarBancoNoTurno(segs, ini, fim) {
+  if (!segs.length) return { ok: false, motivo: 'Depois da troca não trabalhas nesse dia.' };
+  if (!ini || !fim) return { ok: false, motivo: 'Indica das que horas às que horas.' };
+  const iniMin = escalaMinutosAbsolutos(ini, false), fimMin = escalaMinutosAbsolutos(fim, true);
+  if (!(fimMin > iniMin)) return { ok: false, motivo: 'A hora de fim tem de ser depois da de início.' };
+  const t0 = Math.min(...segs.map(sg => sg.inicioMin)), t1 = Math.max(...segs.map(sg => sg.fimMin));
+  if (iniMin < t0 || fimMin > t1) return { ok: false, motivo: `Fica fora do turno que vais fazer (${trocaSegsTexto(segs)}).` };
+  const minutos = segs.reduce((t, sg) => t + Math.max(0, Math.min(sg.fimMin, fimMin) - Math.max(sg.inicioMin, iniMin)), 0);
+  if (minutos <= 0) return { ok: false, motivo: 'Nesse período não estás a trabalhar.' };
+  return { ok: true, horas: Math.round((minutos / 60) * 100) / 100 };
+}
+function trocaTextoBancoLigado(t) {
+  const n = trocaPedidoBancoLigado(t);
+  if (!n || n.rejeitado) return '';
+  const nome = trocasNomeUtilizador(n.autorId);
+  const horas = escalaCalcularHoras(n.horaInicio, n.horaFim);
+  return ` + ${nome} desconta ${escalaFormatarHorasDecimal(horas)} de Banco de Horas a ${formatDate(n.dataPedido)} (${n.horaInicio}–${n.horaFim}).`;
+}
+async function trocaFecharBancoLigado(t, porQuem) {
+  const n = trocaPedidoBancoLigado(t);
+  if (!n || n.validadoDirecao || n.rejeitado) return;
+  const upd = await dbUpdate('escalaNotasSemana', n.id, { rejeitado: true, rejeitadoPor: porQuem, rejeitadoEm: new Date().toISOString() });
+  if (upd) STATE.escalaNotasSemana = (STATE.escalaNotasSemana || []).map(x => x.id === upd.id ? upd : x);
+}
+async function trocaAprovarBancoLigado(t) {
+  const n = trocaPedidoBancoLigado(t);
+  if (!n || n.validadoDirecao || n.rejeitado) return [];
+  const patch = { validadoDirecao: true, validadoPor: currentUserName(), validadoEm: new Date().toISOString(), rejeitado: false, rejeitadoPor: '', rejeitadoEm: null };
+  const ajustes = await escalaProcessarPedidoBancoAoDecidir(n, true, patch);
+  const upd = await dbUpdate('escalaNotasSemana', n.id, patch);
+  if (upd) STATE.escalaNotasSemana = (STATE.escalaNotasSemana || []).map(x => x.id === upd.id ? upd : x);
+  return ajustes;
+}
+async function trocaDesfazerBancoLigado(t) {
+  const n = trocaPedidoBancoLigado(t);
+  if (!n || !n.validadoDirecao) return;
+  const patch = { validadoDirecao: false, validadoPor: '', validadoEm: null, rejeitado: true, rejeitadoPor: `${currentUserName()} (troca anulada)`, rejeitadoEm: new Date().toISOString() };
+  await escalaProcessarPedidoBancoAoDecidir(n, false, patch);
+  const upd = await dbUpdate('escalaNotasSemana', n.id, patch);
+  if (upd) STATE.escalaNotasSemana = (STATE.escalaNotasSemana || []).map(x => x.id === upd.id ? upd : x);
 }
 // Categorias Profissionais elegíveis para tarefas especiais (Chefe de
 // Turno/Encomendas) na Atribuição Rápida — pedido explícito 2026-08-14:
@@ -37715,7 +37820,7 @@ function trocaDescricao(t) {
   const dif = Number(t.diferenca) || 0;
   const resultado = Math.abs(dif) < 0.01 ? ' — troca equilibrada, ninguém fica a dever.'
     : ` — ${dif > 0 ? a : c} fica a dever ${trocasHorasTexto(dif)} a ${dif > 0 ? c : a}.`;
-  return `[${trocaTipoTexto(t)}] ` + parteA + parteB + resultado;
+  return `[${trocaTipoTexto(t)}] ` + parteA + parteB + resultado + trocaTextoBancoLigado(t);
 }
 // Etiqueta com o ícone único das trocas entre colegas (2026-09-28).
 function conteudoComIconeTroca(texto, tamanho) {
@@ -37909,8 +38014,24 @@ async function trocaPropor(dados) {
   const criada = await dbInsert('escalaTrocas', registo);
   if (!criada) return { erro: `Não foi possível registar a troca. ${lastDbError || ''}`.trim() };
   STATE.escalaTrocas = [criada, ...(STATE.escalaTrocas || [])];
+  let aviso = '';
+  if (dados.banco && dados.banco.dia && dados.banco.ini && dados.banco.fim) {
+    // Desconto de Banco de Horas pedido JUNTO com a troca — fica ligado a ela e só chega à Direção com ela.
+    const payloadBanco = {
+      semanaInicio: escalaSegundaFeiraDaSemanaDeISO(dados.banco.dia), autorId: activeUser.id, autorNome: activeUser.nomeCompleto || activeUser.username,
+      validadoDirecao: false, tipo: 'banco', aplicadoHorario: false, dataPedido: dados.banco.dia, horaInicio: dados.banco.ini, horaFim: dados.banco.fim,
+      trocaId: criada.id,
+      texto: `${escalaTextoPedidoBanco(dados.banco.dia, dados.banco.ini, dados.banco.fim, dados.banco.horas, String(dados.banco.nota || '').trim())}\n(Pedido junto com a troca de ${trocaDiasTexto(criada)} com ${trocasNomeUtilizador(criada.colegaId)} — decide-se com ela.)`,
+    };
+    const nb = await dbInsert('escalaNotasSemana', payloadBanco);
+    if (nb && (nb.trocaId === undefined || nb.trocaId === null)) {
+      await dbDelete('escalaNotasSemana', nb.id);
+      aviso = 'A troca foi enviada, mas o desconto de Banco de Horas não ficou junto (falta correr o SQL sigajuncal_troca_banco.sql) — pede-o à parte depois.';
+    } else if (nb) STATE.escalaNotasSemana = [...(STATE.escalaNotasSemana || []), nb];
+    else aviso = `A troca foi enviada, mas não foi possível juntar o desconto de Banco de Horas. ${lastDbError || ''}`.trim();
+  }
   await trocasEnviarRecado(criada.colegaId, `${trocasNomeUtilizador(criada.autorId)} propõe-te uma troca: ${trocaDescricao(criada)}${criada.nota ? `\nNota: ${criada.nota}` : ''}`, 'tarefa', 'escala_trocas', criada.id);
-  return { troca: criada };
+  return { troca: criada, aviso };
 }
 async function trocaAtualizar(troca, patch) {
   const updated = await dbUpdate('escalaTrocas', troca.id, patch);
@@ -37926,8 +38047,12 @@ async function trocaResponderColega(trocaOriginal, aceitar) {
   const updated = await trocaAtualizar(troca, { estado: aceitar ? 'aguarda_direcao' : 'recusada_colega', colegaRespondeuEm: new Date().toISOString() });
   if (!updated) return { erro: `Não foi possível guardar a resposta. ${lastDbError || ''}`.trim() };
   await marcarTratadasTarefasReferencia('escala_trocas', updated.id);
+  if (!aceitar) await trocaFecharBancoLigado(updated, `${currentUserName()} (troca recusada)`);
   if (aceitar) {
-    const texto = `Troca para validar (aceite pelos dois): ${trocaDescricao(updated)}${updated.nota ? `\nNota: ${updated.nota}` : ''}`;
+    const nBanco = trocaPedidoBancoLigado(updated);
+    const prevB = nBanco && !nBanco.rejeitado ? escalaPrevisaoSaldoBanco(nBanco.autorId, escalaCalcularHoras(nBanco.horaInicio, nBanco.horaFim), nBanco.id) : null;
+    const avisoSaldo = prevB && prevB.depois < 0 ? `\nAtenção: ${trocasNomeUtilizador(nBanco.autorId)} fica com saldo de Banco de Horas negativo (${escalaFormatarHorasDecimalComSinal(prevB.depois)}).` : '';
+    const texto = `Troca para validar (aceite pelos dois): ${trocaDescricao(updated)}${updated.nota ? `\nNota: ${updated.nota}` : ''}${avisoSaldo}`;
     for (const u of trocasDestinatariosDirecao([updated.autorId, updated.colegaId])) await trocasEnviarRecado(u.id, texto, 'tarefa', 'escala_trocas', updated.id);
     await trocasEnviarRecado(updated.autorId, `${trocasNomeUtilizador(updated.colegaId)} aceitou a tua proposta de troca — aguarda agora validação da Direção.`, 'mensagem', 'escala_trocas', updated.id);
   } else {
@@ -37971,6 +38096,7 @@ async function trocaDesistir(troca) {
   const eraDirecao = t.estado === 'aguarda_direcao';
   const upd = await trocaAtualizar(t, { estado: 'anulada', validadoPor: `${currentUserName()} (desistiu)`, validadoEm: new Date().toISOString() });
   if (!upd) return { erro: `Não foi possível gravar. ${lastDbError || ''}`.trim() };
+  await trocaFecharBancoLigado(upd, `${currentUserName()} (desistiu da troca)`);
   await marcarTratadasTarefasReferencia('escala_trocas', upd.id);
   const outro = String(upd.autorId) === String(activeUser.id) ? upd.colegaId : upd.autorId;
   const txt = `${currentUserName()} desistiu da troca de ${trocaDiasTexto(upd)} — fica sem efeito${eraDirecao ? ' e já não precisa de validação' : ''}.`;
@@ -37985,6 +38111,7 @@ async function trocaCancelarPelaDirecao(troca) {
   if (!trocaEmAberto(t)) return { erro: 'Esta troca já foi decidida.' };
   const upd = await trocaAtualizar(t, { estado: 'anulada', validadoPor: `${currentUserName()} (cancelou)`, validadoEm: new Date().toISOString() });
   if (!upd) return { erro: `Não foi possível gravar. ${lastDbError || ''}`.trim() };
+  await trocaFecharBancoLigado(upd, `${currentUserName()} (troca cancelada)`);
   await marcarTratadasTarefasReferencia('escala_trocas', upd.id);
   const txt = `A troca de ${trocaDiasTexto(upd)} (${trocasNomeUtilizador(upd.autorId)} ↔ ${trocasNomeUtilizador(upd.colegaId)}) foi cancelada ${decisorPor()}${trocaExpirada(t) ? ' — o dia passou sem decisão' : ''}.`;
   await trocasEnviarRecado(upd.autorId, txt, 'mensagem', 'escala_trocas', upd.id);
@@ -38334,6 +38461,7 @@ async function trocaDecidirDirecao(trocaOriginal, validar) {
   if (!validar) {
     const upd = await trocaAtualizar(troca, { estado: 'rejeitada', validadoPor: currentUserName(), validadoEm: agora });
     if (!upd) return { erro: `Não foi possível gravar. ${lastDbError || ''}`.trim() };
+    await trocaFecharBancoLigado(upd, `${currentUserName()} (troca rejeitada)`);
     await marcarTratadasTarefasReferencia('escala_trocas', upd.id);
     const txt = `A troca de ${formatDate(upd.diaA)} (${trocasNomeUtilizador(upd.autorId)} ↔ ${trocasNomeUtilizador(upd.colegaId)}) foi rejeitada ${decisorPor()}.`;
     await trocasEnviarRecado(upd.autorId, txt, 'mensagem', 'escala_trocas', upd.id);
@@ -38354,7 +38482,10 @@ async function trocaDecidirDirecao(trocaOriginal, validar) {
     });
   }
   const aplic = await trocaAplicarNoHorario(upd);
-  upd = await trocaAtualizar(upd, { aplicadoHorario: aplic.ok, aplicacaoNota: aplic.ok ? `Turnos trocados no horário automaticamente.${(aplic.ajustes || []).length ? ` ${aplic.ajustes.join(' ')}` : ''}` : `Por aplicar à mão: ${aplic.motivo}` }) || upd;
+  // Desconto de Banco de Horas pedido junto com a troca: aplica-se agora, já no turno novo.
+  const ajustesBanco = await trocaAprovarBancoLigado(upd);
+  const extraNota = [...(aplic.ajustes || []), ...ajustesBanco].join(' ');
+  upd = await trocaAtualizar(upd, { aplicadoHorario: aplic.ok, aplicacaoNota: aplic.ok ? `Turnos trocados no horário automaticamente.${extraNota ? ` ${extraNota}` : ''}` : `Por aplicar à mão: ${aplic.motivo}${ajustesBanco.length ? ` ${ajustesBanco.join(' ')}` : ''}` }) || upd;
   await marcarTratadasTarefasReferencia('escala_trocas', upd.id);
   const txt = `A troca foi validada ${decisorPor()}: ${trocaDescricao(upd)}${aplic.ok ? ' O horário já foi atualizado.' : ''}\nSe precisares de a desfazer, podes pedir à Direção para a anular até ao dia da troca.`;
   await trocasEnviarRecado(upd.autorId, txt, 'mensagem', 'escala_trocas', upd.id);
@@ -38368,6 +38499,8 @@ async function trocaAnular(trocaOriginal) {
   if (!souDirecaoHorariosGlobal()) return { erro: 'Só a Direção pode anular trocas.' };
   const troca = await trocaRecarregar(trocaOriginal);
   if (troca.estado !== 'validada') return { erro: `Esta troca já não está validada (${trocaEstadoEfetivoTexto(troca).toLowerCase()}).` };
+  // Primeiro o desconto de Banco de Horas ligado (ainda está no turno da troca), depois a troca em si.
+  await trocaDesfazerBancoLigado(troca);
   // Procura sempre células marcadas com esta troca (mesmo que a aplicação tenha ficado a meio) — é idempotente.
   const desfeito = await trocaDesfazerNoHorario(troca);
   if (!desfeito.ok) return { erro: 'Não foi possível repor o horário — tenta outra vez.' };
@@ -38534,7 +38667,8 @@ function abrirModalProporTroca(rerender, modoInicial) {
   trocasAbrirModal(podeBanco ? 'Propor troca ou Banco de Horas' : 'Propor troca de turno', (corpo, fechar) => {
     const meusDias = trocaDiasComTurno(activeUser.id);
     const st = { modo: (modoInicial === 'banco' && podeBanco) ? 'banco' : 'troca', colegaId: '', diaA: meusDias[0] ? meusDias[0].iso : '', parcialA: false, inicioA: '', fimA: '', comB: false, diaB: '', parcialB: false, inicioB: '', fimB: '', nota: '',
-      bancoDia: meusDias[0] ? meusDias[0].iso : '', bancoIni: '', bancoFim: '', bancoNota: '' };
+      bancoDia: meusDias[0] ? meusDias[0].iso : '', bancoIni: '', bancoFim: '', bancoNota: '',
+      tbAtivo: false, tbDia: '', tbIni: '', tbFim: '', tbHoras: 0 };
     const saldoBanco = podeBanco ? escalaSaldoBancoDe(activeUser.id) : null;
     const seletorModo = () => {
       if (!podeBanco) return null;
@@ -38582,15 +38716,8 @@ function abrirModalProporTroca(rerender, modoInicial) {
       if (avisos.length) corpo.appendChild(h('div', { style: 'display:flex;flex-direction:column;gap:6px;margin:0 0 10px;' }, avisos));
       if (v.ok) {
         corpo.appendChild(h('p', { style: 'margin:4px 0 2px;font-weight:700;color:var(--pharm-800);' }, `Descontas ${escalaFormatarHorasDecimal(v.horas)} do teu Banco de Horas.`));
-        if (saldoBanco !== null && saldoBanco !== undefined) {
-          const comp = escalaBancoComprometido(activeUser.id);
-          const depois = Math.round((saldoBanco - comp.marcado - comp.pendente - v.horas) * 100) / 100;
-          const partes = [`Saldo hoje: ${escalaFormatarHorasDecimalComSinal(saldoBanco)}`];
-          if (comp.marcado > 0) partes.push(`já marcado para os próximos dias: −${escalaFormatarHorasDecimal(comp.marcado)}`);
-          if (comp.pendente > 0) partes.push(`outros pedidos por decidir: −${escalaFormatarHorasDecimal(comp.pendente)}`);
-          partes.push(`depois deste: ${escalaFormatarHorasDecimalComSinal(depois)}`);
-          corpo.appendChild(h('p', { class: 'field-helper-text', style: `margin:0 0 10px;${depois < 0 ? 'color:#b45309;font-weight:600;' : ''}` }, partes.join(' · ') + (depois < 0 ? ' — ficarias com saldo negativo; a Direção decide.' : '')));
-        }
+        const blocoSaldo = saldoBanco !== null && saldoBanco !== undefined ? escalaBlocoSaldoBanco(activeUser.id, v.horas) : null;
+        if (blocoSaldo) corpo.appendChild(blocoSaldo);
       }
       const nota = h('textarea', { class: 'textarea', rows: '2', placeholder: 'Motivo ou nota (opcional)' }); nota.value = st.bancoNota;
       nota.addEventListener('input', () => { st.bancoNota = nota.value; });
@@ -38703,6 +38830,42 @@ function abrirModalProporTroca(rerender, modoInicial) {
           corpo.appendChild(h('p', { style: `margin:4px 0 2px;font-weight:700;color:${Math.abs(dif) < 0.01 ? '#15803d' : '#b45309'};` },
             Math.abs(dif) < 0.01 ? 'Troca equilibrada — ninguém fica a dever.' : (dif > 0 ? `Ficas a dever ${trocasHorasTexto(dif)} a ${nomeColega}.` : `${nomeColega} fica a dever-te ${trocasHorasTexto(dif)}.`)));
           corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, `Contas entre os dois: hoje ${textoSaldo(saldoAtual)} → depois de validada, ${textoSaldo(saldoDepois)}.`));
+          // Troca + Banco de Horas no mesmo dia (ex: fazer a manhã do colega e sair mais cedo).
+          if (podeBanco) {
+            const prop = { autorId: activeUser.id, colegaId: st.colegaId, diaA: st.diaA, inicioA: infoA.inicio, fimA: infoA.fim,
+              diaB: st.comB ? st.diaB : null, inicioB: st.comB ? infoB.inicio : null, fimB: st.comB ? infoB.fim : null };
+            const diasPossiveis = [...new Set([prop.diaB, prop.diaA].filter(Boolean))].filter(d => trocaSegsDepoisDaTroca(activeUser.id, d, prop).length);
+            if (diasPossiveis.length) {
+              const chk = h('input', { type: 'checkbox' }); chk.checked = st.tbAtivo;
+              chk.addEventListener('change', () => { st.tbAtivo = chk.checked; desenhar(); });
+              const blocoTB = [h('label', { style: 'display:flex;gap:8px;align-items:center;font-size:13px;font-weight:600;' }, [chk, 'Nesse dia também quero descontar horas do Banco de Horas'])];
+              if (st.tbAtivo) {
+                if (!diasPossiveis.includes(st.tbDia)) { st.tbDia = diasPossiveis[0]; st.tbIni = ''; st.tbFim = ''; }
+                const segsDepois = trocaSegsDepoisDaTroca(activeUser.id, st.tbDia, prop);
+                if (!st.tbIni && !st.tbFim && segsDepois.length) {
+                  const fimT = segsDepois[segsDepois.length - 1].fimMin;
+                  st.tbFim = trocaMinParaHora(fimT); st.tbIni = trocaMinParaHora(Math.max(segsDepois[segsDepois.length - 1].inicioMin, fimT - 60));
+                }
+                if (diasPossiveis.length > 1) {
+                  const sd = h('select', { class: 'select' }, diasPossiveis.map(d => h('option', { value: d, selected: d === st.tbDia ? 'selected' : undefined }, trocaRotuloDia(d))));
+                  sd.addEventListener('change', () => { st.tbDia = sd.value; st.tbIni = ''; st.tbFim = ''; desenhar(); });
+                  blocoTB.push(trocasCampo('Dia', sd));
+                }
+                blocoTB.push(h('p', { class: 'field-helper-text', style: 'margin:6px 0 0;' }, `Depois da troca, a ${trocaRotuloDia(st.tbDia)} fazes ${trocaSegsTexto(segsDepois)}.`));
+                const iT = h('input', { class: 'input', type: 'time', value: st.tbIni }); iT.addEventListener('change', () => { st.tbIni = iT.value; desenhar(); });
+                const fT = h('input', { class: 'input', type: 'time', value: st.tbFim }); fT.addEventListener('change', () => { st.tbFim = fT.value; desenhar(); });
+                blocoTB.push(h('div', { style: 'display:flex;gap:10px;margin-top:8px;' }, [trocasCampo('Não trabalho das', iT), trocasCampo('Às', fT)]));
+                const vb = trocaValidarBancoNoTurno(segsDepois, st.tbIni, st.tbFim);
+                if (!vb.ok) { blocoTB.push(h('div', { class: 'troca-validacao troca-validacao-erro' }, `⛔ ${vb.motivo}`)); bloqueada = true; }
+                else {
+                  blocoTB.push(h('p', { style: 'margin:4px 0 6px;font-size:13.5px;font-weight:700;color:#1e40af;' }, `Descontas ${escalaFormatarHorasDecimal(vb.horas)} do teu Banco de Horas — decide-se junto com a troca.`));
+                  const bs = escalaBlocoSaldoBanco(activeUser.id, vb.horas); if (bs) blocoTB.push(bs);
+                  st.tbHoras = vb.horas;
+                }
+              }
+              corpo.appendChild(h('div', { class: 'troca-bloco', style: 'border-color:#bfdbfe;background:#f8fbff;' }, blocoTB));
+            } else st.tbAtivo = false;
+          }
         }
       }
       const erroEl = h('p', { class: 'form-error', style: 'margin:0 0 8px;' });
@@ -38710,9 +38873,11 @@ function abrirModalProporTroca(rerender, modoInicial) {
       enviar.addEventListener('click', () => requireAuth(async () => {
         if (!st.colegaId) { erroEl.textContent = 'Escolhe o colega.'; return; }
         enviar.setAttribute('disabled', 'disabled'); enviar.textContent = 'A enviar…';
-        const res = await trocaPropor({ colegaId: st.colegaId, diaA: st.diaA, inicioA: st.parcialA ? st.inicioA : '', fimA: st.parcialA ? st.fimA : '', diaB: st.comB ? st.diaB : null, inicioB: st.parcialB ? st.inicioB : '', fimB: st.parcialB ? st.fimB : '', nota: st.nota });
+        const res = await trocaPropor({ colegaId: st.colegaId, diaA: st.diaA, inicioA: st.parcialA ? st.inicioA : '', fimA: st.parcialA ? st.fimA : '', diaB: st.comB ? st.diaB : null, inicioB: st.parcialB ? st.inicioB : '', fimB: st.parcialB ? st.fimB : '', nota: st.nota,
+          banco: st.tbAtivo ? { dia: st.tbDia, ini: st.tbIni, fim: st.tbFim, horas: st.tbHoras } : null });
         if (res.erro) { erroEl.textContent = res.erro; enviar.removeAttribute('disabled'); enviar.textContent = 'Enviar ao colega'; return; }
-        showToast(`Proposta enviada a ${trocasNomeUtilizador(st.colegaId)} — aguarda a resposta.`, 'success');
+        if (res.aviso) showToast(res.aviso, 'error');
+        else showToast(`Proposta enviada a ${trocasNomeUtilizador(st.colegaId)} — aguarda a resposta.`, 'success');
         fechar(); rerender();
       }));
       corpo.appendChild(erroEl);
@@ -39006,24 +39171,72 @@ function buildVistaGestaoTrocas(rerender) {
     .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || ''))).slice(0, 40);
   wrap.appendChild(h('div', { class: 'card card-pad' }, [
     h('h3', { class: 'dash-card-title', style: 'margin:0 0 10px;' }, iconeTexto('bookOpen', 'Histórico', { titulo: true })),
-    (hist.length || movHist.length) ? h('div', { style: 'display:flex;flex-direction:column;gap:6px;font-size:12.5px;' }, [
+    (hist.length || movHist.length) ? h('div', { class: 'trocas-hist' }, [
       ...hist.map(t => {
-        const kids = [h('b', {}, `${trocaEstadoEfetivoTexto(t)}${t.validadoPor ? ` (${t.validadoPor})` : ''} · `), trocaDescricao(t)];
-        if (t.aplicacaoNota && t.estado === 'validada') kids.push(h('span', { class: 'cell-muted' }, ` (${t.aplicacaoNota})`));
-        const linha = h('div', { style: 'padding:6px 0;border-bottom:1px solid var(--pharm-100);' }, kids);
+        let anular = null;
         if (t.estado === 'validada') {
-          const anular = h('button', { class: 'btn-link', type: 'button', style: 'margin-left:8px;font-size:12px;' }, 'Anular');
+          anular = h('button', { class: 'trocas-hist-anular', type: 'button', title: 'Anular esta troca' }, [Icon('undo', { size: 12, strokeWidth: 2.4 }), h('span', {}, 'Anular')]);
           anular.addEventListener('click', () => requireAuth(() => confirmDialog('Anular esta troca? O horário volta ao que era nos dias que ainda não passaram (se tinha sido trocado automaticamente) e as horas saem das contas entre colegas. Os dois são avisados.', async () => {
             const res = await trocaAnular(t); if (res.erro) showToast(res.erro, 'error'); else { showToast(res.porAjustar && res.porAjustar.length ? `Troca anulada. Confirma à mão: ${res.porAjustar.join('; ')}.` : 'Troca anulada.', 'success'); rerender(); }
           }, { danger: true, confirmLabel: 'Anular' })));
-          linha.appendChild(anular);
         }
-        return linha;
+        return trocaLinhaHistorico(t, anular);
       }),
-      ...movHist.map(m => h('div', { style: 'padding:6px 0;border-bottom:1px solid var(--pharm-100);' }, `${m.estado === 'rejeitado' ? 'Rejeitado · ' : ''}${TROCAS_TIPO_TEXTO[m.tipo] || m.tipo}: ${trocasNomeUtilizador(m.devedorId)} → ${trocasNomeUtilizador(m.credorId)}, ${trocasHorasTexto(m.horas)}${m.nota ? ` (${m.nota})` : ''}${m.validadoPor ? ` — ${m.validadoPor}` : ''}`)),
+      ...movHist.map(trocaLinhaHistoricoMovimento),
     ]) : h('p', { class: 'cell-muted', style: 'margin:0;' }, 'Sem histórico ainda.'),
   ]));
   return wrap;
+}
+// Histórico das trocas (2026-10-01, Hugo: "melhorar o aspeto do histórico") — cada troca numa linha organizada:
+// estado, quem com quem, o que cada um faz (dia/horas), o resultado nas contas e quem decidiu.
+function trocaEstadoClasse(t) {
+  if (trocaExpirada(t)) return 'cinza';
+  return ({ validada: 'verde', rejeitada: 'vermelho', recusada_colega: 'cinza', anulada: 'cinza' })[t.estado] || 'laranja';
+}
+function trocaDataCurta(iso) { return iso ? trocaRotuloDia(iso) : ''; }
+function trocaLinhaHistorico(t, botaoExtra) {
+  const a = trocasNomeUtilizador(t.autorId), c = trocasNomeUtilizador(t.colegaId);
+  const primeiro = (n) => String(n || '').split(' ')[0];
+  const parte = (quemFaz, deQuem, dia, ini, fim, horas, completo) => h('div', { class: 'trocas-hist-parte' }, [
+    h('span', { class: 'trocas-hist-quem' }, `${primeiro(quemFaz)} faz o turno de ${primeiro(deQuem)}`),
+    h('span', { class: 'trocas-hist-quando' }, `${trocaDataCurta(dia)} · ${ini}–${fim} · ${trocasHorasTexto(horas)}${completo ? '' : ' (parte)'}`),
+  ]);
+  const dif = Number(t.diferenca) || 0;
+  const resultado = Math.abs(dif) < 0.01 ? 'Equilibrada — ninguém fica a dever' : `${dif > 0 ? a : c} fica a dever ${trocasHorasTexto(dif)} a ${dif > 0 ? c : a}`;
+  const quando = t.validadoEm ? formatCarimboNota(t.validadoEm) : (t.updatedAt ? formatCarimboNota(t.updatedAt) : '');
+  const rodape = [t.validadoPor ? `${trocaEstadoEfetivoTexto(t).replace(/ por .*$/, '')} por ${t.validadoPor}` : null, quando].filter(Boolean).join(' · ');
+  return h('div', { class: 'trocas-hist-item' }, [
+    h('div', { class: 'trocas-hist-topo' }, [
+      h('span', { class: `troca-estado-chip ${trocaEstadoClasse(t)}` }, trocaEstadoEfetivoTexto(t).replace(/ por .*$/, '').replace(/ \(.*\)$/, '')),
+      h('span', { class: 'trocas-hist-pessoas' }, `${a} ⇄ ${c}`),
+      h('span', { class: 'trocas-hist-tipo' }, trocaEhDiretaTurnoCompleto(t) ? (t.diaB ? 'Troca direta' : 'Cedência') : 'Troca parcial'),
+    ]),
+    h('div', { class: 'trocas-hist-partes' }, [
+      parte(c, a, t.diaA, t.inicioA, t.fimA, t.horasA, t.completoA),
+      t.diaB ? parte(a, c, t.diaB, t.inicioB, t.fimB, t.horasB, t.completoB) : h('div', { class: 'trocas-hist-parte vazia' }, `${primeiro(a)} não faz nenhum turno em troca`),
+    ]),
+    h('div', { class: 'trocas-hist-rodape' }, [
+      h('span', { class: Math.abs(dif) < 0.01 ? 'trocas-hist-ok' : 'trocas-hist-divida' }, resultado),
+      h('span', { class: 'trocas-hist-meta' }, rodape),
+      botaoExtra || null,
+    ]),
+    t.nota ? h('div', { class: 'trocas-hist-nota' }, `Nota: ${t.nota}`) : null,
+    (t.aplicacaoNota && t.estado === 'validada') ? h('div', { class: 'trocas-hist-nota' }, t.aplicacaoNota) : null,
+  ]);
+}
+function trocaLinhaHistoricoMovimento(m) {
+  const rejeitado = m.estado === 'rejeitado';
+  return h('div', { class: 'trocas-hist-item' }, [
+    h('div', { class: 'trocas-hist-topo' }, [
+      h('span', { class: `troca-estado-chip ${rejeitado ? 'vermelho' : 'azul'}` }, rejeitado ? 'Rejeitado' : (TROCAS_TIPO_TEXTO[m.tipo] || m.tipo)),
+      h('span', { class: 'trocas-hist-pessoas' }, `${trocasNomeUtilizador(m.devedorId)} → ${trocasNomeUtilizador(m.credorId)}`),
+      h('span', { class: 'trocas-hist-tipo' }, trocasHorasTexto(m.horas)),
+    ]),
+    h('div', { class: 'trocas-hist-rodape' }, [
+      h('span', { class: 'trocas-hist-meta' }, [rejeitado ? (TROCAS_TIPO_TEXTO[m.tipo] || m.tipo) : null, m.validadoPor ? `por ${m.validadoPor}` : (m.criadoPor ? `por ${m.criadoPor}` : null), (m.validadoEm || m.createdAt) ? formatCarimboNota(m.validadoEm || m.createdAt) : null].filter(Boolean).join(' · ')),
+    ]),
+    m.nota ? h('div', { class: 'trocas-hist-nota' }, `Nota: ${m.nota}`) : null,
+  ]);
 }
 // Cartões "só leitura" das trocas validadas, para o feed "Pedidos e Registos da Semana" (registo por semana/dia).
 function trocasValidadasDaSemana(semanaInicioISO) {
@@ -40332,7 +40545,10 @@ function buildHorariosPage(container, goTo) {
     // "Não Validar", pendente só mostra "Validar"), com tooltip nativo a
     // explicar a ação ao passar o rato (mesmo padrão dos botões
     // Editar/Eliminar acima, .escala-nota-acao-discreta).
-    if (souDirecaoHorariosGlobal()) {
+    const trocaDaNota = (nota.trocaId !== undefined && nota.trocaId !== null) ? (STATE.escalaTrocas || []).find(t => String(t.id) === String(nota.trocaId)) : null;
+    if (trocaDaNota && !nota.validadoDirecao && !nota.rejeitado) {
+      validacaoEl = h('span', { class: 'escala-nota-pendente-badge' }, [Icon('trocaColegas', { size: 12, strokeWidth: 2.4 }), ` Junto com a troca de ${trocaDiasTexto(trocaDaNota)} — decide-se com ela (${trocaEstadoEfetivoTexto(trocaDaNota).toLowerCase()})`]);
+    } else if (souDirecaoHorariosGlobal()) {
       const rotulo = h('span', nota.rejeitado && !nota.validadoDirecao ? { style: 'color:#b91c1c;font-weight:700;' } : {}, nota.validadoDirecao
         ? ` Validado por ${nota.validadoPor || '—'} em ${formatCarimboNota(nota.validadoEm)}`
         : nota.rejeitado ? ` Rejeitado por ${nota.rejeitadoPor || '—'}${nota.rejeitadoEm ? ` em ${formatCarimboNota(nota.rejeitadoEm)}` : ''}` : ' Pendente de validação');
