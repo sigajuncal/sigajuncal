@@ -18408,19 +18408,7 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
       const historicoEl = bodyEl.querySelector('.gaveta-main-historico');
       if (historicoEl) historicoEl.scrollTop = historicoEl.scrollHeight;
     };
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        aplicar();
-        // CORRIGIDO 2026-08-28 (ainda insuficiente numa conversa longa —
-        // Hugo: "não vai para a última mensagem", reproduzido ao abrir
-        // pelo widget "Última Notificação" da Home num histórico com
-        // meses de mensagens): 2 frames podem não bastar quando há
-        // MUITAS mensagens a montar de uma vez (layout mais lento a
-        // estabilizar) — reaplica-se mais uma vez 150ms depois, tempo
-        // de sobra para o browser terminar mesmo com um histórico grande.
-        setTimeout(aplicar, 150);
-      });
-    });
+    manterScrollEnquantoAssenta(aplicar);
   }
 
   // Leva a conversa até um recado concreto (a primeira por ler), com a linha "Por ler" visível por cima — nunca até
@@ -18433,7 +18421,27 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
       const divisor = alvo.previousElementSibling && alvo.previousElementSibling.classList.contains('gaveta-por-ler-divisor') ? alvo.previousElementSibling : alvo;
       historicoEl.scrollTop = Math.max(0, historicoEl.scrollTop + divisor.getBoundingClientRect().top - historicoEl.getBoundingClientRect().top - 10);
     };
-    requestAnimationFrame(() => requestAnimationFrame(() => { aplicar(); setTimeout(aplicar, 150); }));
+    manterScrollEnquantoAssenta(aplicar);
+  }
+  // CORRIGIDO 2026-10-01 (Hugo: "surgiu notificação mas não foi para a última mensagem... ficou a meio e tive de
+  // fazer scroll"): no telemóvel o layout da conversa continua a mudar depois dos 150 ms (janela a abrir, cartões de
+  // tarefa com botões, letra a carregar) — o scroll calculado cedo demais ficava a meio. Agora volta a aplicar-se
+  // sempre que a conversa muda de tamanho, durante 2 s, e pára logo que a pessoa toca/rola a conversa.
+  function manterScrollEnquantoAssenta(aplicar) {
+    const historicoEl = bodyEl.querySelector('.gaveta-main-historico');
+    let parado = false;
+    const parar = () => { parado = true; };
+    const reaplicar = () => { if (!parado) aplicar(); };
+    requestAnimationFrame(() => requestAnimationFrame(reaplicar));
+    [150, 400, 900].forEach(ms => setTimeout(reaplicar, ms));
+    if (!historicoEl) return;
+    ['touchstart', 'wheel', 'mousedown', 'keydown'].forEach(ev => historicoEl.addEventListener(ev, parar, { once: true, passive: true }));
+    if (typeof ResizeObserver === 'function') {
+      const ro = new ResizeObserver(() => reaplicar());
+      ro.observe(historicoEl);
+      Array.from(historicoEl.children).forEach(c => ro.observe(c));
+      setTimeout(() => { parado = true; ro.disconnect(); }, 2000);
+    } else setTimeout(() => { parado = true; }, 2000);
   }
   // Atualização ao vivo (Realtime) com a Gaveta aberta: redesenha mantendo tudo no sítio; o que chegar a uma
   // conversa aberta fica logo lido (está no ecrã).
