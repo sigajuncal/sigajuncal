@@ -2214,6 +2214,11 @@
 .trocas-cartao-acoes{display:flex;gap:6px;flex-wrap:wrap;}
 /* Histórico das trocas (2026-10-01) */
 .trocas-hist{display:flex;flex-direction:column;gap:8px;}
+.trocas-hist-detalhes>summary{display:flex;align-items:center;gap:8px;cursor:pointer;list-style:none;font-size:15px;font-weight:800;color:var(--pharm-800);}
+.trocas-hist-detalhes>summary::-webkit-details-marker{display:none;}
+.trocas-hist-detalhes>summary::after{content:'Mostrar';margin-left:auto;font-size:12px;font-weight:700;color:var(--pharm-500);}
+.trocas-hist-detalhes[open]>summary::after{content:'Esconder';}
+.trocas-hist-contagem{font-size:11px;font-weight:700;color:var(--pharm-500);background:var(--pharm-50);border-radius:999px;padding:1px 8px;}
 .trocas-hist-item{border:1px solid var(--pharm-100);border-radius:12px;padding:10px 12px;background:#fff;display:flex;flex-direction:column;gap:8px;}
 .trocas-hist-topo{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
 .trocas-hist-pessoas{font-size:13px;font-weight:800;color:var(--pharm-800);}
@@ -39169,22 +39174,35 @@ function buildVistaGestaoTrocas(rerender) {
     .sort((a, b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || ''))).slice(0, 40);
   const movHist = (STATE.escalaTrocasMovimentos || []).filter(m => !m.eliminado && m.tipo !== 'troca' && m.estado !== 'pendente')
     .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || ''))).slice(0, 40);
-  wrap.appendChild(h('div', { class: 'card card-pad' }, [
-    h('h3', { class: 'dash-card-title', style: 'margin:0 0 10px;' }, iconeTexto('bookOpen', 'Histórico', { titulo: true })),
-    (hist.length || movHist.length) ? h('div', { class: 'trocas-hist' }, [
-      ...hist.map(t => {
-        let anular = null;
-        if (t.estado === 'validada') {
-          anular = h('button', { class: 'trocas-hist-anular', type: 'button', title: 'Anular esta troca' }, [Icon('undo', { size: 12, strokeWidth: 2.4 }), h('span', {}, 'Anular')]);
-          anular.addEventListener('click', () => requireAuth(() => confirmDialog('Anular esta troca? O horário volta ao que era nos dias que ainda não passaram (se tinha sido trocado automaticamente) e as horas saem das contas entre colegas. Os dois são avisados.', async () => {
-            const res = await trocaAnular(t); if (res.erro) showToast(res.erro, 'error'); else { showToast(res.porAjustar && res.porAjustar.length ? `Troca anulada. Confirma à mão: ${res.porAjustar.join('; ')}.` : 'Troca anulada.', 'success'); rerender(); }
-          }, { danger: true, confirmLabel: 'Anular' })));
-        }
+  // 2026-10-01 (Hugo: "fica sempre ali mesmo os que já passaram? deveria ficar em histórico"): só as trocas validadas
+  // que AINDA VÃO acontecer ficam à vista (com "Anular"); tudo o que já passou ou ficou sem efeito (recusadas,
+  // rejeitadas, anuladas, compensações) vai para o Histórico, fechado por omissão.
+  const hojeISO = todayISO();
+  const proximas = hist.filter(t => t.estado === 'validada' && trocaPrimeiroDia(t) >= hojeISO)
+    .sort((a, b) => trocaPrimeiroDia(a).localeCompare(trocaPrimeiroDia(b)));
+  const passadas = hist.filter(t => !proximas.includes(t));
+  if (proximas.length) {
+    wrap.appendChild(h('div', { class: 'card card-pad' }, [
+      h('h3', { class: 'dash-card-title', style: 'margin:0 0 4px;' }, iconeTexto('calendar', 'Validadas — por acontecer', { titulo: true })),
+      h('p', { class: 'field-helper-text', style: 'margin:0 0 10px;' }, 'Ainda se podem anular até ao dia da troca (o horário volta ao que era).'),
+      h('div', { class: 'trocas-hist' }, proximas.map(t => {
+        const anular = h('button', { class: 'trocas-hist-anular', type: 'button', title: 'Anular esta troca' }, [Icon('undo', { size: 12, strokeWidth: 2.4 }), h('span', {}, 'Anular')]);
+        anular.addEventListener('click', () => requireAuth(() => confirmDialog('Anular esta troca? O horário volta ao que era nos dias que ainda não passaram (se tinha sido trocado automaticamente) e as horas saem das contas entre colegas. Os dois são avisados.', async () => {
+          const res = await trocaAnular(t); if (res.erro) showToast(res.erro, 'error'); else { showToast(res.porAjustar && res.porAjustar.length ? `Troca anulada. Confirma à mão: ${res.porAjustar.join('; ')}.` : 'Troca anulada.', 'success'); rerender(); }
+        }, { danger: true, confirmLabel: 'Anular' })));
         return trocaLinhaHistorico(t, anular);
-      }),
+      })),
+    ]));
+  }
+  const totalHist = passadas.length + movHist.length;
+  const detalhes = h('details', { class: 'trocas-hist-detalhes' }, [
+    h('summary', {}, [iconeTexto('bookOpen', 'Histórico', { titulo: true }), h('span', { class: 'trocas-hist-contagem' }, totalHist ? String(totalHist) : 'vazio')]),
+    totalHist ? h('div', { class: 'trocas-hist', style: 'margin-top:10px;' }, [
+      ...passadas.sort((a, b) => (trocaPrimeiroDia(b) || '').localeCompare(trocaPrimeiroDia(a) || '')).map(t => trocaLinhaHistorico(t, null)),
       ...movHist.map(trocaLinhaHistoricoMovimento),
-    ]) : h('p', { class: 'cell-muted', style: 'margin:0;' }, 'Sem histórico ainda.'),
-  ]));
+    ]) : h('p', { class: 'cell-muted', style: 'margin:10px 0 0;' }, 'Sem histórico ainda.'),
+  ]);
+  wrap.appendChild(h('div', { class: 'card card-pad' }, detalhes));
   return wrap;
 }
 // Histórico das trocas (2026-10-01, Hugo: "melhorar o aspeto do histórico") — cada troca numa linha organizada:
@@ -53325,7 +53343,11 @@ function buildPontoWidget(rerender, diaHoje) {
     } else if (!temLoc) {
       curto = 'Sem localização — fica por validar';
       longo = loc && loc.erro === 'permissao'
-        ? 'Sem permissão de localização — ativa-a para este site nas definições do telemóvel. Podes picar na mesma, mas fica pendente de validação.'
+        ? (/iPhone|iPad|iPod/.test(navigator.userAgent || '')
+          // 2026-10-01 (iPhone da Ana): no iPhone a app do ecrã principal não aparece na lista de apps com localização —
+          // a permissão é a dos "Sites do Safari".
+          ? 'Sem permissão de localização. No iPhone: Definições → Privacidade e segurança → Serviços de localização (ligado) → Sites do Safari → "Durante a utilização". Depois fecha e volta a abrir o SigaJuncal e toca em "Permitir". Podes picar na mesma, mas fica pendente de validação.'
+          : 'Sem permissão de localização — ativa-a para este site nas definições do telemóvel. Podes picar na mesma, mas fica pendente de validação.')
         : 'Não foi possível obter a localização. Podes picar na mesma, mas fica pendente de validação.';
     } else if (distancia > limite) {
       bloqueado = true; tom = 'erro';
