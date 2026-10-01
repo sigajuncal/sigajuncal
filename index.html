@@ -6791,6 +6791,81 @@ const SERVICOS_CALENDARIO = [
   { key: 'depilacao_laser', label: 'Depilação Laser', cor: '#f472b6' }, // rosa
   { key: 'prima_corpus', label: 'Prima Corpus', cor: '#c084fc' }, // roxo
 ];
+/* ---- Nome das Agendas editável (2026-10-01, Hugo: "a Joana nutricionista está de licença... vem uma substituta
+   e terá acesso à agenda dela... o nome da agenda deveria ser possível de alterar") ----
+   Cada agenda tem uma chave interna fixa (ex: nutricao_joana) a que estão ligadas todas as marcações, dias
+   abertos, notas e o utilizador do prestador — essa chave NUNCA muda. O que se pode mudar é só o NOME MOSTRADO
+   (menu, cartões, cabeçalho, calendário, impressões), guardado em agenda_prestadores_config. Sem registo (ou com o
+   nome em branco) volta ao nome original. */
+const AGENDA_NOMES_ORIGINAIS = Object.fromEntries(PRESTADORES_AGENDA.map(p => [p.key, p.nome]));
+const AGENDA_ROTULOS_CALENDARIO_ORIGINAIS = Object.fromEntries(SERVICOS_CALENDARIO.map(s => [s.key, s.label]));
+function agendaConfigDe(prestadorKey) {
+  return (STATE.agendaPrestadoresConfig || []).find(c => c.prestadorKey === prestadorKey && !c.eliminado) || null;
+}
+// "Dra. Ana Silva" → "Ana" (para o rótulo curto do calendário, ex: "Nutrição Ana").
+function agendaPrimeiroNomeSemTitulo(nome) {
+  const partes = String(nome || '').trim().split(/\s+/).filter(w => !/^(dra?|dr)\.?$/i.test(w));
+  return partes[0] || String(nome || '').trim();
+}
+let AGENDA_NOMES_ASSINATURA = '';
+function aplicarNomesAgendasPersonalizados() {
+  const assinatura = JSON.stringify((STATE.agendaPrestadoresConfig || []).map(c => [c.prestadorKey, c.nome, c.eliminado]));
+  if (assinatura === AGENDA_NOMES_ASSINATURA) return false;
+  AGENDA_NOMES_ASSINATURA = assinatura;
+  PRESTADORES_AGENDA.forEach(p => {
+    const cfg = agendaConfigDe(p.key);
+    const personalizado = cfg && String(cfg.nome || '').trim();
+    p.nome = personalizado ? String(cfg.nome).trim() : AGENDA_NOMES_ORIGINAIS[p.key];
+    const sc = SERVICOS_CALENDARIO.find(x => x.key === p.key);
+    if (sc) sc.label = personalizado ? `${p.especialidade} ${agendaPrimeiroNomeSemTitulo(p.nome)}` : AGENDA_ROTULOS_CALENDARIO_ORIGINAIS[p.key];
+    NAV_SECTIONS.forEach(sec => (sec.items || []).forEach(it => { if (it.key === `agenda-${p.key}`) it.label = p.nome; }));
+  });
+  return true;
+}
+async function guardarNomeAgenda(prestadorKey, nome) {
+  if (!isMasterUser()) return { erro: 'Só a Direção pode mudar o nome de uma agenda.' };
+  const limpo = String(nome || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+  const atual = agendaConfigDe(prestadorKey);
+  let res;
+  if (atual) res = await dbUpdate('agendaPrestadoresConfig', atual.id, { nome: limpo, atualizadoPor: currentUserName() });
+  else res = await dbInsert('agendaPrestadoresConfig', { prestadorKey, nome: limpo, atualizadoPor: currentUserName() });
+  if (!res) {
+    return { erro: /agenda_prestadores_config/i.test(lastDbError || '') || /relation .* does not exist|Could not find the table/i.test(lastDbError || '')
+      ? 'Falta correr o SQL sigajuncal_agenda_nomes_utilizadores.sql no Supabase.' : `Não foi possível gravar. ${lastDbError || ''}`.trim() };
+  }
+  STATE.agendaPrestadoresConfig = atual ? STATE.agendaPrestadoresConfig.map(c => c.id === res.id ? res : c) : [...(STATE.agendaPrestadoresConfig || []), res];
+  aplicarNomesAgendasPersonalizados();
+  return { ok: true };
+}
+function abrirModalNomeAgenda(prestadorKey, aoGravar) {
+  const p = PRESTADORES_AGENDA.find(x => x.key === prestadorKey);
+  if (!p) return;
+  const overlay = h('div', { class: 'modal-overlay' });
+  const fechar = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay && cliqueComecouEm(overlay)) fechar(); });
+  const input = h('input', { class: 'input', type: 'text', maxlength: '60', value: p.nome, placeholder: AGENDA_NOMES_ORIGINAIS[prestadorKey] });
+  const erroEl = h('p', { class: 'form-error', style: 'margin:0 0 8px;' });
+  const gravar = h('button', { class: 'btn btn-primary', type: 'button' }, 'Guardar');
+  const repor = h('button', { class: 'btn btn-secondary', type: 'button' }, `Repor "${AGENDA_NOMES_ORIGINAIS[prestadorKey]}"`);
+  const executar = (valor) => requireAuth(async () => {
+    gravar.setAttribute('disabled', 'disabled'); repor.setAttribute('disabled', 'disabled');
+    const r = await guardarNomeAgenda(prestadorKey, valor);
+    if (r.erro) { erroEl.textContent = r.erro; gravar.removeAttribute('disabled'); repor.removeAttribute('disabled'); return; }
+    showToast('Nome da agenda atualizado.', 'success'); fechar(); if (aoGravar) aoGravar(); else render();
+  });
+  gravar.addEventListener('click', () => executar(input.value));
+  repor.addEventListener('click', () => executar(''));
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') executar(input.value); });
+  overlay.appendChild(h('div', { class: 'modal-panel', style: 'max-width:460px;width:100%;' }, [
+    h('h3', { class: 'modal-title', style: 'margin:0 0 6px;' }, 'Nome da agenda'),
+    h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, `Muda só o nome que aparece na app (menu, cartões, calendário e impressões). As marcações, os dias abertos e as notas desta agenda continuam todos no mesmo sítio. Nome original: ${AGENDA_NOMES_ORIGINAIS[prestadorKey]}.`),
+    h('div', { class: 'field', style: 'margin:0 0 10px;' }, [h('label', {}, `Nome (${p.especialidade})`), input]),
+    erroEl,
+    h('div', { class: 'form-actions' }, [gravar, AGENDA_NOMES_ORIGINAIS[prestadorKey] !== p.nome ? repor : null, h('button', { class: 'btn btn-secondary', type: 'button', onclick: fechar }, 'Cancelar')]),
+  ]));
+  document.body.appendChild(overlay);
+  setTimeout(() => { input.focus(); input.select(); }, 30);
+}
 
 /* =================================================================
    AGENDA — 6 prestadores de serviço, com regras de duração automática,
@@ -9363,7 +9438,9 @@ function buildAgendaPage(container, goTo, prestadorKey) {
       h('span', { class: 'agenda-cor-badge-dot', style: `background:${corServico};` }),
       `Agenda ${prestador.nome}`,
     ]);
-    wrap.appendChild(h('div', { style: 'display:flex;' }, [badgeCorAgenda]));
+    const editarNomeBtn = isMasterUser() ? h('button', { type: 'button', class: 'btn-link edit', style: 'font-size:12px;margin-left:10px;display:inline-flex;align-items:center;gap:5px;', title: 'Mudar o nome mostrado desta agenda (ex: substituição)' }, [Icon('pencil', { size: 12, strokeWidth: 2.2 }), h('span', {}, 'Mudar nome')]) : null;
+    if (editarNomeBtn) editarNomeBtn.addEventListener('click', () => abrirModalNomeAgenda(prestadorKey, () => render()));
+    wrap.appendChild(h('div', { style: 'display:flex;align-items:center;flex-wrap:wrap;' }, [badgeCorAgenda, editarNomeBtn]));
     wrap.appendChild(h('p', { class: 'agenda-info-aviso' },
       'Marcar apenas nos dias com cor aberta. Para marcar num dia por abrir, abre-o primeiro («Abrir Dia»).',
     ));
@@ -9940,6 +10017,8 @@ const TABLES = {
   // Observações da Validação de Horários (1 por colaborador+dia) — ver
   // buildVistaValidacaoHorarios.
   pontoObservacoes: 'ponto_observacoes',
+  // 2026-10-01: nome mostrado de cada Agenda (ex: substituição de uma profissional) — a chave interna nunca muda.
+  agendaPrestadoresConfig: 'agenda_prestadores_config',
 };
 
 // LAZY LOADING — 19 tabelas menos usadas, adiadas até ao módulo respetivo
@@ -11921,6 +12000,7 @@ const STATE = {
   formacoes: [],
   agendaMarcacoes: [],
   agendaDias: [],
+  agendaPrestadoresConfig: [],
   objetivos: [],
   usuarios: [],
   empresasParceiras: [],
@@ -30285,7 +30365,7 @@ function buildDefinicoesPage(container, goTo) {
 
   function openNew() {
     if (!isMasterUser()) return;
-    draft = { primeiroNome: '', apelido: '', categoriaProfissional: '', perfilNivel: 'Básico', username: '', pin: '', ativo: true, incluirHorarios: false, estatutoColaborador: '', dataNascimento: '' };
+    draft = { primeiroNome: '', apelido: '', categoriaProfissional: '', perfilNivel: 'Básico', username: '', pin: '', ativo: true, incluirHorarios: false, estatutoColaborador: '', dataNascimento: '', contacto: '', email: '' };
     editingId = null; formError = ''; showForm = true; rerender();
   }
   function openEditSelected() {
@@ -30298,13 +30378,13 @@ function buildDefinicoesPage(container, goTo) {
     const primeiroNome = partesNome[0] || '';
     const apelido = partesNome.slice(1).join(' ') || '';
     draft = isSelf(u.id)
-      ? Object.assign({}, u, { primeiroNome, apelido, incluirHorarios: u.incluirHorarios === true, estatutoColaborador: u.estatutoColaborador || '', dataNascimento: u.dataNascimento || '' })
+      ? Object.assign({}, u, { primeiroNome, apelido, incluirHorarios: u.incluirHorarios === true, estatutoColaborador: u.estatutoColaborador || '', dataNascimento: u.dataNascimento || '', contacto: u.contacto || '', email: u.email || '' })
       // Username/PIN de outra pessoa: só pré-preenchidos com os valores
       // atuais quando quem abre a edição é Hugo/Paulo (isMasterUser) —
       // pedido explícito 2026-09-08. Para os restantes, nem aparecem no
       // formulário (ver usuarioFormSchema), por isso nem faz sentido
       // andar a copiá-los para o draft.
-      : { primeiroNome, apelido, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', prestadorKey: u.prestadorKey || '', ativo: u.ativo !== false, incluirHorarios: u.incluirHorarios === true, estatutoColaborador: u.estatutoColaborador || '', dataNascimento: u.dataNascimento || '', ...(isMasterUser() ? { username: u.username || '', pin: '' } : {}) };
+      : { primeiroNome, apelido, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', prestadorKey: u.prestadorKey || '', ativo: u.ativo !== false, incluirHorarios: u.incluirHorarios === true, estatutoColaborador: u.estatutoColaborador || '', dataNascimento: u.dataNascimento || '', contacto: u.contacto || '', email: u.email || '', ...(isMasterUser() ? { username: u.username || '', pin: '' } : {}) };
     formError = '';
     showForm = true;
     rerender();
@@ -30357,6 +30437,10 @@ function buildDefinicoesPage(container, goTo) {
       rerender();
       return;
     }
+    const emailLimpo = String(draft.email || '').trim();
+    if (emailLimpo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailLimpo)) { formError = 'O Email não parece válido (ex: nome@exemplo.pt).'; rerender(); return; }
+    const contactoLimpo = String(draft.contacto || '').trim();
+    if (contactoLimpo && !/^\+?[0-9 ]{6,20}$/.test(contactoLimpo)) { formError = 'O Contacto só pode ter números (e o + do indicativo).'; rerender(); return; }
     if (!editingId || editingSelf || isMasterUser()) {
       if (!formatoUsernamePinValido(draft.username) || (String(draft.pin || '').trim() && !formatoUsernamePinValido(draft.pin)) || (!editingId && !formatoUsernamePinValido(draft.pin))) {
         formError = 'O Username e o PIN devem conter apenas números, entre 2 e 4 algarismos.';
@@ -30387,14 +30471,15 @@ function buildDefinicoesPage(container, goTo) {
     const incluirHorarios = draft.incluirHorarios === true;
     const estatutoColaborador = incluirHorarios ? (draft.estatutoColaborador || '') : '';
     const dataNascimento = draft.dataNascimento || null;
+    const contacto = String(draft.contacto || '').trim(), email = String(draft.email || '').trim().toLowerCase();
     if (editingId) {
       const payload = editingSelf
-        ? { nomeCompleto, categoriaProfissional, perfilNivel: draft.perfilNivel, prestadorKey, incluirHorarios, estatutoColaborador, dataNascimento, username: draft.username }
+        ? { nomeCompleto, categoriaProfissional, perfilNivel: draft.perfilNivel, prestadorKey, incluirHorarios, estatutoColaborador, dataNascimento, contacto, email, username: draft.username }
         // Username/PIN de outra pessoa: só entram no payload quando quem
         // está a gravar é Hugo/Paulo (isMasterUser) — pedido explícito
         // 2026-09-08. Sem isto, os campos apareciam editáveis no
         // formulário mas a alteração era sempre ignorada ao guardar.
-        : { nomeCompleto, categoriaProfissional, perfilNivel: draft.perfilNivel, prestadorKey, incluirHorarios, estatutoColaborador, dataNascimento, ativo: draft.ativo !== false, ...(isMasterUser() ? { username: draft.username } : {}) };
+        : { nomeCompleto, categoriaProfissional, perfilNivel: draft.perfilNivel, prestadorKey, incluirHorarios, estatutoColaborador, dataNascimento, contacto, email, ativo: draft.ativo !== false, ...(isMasterUser() ? { username: draft.username } : {}) };
       const updated = await dbUpdate('usuarios', editingId, payload);
       // PIN novo (se foi escrito): gravado pela função segura, nunca pela tabela.
       if (updated && String(draft.pin || '').trim() && (editingSelf || isMasterUser())) {
@@ -30405,12 +30490,12 @@ function buildDefinicoesPage(container, goTo) {
       if (updated) {
         STATE.usuarios = STATE.usuarios.map(u => u.id === editingId ? updated : u);
         if (editingSelf) {
-          activeUser = Object.assign({}, activeUser, { nomeCompleto: updated.nomeCompleto, username: updated.username, categoriaProfissional: updated.categoriaProfissional, perfilNivel: updated.perfilNivel, prestadorKey: updated.prestadorKey, incluirHorarios: updated.incluirHorarios, estatutoColaborador: updated.estatutoColaborador, dataNascimento: updated.dataNascimento });
+          activeUser = Object.assign({}, activeUser, { nomeCompleto: updated.nomeCompleto, username: updated.username, categoriaProfissional: updated.categoriaProfissional, perfilNivel: updated.perfilNivel, prestadorKey: updated.prestadorKey, incluirHorarios: updated.incluirHorarios, estatutoColaborador: updated.estatutoColaborador, dataNascimento: updated.dataNascimento, contacto: updated.contacto, email: updated.email });
           refreshSidebarBadges();
         }
       } else formError = `Não foi possível guardar as alterações. ${lastDbError || 'Verifica a ligação e tenta novamente.'}`;
     } else {
-      const payload = { nomeCompleto, categoriaProfissional, perfilNivel: draft.perfilNivel, prestadorKey, incluirHorarios, estatutoColaborador, dataNascimento, username: draft.username, ativo: true };
+      const payload = { nomeCompleto, categoriaProfissional, perfilNivel: draft.perfilNivel, prestadorKey, incluirHorarios, estatutoColaborador, dataNascimento, contacto, email, username: draft.username, ativo: true };
       const created = await dbInsertUsuarioComLimpeza(payload);
       if (created) {
         STATE.usuarios = [created, ...STATE.usuarios];
@@ -30505,13 +30590,17 @@ function buildDefinicoesPage(container, goTo) {
         // (acumula saldo de férias): alimenta o Dia de Aniversário
         // automático (22+1) do módulo Férias (ver escalaBonusAniversarioAno).
         // Nunca obrigatório — sem data, simplesmente não há bónus.
-        if (draft.estatutoColaborador === 'quadro') {
-          base.push({
-            name: 'dataNascimento', label: 'Data de Nascimento (Dia de Aniversário automático)', type: 'date', size: 'sm',
-            helperText: 'Usada só para o Dia de Aniversário automático (+1 dia, nunca conta como Prémio do Ano) no módulo Férias.',
-          });
-        }
       }
+      // 2026-10-01 (Hugo): Data de Nascimento, Contacto e Email para qualquer colaborador (antes a data só aparecia
+      // a quem estava no Quadro). No Quadro, a data continua a dar o Dia de Aniversário automático em Férias.
+      base.push({
+        name: 'dataNascimento', label: draft.estatutoColaborador === 'quadro' ? 'Data de Nascimento (Dia de Aniversário automático)' : 'Data de Nascimento', type: 'date', size: 'sm',
+        helperText: draft.estatutoColaborador === 'quadro' ? 'Também dá o Dia de Aniversário automático (+1 dia, nunca conta como Prémio do Ano) no módulo Férias.' : undefined,
+      });
+      base.push(
+        { name: 'contacto', label: 'Contacto', type: 'text', size: 'sm', inputmode: 'tel', maxLength: 20, placeholder: 'Ex: 912 345 678' },
+        { name: 'email', label: 'Email', type: 'text', inputmode: 'email', maxLength: 120, placeholder: 'Ex: nome@exemplo.pt' },
+      );
     }
     if (ehPrestador) {
       base.push({
@@ -30550,7 +30639,9 @@ function buildDefinicoesPage(container, goTo) {
   function buildTable() {
     const list = ordenarUsuariosPorHierarquia((STATE.usuarios || []).filter(usuarioVisivelParaAtual));
     if (list.length === 0) return EmptyState('Ainda não há utilizadores registados.');
-    const thead = h('thead', {}, h('tr', {}, ['', 'Nome Completo', 'Categoria Profissional', 'Nível de Perfil', 'Estado', 'Username', 'PIN'].map(t => h('th', {}, t))));
+    // 2026-10-01: Data de Nascimento, Contacto e Email — dados pessoais, por isso só visíveis a quem gere utilizadores.
+    const verPessoais = isMasterUser();
+    const thead = h('thead', {}, h('tr', {}, ['', 'Nome Completo', 'Categoria Profissional', ...(verPessoais ? ['Data de Nasc.', 'Contacto', 'Email'] : []), 'Nível de Perfil', 'Estado', 'Username', 'PIN'].map(t => h('th', {}, t))));
     const rows = list.map(u => {
       const selected = selectedIds.has(u.id);
       const inativo = u.ativo === false;
@@ -30569,6 +30660,11 @@ function buildDefinicoesPage(container, goTo) {
         checkboxCell,
         h('td', { class: 'cell-strong' }, [u.nomeCompleto || '—', usuarioOculto(u) ? h('span', { class: 'badge-oculto', style: 'margin-left:6px;font-size:11px;font-weight:600;color:#8a6d00;background:#fff3c4;border-radius:4px;padding:1px 6px;', title: 'Utilizador Oculto/Teste — nunca aparece nas listas partilhadas com a equipa nem no estado Online.' }, 'Oculto') : null]),
         h('td', {}, u.categoriaProfissional || '—'),
+        ...(verPessoais ? [
+          h('td', { style: 'white-space:nowrap;' }, u.dataNascimento ? formatDate(String(u.dataNascimento).slice(0, 10)) : '—'),
+          h('td', { style: 'white-space:nowrap;' }, u.contacto ? h('a', { href: `tel:${String(u.contacto).replace(/\s+/g, '')}`, onclick: (e) => e.stopPropagation(), style: 'color:inherit;' }, u.contacto) : '—'),
+          h('td', { style: 'max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;', title: u.email || '' }, u.email ? h('a', { href: `mailto:${u.email}`, onclick: (e) => e.stopPropagation(), style: 'color:inherit;' }, u.email) : '—'),
+        ] : []),
         h('td', {}, u.perfilNivel || 'Basico'),
         estadoCell,
         h('td', {}, '********'),
@@ -56010,6 +56106,7 @@ let ultimaPaginaRenderizada = null;
 let ultimoUtilizadorRenderizado = undefined; // undefined = ainda não houve nenhum render
 let jaFezPrimeiraRenderizacao = false;
 function render() {
+  try { aplicarNomesAgendasPersonalizados(); } catch (e) { /* nunca impede o resto da app de desenhar */ }
   // Limpeza forçada do tooltip flutuante da sidebar — SEMPRE, em toda e
   // qualquer chamada a render() (mudança de página, gravação, Realtime,
   // toggle de colapsar/expandir). Sem isto, clicar num botão que dispara
