@@ -1031,6 +1031,11 @@
   .ponto-estado{margin:0;font-size:12.5px;font-weight:600;color:#5b7a92;text-align:center;}
   .ponto-estado.ok{color:#15803d;} .ponto-estado.aviso{color:#b45309;} .ponto-estado.erro{color:#dc2626;}
   .ponto-etiquetas{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;}
+  .ponto-declarar-link{background:none;border:0;padding:2px 0;font:inherit;font-size:12.5px;font-weight:700;color:#1d4ed8;text-decoration:underline;cursor:pointer;}
+  .ponto-declarar{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 12px;border-radius:12px;background:#eff6ff;border:1px solid #bfdbfe;max-width:320px;}
+  .ponto-declarar-linha{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:700;color:#1e3a8a;}
+  .ponto-declarar-linha .input{width:auto;padding:6px 8px;}
+  .ponto-declarar-nota{margin:0;font-size:11.5px;color:#475569;text-align:center;}
   .ponto-etiqueta{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--pharm-900);background:#f1f5f9;border-radius:999px;padding:4px 10px;}
   .ponto-etiqueta.pendente{background:#fff7ed;color:#9a3412;}
   .ponto-etiqueta-ponto{width:8px;height:8px;border-radius:50%;}
@@ -52937,6 +52942,7 @@ const PONTO_MOTIVOS_TEXTO = {
   precisao: 'localização pouco precisa',
   sem_localizacao: 'sem localização disponível',
   local_nao_definido: 'localização da farmácia ainda por definir',
+  hora_declarada: 'picou mais tarde e indicou a hora certa',
 };
 function pontoMotivosLista(registo) {
   return String((registo && registo.motivoPendente) || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -53131,9 +53137,11 @@ async function pontoChamarRpc(nome, params) {
     return null;
   }
 }
-async function pontoPicar(tipo, loc) {
+// extra (2026-10-01): { horaPrevista, horaDeclarada } — ver sigajuncal_ponto_menos_avisos.sql. Se esse SQL ainda não
+// tiver sido corrido (função antiga, sem estes parâmetros), repete o pedido como antes, para a picagem nunca falhar.
+async function pontoPicar(tipo, loc, extra) {
   const temLoc = loc && typeof loc.lat === 'number' && typeof loc.lon === 'number';
-  return pontoChamarRpc('rpc_picar_ponto', {
+  const base = {
     p_tipo: tipo,
     p_lat: temLoc ? loc.lat : null,
     p_lng: temLoc ? loc.lon : null,
@@ -53141,7 +53149,26 @@ async function pontoPicar(tipo, loc) {
     p_chave: pontoChaveAparelho(),
     p_descricao: pontoDescricaoAparelho(),
     p_telemovel: dispositivoMobileNativo(),
-  });
+  };
+  const comExtra = Object.assign({}, base, { p_hora_prevista: (extra && extra.horaPrevista) || null, p_hora_declarada: (extra && extra.horaDeclarada) || null });
+  const res = await pontoChamarRpc('rpc_picar_ponto', comExtra);
+  if (!res && /Falta correr o SQL|Could not find the function/i.test(lastDbError || '')) {
+    const antigo = await pontoChamarRpc('rpc_picar_ponto', base);
+    if (antigo) antigo.semHoraDeclarada = !!(extra && extra.horaDeclarada);
+    return antigo;
+  }
+  return res;
+}
+// Dentro do horário previsto? (mesma regra do servidor: entrada até 60 min antes / 10 min depois; saída 10 min antes /
+// 60 min depois). Devolve também o atraso em minutos face à hora prevista.
+function pontoComparacaoHorario(tipo, horaPrevista) {
+  if (!/^\d{2}:\d{2}$/.test(String(horaPrevista || ''))) return null;
+  let prev = escalaMinutosAbsolutos(horaPrevista, tipo === 'saida');
+  const d = new Date();
+  let agora = d.getHours() * 60 + d.getMinutes();
+  if (tipo === 'saida' && prev >= 1320 && agora < 240) agora += 1440;
+  const dentro = tipo === 'entrada' ? (agora >= prev - 60 && agora <= prev + 10) : (agora >= prev - 10 && agora <= prev + 60);
+  return { dentro, atraso: agora - prev, prevista: horaPrevista };
 }
 async function pontoDefinirLocalFarmacia(loc) {
   const res = await pontoChamarRpc('rpc_ponto_definir_local', { p_lat: loc.lat, p_lng: loc.lon, p_precisao: loc.precisao });
@@ -53197,6 +53224,11 @@ async function pontoNotificarDirecaoPendente(res, reg) {
   const nome = activeUser.nomeCompleto || activeUser.username;
   const motivos = pontoMotivosLista(reg);
   const linhas = [`${nome} picou a ${pontoTipoTexto(reg.tipo)} às ${reg.horaReal} (${formatDate(reg.data)}) — pendente de validação: ${pontoMotivosTexto(reg)}.`];
+  if (motivos.includes('hora_declarada') && reg.registadoEm) {
+    const d = new Date(reg.registadoEm);
+    linhas[0] = `${nome} indica que ${reg.tipo === 'entrada' ? 'entrou' : 'saiu'} às ${reg.horaReal} (${formatDate(reg.data)}) — só picou às ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}. Pendente de validação${motivos.length > 1 ? `: ${motivos.filter(m => m !== 'hora_declarada').map(m => PONTO_MOTIVOS_TEXTO[m] || m).join('; ')}` : ''}.`;
+  }
+  if (res && res.horaDeclaradaFallback) linhas.push(`Indica que ${reg.tipo === 'entrada' ? 'entrou' : 'saiu'} às ${res.horaDeclaradaFallback}.`);
   if (motivos.includes('aparelho_de_outro')) linhas.push(`⚠️ Picagem feita a partir do telemóvel associado a ${res.dono_nome || 'outra pessoa'}.`);
   if (motivos.includes('aparelho_novo')) {
     const uso = res.aparelho_anterior_uso ? `, última utilização a ${formatDate(String(res.aparelho_anterior_uso).slice(0, 10))}` : '';
@@ -53349,6 +53381,28 @@ function buildPontoWidget(rerender, diaHoje) {
   const estadoEl = h('p', { class: 'ponto-estado' }, 'A localizar…');
   const extrasEl = h('div', { class: 'ponto-extras' });
   card.appendChild(h('div', { class: 'ponto-centro' }, [btn, estadoEl, etiquetasEl, extrasEl]));
+  // 2026-10-01 (Hugo): hora prevista do turno — dentro do horário, no telemóvel, uma falha só de localização já
+  // não pede validação; fora de horas (mais tarde), dá para indicar a hora certa a que se entrou/saiu.
+  const turnoHoje = pontoTurnoPlaneado(activeUser.id, jornada.data || hojeISO);
+  const horaPrevista = turnoHoje ? (acaoTipo === 'entrada' ? turnoHoje.entrada : turnoHoje.saida) : null;
+  const compHorario = pontoComparacaoHorario(acaoTipo, horaPrevista);
+  let horaDeclarada = '';
+  if (compHorario && !compHorario.dentro && compHorario.atraso > 0 && compHorario.atraso <= 240) { // até 4 h depois (mesmo limite do servidor)
+    const verbo = acaoTipo === 'entrada' ? 'entraste' : 'saíste';
+    const abrir = h('button', { type: 'button', class: 'ponto-declarar-link' }, `Já ${verbo} mais cedo e só picas agora? Indica a hora certa`);
+    const zona = h('div', { class: 'ponto-declarar', hidden: 'hidden' });
+    const inp = h('input', { class: 'input', type: 'time', value: horaPrevista });
+    const usar = h('input', { type: 'checkbox' });
+    const atualizar = () => { horaDeclarada = usar.checked ? (inp.value || '') : ''; };
+    inp.addEventListener('change', () => { usar.checked = true; atualizar(); });
+    usar.addEventListener('change', atualizar);
+    zona.append(
+      h('label', { class: 'ponto-declarar-linha' }, [usar, h('span', {}, `${acaoTipo === 'entrada' ? 'Entrei' : 'Saí'} às`), inp]),
+      h('p', { class: 'ponto-declarar-nota' }, `A tua hora prevista era ${horaPrevista}. Fica com a hora que indicares, para a Direção validar (a hora a que picas fica também registada).`),
+    );
+    abrir.addEventListener('click', () => { zona.removeAttribute('hidden'); abrir.setAttribute('hidden', 'hidden'); usar.checked = true; atualizar(); });
+    extrasEl.append(abrir, zona);
+  }
 
   let locAtual = null;
   let aPicar = false;
@@ -53370,6 +53424,11 @@ function buildPontoWidget(rerender, diaHoje) {
       curto = 'Fica por validar (computador)'; longo = 'A picagem ficará pendente de validação da Direção.';
     } else if (!cfgOk) {
       curto = 'Fica por validar'; longo = 'A localização da farmácia ainda não foi definida — a picagem fica pendente de validação.';
+    } else if (temLoc && ((typeof distancia === 'number' && distancia <= limite && distancia > raio) || (typeof loc.precisao === 'number' && loc.precisao > precisaoMax && !(distancia > limite))) && compHorario && compHorario.dentro) {
+      // Dentro do horário, no telemóvel: localização imprecisa ou perto da farmácia já não pede validação (2026-10-01).
+      // Sem localização continua sempre por validar (Hugo: "localização tem que ser possível no telemóvel").
+      tom = 'ok'; curto = 'Dentro do horário — conta logo';
+      longo = 'Estás perto da farmácia e dentro do teu horário — a picagem conta logo.';
     } else if (!temLoc) {
       curto = 'Sem localização — fica por validar';
       longo = loc && loc.erro === 'permissao'
@@ -53433,7 +53492,8 @@ function buildPontoWidget(rerender, diaHoje) {
     estadoEl.textContent = 'A registar…';
     // Posição fresca no momento do toque (a do carregamento pode ter minutos).
     const locFresca = ehTelemovel ? await obterLocalizacaoAtual({ fresca: true }) : locAtual;
-    const res = await pontoPicar(acaoTipo, (locFresca && typeof locFresca.lat === 'number') ? locFresca : locAtual);
+    const res = await pontoPicar(acaoTipo, (locFresca && typeof locFresca.lat === 'number') ? locFresca : locAtual, { horaPrevista, horaDeclarada });
+    if (res && res.semHoraDeclarada) res.horaDeclaradaFallback = horaDeclarada;
     aPicar = false;
     btn.classList.remove('a-registar');
     if (!res) {
