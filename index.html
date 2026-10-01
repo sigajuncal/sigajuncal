@@ -37299,7 +37299,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
     // Agora a identidade do dia é sempre preservada.
     const identidadeDia = {};
     const diaGravado = (novoDados[codigoVaga].dias && novoDados[codigoVaga].dias[diaKey]) || diaAtual || {};
-    ['colaboradorId', 'colaboradorNome', 'trocaId', 'colaboradorIdAntesTroca'].forEach(k => { if (diaGravado[k] !== undefined) identidadeDia[k] = diaGravado[k]; });
+    ['colaboradorId', 'colaboradorNome', 'trocaId', 'colaboradorIdAntesTroca', 'trocasParciais'].forEach(k => { if (diaGravado[k] !== undefined) identidadeDia[k] = diaGravado[k]; });
     novoDados[codigoVaga].dias[diaKey] = {
       ...identidadeDia,
       entrada, saida, pausaInicio, pausaFim, tipo, heHoras, heHorasBanco, heInicio, heFim, heIntervalos, horas, tarefas,
@@ -37696,7 +37696,7 @@ function trocaTipoTexto(t) {
       ? `Troca direta de turnos completos (total das horas: ${trocasHorasTexto(t.horasA)} ↔ ${trocasHorasTexto(t.horasB)})`
       : `Troca direta de turnos completos, com horas diferentes (${trocasHorasTexto(t.horasA)} ↔ ${trocasHorasTexto(t.horasB)})`;
   }
-  return 'Troca parcial — só parte do turno (horário a ajustar à mão depois de validar)';
+  return 'Troca parcial — só parte do turno (o horário ajusta-se sozinho ao validar)';
 }
 // Horas do turno COMPLETO dessa pessoa nesse dia (para "Xh de Yh"), ou null
 // se já não for possível saber (ex: troca já aplicada ao horário).
@@ -38079,10 +38079,13 @@ async function trocaAplicarNoHorario(t, opts) {
   for (const p of partes) {
     const info = trocaParteDoTurno(p.dia, p.de, p.ini, p.fim);
     if (info.erro) return { ok: false, motivo: `${formatDate(p.dia)}: ${info.erro}` };
-    if (!info.completo) return { ok: false, motivo: `${formatDate(p.dia)}: é só parte do turno — ajustar o horário à mão` };
+    // 2026-10-01 (Hugo: "permitir para turnos parciais também... deveria ser tudo seamless"): troca de PARTE de um
+    // turno também se aplica sozinha ao horário — ver trocaAplicarParcialNoHorario.
+    if (!info.completo) return trocaAplicarParcialNoHorario(t, partes);
     if (info.semana.semanaInicio < hojeSeg) return { ok: false, motivo: `${formatDate(p.dia)}: semana já passada (histórico congelado)` };
     if (trocaAusenciaNoDia(p.para, p.dia)) return { ok: false, motivo: `${formatDate(p.dia)}: ${trocasNomeUtilizador(p.para)} tem uma ausência registada nesse dia` };
-    if (!mesmoDia && escalaVagaDoColaboradorNoDia(info.semana, info.diaKey, p.para)) return { ok: false, motivo: `${formatDate(p.dia)}: ${trocasNomeUtilizador(p.para)} já tem turno nesse dia — ajustar à mão` };
+    // Quem recebe já trabalha noutra parte desse dia → junta-se o turno recebido ao dele (ver trocaAplicarParcialNoHorario).
+    if (!mesmoDia && escalaVagaDoColaboradorNoDia(info.semana, info.diaKey, p.para)) return trocaAplicarParcialNoHorario(t, partes);
     alvos.push({ p, info });
   }
   const porSemana = new Map();
@@ -38115,6 +38118,130 @@ async function trocaAplicarNoHorario(t, opts) {
   }
   return { ok: true };
 }
+/* ---- Trocas de PARTE de um turno no horário (2026-10-01) ----
+   Cada parte da troca "passa" um intervalo (ini–fim) de quem cede para quem recebe, no mesmo dia:
+     - quem cede: o turno perde esse intervalo (encurta; se for a meio, o buraco fica como pausa);
+     - quem recebe: ganha o intervalo — prolonga o turno que já tem, junta-o como 2.º bocado (com pausa entre os
+       dois) ou, num dia de folga, passa a ter esse turno.
+   Uma célula guarda no máximo 2 bocados (entrada–pausa–saída); se uma troca deixasse alguém com 3 ou mais, não se
+   mexe em nada e fica o motivo para ajustar à mão. As tarefas de quem cede nesse intervalo saem; Chefe de Turno e
+   Encomendas passam de preferência para quem recebe o intervalo. Cada célula alterada guarda o "antes" e o "depois"
+   (dia.trocasParciais) para a anulação poder repor tudo, desde que ninguém tenha mexido na célula entretanto. */
+const TROCA_CAMPOS_TURNO = ['tipo', 'entrada', 'saida', 'pausaInicio', 'pausaFim', 'horas'];
+function trocaCamposTurno(dia) { const o = {}; TROCA_CAMPOS_TURNO.forEach(k => { o[k] = (dia && dia[k] !== undefined && dia[k] !== null) ? dia[k] : ''; }); return o; }
+function trocaSegsDaCelula(dia) { return (dia && dia.tipo === 'normal' && dia.entrada && dia.saida) ? escalaSegmentosTurnoAbsolutos(dia).map(s => ({ inicioMin: s.inicioMin, fimMin: s.fimMin })) : []; }
+function trocaSegsUniao(segs, iv) {
+  const todos = [...segs, iv].sort((a, b) => a.inicioMin - b.inicioMin);
+  const out = [];
+  todos.forEach(sg => { const ult = out[out.length - 1]; if (ult && sg.inicioMin <= ult.fimMin) ult.fimMin = Math.max(ult.fimMin, sg.fimMin); else out.push({ ...sg }); });
+  return out;
+}
+// Célula com estes bocados de trabalho (0 = folga, 1 = turno seguido, 2 = turno com pausa no meio).
+function trocaCelulaComSegmentos(dia, segs) {
+  const base = dia || {};
+  const desconto = Number(base.bancoHorasDesconto) || 0;
+  if (!segs.length) return { ok: true, dia: { ...base, tipo: 'folga', entrada: '', saida: '', pausaInicio: '', pausaFim: '', horas: 0 } };
+  if (segs.length > 2) return { ok: false, motivo: 'o turno ficaria partido em mais de dois bocados' };
+  const hh = escalaHoraExataDeMin;
+  const minutos = segs.reduce((t, sg) => t + (sg.fimMin - sg.inicioMin), 0);
+  return { ok: true, dia: {
+    ...base, tipo: 'normal', entrada: hh(segs[0].inicioMin), saida: hh(segs[segs.length - 1].fimMin),
+    pausaInicio: segs.length === 2 ? hh(segs[0].fimMin) : '', pausaFim: segs.length === 2 ? hh(segs[1].inicioMin) : '',
+    horas: Math.max(0, Math.round((minutos / 60 - desconto) * 100) / 100),
+  } };
+}
+async function trocaAplicarParcialNoHorario(t, partes) {
+  const hojeSeg = escalaSegundaFeiraDaSemanaDeISO(todayISO());
+  const porSemana = new Map(); // semana.id -> { semana, dados }
+  const celulasTocadas = new Map(); // `${semanaId}|${codigo}|${diaKey}` -> { antes }
+  const ajustes = [];
+  const contexto = (dataISO) => {
+    const semana = escalaSemanaPorInicio(escalaSegundaFeiraDaSemanaDeISO(dataISO));
+    if (!semana || !semana.dados) return { erro: `${formatDate(dataISO)}: a semana ainda não tem horário` };
+    if (semana.semanaInicio < hojeSeg) return { erro: `${formatDate(dataISO)}: semana já passada (histórico congelado)` };
+    if (!porSemana.has(semana.id)) porSemana.set(semana.id, { semana, dados: JSON.parse(JSON.stringify(semana.dados)) });
+    const w = porSemana.get(semana.id);
+    const diaInfo = ESCALA_DIAS.find(d => escalaDataDoDia(semana.semanaInicio, d.key) === dataISO);
+    if (!diaInfo) return { erro: `${formatDate(dataISO)}: dia fora da semana` };
+    return { w, diaKey: diaInfo.key, semanaNova: Object.assign({}, semana, { dados: w.dados }) };
+  };
+  const marcar = (w, codigo, diaKey, diaAntes) => {
+    const chave = `${w.semana.id}|${codigo}|${diaKey}`;
+    if (!celulasTocadas.has(chave)) celulasTocadas.set(chave, { w, codigo, diaKey, antes: trocaCamposTurno(diaAntes) });
+  };
+  // Já aplicada (ex: semana regenerada a meio)? Não repete.
+  const jaAplicada = partes.some(p => {
+    const c = contexto(p.dia); if (c.erro) return false;
+    return Object.keys(c.w.dados).some(cod => ((c.w.dados[cod].dias || {})[c.diaKey] || {}).trocasParciais && c.w.dados[cod].dias[c.diaKey].trocasParciais.some(x => String(x.trocaId) === String(t.id)));
+  });
+  if (jaAplicada) return { ok: true };
+  // 1) Tirar a cada um o que cede (todas as remoções primeiro — numa troca no mesmo dia, nunca há sobreposições a meio).
+  const cortesTarefas = [];
+  for (const p of partes) {
+    const c = contexto(p.dia); if (c.erro) return { ok: false, motivo: c.erro };
+    const alvo = escalaVagaDoColaboradorNoDia(c.semanaNova, c.diaKey, trocaUid(p.de));
+    if (!alvo) return { ok: false, motivo: `${formatDate(p.dia)}: ${trocasNomeUtilizador(p.de)} já não tem esse turno` };
+    const iv = trocaIntervalo(p.ini, p.fim);
+    const dia = c.w.dados[alvo.codigo].dias[c.diaKey];
+    marcar(c.w, alvo.codigo, c.diaKey, dia);
+    const nova = trocaCelulaComSegmentos(dia, trocaSegsMenos(trocaSegsDaCelula(dia), iv));
+    if (!nova.ok) return { ok: false, motivo: `${formatDate(p.dia)}: ${trocasNomeUtilizador(p.de)} — ${nova.motivo}` };
+    const corte = escalaCortarTarefasNoIntervalo(escalaTarefasDoDia(nova.dia), iv.inicioMin, iv.fimMin);
+    c.w.dados[alvo.codigo].dias[c.diaKey] = escalaGravarTarefasNaCelula(nova.dia, nova.dia.tipo === 'normal' ? corte.ficam : []);
+    cortesTarefas.push({ p, c, corte, quemCede: p.de });
+  }
+  // 2) Dar a cada um o que recebe.
+  for (const p of partes) {
+    const c = contexto(p.dia);
+    const dataISO = p.dia;
+    const codigo = escalaCodigoDaPessoaNoDia(c.w.dados, c.diaKey, trocaUid(p.para), dataISO);
+    if (!codigo || !c.w.dados[codigo]) return { ok: false, motivo: `${formatDate(dataISO)}: ${trocasNomeUtilizador(p.para)} não tem posição no horário desse dia` };
+    const linha = c.w.dados[codigo];
+    if (!linha.dias) linha.dias = {};
+    const dia = linha.dias[c.diaKey] || {};
+    if (dia.tipo && !['normal', 'folga'].includes(dia.tipo)) return { ok: false, motivo: `${formatDate(dataISO)}: ${trocasNomeUtilizador(p.para)} tem esse dia marcado como ${trocaRotuloTipoDia(dia.tipo)}` };
+    marcar(c.w, codigo, c.diaKey, dia);
+    const iv = trocaIntervalo(p.ini, p.fim);
+    const segsAtuais = trocaSegsDaCelula(dia);
+    if (trocaSobreposicaoMin(segsAtuais, iv) > 0) return { ok: false, motivo: `${formatDate(dataISO)}: ${trocasNomeUtilizador(p.para)} já trabalha nesse período` };
+    const nova = trocaCelulaComSegmentos(dia, trocaSegsUniao(segsAtuais, iv));
+    if (!nova.ok) return { ok: false, motivo: `${formatDate(dataISO)}: ${trocasNomeUtilizador(p.para)} — ${nova.motivo}` };
+    if (nova.dia.colaboradorId === undefined && String(linha.colaboradorId) !== String(p.para)) nova.dia.colaboradorId = trocaUid(p.para);
+    if (!segsAtuais.length) nova.dia.tarefas = escalaTarefasDoDia(dia).filter(Boolean);
+    linha.dias[c.diaKey] = escalaGravarTarefasNaCelula(nova.dia, escalaTarefasDoDia(nova.dia));
+  }
+  // 3) Tarefas: Chefe de Turno / Encomendas de quem cedeu passam (de preferência) para quem recebeu esse período.
+  cortesTarefas.forEach(({ p, c, corte }) => {
+    corte.saiu.forEach(sx => {
+      const rotulo = escalaRotuloTarefa(sx.tarefa);
+      const periodo = `${escalaHoraExataDeMin(sx.ini)}–${escalaHoraExataDeMin(sx.fim)}`;
+      if (!ESCALA_TAREFAS_COMUNS_REATRIBUIVEIS.includes(sx.tarefa.tipo)) { ajustes.push(`${rotulo} de ${trocasNomeUtilizador(p.de)} (${periodo}) saiu do horário — reagendar se for preciso.`); return; }
+      let quem = null;
+      const elegivel = colaboradoresElegiveisTarefaEspecial().some(u => String(u.id) === String(p.para));
+      if (elegivel) {
+        const alvoPara = escalaVagaDoColaboradorNoDia(c.semanaNova, c.diaKey, trocaUid(p.para));
+        if (alvoPara && !escalaTarefasDoDia(alvoPara.dia).some(x => x.inicio && x.fim && sx.ini < escalaMinutosAbsolutos(x.fim, true) && sx.fim > escalaMinutosAbsolutos(x.inicio, false))
+          && escalaAdicionarTarefaComumAoDia(c.w.dados, alvoPara.codigo, c.diaKey, sx.tarefa.tipo, escalaHoraExataDeMin(sx.ini), escalaHoraExataDeMin(sx.fim))) {
+          quem = (STATE.usuarios || []).find(u => String(u.id) === String(p.para)) || null;
+        }
+      }
+      if (!quem) quem = escalaReatribuirTarefaComum(c.semanaNova, c.diaKey, sx.tarefa.tipo, sx.ini, sx.fim, p.de);
+      ajustes.push(quem ? `${rotulo} ${periodo} passou para ${quem.nomeCompleto || quem.username}.` : `${rotulo} ${periodo} ficou sem ninguém — atribuir à mão.`);
+    });
+  });
+  // 4) Marca em cada célula o antes/depois (para a anulação) e grava.
+  celulasTocadas.forEach(({ w, codigo, diaKey, antes }) => {
+    const dia = w.dados[codigo].dias[diaKey];
+    const lista = (dia.trocasParciais || []).filter(x => String(x.trocaId) !== String(t.id));
+    w.dados[codigo].dias[diaKey] = { ...dia, trocasParciais: [...lista, { trocaId: t.id, antes, depois: trocaCamposTurno(dia) }] };
+  });
+  for (const { semana, dados } of porSemana.values()) {
+    const updated = await dbUpdate('escalaSemanas', semana.id, { dados }, { base: semana });
+    if (!updated) return { ok: false, motivo: `não foi possível gravar o horário (${lastDbError || 'ligação'})` };
+    STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === updated.id ? updated : s);
+  }
+  return { ok: true, ajustes };
+}
 async function trocaDesfazerNoHorario(t) {
   const hoje = todayISO();
   const hojeSeg = escalaSegundaFeiraDaSemanaDeISO(hoje);
@@ -38126,6 +38253,26 @@ async function trocaDesfazerNoHorario(t) {
     Object.keys(dados).forEach(cod => {
       Object.keys((dados[cod] && dados[cod].dias) || {}).forEach(dk => {
         const dia = dados[cod].dias[dk];
+        // Troca de parte do turno (2026-10-01): repõe entrada/saída/pausa de antes, se ninguém mexeu na célula depois.
+        const parcial = dia && (dia.trocasParciais || []).find(x => String(x.trocaId) === String(t.id));
+        if (parcial) {
+          const dataISOp = escalaDataDoDia(sem.semanaInicio, dk);
+          const restantes = dia.trocasParciais.filter(x => x !== parcial);
+          if (dataISOp < hoje) { porAjustar.push(`${formatDate(dataISOp)} já passou — fica como foi`); return; }
+          const atual = trocaCamposTurno(dia);
+          const intactaP = TROCA_CAMPOS_TURNO.filter(k => k !== 'horas').every(k => String(atual[k] || '') === String(parcial.depois[k] || ''));
+          if (intactaP) {
+            const reposto = { ...dia, trocasParciais: restantes };
+            TROCA_CAMPOS_TURNO.forEach(k => { reposto[k] = parcial.antes[k]; });
+            if (!reposto.tipo) { reposto.tipo = 'folga'; }
+            dados[cod].dias[dk] = reposto;
+          } else {
+            porAjustar.push(`${formatDate(dataISOp)} (${cod}) foi alterado depois da troca`);
+            dados[cod].dias[dk] = { ...dia, trocasParciais: restantes };
+          }
+          mudou = true;
+          if (String(dia.trocaId) !== String(t.id)) return;
+        }
         if (!dia || String(dia.trocaId) !== String(t.id)) return;
         const dataISO = escalaDataDoDia(sem.semanaInicio, dk);
         if (dataISO < hoje) { porAjustar.push(`${formatDate(dataISO)} já passou — fica como foi`); return; }
@@ -38207,7 +38354,7 @@ async function trocaDecidirDirecao(trocaOriginal, validar) {
     });
   }
   const aplic = await trocaAplicarNoHorario(upd);
-  upd = await trocaAtualizar(upd, { aplicadoHorario: aplic.ok, aplicacaoNota: aplic.ok ? 'Turnos trocados no horário automaticamente.' : `Por aplicar à mão: ${aplic.motivo}` }) || upd;
+  upd = await trocaAtualizar(upd, { aplicadoHorario: aplic.ok, aplicacaoNota: aplic.ok ? `Turnos trocados no horário automaticamente.${(aplic.ajustes || []).length ? ` ${aplic.ajustes.join(' ')}` : ''}` : `Por aplicar à mão: ${aplic.motivo}` }) || upd;
   await marcarTratadasTarefasReferencia('escala_trocas', upd.id);
   const txt = `A troca foi validada ${decisorPor()}: ${trocaDescricao(upd)}${aplic.ok ? ' O horário já foi atualizado.' : ''}\nSe precisares de a desfazer, podes pedir à Direção para a anular até ao dia da troca.`;
   await trocasEnviarRecado(upd.autorId, txt, 'mensagem', 'escala_trocas', upd.id);
