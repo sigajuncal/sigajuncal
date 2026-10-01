@@ -2181,6 +2181,10 @@
 .trocas-linha-estado .troca-painel{margin-top:4px;}
 .troca-bloco{padding:10px 12px;border:1px solid #dbe7ef;border-radius:12px;margin-bottom:10px;}
 .troca-chips{display:flex;flex-wrap:wrap;gap:6px;}
+.troca-modo{display:flex;gap:4px;padding:3px;margin:0 0 12px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:11px;}
+.troca-modo-btn{flex:1 1 0;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:7px 10px;border:0;border-radius:8px;background:transparent;color:var(--pharm-600);font-size:12.5px;font-weight:700;cursor:pointer;}
+.troca-modo-btn:hover{color:var(--pharm-800);}
+.troca-modo-btn.ativo{background:#fff;color:#c2410c;box-shadow:0 1px 3px rgba(15,23,42,.12);}
 .troca-chip{display:inline-flex;align-items:center;gap:2px;font-size:12px;padding:4px 9px;border-radius:999px;border:1px solid transparent;}
 .troca-chip.azul{background:#eff6ff;color:#1e40af;border-color:#bfdbfe;}
 .troca-chip.verde{background:#f0fdf4;color:#166534;border-color:#bbf7d0;}
@@ -2379,6 +2383,7 @@
   .escala-nota-validacao-toggle{display:inline-flex;align-items:center;gap:8px;font-size:11px;font-weight:700;color:var(--pharm-500);flex-wrap:wrap;}
   .escala-nota-validacao-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:#166534;}
   .escala-nota-pendente-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:#b45309;}
+  .escala-nota-pendente-badge.escala-nota-rejeitada-badge{color:#b91c1c;}
   /* "A Minha Semana" — Dia | Horas | Tarefas, em 3 colunas de grelha
      (pedido explícito 2026-08-14: a informação de tarefa/cargo especial
      estava empilhada por baixo das horas, na mesma "coluna" da direita —
@@ -10835,7 +10840,7 @@ async function reconciliarTarefasGavetaJaDecididas() {
     if (r.referenciaTabela === 'escala_notas_semana') {
       const nota = notas.find(n => String(n.id) === String(r.referenciaId));
       if (!nota) return notas.length > 0;
-      return !!nota.validadoDirecao;
+      return !!nota.validadoDirecao || !!nota.rejeitado;
     }
     if (r.referenciaTabela === 'escala_pedidos_especiais') {
       const pedido = pedidos.find(p => String(p.id) === String(r.referenciaId));
@@ -17363,7 +17368,7 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
     // reforço no lado da gravação da mesma regra já aplicada ao botão.
     if (!souDirecaoHorariosGlobal() || !r.referenciaId) return;
     const notaAtual = (STATE.escalaNotasSemana || []).find(n => n.id === r.referenciaId);
-    const patch = { validadoDirecao: true, validadoPor: activeUser.nomeCompleto || activeUser.username, validadoEm: new Date().toISOString() };
+    const patch = { validadoDirecao: true, validadoPor: activeUser.nomeCompleto || activeUser.username, validadoEm: new Date().toISOString(), rejeitado: false, rejeitadoPor: '', rejeitadoEm: null };
     // CORRIGIDO 2026-08-29 (2ª cópia do mesmo bug já corrigido em
     // alternarValidacaoNotaEquipa — Hugo: "estes botões ainda não fazem
     // nada", desta vez na Gaveta de Recados, não na página Pedidos; esta
@@ -17387,12 +17392,14 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
         showToast(`Validado, mas não foi possível atribuir sozinha (${escalaMensagemErroPedidoTarefa(resultado.motivo)}) — agende a tarefa manualmente.`, 'error');
       }
     }
+    // Pedido de Banco de Horas com horas definidas: entra já no horário (e as tarefas desse período ajustam-se).
+    const ajustesBanco = (notaAtual && !notaAtual.validadoDirecao) ? await escalaProcessarPedidoBancoAoDecidir(notaAtual, true, patch) : [];
     const updatedNota = await dbUpdate('escalaNotasSemana', r.referenciaId, patch);
     if (!updatedNota) { showDbErrorToast('Não foi possível validar a nota'); return; }
     STATE.escalaNotasSemana = (STATE.escalaNotasSemana || []).map(n => n.id === r.referenciaId ? updatedNota : n);
     await marcarTratadasTarefasNotaEquipa(r.referenciaId);
-    await notificarAutorNotaValidada(updatedNota, true);
-    showToast('Pedido validado.', 'success');
+    await notificarAutorNotaValidada(updatedNota, true, undefined, ajustesBanco);
+    showToast(ajustesBanco.length ? `Pedido validado. ${ajustesBanco.join(' ')}` : 'Pedido validado.', 'success');
     render();
   }
   // CRIADO 2026-08-26 (pedido explícito de Hugo: "Paulo ou eu temos de
@@ -17404,7 +17411,10 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
   // dentro do closure de buildHorariosPage (depende de `rerender` local).
   async function marcarNotaEquipaRejeitadaViaGaveta(r) {
     if (!souDirecaoHorariosGlobal() || !r.referenciaId) return;
-    const patch = { validadoDirecao: false, validadoPor: '', validadoEm: null };
+    // 2026-10-01 (Hugo: "prefiro que tenha a coluna nova"): a rejeição fica gravada na nota (rejeitado/_por/_em).
+    const patch = { validadoDirecao: false, validadoPor: '', validadoEm: null, rejeitado: true, rejeitadoPor: activeUser.nomeCompleto || activeUser.username, rejeitadoEm: new Date().toISOString() };
+    const notaAntes = (STATE.escalaNotasSemana || []).find(n => n.id === r.referenciaId);
+    if (notaAntes) await escalaProcessarPedidoBancoAoDecidir(notaAntes, false, patch);
     const updatedNota = await dbUpdate('escalaNotasSemana', r.referenciaId, patch);
     if (!updatedNota) { showDbErrorToast('Não foi possível rejeitar o pedido'); return; }
     STATE.escalaNotasSemana = (STATE.escalaNotasSemana || []).map(n => n.id === r.referenciaId ? updatedNota : n);
@@ -24771,9 +24781,9 @@ function buildLembretesPage(container, goTo, embedded) {
       if (nota) {
         return {
           utilizador: nota.autorNome || nomeUtilizadorNotificacao(nota.autorId),
-          resultado: nota.validadoDirecao ? 'Nota validada' : 'Nota a aguardar validação',
-          validadoPor: nota.validadoDirecao ? (nota.validadoPor || null) : null,
-          validadoEm: nota.validadoDirecao ? nota.validadoEm : null,
+          resultado: nota.validadoDirecao ? 'Nota validada' : nota.rejeitado ? 'Pedido rejeitado' : 'Nota a aguardar validação',
+          validadoPor: nota.validadoDirecao ? (nota.validadoPor || null) : nota.rejeitado ? (nota.rejeitadoPor || null) : null,
+          validadoEm: nota.validadoDirecao ? nota.validadoEm : nota.rejeitado ? (nota.rejeitadoEm || null) : null,
         };
       }
       return { utilizador: nomeUtilizadorNotificacao(r.remetenteId), resultado: r.mensagem, validadoPor: null, validadoEm: null };
@@ -33099,6 +33109,33 @@ function escalaSegmentosTurnoAbsolutos(dia) {
   }
   return [{ inicioMin, fimMin }];
 }
+// 2026-10-01 (Paulo/Hugo: "ao descontar o banco de horas, ajustar no número de pessoas/hora"): troços de um turno
+// em que a pessoa NÃO está porque descontou Banco de Horas (dia.bancoHorasIntervalos), em minutos absolutos.
+function escalaIntervalosBancoAbsolutos(dia) {
+  return ((dia && dia.bancoHorasIntervalos) || [])
+    .filter(iv => iv && iv.inicio && iv.fim)
+    .map(iv => ({ inicioMin: escalaMinutosAbsolutos(iv.inicio, false), fimMin: escalaMinutosAbsolutos(iv.fim, true) }))
+    .filter(iv => iv.fimMin > iv.inicioMin);
+}
+// Segmentos menos intervalos (todos em minutos, mesma referência).
+function escalaSubtrairIntervalosMin(segs, intervalos) {
+  let out = (segs || []).map(s => ({ ...s }));
+  (intervalos || []).forEach(iv => {
+    const novo = [];
+    out.forEach(sg => {
+      if (iv.fimMin <= sg.inicioMin || iv.inicioMin >= sg.fimMin) { novo.push(sg); return; }
+      if (iv.inicioMin > sg.inicioMin) novo.push({ ...sg, inicioMin: sg.inicioMin, fimMin: iv.inicioMin });
+      if (iv.fimMin < sg.fimMin) novo.push({ ...sg, inicioMin: iv.fimMin, fimMin: sg.fimMin });
+    });
+    out = novo;
+  });
+  return out.filter(sg => sg.fimMin > sg.inicioMin);
+}
+// Onde a pessoa está MESMO a trabalhar: turno − pausa − descontos de Banco de Horas. É o que conta para a
+// cobertura (pessoas por hora), para as tarefas (Chefe de Turno, Encomendas, Reposição, pedidos) e para os avisos.
+function escalaSegmentosPresencaAbsolutos(dia) {
+  return escalaSubtrairIntervalosMin(escalaSegmentosTurnoAbsolutos(dia), escalaIntervalosBancoAbsolutos(dia));
+}
 // Horas de um turno "normal" que caem dentro de uma janela [inicio,fim)
 // em minutos absolutos — usada para o total de Período Noturno
 // (22:00-24:00) do mês.
@@ -33215,7 +33252,7 @@ const ESCALA_TIPOS_PEDIDO_SEMANA = [
   { key: 'nota', label: 'Aviso / Nota Geral', icon: '💬', ajuda: 'Um aviso à equipa, ou qualquer outra informação partilhada que não se encaixa nos tipos abaixo.' },
   { key: 'tarefa', label: 'Atribuição de Tarefa', icon: '⭐', ajuda: 'Pede que uma tarefa tua (Conferência, Reunião ou Outra) seja agendada num dia/horário específico — ao ser validado, fica logo atribuída no horário oficial, sem precisar de edição manual.' },
   { key: 'troca', label: 'Troca de Turno', icon: '⇄', ajuda: 'Informa uma troca de turno já combinada com um colega. Fica registado para constância (inclusive no PDF do horário), mas a grelha oficial continua a editar-se manualmente.' },
-  { key: 'banco', label: 'Descontar Horas de Banco', icon: '🕒', ajuda: 'Pede para descontar horas do teu saldo de Banco de Horas (ex: sair mais cedo num dia). Fica registado como pedido — a Direção é que ajusta depois o horário e o saldo.' },
+  { key: 'banco', label: 'Descontar Horas de Banco', icon: '🕒', ajuda: 'Pede para descontar horas do teu saldo de Banco de Horas (ex: sair mais cedo num dia). Indica o dia e as horas: se a Direção aprovar, o horário e o saldo atualizam-se sozinhos (e as tarefas desse período ajustam-se). Também podes pedir pelo botão "Propor" do cartão Trocas com colegas.' },
 ];
 function escalaPedidoTipoInfo(tipoKey) { return ESCALA_TIPOS_PEDIDO_SEMANA.find(t => t.key === tipoKey) || ESCALA_TIPOS_PEDIDO_SEMANA[0]; }
 // Tarefas MANUAIS elegíveis para o pedido "Atribuição de Tarefa" — nunca
@@ -34187,8 +34224,8 @@ function escalaValidarPedidoTarefaContraTurno(semana, dataISO, autorId, horaInic
   const iniMin = escalaMinutosAbsolutos(horaInicio, false);
   const fimMin = escalaMinutosAbsolutos(horaFim, true);
   if (!(fimMin > iniMin)) return { ok: false, motivo: 'o Fim tem de ser depois do Início', diaInfo, vaga };
-  const cabe = escalaSegmentosTurnoAbsolutos(vaga.dia).some(s => iniMin >= s.inicioMin && fimMin <= s.fimMin);
-  if (!cabe) return { ok: false, motivo: 'o horário não cabe no turno (ou atravessa a pausa)', diaInfo, vaga };
+  const cabe = escalaSegmentosPresencaAbsolutos(vaga.dia).some(s => iniMin >= s.inicioMin && fimMin <= s.fimMin);
+  if (!cabe) return { ok: false, motivo: 'o horário não cabe no turno (ou atravessa a pausa ou um período de Banco de Horas)', diaInfo, vaga };
   const existentes = escalaTarefasDoDia(vaga.dia);
   if (existentes.length >= 3) return { ok: false, motivo: 'esse turno já tem as 3 tarefas possíveis', diaInfo, vaga };
   const sobrepoe = existentes.some(t => {
@@ -34210,7 +34247,7 @@ function escalaMensagemErroPedidoTarefa(motivo) {
     'sem turno normal nesse dia': 'Não tens nenhum turno normal registado nesse dia — não é possível pedir uma tarefa.',
     'indique o horário': 'Indica a Hora de Início e de Fim.',
     'o Fim tem de ser depois do Início': 'O Fim tem de ser depois do Início.',
-    'o horário não cabe no turno (ou atravessa a pausa)': 'Esse horário não cabe no teu turno nesse dia (ou atravessa a Pausa/Almoço).',
+    'o horário não cabe no turno (ou atravessa a pausa ou um período de Banco de Horas)': 'Esse horário não cabe no teu turno nesse dia (ou atravessa a Pausa/Almoço ou um período de Banco de Horas).',
     'esse turno já tem as 3 tarefas possíveis': 'Esse turno já tem o máximo de 3 tarefas atribuídas.',
     'sobrepõe-se a uma tarefa já atribuída nesse turno': 'Esse horário sobrepõe-se a uma tarefa já atribuída nesse turno.',
   };
@@ -34275,6 +34312,261 @@ function escalaRemoverTarefaPedidoDoHorario(nota) {
   const removeu = escalaRemoverTarefaComumDoDia(novoDados, vaga.codigo, diaInfo.key, nota.tarefaTipo, nota.horaInicio, nota.horaFim);
   if (!removeu) return { ok: false, motivo: 'a tarefa já não estava lá' };
   return { ok: true, semana, novoDados };
+}
+/* =================================================================
+   PEDIDO DE BANCO DE HORAS → HORÁRIO (2026-10-01, Hugo: "no botão propor trocas propor também descontar banco de
+   horas e Paulo e eu, se aceitarmos, actualizar directamente o horário... ajustar tarefas e assim para que tudo
+   funcione na perfeição"). O pedido é um registo tipo 'banco' de "Pedidos e Registos da Semana" (escala_notas_semana)
+   com dia + horas (dataPedido/horaInicio/horaFim) — pode nascer do botão "Propor" (cartão Trocas) ou do próprio
+   feed. Ao ser APROVADO por Hugo/Paulo (Gaveta ou Horários):
+     1) o desconto entra na célula da pessoa (dia.bancoHorasIntervalos + bancoHorasDesconto; horas do dia descem) —
+        o mesmo formato do editor de turno, por isso Timeline, Total por hora, cobertura e saldo acertam sozinhos;
+     2) as tarefas da pessoa nesse período são cortadas (ou retiradas, se ficarem todas lá dentro);
+     3) Chefe de Turno / Encomendas desse período passam para outro farmacêutico presente e livre (lista de
+        prioridade primeiro); se não houver ninguém, fica dito no aviso para se atribuir à mão.
+   Anular a aprovação devolve as horas ao turno (as tarefas mudadas não voltam sozinhas — fica dito).
+================================================================= */
+const ESCALA_TAREFAS_COMUNS_REATRIBUIVEIS = ['chefe_turno', 'encomenda_manha', 'encomenda_tarde'];
+function escalaHoraExataDeMin(m) { return trocaMinParaHora(m); }
+function escalaRotuloTarefa(t) { return t.tipo === 'outro' && t.outro ? t.outro : ((escalaTarefaInfo(t.tipo) || {}).label || 'Tarefa'); }
+// Pode `uid` descontar ini–fim do turno de dataISO? opts.pedidoId: ignora o próprio desconto já aplicado.
+function escalaValidarDescontoBanco(dataISO, uid, ini, fim, opts) {
+  opts = opts || {};
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dataISO || ''))) return { ok: false, motivo: 'Escolhe o dia.' };
+  const semana = escalaSemanaPorInicio(escalaSegundaFeiraDaSemanaDeISO(dataISO));
+  if (!semana || semana.eliminado || !semana.dados) return { ok: false, motivo: 'A semana desse dia ainda não tem horário.' };
+  if (semana.semanaInicio < escalaSegundaFeiraDaSemanaDeISO(todayISO())) return { ok: false, motivo: 'Essa semana já passou.' };
+  const diaInfo = ESCALA_DIAS.find(d => escalaDataDoDia(semana.semanaInicio, d.key) === dataISO);
+  const vaga = diaInfo && escalaVagaDoColaboradorNoDia(semana, diaInfo.key, trocaUid(uid));
+  if (!vaga) return { ok: false, motivo: 'Não há turno nesse dia.' };
+  const base = { semana, diaInfo, vaga };
+  if (!ini || !fim) return Object.assign({ ok: false, motivo: 'Indica das que horas às que horas.' }, base);
+  const iniMin = escalaMinutosAbsolutos(ini, false), fimMin = escalaMinutosAbsolutos(fim, true);
+  if (!(fimMin > iniMin)) return Object.assign({ ok: false, motivo: 'A hora de fim tem de ser depois da de início.' }, base);
+  const turnoIni = escalaMinutosAbsolutos(vaga.dia.entrada, false), turnoFim = escalaMinutosAbsolutos(vaga.dia.saida, true);
+  if (iniMin < turnoIni || fimMin > turnoFim) return Object.assign({ ok: false, motivo: `Fica fora do turno (${vaga.dia.entrada}–${vaga.dia.saida}).` }, base);
+  const outrosDescontos = ((vaga.dia.bancoHorasIntervalos) || []).filter(iv => iv && iv.inicio && iv.fim && !(opts.pedidoId && String(iv.pedidoId) === String(opts.pedidoId)))
+    .map(iv => ({ inicioMin: escalaMinutosAbsolutos(iv.inicio, false), fimMin: escalaMinutosAbsolutos(iv.fim, true) }));
+  if (outrosDescontos.some(iv => iniMin < iv.fimMin && fimMin > iv.inicioMin)) return Object.assign({ ok: false, motivo: 'Já há horas de Banco de Horas descontadas nesse período.' }, base);
+  const presenca = escalaSubtrairIntervalosMin(escalaSegmentosTurnoAbsolutos(vaga.dia), outrosDescontos);
+  const minutos = presenca.reduce((t, sg) => t + Math.max(0, Math.min(sg.fimMin, fimMin) - Math.max(sg.inicioMin, iniMin)), 0);
+  if (minutos <= 0) return Object.assign({ ok: false, motivo: 'Nesse período já não há trabalho (é a pausa).' }, base);
+  const totalMin = presenca.reduce((t, sg) => t + (sg.fimMin - sg.inicioMin), 0);
+  return Object.assign({ ok: true, iniMin, fimMin, horas: Math.round((minutos / 60) * 100) / 100, turnoInteiro: minutos >= totalMin }, base);
+}
+// Corta as tarefas no período [iniMin, fimMin): devolve as que ficam e os bocados que saíram.
+function escalaCortarTarefasNoIntervalo(tarefas, iniMin, fimMin) {
+  const ficam = [], saiu = [];
+  (tarefas || []).forEach(t => {
+    if (!t || !t.inicio || !t.fim) { if (t) ficam.push(t); return; }
+    const ti = escalaMinutosAbsolutos(t.inicio, false), tf = escalaMinutosAbsolutos(t.fim, true);
+    if (fimMin <= ti || iniMin >= tf) { ficam.push(t); return; }
+    const corte = { tarefa: t, ini: Math.max(ti, iniMin), fim: Math.min(tf, fimMin), partes: [] };
+    if (ti < iniMin) { const p = { ...t, fim: escalaHoraExataDeMin(iniMin) }; ficam.push(p); corte.partes.push(p); }
+    if (tf > fimMin) { const p = { ...t, inicio: escalaHoraExataDeMin(fimMin) }; ficam.push(p); corte.partes.push(p); }
+    saiu.push(corte);
+  });
+  ficam.sort((a, b) => escalaMinutosAbsolutos(a.inicio, false) - escalaMinutosAbsolutos(b.inicio, false));
+  return { ficam, saiu };
+}
+function escalaGravarTarefasNaCelula(dia, tarefas) {
+  const lista = (tarefas || []).slice(0, 3);
+  const p = lista[0] || { tipo: '', outro: '', inicio: '', fim: '' };
+  return { ...dia, tarefas: lista, tarefaTipo: p.tipo, tarefaOutro: p.outro || '', tarefaInicio: p.inicio, tarefaFim: p.fim };
+}
+// Passa um bocado de Chefe de Turno / Encomenda para outro farmacêutico presente e livre nesse período.
+function escalaReatribuirTarefaComum(semanaNova, diaKey, tipo, iniMin, fimMin, excluirUid) {
+  const novoDados = semanaNova.dados;
+  const listaPrio = (STATE.escalaPrioridadeTarefasComuns || []).filter(i => i.tipo === (tipo === 'chefe_turno' ? 'chefe_turno' : 'encomenda'))
+    .sort((a, b) => (a.ordem || 0) - (b.ordem || 0) || (a.id || 0) - (b.id || 0)).map(i => String(i.utilizadorId));
+  const rank = (u) => { const i = listaPrio.indexOf(String(u.id)); return i < 0 ? 999 : i; };
+  const candidatos = colaboradoresElegiveisTarefaEspecial()
+    .filter(u => String(u.id) !== String(excluirUid))
+    .map((u, ordemHier) => { const alvo = escalaVagaDoColaboradorNoDia(semanaNova, diaKey, u.id); return alvo ? { u, alvo, ordemHier } : null; })
+    .filter(Boolean)
+    .sort((a, b) => rank(a.u) - rank(b.u) || a.ordemHier - b.ordemHier);
+  const sobrepoe = (t) => t.inicio && t.fim && iniMin < escalaMinutosAbsolutos(t.fim, true) && fimMin > escalaMinutosAbsolutos(t.inicio, false);
+  for (const c of candidatos) {
+    const dia = novoDados[c.alvo.codigo].dias[diaKey];
+    if (!escalaSegmentosPresencaAbsolutos(dia).some(sg => iniMin >= sg.inicioMin && fimMin <= sg.fimMin)) continue;
+    const tarefas = escalaTarefasDoDia(dia);
+    if (tarefas.some(sobrepoe)) continue;
+    // Mesmo tipo colado (antes ou depois) → prolonga, sem gastar uma das 3 tarefas da célula. Chefe de Turno nunca passa das 4h seguidas.
+    const idxColado = tarefas.findIndex(t => t.tipo === tipo && (escalaMinutosAbsolutos(t.fim, true) === iniMin || escalaMinutosAbsolutos(t.inicio, false) === fimMin));
+    if (idxColado >= 0) {
+      const t = tarefas[idxColado];
+      const ni = Math.min(escalaMinutosAbsolutos(t.inicio, false), iniMin), nf = Math.max(escalaMinutosAbsolutos(t.fim, true), fimMin);
+      if (tipo !== 'chefe_turno' || nf - ni <= 240) {
+        const novas = tarefas.map((x, i) => i === idxColado ? { ...x, inicio: escalaHoraExataDeMin(ni), fim: escalaHoraExataDeMin(nf) } : x);
+        novoDados[c.alvo.codigo].dias[diaKey] = escalaGravarTarefasNaCelula(dia, novas);
+        return c.u;
+      }
+      continue;
+    }
+    if (escalaAdicionarTarefaComumAoDia(novoDados, c.alvo.codigo, diaKey, tipo, escalaHoraExataDeMin(iniMin), escalaHoraExataDeMin(fimMin))) return c.u;
+  }
+  return null;
+}
+function escalaAplicarBancoPedidoNoHorario(nota) {
+  const v = escalaValidarDescontoBanco(nota.dataPedido, nota.autorId, nota.horaInicio, nota.horaFim, { pedidoId: nota.id });
+  if (!v.ok) return { ok: false, motivo: v.motivo };
+  const { semana, diaInfo, vaga } = v;
+  if (((vaga.dia.bancoHorasIntervalos) || []).some(iv => String(iv.pedidoId) === String(nota.id))) return { ok: true, jaAplicado: true, semana, novoDados: null, ajustes: [] };
+  const novoDados = JSON.parse(JSON.stringify(semana.dados));
+  const semanaNova = Object.assign({}, semana, { dados: novoDados });
+  const dia = novoDados[vaga.codigo].dias[diaInfo.key];
+  const ajustes = [];
+  const nomeAutor = trocasNomeUtilizador(nota.autorId);
+  let novoDia = {
+    ...dia,
+    bancoHorasIntervalos: [...(dia.bancoHorasIntervalos || []), { inicio: nota.horaInicio, fim: nota.horaFim, pedidoId: nota.id }],
+    bancoHorasDesconto: Math.round(((Number(dia.bancoHorasDesconto) || 0) + v.horas) * 100) / 100,
+    horas: Math.max(0, Math.round(((Number(dia.horas) || 0) - v.horas) * 100) / 100),
+  };
+  if (dia.bancoHorasCorrigido !== undefined && dia.bancoHorasCorrigido !== null) ajustes.push('Este dia tinha o Banco de Horas corrigido à mão em Validação de Horários — confirma lá o valor.');
+  const corte = escalaCortarTarefasNoIntervalo(escalaTarefasDoDia(novoDia), v.iniMin, v.fimMin);
+  if (corte.ficam.length > 3) ajustes.push(`${nomeAutor} ficava com mais de 3 tarefas nesse dia — confirma as tarefas no Editor de Dia.`);
+  novoDia = escalaGravarTarefasNaCelula(novoDia, corte.ficam);
+  novoDados[vaga.codigo].dias[diaInfo.key] = novoDia;
+  corte.saiu.forEach(s => {
+    const rotulo = escalaRotuloTarefa(s.tarefa);
+    const periodo = `${escalaHoraExataDeMin(s.ini)}–${escalaHoraExataDeMin(s.fim)}`;
+    if (ESCALA_TAREFAS_COMUNS_REATRIBUIVEIS.includes(s.tarefa.tipo)) {
+      const quem = escalaReatribuirTarefaComum(semanaNova, diaInfo.key, s.tarefa.tipo, s.ini, s.fim, nota.autorId);
+      ajustes.push(quem ? `${rotulo} ${periodo} passou para ${quem.nomeCompleto || quem.username}.` : `${rotulo} ${periodo} ficou sem ninguém (não há farmacêutico livre nesse período) — atribuir à mão.`);
+    } else {
+      ajustes.push(s.partes.length ? `${rotulo} de ${nomeAutor} encurtada (saiu ${periodo}).` : `${rotulo} de ${nomeAutor} (${periodo}) saiu do horário — reagendar se for preciso.`);
+    }
+  });
+  return { ok: true, semana, novoDados, ajustes, horas: v.horas };
+}
+function escalaDesfazerBancoPedidoNoHorario(nota) {
+  const semana = escalaSemanaPorInicio(escalaSegundaFeiraDaSemanaDeISO(nota.dataPedido || ''));
+  if (!semana || !semana.dados) return { ok: false, motivo: 'a semana já não existe' };
+  const diaInfo = ESCALA_DIAS.find(d => escalaDataDoDia(semana.semanaInicio, d.key) === nota.dataPedido);
+  const cel = diaInfo && escalaCelulaColaboradorNoDia(semana, diaInfo.key, trocaUid(nota.autorId));
+  if (!cel) return { ok: false, motivo: 'já não há turno nesse dia' };
+  const novoDados = JSON.parse(JSON.stringify(semana.dados));
+  const dia = novoDados[cel.codigo].dias[diaInfo.key];
+  const lista = dia.bancoHorasIntervalos || [];
+  let idx = lista.findIndex(iv => String(iv.pedidoId) === String(nota.id));
+  if (idx < 0) idx = lista.findIndex(iv => iv.inicio === nota.horaInicio && iv.fim === nota.horaFim);
+  if (idx < 0) return { ok: false, motivo: 'o desconto já não estava no horário' };
+  const iv = lista[idx];
+  const horas = Math.round(escalaSobreposicaoTurno(dia, iv.inicio, iv.fim) * 100) / 100;
+  novoDados[cel.codigo].dias[diaInfo.key] = {
+    ...dia,
+    bancoHorasIntervalos: lista.filter((_, i) => i !== idx),
+    bancoHorasDesconto: Math.max(0, Math.round(((Number(dia.bancoHorasDesconto) || 0) - horas) * 100) / 100),
+    horas: Math.round(((Number(dia.horas) || 0) + horas) * 100) / 100,
+  };
+  return { ok: true, semana, novoDados };
+}
+// Horas de trabalho (sem pausa) do turno de `dia` dentro de ini–fim.
+function escalaSobreposicaoTurno(dia, ini, fim) {
+  const a = escalaMinutosAbsolutos(ini, false), b = escalaMinutosAbsolutos(fim, true);
+  return escalaSegmentosTurnoAbsolutos(dia).reduce((t, sg) => t + Math.max(0, Math.min(sg.fimMin, b) - Math.max(sg.inicioMin, a)), 0) / 60;
+}
+// Chamado ao decidir um pedido (Gaveta ou Horários). Mexe no horário quando é um pedido de Banco de Horas com
+// horas definidas; acerta patch.aplicadoHorario e devolve as frases do que mudou (para os avisos).
+async function escalaProcessarPedidoBancoAoDecidir(nota, aprovar, patch) {
+  if (!nota || nota.tipo !== 'banco' || !nota.dataPedido || !nota.horaInicio || !nota.horaFim) return [];
+  const gravar = async (semana, novoDados) => {
+    const upd = await dbUpdate('escalaSemanas', semana.id, { dados: novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() }, { base: semana });
+    if (upd) STATE.escalaSemanas = (STATE.escalaSemanas || []).map(s => s.id === upd.id ? upd : s);
+    return !!upd;
+  };
+  if (aprovar && !nota.aplicadoHorario) {
+    const res = escalaAplicarBancoPedidoNoHorario(nota);
+    if (!res.ok) { showToast(`Aprovado, mas o horário não foi mudado sozinho (${res.motivo}) — ajusta à mão.`, 'error'); return [`O horário não foi mudado sozinho (${res.motivo}).`]; }
+    if (res.jaAplicado) { patch.aplicadoHorario = true; return []; }
+    if (await gravar(res.semana, res.novoDados)) { patch.aplicadoHorario = true; return [`Horário atualizado: ${nota.horaInicio}–${nota.horaFim} descontado do Banco de Horas (${escalaFormatarHorasDecimal(res.horas)}).`, ...res.ajustes]; }
+    showToast('Aprovado, mas não foi possível gravar o horário (falha de rede) — ajusta à mão.', 'error');
+    return ['Não foi possível gravar o horário (falha de rede).'];
+  }
+  if (!aprovar && nota.aplicadoHorario) {
+    const res = escalaDesfazerBancoPedidoNoHorario(nota);
+    patch.aplicadoHorario = false;
+    if (res.ok && await gravar(res.semana, res.novoDados)) return ['As horas voltaram ao turno. As tarefas que tinham sido mudadas não voltam sozinhas — confirma o Chefe de Turno e as Encomendas desse dia.'];
+    if (!res.ok) return [];
+    showToast('Não foi possível repor o horário (falha de rede) — ajusta à mão.', 'error');
+    return [];
+  }
+  return [];
+}
+// Estado de um pedido de Banco de Horas para quem o fez (as rejeições não ficam marcadas na nota — vê-se pela
+// tarefa da Direção já tratada).
+function escalaEstadoPedidoBanco(nota) {
+  if (nota.validadoDirecao) return 'aprovado';
+  if (nota.rejeitado) return 'nao_aprovado';
+  const tarefas = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_notas_semana' && String(r.referenciaId) === String(nota.id) && (r.tipo || 'mensagem') === 'tarefa');
+  if (!tarefas.length || tarefas.some(r => !r.tratado)) return 'pendente';
+  return 'nao_aprovado';
+}
+// Saldo de Banco de Horas (a função de cálculo vive no módulo Horários e fica aqui registada quando ele abre).
+let ESCALA_FN_SALDO_BANCO = null;
+function escalaSaldoBancoDe(uid) {
+  try { const s = ESCALA_FN_SALDO_BANCO ? ESCALA_FN_SALDO_BANCO() : null; return s && s[uid] ? s[uid].saldoAtual : null; } catch (e) { return null; }
+}
+// Horas já descontadas em dias que ainda não chegaram (o saldo "de hoje" ainda não as conta) + pedidos por decidir.
+function escalaBancoComprometido(uid) {
+  const hoje = todayISO();
+  let marcado = 0;
+  (STATE.escalaSemanas || []).filter(s => !s.eliminado && s.dados && escalaDataDoDia(s.semanaInicio, 'dom') > hoje).forEach(s => {
+    ESCALA_DIAS.forEach(d => {
+      const data = escalaDataDoDia(s.semanaInicio, d.key);
+      if (data <= hoje) return;
+      const cel = escalaCelulaColaboradorNoDia(s, d.key, trocaUid(uid));
+      if (cel && cel.dia) marcado += escalaBancoHorasGanhoUsadoDoDia(cel.dia).usado || 0;
+    });
+  });
+  const pendente = (STATE.escalaNotasSemana || []).filter(n => n.tipo === 'banco' && String(n.autorId) === String(uid) && n.horaInicio && n.horaFim
+    && (n.dataPedido || '') >= hoje && escalaEstadoPedidoBanco(n) === 'pendente')
+    .reduce((t, n) => { const v = escalaValidarDescontoBanco(n.dataPedido, uid, n.horaInicio, n.horaFim, { pedidoId: n.id }); return t + (v.ok ? v.horas : 0); }, 0);
+  return { marcado: Math.round(marcado * 100) / 100, pendente: Math.round(pendente * 100) / 100 };
+}
+// Notificação à Direção de um registo de "Pedidos e Registos da Semana" (também usada fora do módulo Horários).
+async function notificarDirecaoNotaEquipaGlobal(nota, acaoTexto) {
+  if (!activeUser || !nota) return;
+  const destinatarios = escalaUsuariosDirecao().filter(u => String(u.id) !== String(activeUser.id));
+  const textoNota = String(nota.texto || '');
+  const trecho = textoNota.length > 140 ? textoNota.slice(0, 140) + '…' : textoNota;
+  const notaDiaTexto = nota.dataPedido ? (() => {
+    const d = new Date(nota.dataPedido + 'T12:00:00');
+    const nomes = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
+    return ` — ${nomes[d.getDay()]}, ${formatDate(nota.dataPedido).slice(0, 5)}`;
+  })() : '';
+  const mensagem = `${nota.autorNome || 'Um colaborador'} ${acaoTexto} em "Pedidos e Registos da Semana" (semana de ${formatDate(nota.semanaInicio)}${notaDiaTexto}): "${trecho}"`;
+  const existentes = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_notas_semana' && String(r.referenciaId) === String(nota.id) && (r.tipo || 'mensagem') === 'tarefa');
+  const resultados = await Promise.all(destinatarios.map(async u => {
+    const existente = existentes.find(r => String(r.destinatarioId) === String(u.id));
+    if (existente) return { tipo: 'update', registo: await dbAtualizarRecado(existente.id, { mensagem, tratado: false, tratadoEm: null }) };
+    return { tipo: 'novo', registo: await dbInsertRecado({ remetenteId: activeUser.id, destinatarioId: u.id, mensagem, tratado: false, tipo: 'tarefa', referenciaTabela: 'escala_notas_semana', referenciaId: nota.id }) };
+  }));
+  resultados.forEach(({ tipo, registo }) => {
+    if (!registo) return;
+    STATE.gavetaRecados = tipo === 'update' ? STATE.gavetaRecados.map(r => r.id === registo.id ? registo : r) : [registo, ...(STATE.gavetaRecados || [])];
+  });
+}
+function escalaTextoPedidoBanco(dataISO, ini, fim, horas, notaLivre) {
+  return `Descontar ${escalaFormatarHorasDecimal(horas)} de Banco de Horas a ${formatDate(dataISO)} (${ini}–${fim}).${notaLivre ? `\n${notaLivre}` : ''}`;
+}
+// Pedido criado a partir do botão "Propor" (cartão Trocas com colegas).
+async function escalaCriarPedidoBanco(dataISO, ini, fim, notaLivre) {
+  if (!activeUser) return { erro: 'Sessão terminada.' };
+  const v = escalaValidarDescontoBanco(dataISO, activeUser.id, ini, fim);
+  if (!v.ok) return { erro: v.motivo };
+  const payload = {
+    semanaInicio: v.semana.semanaInicio, autorId: activeUser.id, autorNome: activeUser.nomeCompleto || activeUser.username,
+    validadoDirecao: false, tipo: 'banco', aplicadoHorario: false, dataPedido: dataISO, horaInicio: ini, horaFim: fim,
+    texto: escalaTextoPedidoBanco(dataISO, ini, fim, v.horas, String(notaLivre || '').trim()),
+  };
+  const criado = await dbInsert('escalaNotasSemana', payload);
+  if (!criado) return { erro: `Não foi possível enviar o pedido. ${lastDbError || ''}`.trim() };
+  if (!criado.horaInicio || !criado.horaFim) return { erro: 'O pedido ficou registado, mas sem as horas (falta uma coluna na base de dados) — fala com o Hugo.' };
+  STATE.escalaNotasSemana = [...(STATE.escalaNotasSemana || []), criado];
+  await notificarDirecaoNotaEquipaGlobal(criado, 'pediu para descontar Banco de Horas');
+  return { nota: criado, horas: v.horas };
 }
 // Categorias Profissionais elegíveis para tarefas especiais (Chefe de
 // Turno/Encomendas) na Atribuição Rápida — pedido explícito 2026-08-14:
@@ -34571,13 +34863,15 @@ async function decidirHorasExtraReivindicacaoViaGaveta(r, novoEstado, onDone) {
 // avisa também ao DESMARCAR a validação (invalidar) — antes só avisava
 // ao validar, nunca ao reverter, mas o colaborador também precisa de
 // saber se a Direção veio a invalidar a nota depois.
-async function notificarAutorNotaValidada(nota, validada, motivo) {
+async function notificarAutorNotaValidada(nota, validada, motivo, detalhes) {
   if (!nota) return;
   const resumo = (nota.texto || '').slice(0, 80) + ((nota.texto || '').length > 80 ? '…' : '');
+  // `detalhes` (opcional): o que mudou no horário (pedido de Banco de Horas aprovado) — vai no fim dos dois avisos.
+  const extra = (detalhes && detalhes.length) ? `\n${detalhes.join('\n')}` : '';
   // O outro elemento da Direção fica a saber da decisão (2026-09-30).
-  const acaoDirecao = validada ? 'validou o' : motivo === 'rejeitado' ? 'rejeitou o' : 'anulou a validação do';
+  const acaoDirecao = validada ? 'validou o' : motivo === 'rejeitado' ? 'rejeitou o' : motivo === 'reaberto' ? 'anulou a rejeição do' : 'anulou a validação do';
   await avisarOutraDirecaoDaDecisao(
-    `${currentUserName()} ${acaoDirecao} pedido de ${nota.autorId ? trocasNomeUtilizador(nota.autorId) : 'um colaborador'} em "Pedidos e Registos da Semana": "${resumo}"`,
+    `${currentUserName()} ${acaoDirecao} pedido de ${nota.autorId ? trocasNomeUtilizador(nota.autorId) : 'um colaborador'} em "Pedidos e Registos da Semana": "${resumo}"${extra}`,
     'escala_notas_semana', nota.id, [nota.autorId]);
   if (!nota.autorId || String(nota.autorId) === String(activeUser.id)) return;
   // CORRIGIDO 2026-08-29 (pedido explícito de Hugo, "só há botão para
@@ -34593,7 +34887,10 @@ async function notificarAutorNotaValidada(nota, validada, motivo) {
     ? `O teu pedido em "Pedidos e Registos da Semana" foi validado ${decisorPor()}: "${resumo}"`
     : motivo === 'rejeitado'
     ? `O teu pedido em "Pedidos e Registos da Semana" foi rejeitado ${decisorPor()}: "${resumo}"`
+    : motivo === 'reaberto'
+    ? `A rejeição do teu pedido em "Pedidos e Registos da Semana" foi anulada ${decisorPor()} — voltou a ficar pendente: "${resumo}"`
     : `A validação do teu pedido em "Pedidos e Registos da Semana" foi anulada ${decisorPor()}: "${resumo}"`;
+  const mensagemFinal = mensagem + extra;
   // BUG CORRIGIDO (2026-08-18): ver nota em notificarDirecaoPedidoEspecial
   // — mesmo problema, dbInsert('gavetaRecados', ...) falhava sempre.
   // ALTERADO (2026-08-25, pedido explícito): tipo passou de 'tarefa' para
@@ -34605,7 +34902,7 @@ async function notificarAutorNotaValidada(nota, validada, motivo) {
   // conversa, tal como qualquer mensagem normal.
   const criado = await dbInsertRecado({
     remetenteId: activeUser.id, destinatarioId: nota.autorId,
-    mensagem, tratado: false, tipo: 'mensagem', referenciaTabela: 'escala_notas_semana', referenciaId: nota.id,
+    mensagem: mensagemFinal, tratado: false, tipo: 'mensagem', referenciaTabela: 'escala_notas_semana', referenciaId: nota.id,
   });
   if (criado) STATE.gavetaRecados = [criado, ...(STATE.gavetaRecados || [])];
 }
@@ -37934,9 +38231,87 @@ function abrirModalProporTroca(rerender) {
   // em que TENS turno (e, do lado do colega, os dias em que ELE tem turno),
   // já com o horário e a situação do outro nesse dia; e a troca é validada
   // em tempo real (férias, folgas, horários sobrepostos ou iguais).
-  trocasAbrirModal('Propor troca de turno', (corpo, fechar) => {
+  // 2026-10-01 (Hugo): o mesmo botão serve também para pedir à Direção para descontar horas do Banco de Horas —
+  // se Hugo ou Paulo aprovarem, o horário atualiza-se sozinho (ver escalaAplicarBancoPedidoNoHorario).
+  const euCompleto = (STATE.usuarios || []).find(u => String(u.id) === String(activeUser.id)) || activeUser;
+  const podeBanco = euCompleto && euCompleto.estatutoColaborador === 'quadro';
+  trocasAbrirModal(podeBanco ? 'Propor troca ou Banco de Horas' : 'Propor troca de turno', (corpo, fechar) => {
     const meusDias = trocaDiasComTurno(activeUser.id);
-    const st = { colegaId: '', diaA: meusDias[0] ? meusDias[0].iso : '', parcialA: false, inicioA: '', fimA: '', comB: false, diaB: '', parcialB: false, inicioB: '', fimB: '', nota: '' };
+    const st = { modo: 'troca', colegaId: '', diaA: meusDias[0] ? meusDias[0].iso : '', parcialA: false, inicioA: '', fimA: '', comB: false, diaB: '', parcialB: false, inicioB: '', fimB: '', nota: '',
+      bancoDia: meusDias[0] ? meusDias[0].iso : '', bancoIni: '', bancoFim: '', bancoNota: '' };
+    const saldoBanco = podeBanco ? escalaSaldoBancoDe(activeUser.id) : null;
+    const seletorModo = () => {
+      if (!podeBanco) return null;
+      const botao = (modo, rotulo, icone) => {
+        const b = h('button', { type: 'button', class: 'troca-modo-btn' + (st.modo === modo ? ' ativo' : ''), 'aria-pressed': st.modo === modo ? 'true' : 'false' }, [Icon(icone, { size: 14, strokeWidth: 2.3 }), h('span', {}, rotulo)]);
+        b.addEventListener('click', () => { if (st.modo !== modo) { st.modo = modo; desenhar(); } });
+        return b;
+      };
+      return h('div', { class: 'troca-modo' }, [botao('troca', 'Troca com colega', 'trocaColegas'), botao('banco', 'Descontar Banco de Horas', 'clock')]);
+    };
+    const desenharBanco = () => {
+      if (!meusDias.some(x => x.iso === st.bancoDia)) st.bancoDia = meusDias[0].iso;
+      const sit = trocaSituacaoNoDia(st.bancoDia, activeUser.id);
+      // Por omissão: a última hora do turno (o caso mais comum é sair mais cedo).
+      if (!st.bancoIni && !st.bancoFim && sit.tipo === 'turno') {
+        const fimTurno = escalaMinutosAbsolutos(sit.saida, true);
+        st.bancoFim = sit.saida; st.bancoIni = trocaMinParaHora(Math.max(escalaMinutosAbsolutos(sit.entrada, false), fimTurno - 60));
+      }
+      const diaSel = h('select', { class: 'select' }, meusDias.map(x => h('option', { value: x.iso, selected: x.iso === st.bancoDia ? 'selected' : undefined }, `${trocaRotuloDia(x.iso)} · ${x.sit.entrada}–${x.sit.saida}`)));
+      diaSel.addEventListener('change', () => { st.bancoDia = diaSel.value; st.bancoIni = ''; st.bancoFim = ''; desenhar(); });
+      corpo.appendChild(trocasCampo('Dia', diaSel, sit.tipo === 'turno' ? `O teu turno: ${sit.texto}` : null));
+      const atalho = (rotulo, fn) => { const b = h('button', { type: 'button', class: 'btn-link edit', style: 'font-size:12px;' }, rotulo); b.addEventListener('click', () => { fn(); desenhar(); }); return b; };
+      if (sit.tipo === 'turno') {
+        const ent = escalaMinutosAbsolutos(sit.entrada, false), sai = escalaMinutosAbsolutos(sit.saida, true);
+        corpo.appendChild(h('div', { style: 'display:flex;gap:14px;flex-wrap:wrap;margin:-2px 0 12px;' }, [
+          atalho('Sair 1h mais cedo', () => { st.bancoIni = trocaMinParaHora(Math.max(ent, sai - 60)); st.bancoFim = sit.saida; }),
+          atalho('Entrar 1h mais tarde', () => { st.bancoIni = sit.entrada; st.bancoFim = trocaMinParaHora(Math.min(sai, ent + 60)); }),
+        ]));
+      }
+      const iniEl = h('input', { class: 'input', type: 'time', value: st.bancoIni }); iniEl.addEventListener('change', () => { st.bancoIni = iniEl.value; desenhar(); });
+      const fimEl = h('input', { class: 'input', type: 'time', value: st.bancoFim }); fimEl.addEventListener('change', () => { st.bancoFim = fimEl.value; desenhar(); });
+      corpo.appendChild(h('div', { style: 'display:flex;gap:10px;' }, [trocasCampo('Não trabalho das', iniEl), trocasCampo('Às', fimEl)]));
+      const v = escalaValidarDescontoBanco(st.bancoDia, activeUser.id, st.bancoIni, st.bancoFim);
+      const avisos = [];
+      let bloqueada = !v.ok;
+      if (!v.ok) avisos.push(h('div', { class: 'troca-validacao troca-validacao-erro' }, `⛔ ${v.motivo}`));
+      else {
+        if (v.turnoInteiro) avisos.push(h('div', { class: 'troca-validacao troca-validacao-info' }, 'ℹ️ É o turno inteiro desse dia.'));
+        const iniMinV = v.iniMin, fimMinV = v.fimMin;
+        const tarefasNoPeriodo = escalaTarefasDoDia(v.vaga.dia).filter(t => t.inicio && t.fim && iniMinV < escalaMinutosAbsolutos(t.fim, true) && fimMinV > escalaMinutosAbsolutos(t.inicio, false));
+        if (tarefasNoPeriodo.length) avisos.push(h('div', { class: 'troca-validacao troca-validacao-aviso' }, `⚠️ Tens ${tarefasNoPeriodo.map(t => `${escalaRotuloTarefa(t)} (${t.inicio}–${t.fim})`).join(', ')} nesse período — se for aprovado, a app ajusta as tarefas (Chefe de Turno e Encomendas passam para outro farmacêutico, se houver alguém livre).`));
+        const semelhante = (STATE.escalaNotasSemana || []).some(n => n.tipo === 'banco' && String(n.autorId) === String(activeUser.id) && n.dataPedido === st.bancoDia && escalaEstadoPedidoBanco(n) === 'pendente');
+        if (semelhante) avisos.push(h('div', { class: 'troca-validacao troca-validacao-aviso' }, '⚠️ Já tens um pedido de Banco de Horas por decidir para esse dia.'));
+      }
+      if (avisos.length) corpo.appendChild(h('div', { style: 'display:flex;flex-direction:column;gap:6px;margin:0 0 10px;' }, avisos));
+      if (v.ok) {
+        corpo.appendChild(h('p', { style: 'margin:4px 0 2px;font-weight:700;color:var(--pharm-800);' }, `Descontas ${escalaFormatarHorasDecimal(v.horas)} do teu Banco de Horas.`));
+        if (saldoBanco !== null && saldoBanco !== undefined) {
+          const comp = escalaBancoComprometido(activeUser.id);
+          const depois = Math.round((saldoBanco - comp.marcado - comp.pendente - v.horas) * 100) / 100;
+          const partes = [`Saldo hoje: ${escalaFormatarHorasDecimalComSinal(saldoBanco)}`];
+          if (comp.marcado > 0) partes.push(`já marcado para os próximos dias: −${escalaFormatarHorasDecimal(comp.marcado)}`);
+          if (comp.pendente > 0) partes.push(`outros pedidos por decidir: −${escalaFormatarHorasDecimal(comp.pendente)}`);
+          partes.push(`depois deste: ${escalaFormatarHorasDecimalComSinal(depois)}`);
+          corpo.appendChild(h('p', { class: 'field-helper-text', style: `margin:0 0 10px;${depois < 0 ? 'color:#b45309;font-weight:600;' : ''}` }, partes.join(' · ') + (depois < 0 ? ' — ficarias com saldo negativo; a Direção decide.' : '')));
+        }
+      }
+      const nota = h('textarea', { class: 'textarea', rows: '2', placeholder: 'Motivo ou nota (opcional)' }); nota.value = st.bancoNota;
+      nota.addEventListener('input', () => { st.bancoNota = nota.value; });
+      corpo.appendChild(trocasCampo('Nota', nota));
+      corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 10px;' }, 'Vai para o Hugo e o Paulo. Se um deles aprovar, o horário atualiza-se sozinho e o saldo desce.'));
+      const erroEl = h('p', { class: 'form-error', style: 'margin:0 0 8px;' });
+      const enviar = h('button', { class: 'btn btn-primary', type: 'button', disabled: bloqueada ? 'disabled' : undefined }, 'Enviar à Direção');
+      enviar.addEventListener('click', () => requireAuth(async () => {
+        enviar.setAttribute('disabled', 'disabled'); enviar.textContent = 'A enviar…';
+        const res = await escalaCriarPedidoBanco(st.bancoDia, st.bancoIni, st.bancoFim, st.bancoNota);
+        if (res.erro) { erroEl.textContent = res.erro; enviar.removeAttribute('disabled'); enviar.textContent = 'Enviar à Direção'; return; }
+        showToast('Pedido enviado à Direção — aguarda aprovação.', 'success');
+        fechar(); rerender();
+      }));
+      corpo.appendChild(erroEl);
+      corpo.appendChild(h('div', { class: 'form-actions' }, [enviar, h('button', { class: 'btn btn-secondary', type: 'button', onclick: fechar }, 'Cancelar')]));
+    };
     const chipSituacao = (nome, sit) => {
       const cls = !sit ? 'cinza' : sit.tipo === 'turno' ? 'azul' : sit.tipo === 'folga' ? 'verde' : sit.tipo === 'ausencia' ? 'vermelho' : 'cinza';
       return h('span', { class: `troca-chip ${cls}` }, [h('b', {}, `${nome}: `), sit ? (sit.tipo === 'turno' ? `${sit.texto} · ${trocasHorasTexto(sit.horas)}` : sit.texto) : '—']);
@@ -37948,6 +38323,9 @@ function abrirModalProporTroca(rerender) {
         corpo.appendChild(h('div', { class: 'form-actions' }, [h('button', { class: 'btn btn-secondary', type: 'button', onclick: fechar }, 'Fechar')]));
         return;
       }
+      const modoEl = seletorModo();
+      if (modoEl) corpo.appendChild(modoEl);
+      if (st.modo === 'banco') { desenharBanco(); return; }
       const colegaSel = trocasSelectColaborador(st.colegaId, activeUser.id);
       colegaSel.addEventListener('change', () => { st.colegaId = colegaSel.value; st.diaB = ''; st.parcialB = false; desenhar(); });
       corpo.appendChild(trocasCampo('Colega', colegaSel));
@@ -38216,11 +38594,21 @@ function buildCartaoTrocasPessoal(rerender) {
       h('span', {}, `✅ Validada: troca de ${trocaDiasTexto(t)} com ${trocasNomeUtilizador(String(t.autorId) === uid ? t.colegaId : t.autorId)}`),
       trocaPainelAcoesEl(t, rerender, { semEstado: true }),
     ])));
+  // Pedidos de Banco de Horas (feitos pelo botão "Propor" ou pelo feed) para dias que ainda não passaram.
+  (STATE.escalaNotasSemana || []).filter(n => n.tipo === 'banco' && String(n.autorId) === uid && n.horaInicio && n.horaFim && (n.dataPedido || '') >= todayISO())
+    .sort((a, b) => String(a.dataPedido).localeCompare(String(b.dataPedido)))
+    .forEach(n => {
+      const est = escalaEstadoPedidoBanco(n);
+      const txt = `Banco de Horas ${trocaRotuloDia(n.dataPedido)}, ${n.horaInicio}–${n.horaFim}`;
+      linhas.push(h('p', { class: 'cell-muted', style: 'margin:0;font-size:12.5px;' }, est === 'aprovado'
+        ? `✅ ${txt}: aprovado${n.validadoPor ? ` por ${n.validadoPor}` : ''}${n.aplicadoHorario ? ' — já está no horário' : ''}`
+        : est === 'pendente' ? `⏳ ${txt}: aguarda aprovação da Direção` : `✖ ${txt}: não aprovado`));
+    });
   compPend.forEach(m => linhas.push(h('p', { class: 'cell-muted', style: 'margin:0;font-size:12.5px;' }, `⏳ Compensação com Banco de Horas (${trocasHorasTexto(m.horas)}, ${trocasNomeUtilizador(m.devedorId)} → ${trocasNomeUtilizador(m.credorId)}) aguarda validação da Direção`)));
   if (!linhas.length) linhas.push(h('p', { class: 'cell-muted', style: 'margin:0;font-size:12.5px;' }, 'Sem trocas nem horas em aberto com colegas.'));
   // 2026-09-28 (Hugo: "botão de trocas mais evidente, ícone maior à esquerda, alguma cor"): cartão com
   // o ícone das trocas grande num círculo cor-de-laranja à esquerda e botão "Propor troca" cheio, na mesma cor.
-  const proporBtn = h('button', { class: 'btn trocas-propor-btn', type: 'button' }, [Icon('trocaColegas', { size: 16, strokeWidth: 2.4 }), h('span', {}, 'Propor troca')]);
+  const proporBtn = h('button', { class: 'btn trocas-propor-btn', type: 'button', title: euCompleto.estatutoColaborador === 'quadro' ? 'Propor uma troca a um colega, ou pedir à Direção para descontar horas do Banco de Horas' : 'Propor uma troca a um colega' }, [Icon('trocaColegas', { size: 16, strokeWidth: 2.4 }), h('span', {}, 'Propor')]);
   proporBtn.addEventListener('click', () => abrirModalProporTroca(rerender));
   const contasBtn = h('button', { class: 'btn trocas-contas-btn', type: 'button', title: souDirecaoHorariosGlobal() ? 'Contas entre colegas: quem deve horas a quem, por validar, dívidas já existentes e histórico' : 'As tuas contas de horas com colegas' }, [Icon('balanca', { size: 16, strokeWidth: 2.2 }), h('span', {}, 'Contas')]);
   contasBtn.addEventListener('click', () => abrirContasTrocas(rerender));
@@ -38234,7 +38622,7 @@ function buildCartaoTrocasPessoal(rerender) {
       ]),
       h('div', { class: 'trocas-cartao-titulos' }, [
         h('h3', { class: 'dash-card-title', style: 'margin:0;' }, 'Trocas com colegas'),
-        h('p', { class: 'cell-muted', style: 'margin:1px 0 0;font-size:12px;' }, porResponder ? `${porResponder} proposta${porResponder > 1 ? 's' : ''} à espera da tua resposta` : 'Troca um turno ou parte dele com um colega'),
+        h('p', { class: 'cell-muted', style: 'margin:1px 0 0;font-size:12px;' }, porResponder ? `${porResponder} proposta${porResponder > 1 ? 's' : ''} à espera da tua resposta` : (euCompleto.estatutoColaborador === 'quadro' ? 'Troca um turno com um colega ou desconta horas do Banco de Horas' : 'Troca um turno ou parte dele com um colega')),
       ]),
       h('div', { class: 'trocas-cartao-acoes' }, acoes),
     ]),
@@ -38351,6 +38739,7 @@ function buildCartaoTrocaNoFeed(t) {
 // Último sub-separador de "Gestão" usado (Horários) — o botão "Gestão" volta sempre a ele (2026-09-25).
 let HORARIOS_ULTIMA_TAB_GESTAO = 'gerador';
 function buildHorariosPage(container, goTo) {
+  ESCALA_FN_SALDO_BANCO = escalaCalcularSaldoBancoHoras; // saldo de Banco de Horas visível ao pedido do botão "Propor"
   // Picagens de ponto (vêm por função segura, não por tempo real): ao abrir Horários pede só o que mudou.
   pontoSincronizar().then(mudou => { if (mudou) renderOuAdiarSeOcupado(); });
   // Reset a cada entrada no módulo (ver comentário acima) — nunca
@@ -39343,49 +39732,9 @@ function buildHorariosPage(container, goTo) {
   // 2026-08-19: baseada no CARGO real, não em perfilNivel==='Master'
   // sozinho — ver comentário completo lá).
   function usuariosDirecao() { return escalaUsuariosDirecao(); }
-  async function notificarDirecaoNotaEquipa(nota, acaoTexto) {
-    if (!activeUser) return;
-    const destinatarios = usuariosDirecao().filter(u => String(u.id) !== String(activeUser.id));
-    const trecho = nota.texto.length > 140 ? nota.texto.slice(0, 140) + '…' : nota.texto;
-    // Dia explícito na mensagem, quando existe (pedido explícito
-    // 2026-08-19, queixa de Paulo: "fica-se sem perceber a que dia se
-    // refere" — a notificação só dizia "semana de X", nunca o dia em si,
-    // mesmo já tendo nota.dataPedido gravado).
-    // 2026-09-29 (Hugo: "se já informa a semana, o dia pode ser mais simples"): dia da semana + dia/mês (ex: "quarta, 07/10").
-    const notaDiaTexto = nota.dataPedido ? (() => {
-      const d = new Date(nota.dataPedido + 'T12:00:00');
-      const nomes = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
-      return ` — ${nomes[d.getDay()]}, ${formatDate(nota.dataPedido).slice(0, 5)}`;
-    })() : '';
-    const mensagem = `${nota.autorNome || 'Um colaborador'} ${acaoTexto} em "Pedidos e Registos da Semana" (semana de ${formatDate(nota.semanaInicio)}${notaDiaTexto}): "${trecho}"`;
-    // BUG CORRIGIDO (2026-08-18): usava dbInsert('gavetaRecados', ...), que
-    // falhava sempre — 'gavetaRecados' nunca esteve mapeado em TABLES
-    // (ver notificarDirecaoPedidoEspecial) — estas notificações nunca
-    // chegavam mesmo a ser criadas na base de dados.
-    // Ao mesmo tempo, pedido explícito 2026-08-18: quando o pedido é
-    // EDITADO, a notificação já enviada deve refletir a edição (não
-    // acumular uma notificação nova ao lado da antiga, com texto
-    // desatualizado) — por isso, para cada destinatário, atualiza a
-    // notificação já existente referente a este pedido (se houver) em vez
-    // de criar sempre uma nova; só cria de novo se ainda não existir
-    // nenhuma para essa pessoa (o caso normal na criação do pedido).
-    // Só as TAREFAS (pedido à Direção) — nunca os avisos de decisão ao autor/ao outro elemento da Direção.
-    const existentes = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_notas_semana' && String(r.referenciaId) === String(nota.id) && (r.tipo || 'mensagem') === 'tarefa');
-    const resultados = await Promise.all(destinatarios.map(async u => {
-      const existente = existentes.find(r => String(r.destinatarioId) === String(u.id));
-      if (existente) return { tipo: 'update', registo: await dbAtualizarRecado(existente.id, { mensagem, tratado: false, tratadoEm: null }) };
-      return { tipo: 'novo', registo: await dbInsertRecado({ remetenteId: activeUser.id, destinatarioId: u.id, mensagem, tratado: false, tipo: 'tarefa', referenciaTabela: 'escala_notas_semana', referenciaId: nota.id }) };
-    }));
-    resultados.forEach(({ tipo, registo }) => {
-      if (!registo) return;
-      STATE.gavetaRecados = tipo === 'update'
-        ? STATE.gavetaRecados.map(r => r.id === registo.id ? registo : r)
-        : [registo, ...(STATE.gavetaRecados || [])];
-    });
-    // Best-effort: se a Gaveta estiver aberta na sessão do próprio autor,
-    // o Realtime já trata de mostrar a notificação aos destinatários —
-    // aqui só se garante que o pedido de INSERT/UPDATE foi mesmo disparado.
-  }
+  // Corpo movido para fora do módulo (notificarDirecaoNotaEquipaGlobal, 2026-10-01) — também é usado pelo pedido de
+  // Banco de Horas feito no botão "Propor" do cartão Trocas.
+  async function notificarDirecaoNotaEquipa(nota, acaoTexto) { return notificarDirecaoNotaEquipaGlobal(nota, acaoTexto); }
   // Elimina TODAS as notificações da Gaveta já enviadas por causa deste
   // pedido — pedido explícito 2026-08-18: "quando responsável por pedido
   // elimina a notificação também desaparece para Paulo/Hugo". Recados são
@@ -39433,6 +39782,13 @@ function buildHorariosPage(container, goTo) {
       payload.tarefaTipo = novoPedidoTarefaTipo;
       payload.tarefaDescricao = novoPedidoTarefaDescricao.trim();
       payload.texto = texto.trim() || resumoPedidoTarefa();
+    } else if (tipo === 'banco' && (novoPedidoHoraInicio || novoPedidoHoraFim)) {
+      const vb = escalaValidarDescontoBanco(novoPedidoData, activeUser.id, novoPedidoHoraInicio, novoPedidoHoraFim);
+      if (!vb.ok) { novoPedidoErro = vb.motivo; rerender(); return; }
+      payload.dataPedido = novoPedidoData;
+      payload.horaInicio = novoPedidoHoraInicio;
+      payload.horaFim = novoPedidoHoraFim;
+      payload.texto = escalaTextoPedidoBanco(novoPedidoData, novoPedidoHoraInicio, novoPedidoHoraFim, vb.horas, texto.trim());
     } else {
       if (!texto.trim()) { novoPedidoErro = 'Escreve uma descrição.'; rerender(); return; }
       // Data passou a obrigatória (2026-08-22, antes só recomendada) —
@@ -39467,7 +39823,9 @@ function buildHorariosPage(container, goTo) {
     const souAutor = activeUser && String(nota.autorId) === String(activeUser.id);
     const podeEditar = isMasterUser() || (souAutor && !nota.validadoDirecao);
     if (!podeEditar) { showToast('Já não é possível editar esta nota.', 'error'); rerender(); return; }
-    const updated = await dbUpdate('escalaNotasSemana', nota.id, { texto: novoTexto.trim(), updatedAt: new Date().toISOString() });
+    // Um pedido rejeitado que o autor corrige volta a ficar pendente (e a Direção é avisada outra vez, logo abaixo).
+    const reabrePorEdicao = souAutor && nota.rejeitado && !nota.validadoDirecao;
+    const updated = await dbUpdate('escalaNotasSemana', nota.id, Object.assign({ texto: novoTexto.trim(), updatedAt: new Date().toISOString() }, reabrePorEdicao ? { rejeitado: false, rejeitadoPor: '', rejeitadoEm: null } : {}));
     if (updated) {
       STATE.escalaNotasSemana = STATE.escalaNotasSemana.map(n => n.id === nota.id ? updated : n);
       notaEquipaEditandoId = null;
@@ -39504,10 +39862,19 @@ function buildHorariosPage(container, goTo) {
     // nunca dependerem de adivinhar o estado atual — cada botão diz
     // exatamente o que faz.
     const novoEstado = typeof novoEstadoForcado === 'boolean' ? novoEstadoForcado : !nota.validadoDirecao;
-    if (novoEstado === !!nota.validadoDirecao) { rerender(); return; }
+    // CORRIGIDO 2026-10-01: rejeitar um pedido PENDENTE (novoEstado=false, já não validado) saía logo aqui sem fazer
+    // nada — só a Gaveta conseguia rejeitar. Agora "rejeitar" é sempre uma decisão própria (gravada em rejeitado).
+    const ehRejeicao = !novoEstado && motivo === 'rejeitado';
+    const nadaMuda = novoEstado ? !!nota.validadoDirecao : ehRejeicao ? (!!nota.rejeitado && !nota.validadoDirecao) : (!nota.validadoDirecao && !nota.rejeitado);
+    if (nadaMuda) { rerender(); return; }
+    // Anular uma REJEIÇÃO = o pedido volta a pendente (aviso próprio, nunca "validação anulada").
+    if (!novoEstado && !ehRejeicao && !nota.validadoDirecao && nota.rejeitado) motivo = 'reaberto';
+    const quemAgora = activeUser.nomeCompleto || activeUser.username;
     const patch = novoEstado
-      ? { validadoDirecao: true, validadoPor: activeUser.nomeCompleto || activeUser.username, validadoEm: new Date().toISOString() }
-      : { validadoDirecao: false, validadoPor: '', validadoEm: null };
+      ? { validadoDirecao: true, validadoPor: quemAgora, validadoEm: new Date().toISOString(), rejeitado: false, rejeitadoPor: '', rejeitadoEm: null }
+      : ehRejeicao
+        ? { validadoDirecao: false, validadoPor: '', validadoEm: null, rejeitado: true, rejeitadoPor: quemAgora, rejeitadoEm: new Date().toISOString() }
+        : { validadoDirecao: false, validadoPor: '', validadoEm: null, rejeitado: false, rejeitadoPor: '', rejeitadoEm: null };
     // Auto-atribuição no horário (só tipo==='tarefa', só ao VALIDAR — nunca
     // ao desmarcar, e nunca 2ª vez se já tiver conseguido da 1ª): tenta
     // gravar a tarefa no turno certo antes de marcar como validado.
@@ -39559,6 +39926,10 @@ function buildHorariosPage(container, goTo) {
       }
       patch.aplicadoHorario = false;
     }
+    // Pedido de Banco de Horas com horas definidas: aprovar põe-no no horário (e ajusta as tarefas); anular/rejeitar
+    // depois de aplicado devolve as horas ao turno.
+    const ajustesBanco = await escalaProcessarPedidoBancoAoDecidir(nota, novoEstado, patch);
+    if (ajustesBanco.length) showToast(ajustesBanco.join(' '), 'info');
     const updated = await dbUpdate('escalaNotasSemana', nota.id, patch);
     if (updated) {
       STATE.escalaNotasSemana = STATE.escalaNotasSemana.map(n => n.id === nota.id ? updated : n);
@@ -39566,7 +39937,7 @@ function buildHorariosPage(container, goTo) {
       // para este pedido deixam de fazer sentido. Só NÃO se mexe quando é uma simples ANULAÇÃO de uma validação
       // anterior (motivo indefinido, novoEstado=false) — aí não havia nenhuma tarefa pendente para tratar.
       if (novoEstado || motivo === 'rejeitado') await marcarTratadasTarefasNotaEquipa(nota.id);
-      await notificarAutorNotaValidada(updated, novoEstado, motivo);
+      await notificarAutorNotaValidada(updated, novoEstado, motivo, ajustesBanco);
     }
     else escalaShowErro('Não foi possível atualizar a validação');
     rerender();
@@ -39589,6 +39960,8 @@ function buildHorariosPage(container, goTo) {
       const tarefaInfo = escalaTarefaInfo(nota.tarefaTipo);
       const labelTarefa = nota.tarefaTipo === 'outro' ? (nota.tarefaDescricao || 'Outro') : (tarefaInfo ? tarefaInfo.label : nota.tarefaTipo);
       detalheEl = h('p', { style: 'margin:2px 0 6px;font-size:12px;color:var(--pharm-600);' }, `📅 ${formatDate(nota.dataPedido)} · ${nota.horaInicio}–${nota.horaFim} · ${labelTarefa}${nota.validadoDirecao ? (nota.aplicadoHorario ? ' · ✅ atribuída no horário' : ' · ⚠️ não foi possível atribuir sozinha, agendar manualmente') : ''}`);
+    } else if (nota.tipo === 'banco' && nota.dataPedido && nota.horaInicio && nota.horaFim) {
+      detalheEl = h('p', { style: 'margin:2px 0 6px;font-size:12px;color:var(--pharm-600);' }, `📅 ${formatDate(nota.dataPedido)} · ${nota.horaInicio}–${nota.horaFim}${nota.validadoDirecao ? (nota.aplicadoHorario ? ' · ✅ descontado no horário' : ' · ⚠️ não foi possível pôr no horário sozinho, ajustar à mão') : ' · ao aprovar, fica logo no horário'}`);
     } else if (nota.dataPedido) {
       // 'nota'/'troca'/'banco' — mesmo tratamento (pedido explícito
       // 2026-08-19, queixa de Paulo: "fica-se sem perceber a que dia se
@@ -39653,9 +40026,9 @@ function buildHorariosPage(container, goTo) {
     // explicar a ação ao passar o rato (mesmo padrão dos botões
     // Editar/Eliminar acima, .escala-nota-acao-discreta).
     if (souDirecaoHorariosGlobal()) {
-      const rotulo = h('span', {}, nota.validadoDirecao
+      const rotulo = h('span', nota.rejeitado && !nota.validadoDirecao ? { style: 'color:#b91c1c;font-weight:700;' } : {}, nota.validadoDirecao
         ? ` Validado por ${nota.validadoPor || '—'} em ${formatCarimboNota(nota.validadoEm)}`
-        : ' Pendente de validação');
+        : nota.rejeitado ? ` Rejeitado por ${nota.rejeitadoPor || '—'}${nota.rejeitadoEm ? ` em ${formatCarimboNota(nota.rejeitadoEm)}` : ''}` : ' Pendente de validação');
       const botoes = [];
       // CORRIGIDO 2026-08-29 (pedido explícito de Hugo, "só há botão para
       // aprovar e nenhum para rejeitar" — reproduzido com um caso real:
@@ -39676,6 +40049,13 @@ function buildHorariosPage(container, goTo) {
         }, Icon('x', { size: 13, strokeWidth: 2.4 }));
         naoValidarBtn.addEventListener('click', () => requireAuth(() => alternarValidacaoNotaEquipa(nota, false, 'anulado')));
         botoes.push(naoValidarBtn);
+      } else if (nota.rejeitado) {
+        // Rejeitado: pode mudar de ideias (Aprovar) ou anular a rejeição (volta a pendente).
+        const aprovarBtn = h('button', { type: 'button', class: 'btn btn-secondary', style: 'font-size:12px;padding:6px 12px;' }, iconeTexto('check', 'Aprovar'));
+        aprovarBtn.addEventListener('click', () => requireAuth(() => alternarValidacaoNotaEquipa(nota, true)));
+        const reabrirBtn = h('button', { type: 'button', class: 'btn-fab-sm tone-gray', title: 'Anular Rejeição (volta a pendente)', 'aria-label': 'Anular Rejeição' }, Icon('undo', { size: 13, strokeWidth: 2.4 }));
+        reabrirBtn.addEventListener('click', () => requireAuth(() => alternarValidacaoNotaEquipa(nota, false, 'anulado')));
+        botoes.push(aprovarBtn, reabrirBtn);
       } else {
         const aprovarBtn = h('button', {
           type: 'button', class: 'btn btn-primary', style: 'font-size:12px;padding:6px 12px;',
@@ -39690,6 +40070,8 @@ function buildHorariosPage(container, goTo) {
       validacaoEl = h('div', { class: 'escala-nota-validacao-toggle' }, [rotulo, h('div', { style: 'display:flex;gap:8px;' }, botoes)]);
     } else if (nota.validadoDirecao) {
       validacaoEl = h('span', { class: 'escala-nota-validacao-badge' }, [Icon('checkcircle', { size: 12, strokeWidth: 2.4 }), ` Validado por ${nota.validadoPor || 'Direção'} em ${formatCarimboNota(nota.validadoEm)}`]);
+    } else if (nota.rejeitado) {
+      validacaoEl = h('span', { class: 'escala-nota-pendente-badge escala-nota-rejeitada-badge' }, [Icon('x', { size: 12, strokeWidth: 2.4 }), ` Rejeitado por ${nota.rejeitadoPor || 'Direção'}${nota.rejeitadoEm ? ` em ${formatCarimboNota(nota.rejeitadoEm)}` : ''}`]);
     } else {
       validacaoEl = h('span', { class: 'escala-nota-pendente-badge' }, [Icon('clock', { size: 12, strokeWidth: 2.4 }), ' Pendente de validação']);
     }
@@ -39713,7 +40095,7 @@ function buildHorariosPage(container, goTo) {
     const notas = escalaNotasSemanaDaSemana(semana.semanaInicio);
     const kids = [
       h('h3', { class: 'dash-card-title', style: 'margin:0 0 2px;' }, iconeTexto('clipboard', 'Pedidos e Registos da Semana', { titulo: true })),
-      h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, 'Visível a toda a equipa e fica pendente de validação da Direção até ser confirmado. "Atribuição de Tarefa" fica automaticamente no horário assim que validada; os outros tipos ficam só registados (inclusive na versão impressa do horário), sem alterar a grelha sozinhos.'),
+      h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, 'Visível a toda a equipa e fica pendente de validação da Direção até ser confirmado. "Atribuição de Tarefa" e "Descontar Horas de Banco" (com dia e horas) ficam automaticamente no horário assim que validados; os outros tipos ficam só registados (inclusive na versão impressa do horário), sem alterar a grelha sozinhos.'),
     ];
     if (activeUser) {
       const tipoInfo = escalaPedidoTipoInfo(novoPedidoTipo);
@@ -39730,7 +40112,7 @@ function buildHorariosPage(container, goTo) {
       // linha.
       const linha1 = [h('div', { class: 'field', style: 'width:210px;margin:0;' }, [buildLabelComAjuda('Tipo de Pedido', tipoInfo.ajuda), tipoSelect])];
       const linha2 = [];
-      const novoInput = h('textarea', { class: 'textarea', rows: '2', placeholder: novoPedidoTipo === 'tarefa' ? 'Notas adicionais (opcional)...' : novoPedidoTipo === 'troca' ? 'Descreve a troca (quem, que dias/turnos)...' : novoPedidoTipo === 'banco' ? 'Descreve o pedido (ex: sair mais cedo dia X, quantas horas)...' : 'Escrever um aviso à equipa...' });
+      const novoInput = h('textarea', { class: 'textarea', rows: '2', placeholder: novoPedidoTipo === 'tarefa' ? 'Notas adicionais (opcional)...' : novoPedidoTipo === 'troca' ? 'Descreve a troca (quem, que dias/turnos)...' : novoPedidoTipo === 'banco' ? 'Motivo (opcional)...' : 'Escrever um aviso à equipa...' });
 
       // Datas do pedido são sempre restritas à semana atualmente aberta
       // (é essa a semana gravada em `semanaInicio` do registo, e é contra
@@ -39802,6 +40184,32 @@ function buildHorariosPage(container, goTo) {
             previewEl = h('div', {}, linhas);
           }
         }
+      } else if (novoPedidoTipo === 'banco') {
+        // 2026-10-01: com dia + horas, a aprovação põe logo o desconto no horário (ver escalaAplicarBancoPedidoNoHorario).
+        const dataInput = h('input', { class: 'input', type: 'date', min: semanaMinISO, max: semanaMaxISO }); dataInput.value = novoPedidoData;
+        dataInput.addEventListener('change', () => { novoPedidoData = dataInput.value; novoPedidoDataManual = true; novoPedidoErro = ''; rerender(); });
+        const horaIniInput = h('input', { class: 'input', type: 'time' }); horaIniInput.value = novoPedidoHoraInicio;
+        horaIniInput.addEventListener('change', () => { novoPedidoHoraInicio = horaIniInput.value; novoPedidoErro = ''; rerender(); });
+        const horaFimInput = h('input', { class: 'input', type: 'time' }); horaFimInput.value = novoPedidoHoraFim;
+        horaFimInput.addEventListener('change', () => { novoPedidoHoraFim = horaFimInput.value; novoPedidoErro = ''; rerender(); });
+        linha1.push(
+          h('div', { class: 'field', style: 'width:150px;margin:0;' }, [h('label', {}, 'Data'), melhorarInputData(dataInput)]),
+          h('div', { class: 'field', style: 'width:110px;margin:0;' }, [h('label', {}, 'Não trabalho das'), horaIniInput]),
+          h('div', { class: 'field', style: 'width:110px;margin:0;' }, [h('label', {}, 'Às'), horaFimInput]),
+        );
+        if (novoPedidoData) {
+          const vb = escalaValidarDescontoBanco(novoPedidoData, activeUser.id, novoPedidoHoraInicio, novoPedidoHoraFim);
+          const linhasB = [];
+          if (vb.vaga) linhasB.push(h('p', { class: 'field-helper-text', style: 'margin:8px 0 0;' }, `🕐 O teu turno nesse dia: ${vb.vaga.dia.entrada}–${vb.vaga.dia.saida}${vb.vaga.dia.pausaInicio && vb.vaga.dia.pausaFim ? ` (pausa ${vb.vaga.dia.pausaInicio}-${vb.vaga.dia.pausaFim})` : ''}`));
+          if (novoPedidoHoraInicio && novoPedidoHoraFim) {
+            linhasB.push(vb.ok
+              ? h('p', { style: 'margin:4px 0 0;font-size:12px;color:var(--green);font-weight:700;' }, `✅ Descontas ${escalaFormatarHorasDecimal(vb.horas)}. Se for aprovado, o horário atualiza-se sozinho.`)
+              : h('p', { class: 'form-error', style: 'margin:4px 0 0;' }, `⚠️ ${vb.motivo}`));
+          } else if (!vb.vaga) {
+            linhasB.push(h('p', { class: 'form-error', style: 'margin:8px 0 0;' }, `⚠️ ${vb.motivo}`));
+          }
+          previewEl = linhasB.length ? h('div', {}, linhasB) : null;
+        }
       } else if (novoPedidoTipo !== 'tarefa') {
         // Data sempre visível para qualquer tipo que não seja 'tarefa'
         // (que já tem a sua própria, obrigatória) — antes só aparecia em
@@ -39817,7 +40225,7 @@ function buildHorariosPage(container, goTo) {
         // preencher (raro, mas acontecia em 'nota'/'troca'/'banco').
         linha1.push(h('div', { class: 'field', style: 'width:150px;margin:0;' }, [h('label', {}, 'Data'), melhorarInputData(dataInput)]));
       }
-      linha2.push(h('div', { class: 'field span2', style: 'margin:0;' }, [h('label', {}, novoPedidoTipo === 'tarefa' ? 'Notas' : 'Descrição'), novoInput]));
+      linha2.push(h('div', { class: 'field span2', style: 'margin:0;' }, [h('label', {}, novoPedidoTipo === 'tarefa' ? 'Notas' : novoPedidoTipo === 'banco' ? 'Motivo' : 'Descrição'), novoInput]));
 
       const enviarBtn = h('button', {
         class: 'btn btn-secondary', style: 'padding:7px 14px;font-size:12.5px;', disabled: notaEquipaSaving ? 'disabled' : undefined,
@@ -40580,7 +40988,7 @@ function buildHorariosPage(container, goTo) {
     presentes.forEach(p => { if (!ordenados.some(x => x.id === p.id)) ordenados.push(p); });
     return ordenados.map(p => {
       const alvo = escalaVagaDoColaboradorNoDia(semana, diaKey, p.id);
-      return alvo ? { pessoa: p, codigo: alvo.codigo, segmentos: escalaSegmentosTurnoAbsolutos(alvo.dia) } : null;
+      return alvo ? { pessoa: p, codigo: alvo.codigo, segmentos: escalaSegmentosPresencaAbsolutos(alvo.dia) } : null;
     }).filter(Boolean);
   }
   // Grava 1 tarefa comum numa célula (posição+dia) de um `novoDados` em
@@ -40848,7 +41256,7 @@ function buildHorariosPage(container, goTo) {
       const colaboradorId = dia.colaboradorId || linha.colaboradorId;
       if (colaboradorId && dataISO && escalaAusenciaDoDia(colaboradorId, dataISO)) return;
       const nome = dia.colaboradorNome || linha.colaboradorNome || codigo;
-      const segmentos = escalaSegmentosTurnoAbsolutos(dia);
+      const segmentos = escalaSegmentosPresencaAbsolutos(dia);
       const feitos = [];
       cfg.periodos.forEach(p => {
         const iniMin = escalaMinutosAbsolutos(p.inicio, false), fimMin = escalaMinutosAbsolutos(p.fim, true);
@@ -41098,8 +41506,8 @@ function buildHorariosPage(container, goTo) {
     // uma tarefa a cobrir também o período em que a pessoa nem está lá,
     // bloqueando erradamente outras atribuições nesse horário morto.
     const iniMin = escalaMinutosAbsolutos(inicio, false), fimMin = escalaMinutosAbsolutos(fim, true);
-    const dentroDeUmSegmento = escalaSegmentosTurnoAbsolutos(alvo.dia).some(seg => iniMin >= seg.inicioMin && fimMin <= seg.fimMin);
-    if (!dentroDeUmSegmento) { atribuicaoRapidaError = 'Esse intervalo ultrapassa a Pausa/Almoço do turno — ajusta o Início/Fim para caber só no período em que a pessoa está mesmo a trabalhar.'; rerender(); return; }
+    const dentroDeUmSegmento = escalaSegmentosPresencaAbsolutos(alvo.dia).some(seg => iniMin >= seg.inicioMin && fimMin <= seg.fimMin);
+    if (!dentroDeUmSegmento) { atribuicaoRapidaError = 'Esse intervalo ultrapassa a Pausa/Almoço do turno ou um período de Banco de Horas — ajusta o Início/Fim para caber só no período em que a pessoa está mesmo a trabalhar.'; rerender(); return; }
     const tarefasAtuais = escalaTarefasDoDia(alvo.dia);
     if (tarefasAtuais.length >= 3) { atribuicaoRapidaError = 'Este turno já tem o máximo de 3 tarefas — remove uma primeiro no Editor de Dia.'; rerender(); return; }
     // Bloqueio de sobreposição ENTRE tarefas do MESMO turno (2026-08-17,
@@ -41239,8 +41647,8 @@ function buildHorariosPage(container, goTo) {
     // só preenche o seu próprio troço.
     const alvoAtual = atribuicaoRapidaDraft.colaboradorId ? escalaVagaDoColaboradorNoDia(semana, diaAtualKey, atribuicaoRapidaDraft.colaboradorId) : null;
     const todoHorarioBtn = alvoAtual ? (() => {
-      const segmentos = escalaSegmentosTurnoAbsolutos(alvoAtual.dia);
-      if (segmentos.length <= 1) {
+      const segmentos = escalaSegmentosPresencaAbsolutos(alvoAtual.dia);
+      if (segmentos.length <= 1 && !escalaIntervalosBancoAbsolutos(alvoAtual.dia).length) {
         const btn = h('button', { type: 'button', class: 'btn-link edit', style: 'font-size:11.5px;' }, iconeTexto('clock', 'Todo o Horário (Entrada–Saída)'));
         btn.addEventListener('click', () => { atribuicaoRapidaDraft.inicio = alvoAtual.dia.entrada; atribuicaoRapidaDraft.fim = alvoAtual.dia.saida; atribuicaoRapidaError = ''; rerender(); });
         return btn;
@@ -46081,6 +46489,14 @@ function buildHorariosPage(container, goTo) {
     }
     return [{ inicio: dia.entrada, fim: dia.saida, inicioMin, fimMin }];
   }
+  // Igual, mas sem os troços de Banco de Horas descontados (2026-10-01, Paulo: "ao descontar o banco de horas,
+  // ajustar no número de pessoas/hora") — é a PRESENÇA real, usada no Total por hora e na validação de cobertura.
+  // Os blocos da Timeline continuam a desenhar o turno inteiro (o desconto vai por cima, a vermelho).
+  function escalaSegmentosPresenca(dia, minutosNoIntervalo) {
+    const banco = ((dia && dia.bancoHorasIntervalos) || []).filter(iv => iv && iv.inicio && iv.fim)
+      .map(iv => ({ inicioMin: minutosNoIntervalo(iv.inicio, false), fimMin: minutosNoIntervalo(iv.fim, true) }));
+    return escalaSubtrairIntervalosMin(escalaSegmentosTurno(dia, minutosNoIntervalo), banco);
+  }
   // Aniversário de colaborador agendado a trabalhar ("normal") nesse
   // exato dia — comparação por Mês-Dia (AAAA-MM-DD → "MM-DD"), ignora o
   // ano de nascimento em si. Pedido explícito 2026-08-14: o gerador de
@@ -46138,14 +46554,17 @@ function buildHorariosPage(container, goTo) {
     // estar mesmo lá fisicamente, e de a Timeline já mostrar o bloco
     // corretamente. Corrigido tratando cada bloco de heIntervalos como
     // uma janela de presença adicional, exatamente como o turno normal.
-    const contagemAbertura = turnosDia.filter(d => d.entrada === '08:00' || (d.heIntervalos || []).some(iv => iv.inicio === '08:00')).length;
+    // Abertura/Fecho contam só quem está MESMO lá a essa hora (um desconto de Banco de Horas às 08:00 ou até às 24:00 tira a pessoa).
+    const ABERTURA_MIN = 8 * 60, FECHO_MIN = 24 * 60;
+    const presencaAbs = (d) => escalaSegmentosPresencaAbsolutos(d);
+    const contagemAbertura = turnosDia.filter(d => presencaAbs(d).some(sg => sg.inicioMin === ABERTURA_MIN) || (d.heIntervalos || []).some(iv => iv.inicio === '08:00')).length;
     if (contagemAbertura !== 2) alertas.push({ nivel: 'aviso', texto: `⚠️ Abertura (08:00) com ${contagemAbertura} pessoa${contagemAbertura === 1 ? '' : 's'} (ideal: 2)` });
     // Diurno — segmentação ao minuto dentro da janela 09:00-22:00. Cada
     // turno contribui com um ou dois intervalos (ver escalaSegmentosTurno)
     // — a pausa/almoço fica de fora, para um colaborador em intervalo
     // nunca contar como presente na cobertura — e cada bloco de
     // heIntervalos (Horas Extra/Banco) soma mais uma janela própria.
-    const turnosMin = turnosDia.flatMap(dia => escalaSegmentosTurno(dia, minutosNoIntervalo).map(seg => ({
+    const turnosMin = turnosDia.flatMap(dia => escalaSegmentosPresenca(dia, minutosNoIntervalo).map(seg => ({
       inicioMin: seg.inicioMin + HORA_INICIO * 60,
       fimMin: seg.fimMin + HORA_INICIO * 60,
     })).concat((dia.heIntervalos || []).map(iv => ({
@@ -46185,7 +46604,7 @@ function buildHorariosPage(container, goTo) {
     });
     // Fecho — igualdade estrita: saída marcada como "00:00" (24:00) no
     // turno normal, OU um bloco de heIntervalos a terminar às 00:00.
-    const contagemFecho = turnosDia.filter(d => d.saida === '00:00' || d.saida === '24:00' || (d.heIntervalos || []).some(iv => iv.fim === '00:00' || iv.fim === '24:00')).length; // AUDITORIA 2026-09-29: "24:00" também é fecho
+    const contagemFecho = turnosDia.filter(d => presencaAbs(d).some(sg => sg.fimMin === FECHO_MIN) || (d.heIntervalos || []).some(iv => iv.fim === '00:00' || iv.fim === '24:00')).length; // AUDITORIA 2026-09-29: "24:00" também é fecho
     if (contagemFecho !== 2) alertas.push({ nivel: 'aviso', texto: `⚠️ Fecho (24:00) com ${contagemFecho} pessoa${contagemFecho === 1 ? '' : 's'} (ideal: 2)` });
     return alertas;
   }
@@ -46808,7 +47227,7 @@ function buildHorariosPage(container, goTo) {
           // Presente nesta hora se QUALQUER segmento do turno (excluindo a
           // pausa/almoço, ver escalaSegmentosTurno) a intersetar — nunca
           // soma 1 por segmento, só conta a pessoa uma vez por hora.
-          const presenteNestaHora = escalaSegmentosTurno(dia, minutosNoIntervalo).some(seg => {
+          const presenteNestaHora = escalaSegmentosPresenca(dia, minutosNoIntervalo).some(seg => {
             const inicioMin = seg.inicioMin + HORA_INICIO * 60;
             const fimMin = seg.fimMin + HORA_INICIO * 60;
             return inicioMin < (hr + 1) * 60 && fimMin > hr * 60;
