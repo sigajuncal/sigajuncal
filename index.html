@@ -7130,7 +7130,7 @@ function agendaIntervaloMin(hora, duracaoMin, prestadorKey) {
 function agendaIntervalosSobrepoem(a, b) { return a.ini < b.fim && b.ini < a.fim; }
 function agendaConflito(prestadorKey, data, horaInicio, duracaoMin, excludeId) {
   const novo = agendaIntervaloMin(horaInicio, duracaoMin, prestadorKey);
-  const doDia = STATE.agendaMarcacoes.filter(m => m.prestadorKey === prestadorKey && m.data === data && m.id !== excludeId);
+  const doDia = STATE.agendaMarcacoes.filter(m => m.prestadorKey === prestadorKey && m.data === data && (excludeId === undefined || excludeId === null || String(m.id) !== String(excludeId)));
   for (const m of doDia) {
     // BUG CORRIGIDO 2026-09-17 (Hugo: aproveitar o horário de uma marcação
     // já CANCELADA acusava sempre colisão com ela própria — "Este horário
@@ -7151,7 +7151,7 @@ function agendaConflito(prestadorKey, data, horaInicio, duracaoMin, excludeId) {
 function agendaSobreposicoesPrimaCorpus(data, horaInicio, duracaoMin, excludeId) {
   const novo = agendaIntervaloMin(horaInicio, duracaoMin, 'prima_corpus');
   return STATE.agendaMarcacoes.filter(m => {
-    if (m.prestadorKey !== 'prima_corpus' || m.data !== data || m.id === excludeId) return false;
+    if (m.prestadorKey !== 'prima_corpus' || m.data !== data || (excludeId !== undefined && excludeId !== null && String(m.id) === String(excludeId))) return false;
     if (m.tipoLinha === 'vaga' && (m.estado === 'cancelada' || m.estado === 'faltou' || m.estado === 'cancelado')) return false;
     return agendaIntervalosSobrepoem(novo, agendaIntervaloMin(m.hora, m.duracaoMin || 15, 'prima_corpus'));
   });
@@ -7459,6 +7459,20 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
         m => m.prestadorKey === prestadorKey && m.data === dateISO);
       saving = false;
     }
+    // BUG CORRIGIDO 2026-10-01 (Patrícia: editar só a observação de uma marcação dava "colide com outra marcação"):
+    // uma edição que não mexe na hora, na duração, no dia nem reativa uma marcação cancelada não ocupa nada de
+    // novo — não volta a passar pelas regras de sobreposição (a marcação já estava lá assim, ex: um encaixe forçado
+    // ou uma marcação vizinha que entretanto ficou mais longa).
+    const original = formDraft.editId ? (STATE.agendaMarcacoes.find(m => String(m.id) === String(formDraft.editId)) || formDraft.baseRegisto) : null;
+    const estadoInativo = (e) => e === 'cancelada' || e === 'cancelado' || e === 'faltou';
+    // Compara o período OCUPADO (em blocos da grelha), não os números em bruto — uma duração gravada noutra altura
+    // (ex: 15 vs 20 min) pode ocupar exatamente o mesmo bloco.
+    const ivOriginal = original ? agendaIntervaloMin(original.hora, original.duracaoMin || 15, prestadorKey) : null;
+    const ivNovo = agendaIntervaloMin(formDraft.hora, duracaoMin, prestadorKey);
+    const semMudarHorario = !!original && original.data === dateISO && !!ivOriginal && !!ivNovo
+      && ivNovo.ini >= ivOriginal.ini && ivNovo.fim <= ivOriginal.fim
+      && !(estadoInativo(original.estado) && !estadoInativo(formDraft.estado || 'agendada'));
+    const ignorarSobreposicao = !!formDraft.forcarEncaixe || semMudarHorario;
     // ---- Regras específicas Prima Corpus ----
     // 1) O último serviço do dia tem início até às 19h (máximo).
     // 2) Podem existir DOIS serviços em simultâneo, mas o segundo carece de
@@ -7466,7 +7480,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     //    Três ou mais em simultâneo é sempre bloqueado.
     // Nenhuma destas regras se aplica a criar só uma vaga livre — ainda
     // não há ninguém marcado, não faz sentido perguntar sobre simultâneos.
-    if (!criandoVagaLivre && agendaEhPrimaCorpus(prestadorKey) && !formDraft.forcarEncaixe) {
+    if (!criandoVagaLivre && agendaEhPrimaCorpus(prestadorKey) && !ignorarSobreposicao) {
       if (normalizarHora(formDraft.hora) > PRIMA_CORPUS_ULTIMA_HORA_INICIO) {
         formError = `ATENÇÃO: Nos serviços Prima Corpus, o último serviço do dia tem de ter início até às ${PRIMA_CORPUS_ULTIMA_HORA_INICIO}.`;
         render();
@@ -7493,7 +7507,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     // botão de um slot já ocupado por uma marcação anterior mais longa, a
     // equipa já sabe e decidiu sobrepor-se de propósito — não faz sentido
     // barrar com o aviso de conflito.
-    const conflito = formDraft.forcarEncaixe ? null : agendaConflito(prestadorKey, dateISO, formDraft.hora, duracaoMin, formDraft.editId || undefined);
+    const conflito = ignorarSobreposicao ? null : agendaConflito(prestadorKey, dateISO, formDraft.hora, duracaoMin, formDraft.editId || undefined);
     if (conflito) {
       formError = `ATENÇÃO: Este horário colide com a marcação das ${conflito.hora}${conflito.nomeCliente ? ' (' + conflito.nomeCliente + ')' : ''}. Escolhe outro horário.`;
       render();
