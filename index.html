@@ -18139,7 +18139,16 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
           // confundia (2 ações diferentes para a mesma decisão, uma das
           // quais nunca decide nada a sério). Fica só para tarefas/pedidos
           // ad-hoc enviados diretamente entre colegas, sem tabela própria.
-          const REFERENCIAS_COM_DECISAO_PROPRIA = ['escala_notas_semana', 'escala_pedidos_especiais', 'escala_horas_extra_reivindicacoes', 'ponto_registos', 'escala_trocas', 'escala_trocas_movimentos'];
+          const REFERENCIAS_COM_DECISAO_PROPRIA = ['escala_notas_semana', 'escala_pedidos_especiais', 'escala_horas_extra_reivindicacoes', 'ponto_registos', 'escala_trocas', 'escala_trocas_movimentos', 'escala_horas_extra'];
+          // Horas extra disponíveis (2026-10-02): atalho direto para "O Meu Horário", onde se reivindica.
+          if (r.referenciaTabela === 'escala_horas_extra' && !souEuRemetente && !concluida) {
+            const blocoRef = (STATE.escalaHorasExtra || []).find(b => String(b.id) === String(r.referenciaId));
+            if (blocoRef) {
+              const verBtn = botaoAcaoGaveta('aprovar', 'Ver e reivindicar');
+              verBtn.addEventListener('click', () => { close(); if (STATE.page !== 'horarios') { STATE.navFrom = STATE.page; STATE.page = 'horarios'; STATE.sidebarOpen = false; } render(); });
+              acoes.push(verBtn);
+            }
+          }
           const temDecisaoPropria = REFERENCIAS_COM_DECISAO_PROPRIA.includes(r.referenciaTabela);
           if (!souEuRemetente && !concluida && !temDecisaoPropria) {
             const confirmarBtn = botaoAcaoGaveta('aprovar', 'Confirmar Conclusão');
@@ -35280,6 +35289,55 @@ function escalaBlocoHorasExtraDiaTexto(bloco) {
 // decisão já foi tomada por quem reivindicou). Continua visível na
 // conversa/histórico (fica logo em "Concluídas"), só deixa de inflar a
 // contagem de Pendentes e de pedir uma ação que não existe.
+// ---- Aviso à equipa quando a Direção disponibiliza Horas Extra (2026-10-02, Hugo: "notificação para
+// colaboradores quando Paulo disponibiliza horas extra para reivindicar... quadro e prestadores de atendimento") ----
+// Destinatários = exatamente quem pode reivindicar: Quadro + Prestadores de atendimento (Farmacêuticos/Técnicos),
+// ativos, sem quem criou o bloco e sem quem está ausente (férias/folga/baixa) nesse dia.
+const ESCALA_CATEGORIAS_PRESTADOR_ATENDIMENTO = ['Farmacêutico', 'Farmacêutica', 'Técnico de Farmácia', 'Técnica de Farmácia', 'Técnico Auxiliar de Farmácia', 'Técnica Auxiliar de Farmácia'];
+function escalaDataDoBlocoHorasExtra(bloco) {
+  const semana = (STATE.escalaSemanas || []).find(s => String(s.id) === String(bloco.semanaId));
+  return semana ? escalaDataDoDia(semana.semanaInicio, bloco.diaKey) : null;
+}
+function escalaDestinatariosAvisoHorasExtra(bloco) {
+  const dataISO = escalaDataDoBlocoHorasExtra(bloco);
+  const jaReivindicaram = new Set(escalaReivindicacoesDoBloco(bloco.id).map(r => String(r.utilizadorId)));
+  return (STATE.usuarios || []).filter(u => u && u.ativo !== false && !u.eliminado && !usuarioOculto(u)
+    && (u.estatutoColaborador === 'quadro' || (escalaUtilizadorEhPrestador(u) && ESCALA_CATEGORIAS_PRESTADOR_ATENDIMENTO.includes(u.categoriaProfissional)))
+    && (!activeUser || String(u.id) !== String(activeUser.id))
+    && !jaReivindicaram.has(String(u.id))
+    && !(dataISO && escalaAusenciaDoDia(u.id, dataISO)));
+}
+function escalaJaAvisadosHorasExtra(bloco) {
+  return new Set((STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_horas_extra' && String(r.referenciaId) === String(bloco.id))
+    .map(r => String(r.destinatarioId)));
+}
+// Envia o aviso só a quem ainda não o recebeu para este bloco (por isso pode ser usado de novo sem duplicar).
+// Devolve quantas pessoas foram avisadas.
+async function notificarEquipaHorasExtraDisponiveis(bloco) {
+  if (!activeUser || !bloco) return 0;
+  const jaAvisados = escalaJaAvisadosHorasExtra(bloco);
+  const destinatarios = escalaDestinatariosAvisoHorasExtra(bloco).filter(u => !jaAvisados.has(String(u.id)));
+  if (!destinatarios.length) return 0;
+  const pausa = bloco.pausaInicio && bloco.pausaFim ? ` (pausa ${bloco.pausaInicio}–${bloco.pausaFim})` : '';
+  const descricao = String(bloco.descricao || '').trim();
+  const mensagem = `Horas extra disponíveis: ${escalaBlocoHorasExtraDiaTexto(bloco)}, ${bloco.horaInicio}–${bloco.horaFim}${pausa}.`
+    + (descricao ? ` ${descricao}` : '')
+    + ' Podes reivindicar o bloco todo ou só uma parte em Horários › O Meu Horário.';
+  const criados = await Promise.all(destinatarios.map(u => dbInsertRecado({
+    remetenteId: activeUser.id, destinatarioId: u.id, mensagem, tratado: false, tipo: 'tarefa',
+    referenciaTabela: 'escala_horas_extra', referenciaId: bloco.id,
+  })));
+  const novos = criados.filter(Boolean);
+  if (novos.length) STATE.gavetaRecados = [...novos, ...(STATE.gavetaRecados || [])];
+  return novos.length;
+}
+// O aviso deixa de estar pendente quando a pessoa reivindica, ou quando o bloco é eliminado.
+async function fecharAvisosHorasExtra(bloco, apenasUtilizadorId) {
+  const abertos = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_horas_extra' && String(r.referenciaId) === String(bloco.id)
+    && !r.tratado && (!apenasUtilizadorId || String(r.destinatarioId) === String(apenasUtilizadorId)));
+  const res = await Promise.all(abertos.map(r => dbMarcarRecadoTratado(r.id)));
+  res.forEach(reg => { if (reg) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === reg.id ? reg : x); });
+}
 async function notificarDirecaoHorasExtra(reivindicacao, bloco, utilizador, acaoTexto, jaTratada) {
   const destinatarios = escalaUsuariosDirecao().filter(u => String(u.id) !== String(utilizador.id));
   if (!destinatarios.length) return;
@@ -41489,7 +41547,8 @@ function buildHorariosPage(container, goTo) {
     if (created) {
       STATE.escalaHorasExtra = [...(STATE.escalaHorasExtra || []), created];
       mostrarFormHorasExtra = false;
-      showToast('Horas Extra disponibilizadas.', 'success');
+      const avisados = await notificarEquipaHorasExtraDisponiveis(created);
+      showToast(avisados ? `Horas Extra disponibilizadas — ${avisados} colega${avisados === 1 ? '' : 's'} avisado${avisados === 1 ? '' : 's'}.` : 'Horas Extra disponibilizadas.', 'success');
     } else {
       horasExtraError = `Não foi possível guardar. ${escalaMensagemErroAmigavel(lastDbError)}`;
     }
@@ -41520,6 +41579,7 @@ function buildHorariosPage(container, goTo) {
             STATE.escalaHorasExtraReivindicacoes = STATE.escalaHorasExtraReivindicacoes.map(r => r.id === upd.id ? upd : r);
           });
         }
+        await fecharAvisosHorasExtra(bloco);
         showToast('Bloco de Horas Extra eliminado.', 'success');
       } else {
         escalaShowErro('Não foi possível eliminar');
@@ -41599,6 +41659,7 @@ function buildHorariosPage(container, goTo) {
       reivindicandoBlocoId = null;
       showToast('Hora extra reivindicada — já entra no teu horário.', 'success');
       notificarDirecaoHorasExtra(created, bloco, activeUser, 'reivindicou');
+      fecharAvisosHorasExtra(bloco, activeUser.id);
     } else {
       reivindicarError = `Não foi possível guardar. ${escalaMensagemErroAmigavel(lastDbError)}`;
     }
@@ -41653,7 +41714,7 @@ function buildHorariosPage(container, goTo) {
   // explícito: "escolher o colaborador (quadro e prestadores de serviço
   // farmacêuticos e técnico)") — nunca Estafetas nem outros perfis de
   // Prestador sem essa categoria profissional.
-  const CATEGORIAS_PRESTADOR_ELEGIVEL_REIVINDICAR = ['Farmacêutico', 'Farmacêutica', 'Técnico de Farmácia', 'Técnica de Farmácia', 'Técnico Auxiliar de Farmácia', 'Técnica Auxiliar de Farmácia'];
+  const CATEGORIAS_PRESTADOR_ELEGIVEL_REIVINDICAR = ESCALA_CATEGORIAS_PRESTADOR_ATENDIMENTO;
   function usuariosElegiveisReivindicarParaColaborador() {
     return ordenarUsuariosPorHierarquia((STATE.usuarios || []).filter(u => usuarioVisivelParaAtual(u)
       && (!escalaUtilizadorEhPrestador(u) || CATEGORIAS_PRESTADOR_ELEGIVEL_REIVINDICAR.includes(u.categoriaProfissional))
@@ -42594,6 +42655,26 @@ function buildHorariosPage(container, goTo) {
             style: 'flex-shrink:0;background:#fff;color:#b45309;font-weight:700;border:1.5px solid #f59e0b;border-radius:8px;padding:7px 13px;font-size:12.5px;cursor:pointer;',
           }, 'Reivindicar Horas para Colaborador');
           btn.addEventListener('click', () => requireAuth(() => abrirReivindicarParaColaborador(bloco)));
+          return btn;
+        })() : null,
+        // Avisar a equipa (2026-10-02): blocos criados antes deste aviso existir, ou colegas que entretanto
+        // passaram a poder reivindicar — só envia a quem ainda não foi avisado.
+        (ehGestor && souDirecaoHorarios() && !blocoCongelado && !disponibilidade.totalmenteReivindicado && dataISO >= todayISO()) ? (() => {
+          const jaAvisados = escalaJaAvisadosHorasExtra(bloco);
+          const porAvisar = escalaDestinatariosAvisoHorasExtra(bloco).filter(u => !jaAvisados.has(String(u.id)));
+          if (!porAvisar.length) {
+            return jaAvisados.size ? h('span', { class: 'field-helper-text', style: 'flex-shrink:0;align-self:center;font-weight:700;color:#15803d;' }, `Equipa avisada (${jaAvisados.size})`) : null;
+          }
+          const btn = h('button', {
+            style: 'flex-shrink:0;background:#fff;color:var(--pharm-700);font-weight:700;border:1.5px solid var(--pharm-200);border-radius:8px;padding:7px 13px;font-size:12.5px;cursor:pointer;',
+            title: porAvisar.map(u => u.nomeCompleto || u.username).join(', '),
+          }, jaAvisados.size ? `Avisar quem falta (${porAvisar.length})` : `Avisar equipa (${porAvisar.length})`);
+          btn.addEventListener('click', () => requireAuth(async () => {
+            btn.disabled = true; btn.textContent = 'A avisar…';
+            const n = await notificarEquipaHorasExtraDisponiveis(bloco);
+            showToast(n ? `${n} colega${n === 1 ? '' : 's'} avisado${n === 1 ? '' : 's'}.` : 'Não foi possível enviar o aviso.', n ? 'success' : 'error');
+            rerender();
+          }));
           return btn;
         })() : null,
         // Botão de reivindicar movido para aqui, ao lado da data (pedido
@@ -58362,7 +58443,8 @@ function setupRealtime() {
           // se ativa em todas as plataformas, como sempre esteve.
           showToast(`${ehTarefa ? '📋' : '📥'} ${remetenteNome}: ${trecho}`, 'info', { onClick: () => abrirModalGaveta(novo.remetenteId, { focoRecadoId: novo.id }) });
           if (pushGavetaPermitidoNesteDispositivo()) {
-            dispararNotificacaoNativa(ehTarefa ? `📋 Nova tarefa de ${remetenteNome}` : `📥 Novo recado de ${remetenteNome}`, trecho);
+            if (novo.referenciaTabela === 'escala_horas_extra') dispararNotificacaoNativa('⚡ Horas extra disponíveis', String(novo.mensagem || '').replace(/^Horas extra disponíveis:\s*/, ''));
+            else dispararNotificacaoNativa(ehTarefa ? `📋 Nova tarefa de ${remetenteNome}` : `📥 Novo recado de ${remetenteNome}`, trecho);
           }
           // Destaque temporário (pulse) na pílula do cabeçalho — chama a
           // atenção ao balcão sem interromper o que está a fazer.
