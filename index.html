@@ -4646,6 +4646,7 @@
   .entrega-cartao-linha a:active{text-decoration:underline;}
   .entrega-cartao-ico{flex:0 0 auto;width:26px;height:26px;border-radius:8px;background:var(--pharm-50);color:var(--pharm-500);display:flex;align-items:center;justify-content:center;margin-top:-2px;}
   .entrega-cartao-km{color:var(--pharm-400);font-size:12.5px;}
+  .entrega-cartao-entidade{display:block;color:var(--pharm-400);font-size:12px;margin-top:1px;}
   .entrega-cartao-pag{align-self:flex-start;font-size:13px;padding:5px 10px;border-radius:10px;cursor:pointer;}
   .entrega-cartao-pag.pago{background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;}
   .entrega-cartao-pag.cobrar{background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;}
@@ -53878,6 +53879,44 @@ function entregasStatsKm(r) {
   const n = Number(r.distanciaKm);
   return (r.distanciaKm !== null && r.distanciaKm !== undefined && r.distanciaKm !== '' && Number.isFinite(n) && n > 0) ? n : null;
 }
+// Entidade da morada (2026-10-02, Hugo: várias pessoas recebem na mesma morada — "Rua Igreja Velha 436" é a
+// Castros Iluminações Festivas — "coloca algures, pouco relevo, a entidade, para se saber quem vê por telemóvel").
+// Ordem: Empresa Parceira cuja morada foi usada → Empresa Parceira registada com a mesma morada → entrega feita
+// a uma empresa nessa morada (destinatário "Empresa Parceira", ou sem Nº de Ficha e com nome de empresa).
+// Nunca aparece quando o próprio destinatário já é a empresa.
+const ENTREGA_NOME_EMPRESA_RE = /\b(lda|limitada|unipessoal|s\.a\.?|sociedade|ilumina\w*|com[eé]rcio|ind[uú]stria\w*|constru\w*|transportes|restaurante|hotel|cl[ií]nica|associa[cç][aã]o|junta|c[aâ]mara|escola|col[eé]gio|oficina|f[aá]brica|armaz[eé]m|grupo)\b/i;
+function entregaMoradaChave(m) {
+  return normalizarTexto(m).replace(/[^a-z0-9]+/g, ' ').replace(/\bn\s?o?\b|\bnumero\b/g, ' ').replace(/\s+/g, ' ').trim();
+}
+let ENTREGA_ENTIDADES_CACHE = { entregas: null, empresas: null, mapa: null };
+function entregaMapaEntidades() {
+  const entregas = STATE.entregas || [], empresas = STATE.empresasParceiras || [];
+  if (ENTREGA_ENTIDADES_CACHE.entregas === entregas && ENTREGA_ENTIDADES_CACHE.empresas === empresas && ENTREGA_ENTIDADES_CACHE.mapa) return ENTREGA_ENTIDADES_CACHE.mapa;
+  const mapa = new Map(); // `${farmacia}|${moradaChave}` → nome
+  empresas.forEach(e => { const k = entregaMoradaChave(e.morada); if (k && e.nome) mapa.set(`${e.farmacia || ''}|${k}`, e.nome); });
+  entregas.forEach(r => {
+    const k = entregaMoradaChave(r.morada);
+    if (!k || !r.nomeCliente) return;
+    const chave = `${r.farmacia || ''}|${k}`;
+    if (mapa.has(chave)) return;
+    const empresaDireta = r.tipoDestinatario === 'Empresa Parceira';
+    const pareceEmpresa = !String(r.numeroFicha || '').trim() && ENTREGA_NOME_EMPRESA_RE.test(normalizarTexto(r.nomeCliente));
+    if (empresaDireta || pareceEmpresa) mapa.set(chave, String(r.nomeCliente).trim());
+  });
+  ENTREGA_ENTIDADES_CACHE = { entregas, empresas, mapa };
+  return mapa;
+}
+function entregaEntidadeDaMorada(r) {
+  if (!r || r.tipoDestinatario === 'Empresa Parceira') return '';
+  if (r.enderecoEmpresaParceiraId) {
+    const emp = (STATE.empresasParceiras || []).find(e => String(e.id) === String(r.enderecoEmpresaParceiraId));
+    if (emp && emp.nome) return emp.nome;
+  }
+  const k = entregaMoradaChave(r.morada);
+  if (!k) return '';
+  const nome = entregaMapaEntidades().get(`${r.farmacia || ''}|${k}`) || '';
+  return nome && normalizarTexto(nome) !== normalizarTexto(r.nomeCliente) ? nome : '';
+}
 function entregasStatsEhEmpresa(r) {
   return r.tipoDestinatario === 'Empresa Parceira' || !!r.entregaEmpresaParceira;
 }
@@ -54731,10 +54770,15 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
     function aplicarEscolha(encontrado) {
       fichaFoiCarregadaNestaSessao = true;
       clienteFichaCarregada = { fonte: encontrado.fonte, id: encontrado.id, nome: encontrado.nome, morada: encontrado.morada, localidade: encontrado.localidade, contacto: encontrado.contacto };
-      if (encontrado.nome) draft.nomeCliente = encontrado.nome;
-      if (encontrado.morada) draft.morada = encontrado.morada;
-      if (encontrado.localidade) draft.localidade = encontrado.localidade;
-      if (encontrado.contacto) draft.contacto = encontrado.contacto;
+      // CORRIGIDO 2026-10-02 (Hugo: 3 entregas de clientes/fichas diferentes, todas com "Rua Igreja Velha 436"):
+      // só se substituía um campo quando a ficha encontrada o tinha preenchido — uma ficha SEM morada (ou sem
+      // contacto/localidade) herdava a do cliente anterior que estava no formulário, e ao gravar essa morada
+      // errada ficava ainda guardada na ficha do novo cliente (a app atualiza a ficha em silêncio). Agora os 4
+      // campos são SEMPRE os da ficha encontrada, mesmo vazios — como o próprio texto de ajuda do campo promete.
+      draft.nomeCliente = String(encontrado.nome || '').trim();
+      draft.morada = String(encontrado.morada || '').trim();
+      draft.localidade = String(encontrado.localidade || '').trim();
+      draft.contacto = String(encontrado.contacto || '').trim();
       rerender();
     }
     control.addEventListener('input', () => {
@@ -55189,6 +55233,7 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
       const moradaCell = h('div', { style: 'display:flex;align-items:center;gap:6px;min-width:0;' }, [
         h('div', { style: 'min-width:0;' }, [
           h('span', { class: 'cell-truncate', title: r.morada || undefined }, r.morada || '—'),
+          (() => { const ent = entregaEntidadeDaMorada(r); return ent ? h('span', { class: 'cell-muted cell-truncate', style: 'font-size:11px;display:block;', title: ent }, ent) : null; })(),
           // Distância até à farmácia (pedido explícito 2026-09-17) — só
           // aparece quando já foi calculada (ver calcularEGravarDistanciaEntrega);
           // fica muda/sem nada enquanto isso não acontece, nunca "a calcular…"
@@ -55292,8 +55337,10 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
     }
     if (pagamento) pagamento.addEventListener('click', (e) => { e.stopPropagation(); requireAuth(() => togglePagamento(r)); });
     const linha = (icone, conteudo) => h('div', { class: 'entrega-cartao-linha' }, [h('span', { class: 'entrega-cartao-ico' }, Icon(icone, { size: 14, strokeWidth: 2.2 })), conteudo]);
+    const entidadeMorada = entregaEntidadeDaMorada(r);
     const morada = r.morada ? linha('mapPin', h('a', { href: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(r.morada)}`, target: '_blank', rel: 'noopener noreferrer', onclick: (e) => e.stopPropagation() }, [
       h('span', {}, r.morada), typeof r.distanciaKm === 'number' ? h('span', { class: 'entrega-cartao-km' }, ` · ${String(r.distanciaKm).replace('.', ',')} km`) : null,
+      entidadeMorada ? h('span', { class: 'entrega-cartao-entidade' }, entidadeMorada) : null,
     ])) : null;
     const contacto = r.contacto ? linha('iconeTelefone', h('a', { href: `tel:${String(r.contacto).replace(/\s+/g, '')}`, onclick: (e) => e.stopPropagation() }, formatarTelefonePT(r.contacto))) : null;
     const entregueBtn = h('button', { type: 'button', class: 'entrega-cartao-btn principal' }, [Icon('check', { size: 15, strokeWidth: 2.6 }), h('span', {}, 'Entregue')]);
