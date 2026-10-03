@@ -6334,6 +6334,9 @@ const vacinacaoMarcacaoSchema = [
   { name: 'responsavel', label: 'Responsável pelo Registo', type: 'text', size: 'sm' },
   { name: 'gripe', label: 'Gripe', type: 'checkbox', size: 'xs' },
   { name: 'covid', label: 'COVID', type: 'checkbox', size: 'xs' },
+  // Patologia de risco (2026-10-03, Hugo): exceção que permite marcar utentes dos 18 aos 59 anos que, pela
+  // idade, não seriam elegíveis — ver vacinacaoExcecaoPatologia.
+  { name: 'patologiaRisco', label: 'Patologia de risco (18–59 anos)', type: 'checkbox', col: 2, help: 'Exceção de elegibilidade — utentes dos 18 aos 59 anos com patologia de risco podem ser marcados (Gripe e/ou COVID).' },
   // Exceção de elegibilidade: colaboradores da farmácia têm direito às
   // vacinas do contingente, independentemente da idade — assinalar esta
   // checkbox dispensa a validação de idade em submitMarcacao (nunca
@@ -6388,6 +6391,9 @@ const vacinacaoListaEsperaSchema = [
   { name: 'numeroUtente', label: 'Nº de Utente', type: 'text', size: 'sm', maxLength: 9, inputmode: 'numeric', pattern: '[0-9]{9}', digitsOnly: true, placeholder: '9 dígitos' },
   { name: 'gripe', label: 'Gripe', type: 'checkbox', size: 'xs' },
   { name: 'covid', label: 'COVID', type: 'checkbox', size: 'xs' },
+  // Patologia de risco (2026-10-03, Hugo): exceção que permite marcar utentes dos 18 aos 59 anos que, pela
+  // idade, não seriam elegíveis — ver vacinacaoExcecaoPatologia.
+  { name: 'patologiaRisco', label: 'Patologia de risco (18–59 anos)', type: 'checkbox', col: 2, help: 'Exceção de elegibilidade — utentes dos 18 aos 59 anos com patologia de risco podem ser marcados (Gripe e/ou COVID).' },
   // Sem "Colaborador da Farmácia Juncal" aqui (pedido explícito
   // 2026-08-11): um(a) colaborador(a) nunca entra na Lista de Espera — vai
   // sempre direto(a) a uma Marcação (onde a exceção de elegibilidade
@@ -6513,8 +6519,16 @@ function vacinacaoCalcularIdade(dataNascISO, dataRefISO) {
 // lembra que a Gripe (só com receita) não exige marcação nem gestão de vaga
 // (não tem o problema de desperdício de frascos que a COVID tem), por isso
 // a pessoa pode simplesmente aparecer, sem precisar de ficar agendada.
-function vacinacaoAvisoElegibilidade(idade, gripe, covid) {
-  if (idade === null || idade === undefined) return '';
+// Patologia de risco: só abre a exceção dos 18 aos 59 anos. Abaixo dos 18 continua sem indicação; a partir dos 60
+// já é elegível pela idade; acima dos 84 continua a ser no Centro de Saúde.
+const VACINACAO_PATOLOGIA_IDADE_MIN = 18, VACINACAO_PATOLOGIA_IDADE_MAX = 59;
+function vacinacaoExcecaoPatologia(idade, patologiaRisco) {
+  return !!patologiaRisco && idade !== null && idade !== undefined && idade >= VACINACAO_PATOLOGIA_IDADE_MIN && idade <= VACINACAO_PATOLOGIA_IDADE_MAX;
+}
+function vacinacaoAvisoElegibilidade(idade, gripe, covid, patologiaRisco) {
+  if (idade === null || idade === undefined) return patologiaRisco ? 'Patologia de risco assinalada — preenche a Data de Nascimento para confirmar a idade (exceção só dos 18 aos 59 anos).' : '';
+  if (vacinacaoExcecaoPatologia(idade, patologiaRisco)) return `${idade} anos — ✅ Patologia de risco: elegível excecionalmente (exceção dos 18 aos 59 anos).`;
+  if (patologiaRisco && idade < VACINACAO_PATOLOGIA_IDADE_MIN) return `${idade} anos — ⚠️ A exceção de Patologia de risco só se aplica dos 18 aos 59 anos.`;
   // Idade sempre à cabeça da mensagem (pedido explícito 2026-08-11: dar
   // sempre feedback claro e imediato — ex: "63 anos — ✅ Idade
   // elegível..." — logo por baixo do campo Data de Nascimento, mal se
@@ -6531,8 +6545,9 @@ function vacinacaoAvisoElegibilidade(idade, gripe, covid) {
 // só Gripe, sem bloqueio nenhum), vermelho nos restantes casos de fora
 // dos critérios (pedido explícito 2026-08-11: "feedback visual", tipo
 // "63 anos ✅ a verde").
-function vacinacaoElegibilidadeTone(idade, gripe, covid) {
-  if (idade === null || idade === undefined) return '';
+function vacinacaoElegibilidadeTone(idade, gripe, covid, patologiaRisco) {
+  if (idade === null || idade === undefined) return patologiaRisco ? 'orange' : '';
+  if (vacinacaoExcecaoPatologia(idade, patologiaRisco)) return 'green';
   if (idade > 84) return 'red';
   if (idade < 60) return (gripe && !covid) ? 'orange' : 'red';
   return 'green';
@@ -49609,11 +49624,12 @@ function buildVacinacaoPage(container, goTo) {
       marcacaoDraft = Object.assign({}, marcacaoDraft, {
         nome: esp.nome || '', contacto: esp.contacto || '', numeroUtente: esp.numeroUtente || '',
         gripe: !!esp.gripe, covid: !!esp.covid, dataNascimento: esp.dataNascimento || '',
+        patologiaRisco: !!esp.patologiaRisco,
       });
       rerender();
     };
     const idade = vacinacaoCalcularIdade(esp.dataNascimento, marcacaoDraft && marcacaoDraft.data);
-    if (idade !== null && idade < 60 && esp.gripe && !esp.covid) {
+    if (idade !== null && idade < 60 && esp.gripe && !esp.covid && !vacinacaoExcecaoPatologia(idade, esp.patologiaRisco)) {
       confirmDialog('Esta pessoa tem menos de 60 anos e só quer a vacina da Gripe — não é preciso marcação (só com receita médica válida), pode simplesmente aparecer quando quiser. Usa o contacto na tabela acima para a informar, se for preciso.', () => {}, { confirmLabel: 'Entendido' });
       return;
     }
@@ -49675,7 +49691,15 @@ function buildVacinacaoPage(container, goTo) {
     // para o caso de os critérios de elegibilidade mudarem entretanto;
     // <60 anos só com Gripe nunca bloqueia (só precisa de receita médica,
     // sem gestão de vaga — mesma exceção já aplicada em escolherDaListaEsperaNoFormulario).
-    if (!marcacaoEditId && !marcacaoDraft.colaboradorFarmacia) {
+    // Patologia de risco (2026-10-03): dos 18 aos 59 anos dispensa a regra da idade, mas exige a Data de
+    // Nascimento (é a única forma de confirmar que está dentro da exceção).
+    if (!marcacaoEditId && marcacaoDraft.patologiaRisco && !marcacaoDraft.colaboradorFarmacia) {
+      const idadeP = vacinacaoCalcularIdade(marcacaoDraft.dataNascimento, marcacaoDraft.data);
+      if (idadeP === null) { marcacaoFormError = 'Patologia de risco assinalada: preenche a Data de Nascimento (a exceção só se aplica dos 18 aos 59 anos).'; rerender(); return; }
+      if (idadeP < VACINACAO_PATOLOGIA_IDADE_MIN) { marcacaoFormError = `⚠️ ${idadeP} anos — a exceção de Patologia de risco só se aplica dos 18 aos 59 anos.`; rerender(); return; }
+    }
+    const idadeMarcacaoPre = vacinacaoCalcularIdade(marcacaoDraft.dataNascimento, marcacaoDraft.data);
+    if (!marcacaoEditId && !marcacaoDraft.colaboradorFarmacia && !vacinacaoExcecaoPatologia(idadeMarcacaoPre, marcacaoDraft.patologiaRisco)) {
       const idadeMarcacao = vacinacaoCalcularIdade(marcacaoDraft.dataNascimento, marcacaoDraft.data);
       if (idadeMarcacao !== null && idadeMarcacao > 84) {
         marcacaoFormError = '⚠️ Não é possível criar esta marcação direta: idade acima dos 84 anos deve realizar a vacinação no Centro de Saúde onde está inscrito(a). Se se tratar de um(a) colaborador(a) da farmácia, assinala "Colaborador da Farmácia Juncal".';
@@ -49856,7 +49880,7 @@ function buildVacinacaoPage(container, goTo) {
       // explícito 2026-08-11), por isso isto é só contexto, nunca bloqueia.
       const created = await dbInsert('vacinacaoListaEspera', {
         campanhaId, nome: m.nome || '', contacto: m.contacto || '', numeroUtente: m.numeroUtente || '', gripe: !!m.gripe, covid: !!m.covid,
-        dataNascimento: m.dataNascimento || '',
+        dataNascimento: m.dataNascimento || '', patologiaRisco: !!m.patologiaRisco,
         observacoes: `Reposto na lista após cancelamento da marcação de ${m.data ? formatDate(m.data) : 'data desconhecida'}${m.hora ? ` às ${m.hora}` : ''} (${vacinacaoLabelVacinas(m) || 'sem vacina(s) definida(s)'}).`,
       });
       if (created) { STATE.vacinacaoListaEspera = [created, ...STATE.vacinacaoListaEspera]; rerender(); }
@@ -50321,7 +50345,7 @@ function buildVacinacaoPage(container, goTo) {
       h('td', {}, m.hora || '—'),
       h('td', { class: 'cell-strong' }, m.nome || '—'),
       h('td', {}, m.contacto ? formatarTelefonePT(m.contacto) : '—'),
-      h('td', {}, vacinacaoLabelVacinas(m)),
+      h('td', {}, [vacinacaoLabelVacinas(m), m.patologiaRisco ? h('span', { class: 'cell-muted', style: 'display:block;font-size:11px;' }, 'patologia de risco') : null].filter(Boolean)),
       h('td', {}, estadoBadge),
       h('td', {}, avisoBtn),
       h('td', { title: m.responsavel || undefined }, m.responsavel ? formatarNomeResponsavelTabela(m.responsavel, STATE.usuarios) : '—'),
@@ -50519,7 +50543,7 @@ function buildVacinacaoPage(container, goTo) {
         h('span', { class: 'agenda-slot-hora' }, [hora, ehEncaixe ? h('span', { class: 'badge-encaixe', title: 'Encaixe — fora da grelha fixa de 10 em 10 minutos' }, 'ENCAIXE') : null]),
         h('span', { class: 'agenda-slot-label cell-strong' }, [
           h('span', { class: 'agenda-slot-nome' }, m.nome || '—'),
-          h('span', { class: 'agenda-slot-servico' }, vacinacaoLabelVacinas(m)),
+          h('span', { class: 'agenda-slot-servico' }, vacinacaoLabelVacinas(m) + (m.patologiaRisco ? ' · patologia de risco' : '')),
         ]),
         respBadge,
         m.aviso ? h('span', { title: 'Utente avisado' }, Icon('bell', { size: 14, strokeWidth: 2.2 })) : null,
@@ -51312,8 +51336,8 @@ function buildVacinacaoPage(container, goTo) {
     if (showMarcacaoForm) {
       const slots = vacinacaoGerarSlotsHorario();
       const idadeMarcacaoDraft = vacinacaoCalcularIdade(marcacaoDraft.dataNascimento, marcacaoDraft.data);
-      const avisoElegibilidadeMarcacao = vacinacaoAvisoElegibilidade(idadeMarcacaoDraft, !!marcacaoDraft.gripe, !!marcacaoDraft.covid);
-      const toneElegibilidadeMarcacao = vacinacaoElegibilidadeTone(idadeMarcacaoDraft, !!marcacaoDraft.gripe, !!marcacaoDraft.covid);
+      const avisoElegibilidadeMarcacao = vacinacaoAvisoElegibilidade(idadeMarcacaoDraft, !!marcacaoDraft.gripe, !!marcacaoDraft.covid, !!marcacaoDraft.patologiaRisco);
+      const toneElegibilidadeMarcacao = vacinacaoElegibilidadeTone(idadeMarcacaoDraft, !!marcacaoDraft.gripe, !!marcacaoDraft.covid, !!marcacaoDraft.patologiaRisco);
       const camposComOverrides = (marcacaoEditId ? vacinacaoMarcacaoSchema : vacinacaoMarcacaoSchema.filter(f => f.name !== 'administradoPor')).map(f => {
         if (f.name === 'hora') return Object.assign({}, f, { type: 'combo', options: slots.map(s => s.hora), optionLabels: slots.map(s => s.label), placeholder: 'Ex: 08:20' });
         if (f.name === 'dataNascimento') return Object.assign({}, f, { onChange: agendarRerenderDataNascimento, helperText: avisoElegibilidadeMarcacao || undefined, helperTone: toneElegibilidadeMarcacao || undefined });
@@ -51323,7 +51347,7 @@ function buildVacinacaoPage(container, goTo) {
         if (f.name === 'covid' && vacinacaoCovidBloqueadoNoDia(marcacaoDraft.data)) {
           return Object.assign({}, f, { onChange: () => rerender(), helperText: vacinacaoMarcacaoBloqueadaPorCovid(marcacaoDraft, marcacaoEditId) ? '🔒 COVID fechada neste dia — não é possível gravar com COVID.' : '🔒 COVID fechada neste dia para novas marcações.', helperTone: 'orange' });
         }
-        if (f.name === 'data' || f.name === 'gripe' || f.name === 'covid' || f.name === 'colaboradorFarmacia') return Object.assign({}, f, { onChange: () => rerender() });
+        if (f.name === 'data' || f.name === 'gripe' || f.name === 'covid' || f.name === 'colaboradorFarmacia' || f.name === 'patologiaRisco') return Object.assign({}, f, { onChange: () => rerender() });
         return f;
       });
       const avisoPresenca = h('div', { class: 'card card-pad vac-presenca-aviso', role: 'status', style: 'display:none;margin-bottom:14px;background:#fff7ed;border-color:#fdba74;font-size:13px;color:#9a3412;' });
@@ -51359,7 +51383,7 @@ function buildVacinacaoPage(container, goTo) {
               return h('tr', { class: 'selectable-row' }, [
                 h('td', { class: 'cell-numero-pedido' }, h('span', { class: 'badge-numero-pedido' }, formatarNumeroPedido('vacinacaoListaEspera', esp))),
                 h('td', { class: 'cell-strong' }, esp.nome || '—'),
-                h('td', {}, idadeEsp === null ? '—' : `${idadeEsp} anos`),
+                h('td', {}, [idadeEsp === null ? '—' : `${idadeEsp} anos`, esp.patologiaRisco ? h('span', { class: 'cell-muted', style: 'display:block;font-size:11px;' }, 'patologia de risco') : null].filter(Boolean)),
                 h('td', {}, esp.contacto ? formatarTelefonePT(esp.contacto) : '—'),
                 h('td', {}, vacinacaoLabelVacinas(esp)),
                 h('td', {}, escolherBtn),
@@ -51685,11 +51709,11 @@ function buildVacinacaoPage(container, goTo) {
     const wrap = h('div', {});
     if (showEsperaForm) {
       const idade = vacinacaoCalcularIdade(esperaDraft.dataNascimento);
-      const avisoTxt = vacinacaoAvisoElegibilidade(idade, !!esperaDraft.gripe, !!esperaDraft.covid);
-      const toneEspera = vacinacaoElegibilidadeTone(idade, !!esperaDraft.gripe, !!esperaDraft.covid);
+      const avisoTxt = vacinacaoAvisoElegibilidade(idade, !!esperaDraft.gripe, !!esperaDraft.covid, !!esperaDraft.patologiaRisco);
+      const toneEspera = vacinacaoElegibilidadeTone(idade, !!esperaDraft.gripe, !!esperaDraft.covid, !!esperaDraft.patologiaRisco);
       wrap.appendChild(buildRecordFormEstreito(vacinacaoListaEsperaSchema.map(f => {
         if (f.name === 'dataNascimento') return Object.assign({}, f, { onChange: agendarRerenderDataNascimento, helperText: avisoTxt || undefined, helperTone: toneEspera || undefined });
-        if (f.name === 'gripe' || f.name === 'covid') return Object.assign({}, f, { onChange: () => rerender() });
+        if (f.name === 'gripe' || f.name === 'covid' || f.name === 'patologiaRisco') return Object.assign({}, f, { onChange: () => rerender() });
         return f;
       }), esperaDraft, {
         editing: !!esperaEditId, onSubmit: submitEspera, onCancel: cancelEsperaForm, errorMessage: esperaFormError, saving: esperaSaving,
@@ -51751,7 +51775,8 @@ function buildVacinacaoPage(container, goTo) {
       const tbody = h('tbody', {}, list.map(e => {
         const selected = esperaSelectedIds.has(e.id);
         const idade = vacinacaoCalcularIdade(e.dataNascimento);
-        const elegivel = idade !== null && idade >= 60 && idade <= 84;
+        const porPatologia = vacinacaoExcecaoPatologia(idade, e.patologiaRisco);
+        const elegivel = (idade !== null && idade >= 60 && idade <= 84) || porPatologia;
         const row = h('tr', { class: 'selectable-row' + (selected ? ' row-selected' : '') }, [
           buildSelectionCheckbox(e.id, esperaSelectedIds, toggleEsperaSelect),
           h('td', { class: 'cell-numero-pedido' }, h('span', { class: 'badge-numero-pedido', title: 'Nº sequencial de registo na Lista de Espera — critério de ordem de marcação' }, formatarNumeroPedido('vacinacaoListaEspera', e))),
@@ -51762,7 +51787,7 @@ function buildVacinacaoPage(container, goTo) {
           h('td', {}, idade === null ? '—' : `${idade} anos`),
           h('td', {}, e.contacto ? formatarTelefonePT(e.contacto) : '—'),
           h('td', { class: 'espera-trunc', title: vacinacaoLabelVacinas(e) }, vacinacaoLabelVacinas(e)),
-          h('td', {}, h('span', { class: 'badge ' + (elegivel ? 'badge-green' : 'badge-orange') }, elegivel ? 'ELEGÍVEL (60–84)' : (idade === null ? '—' : (idade < 60 ? '< 60 ANOS' : '> 84 ANOS')))),
+          h('td', {}, h('span', { class: 'badge ' + (elegivel ? 'badge-green' : 'badge-orange') }, porPatologia ? 'PATOLOGIA DE RISCO' : (elegivel ? 'ELEGÍVEL (60–84)' : (idade === null ? '—' : (idade < 60 ? '< 60 ANOS' : '> 84 ANOS'))))),
         ]);
         // Clicar na linha só SELECIONA (já ligado por buildSelectionCheckbox
         // acima) — ver/editar passa a exigir selecionar + botão "Editar" da
