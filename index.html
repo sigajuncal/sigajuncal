@@ -1047,6 +1047,9 @@
   .ponto-etiqueta-ponto.entrada{background:#16a34a;} .ponto-etiqueta-ponto.saida{background:#dc2626;}
   .ponto-extras:empty{display:none;}
   @media (max-width:640px){ .ponto-card{max-width:none;} .ponto-circulo{width:124px;height:124px;} }
+  .validacao-ancora-tabela{scroll-margin-top:80px;}
+  .validacao-destaque{animation:validacaoDestaque 1.8s ease;}
+  @keyframes validacaoDestaque{0%,40%{box-shadow:0 0 0 3px #f59e0b;border-radius:12px;}100%{box-shadow:0 0 0 0 transparent;}}
   /* Aviso de versão nova (2026-10-07) */
   .versao-nova-barra{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:9999;display:flex;align-items:center;gap:10px;
     background:#0f172a;color:#fff;border-radius:14px;padding:9px 10px 9px 16px;box-shadow:0 10px 30px rgba(15,23,42,.35);font-size:13.5px;font-weight:600;max-width:calc(100% - 24px);}
@@ -48337,6 +48340,7 @@ function buildHorariosPage(container, goTo) {
   // Gaveta da Direção: está tudo aqui, para validar quando der jeito. Validar/rejeitar usa rpc_ponto_decidir (cada
   // elemento da Direção valida as picagens do outro, nunca as suas).
   let pontoPorValidarAberto = true;
+  let PONTO_VER_MES_IR_PARA_TABELA = false;
   let pontoDecidindoId = null;
   function buildPontoPorValidarCard(colaboradores) {
     const lista = pontoPicagensPorValidar();
@@ -48361,7 +48365,15 @@ function buildHorariosPage(container, goTo) {
           ? confirmDialog(`Rejeitar a ${pontoTipoTexto(r.tipo)} de ${trocasNomeUtilizador(r.utilizadorId)} (${formatDate(r.data)}, ${r.horaReal})? A pessoa recebe um aviso.`, () => decidir(r, 'rejeitar'), { confirmLabel: 'Rejeitar', danger: true })
           : decidir(r, decisao) }, texto);
       const verDia = h('button', { class: 'btn btn-secondary', type: 'button', style: 'font-size:11.5px;padding:3px 9px;', title: 'Abrir o mês desta pessoa na tabela abaixo',
-        onClick: () => { if (colaboradores.some(u => String(u.id) === String(r.utilizadorId))) definirColaboradorValidacao(colaboradores.find(u => String(u.id) === String(r.utilizadorId)).id); definirMesValidacao(escalaPrimeiroDiaDoMes(r.data)); rerender(); } }, 'Ver mês');
+        onClick: () => {
+          const alvo = colaboradores.find(u => String(u.id) === String(r.utilizadorId));
+          if (!alvo) { showToast(`${trocasNomeUtilizador(r.utilizadorId)} não está incluído(a) nos Horários — não há tabela do mês para mostrar.`, 'info'); return; }
+          definirColaboradorValidacao(alvo.id); definirMesValidacao(escalaPrimeiroDiaDoMes(r.data));
+          // (2026-10-07, Hugo: "clico em Ver mês e não acontece nada") — a tabela está por baixo da lista: muda para essa
+          // pessoa/mês e leva o ecrã até lá, com um destaque curto.
+          PONTO_VER_MES_IR_PARA_TABELA = true;
+          rerender();
+        } }, 'Ver mês');
       return h('tr', {}, [
         h('td', { style: 'white-space:nowrap;' }, formatDate(r.data)),
         h('td', {}, r.utilizadorNome || trocasNomeUtilizador(r.utilizadorId)),
@@ -48407,7 +48419,18 @@ function buildHorariosPage(container, goTo) {
     const wrap = h('div', {});
     const porValidar = souDirecaoHorariosGlobal() ? buildPontoPorValidarCard(colaboradores) : null;
     if (porValidar) wrap.appendChild(porValidar);
+    const ancoraTabela = h('div', { class: 'validacao-ancora-tabela' });
+    wrap.appendChild(ancoraTabela);
     wrap.appendChild(h('div', { class: 'field field-sm', style: 'margin-bottom:16px;max-width:320px;' }, [h('label', {}, 'Colaborador'), select]));
+    if (PONTO_VER_MES_IR_PARA_TABELA) {
+      PONTO_VER_MES_IR_PARA_TABELA = false;
+      setTimeout(() => {
+        if (!ancoraTabela.isConnected) return;
+        ancoraTabela.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        const alvo = ancoraTabela.nextElementSibling && ancoraTabela.nextElementSibling.nextElementSibling;
+        if (alvo) { alvo.classList.add('validacao-destaque'); setTimeout(() => alvo.classList.remove('validacao-destaque'), 1800); }
+      }, 60);
+    }
     wrap.appendChild(buildVistaPessoalMensal({
       colaboradorId: colaboradorValidacaoId,
       primeiroDiaMes: mesValidacaoAtual(),
@@ -54420,8 +54443,18 @@ function pontoAbrirConfigRedeQr(rerender) {
     try { pre.innerHTML = pontoQrSvg(endereco, 4); } catch (e) { pre.textContent = 'Não foi possível desenhar o QR code.'; }
     corpo.appendChild(pre);
     corpo.appendChild(h('p', { class: 'ponto-qr-nota' }, `Criado ${est.qr_gerado_em ? `a ${formatDate(String(est.qr_gerado_em).slice(0, 10))}` : ''}${est.qr_gerado_por ? ` por ${est.qr_gerado_por}` : ''}. Afixa uma ou mais cópias da folha em sítios diferentes da farmácia (todas iguais).`));
+    // Palavra-passe do Wi-Fi na folha (2026-10-07, Hugo: "não coloques no index, deixa na base de dados") — guardada
+    // em ponto_rede.wifi_senha (sigajuncal_ponto_wifi.sql), só a Direção a lê/altera; nunca no index.html (público).
+    const inputWifi = h('input', { class: 'input', type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder: 'Palavra-passe do Wi-Fi (opcional)', style: 'max-width:240px;' });
+    inputWifi.value = est.wifi_senha || '';
+    const guardarWifi = h('button', { class: 'btn btn-secondary', type: 'button', style: 'font-size:12.5px;padding:5px 11px;',
+      onClick: () => acao('rpc_ponto_definir_wifi', { p_senha: inputWifi.value }, inputWifi.value.trim() ? 'Palavra-passe do Wi-Fi guardada.' : 'Palavra-passe do Wi-Fi removida da folha.') }, 'Guardar');
+    corpo.appendChild(h('div', { style: 'margin:4px 0 10px;' }, [
+      h('label', { class: 'ponto-qr-nota', style: 'display:block;margin:0 0 4px;' }, `Palavra-passe do Wi-Fi ${PONTO_REDE_WIFI_NOME} na folha (opcional) — aparece com um QR code pequeno para o telemóvel se ligar sozinho. Fica guardada no servidor (só a Direção a vê), nunca no código da app.`),
+      h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;' }, [inputWifi, guardarWifi]),
+    ]));
     corpo.appendChild(h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;' }, [
-      h('button', { class: 'btn btn-primary', type: 'button', onClick: () => pontoImprimirFolhaQr(est.qr_codigo, est.qr_gerado_em) }, iconeTexto('printer', 'Imprimir folha A4')),
+      h('button', { class: 'btn btn-primary', type: 'button', onClick: () => pontoImprimirFolhaQr(est.qr_codigo, est.qr_gerado_em, inputWifi.value) }, iconeTexto('printer', 'Imprimir folha A4')),
       h('button', { class: 'btn btn-secondary', type: 'button', onClick: () => confirmDialog('Trocar o QR code? As folhas já impressas deixam de funcionar e tens de imprimir e afixar as novas. Usa isto se alguém tiver levado uma foto da folha.', () => acao('rpc_ponto_gerar_qr', {}, 'QR code trocado — imprime e afixa as folhas novas.'), { confirmLabel: 'Trocar QR code', danger: true }) }, 'Trocar QR code'),
     ]));
     secAtivar.forEach(el => corpo.appendChild(el));
@@ -54429,44 +54462,80 @@ function pontoAbrirConfigRedeQr(rerender) {
   pontoRedeEstado(true).then(desenhar);
 }
 // Folha A4 para afixar: QR code grande + instruções curtas.
-function pontoImprimirFolhaQr(codigo, geradoEm) {
+function pontoImprimirFolhaQr(codigo, geradoEm, wifiPass) {
   const endereco = pontoQrEndereco(codigo);
   let svg = '';
   try { svg = pontoQrSvg(endereco, 8); } catch (e) { showToast('Não foi possível desenhar o QR code.', 'error'); return; }
   const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const data = geradoEm ? formatDate(String(geradoEm).slice(0, 10)) : formatDate(todayISO());
+  const pass = String(wifiPass || '').trim();
+  // QR code de ligação ao Wi-Fi (formato padrão WIFI:…, lido pela câmara do iPhone e do Android).
+  const escWifi = (t) => String(t).replace(/([\\;,:"])/g, '\\$1');
+  let svgWifi = '';
+  if (pass) { try { svgWifi = pontoQrSvg(`WIFI:T:WPA;S:${escWifi(PONTO_REDE_WIFI_NOME)};P:${escWifi(pass)};;`, 4); } catch (e) { svgWifi = ''; } }
+  // (2026-10-07, Hugo: "separa um pouco os dois QR codes para as pessoas não confundirem, talvez colocar o grande em
+  // baixo e distinguir mais o que é o de rede e o de picar o ponto") — dois passos numerados e com cores diferentes:
+  // 1 = Wi-Fi (verde, tracejado, QR pequeno com "não pica o ponto"); 2 = Picar o ponto (azul-escuro, QR grande, em baixo).
+  const passoWifi = pass
+    ? `<section class="passo passo-wifi"><div class="passo-cab"><span class="num">1</span>Ligar ao Wi-Fi <b>${esc(PONTO_REDE_WIFI_NOME)}</b></div>
+<div class="wifi-linha">${svgWifi ? `<div class="wifi-qr-bloco"><div class="wifi-qr">${svgWifi}</div><div class="etq etq-wifi">QR do Wi-Fi</div></div>` : ''}
+<div class="wifi-txt"><div class="wifi-senha">Palavra-passe: <b>${esc(pass)}</b></div>
+<div class="wifi-dica">Escreve a palavra-passe ou lê este QR pequeno com a câmara: o telemóvel liga-se à rede.<br><b>Este QR serve só para o Wi-Fi — não pica o ponto.</b></div></div></div></section>`
+    : `<section class="passo passo-wifi"><div class="passo-cab"><span class="num">1</span>Ligar ao Wi-Fi <b>${esc(PONTO_REDE_WIFI_NOME)}</b></div>
+<div class="wifi-dica" style="text-align:center;">Antes de picar, liga o telemóvel ao Wi-Fi da farmácia.</div></section>`;
   const html = `<!doctype html><html lang="pt"><head><meta charset="utf-8"><title>Picar o Ponto — QR code</title>
 <style>
-@page{size:A4 portrait;margin:14mm;}
+@page{size:A4 portrait;margin:12mm;}
+html,body{margin:0;padding:0;}
 *{box-sizing:border-box;}
 body{font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:#0f172a;margin:0;}
-.folha{display:flex;flex-direction:column;align-items:center;text-align:center;min-height:265mm;}
-h1{font-size:34pt;margin:4mm 0 1mm;letter-spacing:.5px;}
-.sub{font-size:14pt;color:#334155;margin:0 0 6mm;}
-.wifi{display:inline-block;font-size:15pt;font-weight:700;background:#ecfdf5;color:#065f46;border:2px solid #10b981;border-radius:12px;padding:3mm 6mm;margin-bottom:6mm;}
-.qr{width:120mm;height:120mm;}
-.qr svg{width:100%;height:100%;display:block;}
-ol{text-align:left;font-size:14pt;line-height:1.45;max-width:165mm;margin:7mm 0 4mm;padding-left:9mm;}
-ol li{margin-bottom:2mm;}
-.regras{text-align:left;font-size:11pt;color:#334155;max-width:165mm;border-top:1px solid #cbd5e1;padding-top:4mm;line-height:1.5;}
-.rodape{margin-top:auto;font-size:9.5pt;color:#64748b;}
+.folha{display:flex;flex-direction:column;align-items:center;text-align:center;height:271mm;overflow:hidden;}
+@media screen{.folha{height:auto;overflow:visible;}}
+h1{font-size:32pt;margin:2mm 0 0;letter-spacing:.5px;}
+.sub{font-size:13pt;color:#334155;margin:1mm 0 5mm;}
+.passo{width:170mm;border-radius:14px;padding:4mm 6mm;break-inside:avoid;}
+.passo-cab{display:flex;align-items:center;justify-content:center;gap:3mm;font-size:16pt;font-weight:800;}
+.num{display:inline-flex;align-items:center;justify-content:center;width:10mm;height:10mm;border-radius:50%;color:#fff;font-size:15pt;font-weight:800;flex-shrink:0;}
+.passo-wifi{background:#f0fdf4;border:2px dashed #16a34a;color:#14532d;}
+.passo-wifi .num{background:#16a34a;}
+.wifi-linha{display:flex;align-items:center;gap:6mm;margin-top:3mm;text-align:left;}
+.wifi-qr-bloco{display:flex;flex-direction:column;align-items:center;flex-shrink:0;}
+.wifi-qr{width:28mm;height:28mm;background:#fff;border-radius:6px;}
+.wifi-qr svg,.qr svg{width:100%;height:100%;display:block;}
+.etq{font-size:9pt;font-weight:800;letter-spacing:.6px;text-transform:uppercase;margin-top:1mm;}
+.etq-wifi{color:#15803d;}
+.wifi-senha{font-size:14pt;font-weight:600;}
+.wifi-senha b{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:15pt;letter-spacing:.5px;}
+.wifi-dica{font-size:10.5pt;color:#166534;margin-top:2mm;line-height:1.4;}
+.seta{font-size:16pt;color:#94a3b8;margin:2mm 0;line-height:1;}
+.passo-ponto{background:#fff;border:3px solid #1e3a8a;color:#0f172a;padding-bottom:3mm;}
+.passo-ponto .num{background:#1e3a8a;}
+.passo-ponto .passo-cab{color:#1e3a8a;}
+.qr{width:${pass ? 78 : 92}mm;height:${pass ? 78 : 92}mm;margin:3mm auto 0;}
+.etq-ponto{color:#1e3a8a;font-size:10pt;}
+ol{text-align:left;font-size:12.5pt;line-height:1.4;max-width:150mm;margin:3mm auto 0;padding-left:8mm;}
+ol li{margin-bottom:1mm;}
+.regras{display:grid;grid-template-columns:1fr 1fr;column-gap:6mm;row-gap:1mm;text-align:left;font-size:9.5pt;color:#334155;width:170mm;padding-top:3mm;margin-top:3mm;border-top:1px solid #cbd5e1;line-height:1.35;}
+.rodape{margin-top:3mm;font-size:9pt;color:#64748b;}
 </style></head><body><div class="folha">
 <h1>Picar o Ponto</h1>
 <p class="sub">Entrada ao chegar · Saída no fim do dia</p>
-<div class="wifi">📶 Liga-te primeiro ao Wi-Fi <u>${esc(PONTO_REDE_WIFI_NOME)}</u></div>
+${passoWifi}
+<div class="seta">▼</div>
+<section class="passo passo-ponto"><div class="passo-cab"><span class="num">2</span>Picar o ponto — lê ESTE QR code</div>
 <div class="qr">${svg}</div>
+<div class="etq etq-ponto">QR do ponto</div>
 <ol>
-<li>Liga o telemóvel ao Wi-Fi da farmácia <b>${esc(PONTO_REDE_WIFI_NOME)}</b>.</li>
-<li>Abre a <b>câmara</b> e aponta para o QR code. Toca na ligação que aparece.</li>
+<li>Abre a <b>câmara</b>, aponta para este QR code e toca na ligação que aparece.</li>
 <li>Se pedir, entra com o teu <b>username e PIN</b>.</li>
-<li>A app regista sozinha a <b>ENTRADA</b> ou a <b>SAÍDA</b> e mostra a hora em grande. Pronto!</li>
-</ol>
+<li>A app regista sozinha a <b>ENTRADA</b> ou a <b>SAÍDA</b> e mostra a hora em grande.</li>
+</ol></section>
 <div class="regras">
-• As pausas e o almoço <b>não</b> se picam.<br>
-• Leste o QR code duas vezes seguidas? Só conta uma.<br>
-• Uma saída pouco depois da entrada (ou muito antes do fim do turno) pede confirmação.<br>
-• Fora do Wi-Fi ${esc(PONTO_REDE_WIFI_NOME)}, a picagem fica por validar pela Direção.<br>
-• Esqueceste-te de picar? Avisa a Direção na app (cartão "Picar Ponto").
+<div>• As pausas e o almoço <b>não</b> se picam.</div>
+<div>• Leste o QR duas vezes seguidas? Só conta uma.</div>
+<div>• Saída pouco depois da entrada (ou muito antes do fim do turno) pede confirmação.</div>
+<div>• Fora do Wi-Fi ${esc(PONTO_REDE_WIFI_NOME)}, a picagem fica por validar pela Direção.</div>
+<div>• Esqueceste-te de picar? Avisa a Direção na app (cartão "Picar Ponto").</div>
 </div>
 <p class="rodape">SigaJuncal · QR code criado a ${esc(data)} — se a Direção trocar o QR code, esta folha deixa de funcionar.</p>
 </div><script>window.onload=function(){setTimeout(function(){window.print();},300);};<\/script></body></html>`;
