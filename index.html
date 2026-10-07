@@ -1047,6 +1047,13 @@
   .ponto-etiqueta-ponto.entrada{background:#16a34a;} .ponto-etiqueta-ponto.saida{background:#dc2626;}
   .ponto-extras:empty{display:none;}
   @media (max-width:640px){ .ponto-card{max-width:none;} .ponto-circulo{width:124px;height:124px;} }
+  /* Aviso de versão nova (2026-10-07) */
+  .versao-nova-barra{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:9999;display:flex;align-items:center;gap:10px;
+    background:#0f172a;color:#fff;border-radius:14px;padding:9px 10px 9px 16px;box-shadow:0 10px 30px rgba(15,23,42,.35);font-size:13.5px;font-weight:600;max-width:calc(100% - 24px);}
+  .versao-nova-barra .btn{padding:6px 14px;font-size:13px;}
+  .versao-nova-depois{all:unset;cursor:pointer;color:#94a3b8;padding:4px 6px;font-size:14px;}
+  .versao-nova-depois:hover{color:#fff;}
+  @media (max-width:640px){ .versao-nova-barra{bottom:84px;} }
   /* Ponto por QR code (2026-10-07) */
   .ponto-por-validar-cabecalho{all:unset;cursor:pointer;display:flex;justify-content:space-between;align-items:center;width:100%;font-size:14px;font-weight:800;color:#9a3412;}
   .ponto-por-validar-cabecalho:focus-visible{outline:2px solid #f59e0b;outline-offset:2px;border-radius:6px;}
@@ -61284,7 +61291,7 @@ function showUserLoginScreen(onSuccess, opts) {
   // entretanto. Fora deste caso (login normal, ainda sem sessão nenhuma
   // aberta) o comportamento mantém-se: repaint completo no fim, como sempre.
   const preservarEcra = !!(opts && opts.preservarEcra);
-  const overlay = h('div', { class: 'modal-overlay' });
+  const overlay = h('div', { class: 'modal-overlay login-sessao-overlay' }); // classe extra: ver AVISO DE VERSÃO NOVA
   // Fechar/Cancelar = Modo Sem Sessão Iniciada: a app fica navegável em modo
   // de consulta geral (Página Inicial), sem acesso a dados/ações privadas —
   // o dispositivo mantém-se registado para notificações e badge.
@@ -61666,6 +61673,73 @@ function reporContextosDeSessao() {
 }
 let adiamentoExpiracaoDesde = 0;
 let utilizadorSessaoExpiradaId = null; // quem estava com sessão quando esta expirou por inatividade
+/* =================================================================
+   AVISO DE VERSÃO NOVA (2026-10-07, Hugo: "consigo atualizar a app sempre que atualizar o index? Imagina que alguém
+   tem a app aberta, atualmente só atualiza se fechar e abrir").
+   De 5 em 5 minutos (e sempre que a app volta a ficar visível, no máx. 1×/min) pergunta ao servidor se o index.html
+   mudou — só os cabeçalhos (HEAD: ETag / Last-Modified), nunca os ~4 MB. Funciona igual no GitHub Pages e no
+   servidor da farmácia (PocketBase).
+   Quando há versão nova:
+    • sem sessão iniciada e sem nada a meio (nenhuma janela aberta além do login, nenhum formulário, nada escrito no
+      login) → recarrega sozinha, sem perguntar;
+    • com sessão (recarregar terminaria a sessão — o PIN só vive em memória — e perderia o que estiver a meio) → barra
+      "Há uma versão nova" com "Atualizar"; e assim que a sessão terminar (ex.: bloqueio por inatividade) e não houver
+      nada a meio, recarrega sozinha.
+   O service worker (sw.js) não guarda cópias da app (não tem "fetch"), por isso recarregar traz sempre a versão nova.
+================================================================= */
+let VERSAO_APP_IMPRESSAO = null;   // impressão digital da versão carregada
+let VERSAO_APP_NOVA = false;
+let VERSAO_APP_ULTIMA_VERIFICACAO = 0;
+async function versaoAppImpressaoAtual() {
+  try {
+    const url = window.location.pathname;
+    const r = await fetch(url, { method: 'HEAD', cache: 'no-store', credentials: 'same-origin' });
+    if (!r.ok) return null;
+    const etag = r.headers.get('etag'), modif = r.headers.get('last-modified'), tam = r.headers.get('content-length');
+    if (!etag && !modif) return null;
+    return [etag || '', modif || '', tam || ''].join('|');
+  } catch (e) { return null; }
+}
+function versaoAppPodeRecarregarSozinha() {
+  if (activeUser) return false;
+  const janelas = [...document.querySelectorAll('.modal-overlay')].filter(o => !o.classList.contains('login-sessao-overlay'));
+  if (janelas.length) return false;
+  if (document.querySelector('.form-registo-ativo')) return false;
+  const escritoNoLogin = [...document.querySelectorAll('.login-sessao-overlay input')].some(i => i.type !== 'hidden' && String(i.value || '').trim() !== '');
+  if (escritoNoLogin) return false;
+  const ativo = document.activeElement;
+  if (ativo && /^(INPUT|TEXTAREA|SELECT)$/.test(ativo.tagName)) return false;
+  return true;
+}
+function versaoAppMostrarAviso() {
+  if (document.querySelector('.versao-nova-barra')) return;
+  const barra = h('div', { class: 'versao-nova-barra', role: 'status' }, [
+    h('span', {}, '✨ Há uma versão nova do SigaJuncal.'),
+    h('button', { class: 'btn btn-primary', type: 'button', onClick: () => window.location.reload() }, 'Atualizar'),
+    h('button', { class: 'versao-nova-depois', type: 'button', 'aria-label': 'Mais tarde', title: 'Mais tarde (atualiza sozinha quando a sessão terminar)', onClick: () => barra.remove() }, '✕'),
+  ]);
+  document.body.appendChild(barra);
+}
+async function versaoAppVerificar(forcar) {
+  if (!forcar && Date.now() - VERSAO_APP_ULTIMA_VERIFICACAO < 60 * 1000) return;
+  VERSAO_APP_ULTIMA_VERIFICACAO = Date.now();
+  if (VERSAO_APP_NOVA) { if (versaoAppPodeRecarregarSozinha()) window.location.reload(); return; }
+  const atual = await versaoAppImpressaoAtual();
+  if (!atual) return;
+  if (VERSAO_APP_IMPRESSAO === null) { VERSAO_APP_IMPRESSAO = atual; return; }
+  if (atual === VERSAO_APP_IMPRESSAO) return;
+  VERSAO_APP_NOVA = true;
+  if (versaoAppPodeRecarregarSozinha()) { window.location.reload(); return; }
+  versaoAppMostrarAviso();
+}
+function iniciarAvisoVersaoNova() {
+  if (!/^https?:$/.test(window.location.protocol)) return;
+  versaoAppVerificar(true); // fixa a versão carregada
+  setInterval(() => versaoAppVerificar(true), 5 * 60 * 1000);
+  // Com versão nova já detetada: assim que a sessão terminar e não houver nada a meio, recarrega (verificação barata, local).
+  setInterval(() => { if (VERSAO_APP_NOVA && versaoAppPodeRecarregarSozinha()) window.location.reload(); }, 20 * 1000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') versaoAppVerificar(false); });
+}
 function clearSessionSilently() {
   if (!activeUser) return;
   // Se a pessoa está mesmo a trabalhar num formulário/modal aberto (ex: o
@@ -61822,6 +61896,7 @@ function setupSilentDataRefreshWatcher() {
 
 async function startApp() {
   registarServiceWorker();
+  iniciarAvisoVersaoNova();
   carregarFilaOffline();
   window.addEventListener('online', () => marcarConexao(true));
   window.addEventListener('offline', () => marcarConexao(false));
