@@ -5207,6 +5207,18 @@
   .turno-relogio-hora{font-size:11px;font-weight:700;fill:var(--pharm-500);font-variant-numeric:tabular-nums;}
   .turno-relogio-centro-grande{font-size:19px;font-weight:800;fill:var(--pharm-900);font-variant-numeric:tabular-nums;letter-spacing:.01em;}
   .turno-relogio-centro-pequeno{font-size:10.5px;font-weight:600;fill:var(--pharm-500);}
+  .tr-ok-titulo{font-size:11.5px;font-weight:800;fill:#166534;letter-spacing:.01em;}
+  .tr-ok-linha{font-size:9.5px;font-weight:700;fill:#334155;font-variant-numeric:tabular-nums;}
+  .tr-ok-linha2{font-size:8.6px;font-weight:600;fill:var(--pharm-500);}
+  .turno-relogio-arco-ok{stroke-dasharray:100;animation:trOkAnel 1.1s cubic-bezier(.3,.7,.3,1) both;}
+  @keyframes trOkAnel{from{stroke-dashoffset:100;}to{stroke-dashoffset:0;}}
+  .tr-ok-visto{stroke-dasharray:40;stroke-dashoffset:40;animation:trOkVisto .55s .9s ease-out forwards;}
+  @keyframes trOkVisto{to{stroke-dashoffset:0;}}
+  .tr-ok-pulso{opacity:0;transform-box:fill-box;transform-origin:center;animation:trOkPulso 1.3s 1.3s ease-out both;}
+  @keyframes trOkPulso{0%{opacity:.55;transform:scale(.85);}100%{opacity:0;transform:scale(1.9);}}
+  .tr-ok-estrela{transform-box:fill-box;transform-origin:center;animation:trOkBrilha 2.8s ease-in-out infinite;}
+  @keyframes trOkBrilha{0%,100%{opacity:.35;transform:scale(.75);}50%{opacity:1;transform:scale(1);}}
+  @media (prefers-reduced-motion: reduce){ .turno-relogio-arco-ok,.tr-ok-pulso,.tr-ok-estrela{animation:none;} .tr-ok-visto{animation:none;stroke-dashoffset:0;} .tr-ok-estrela{opacity:.7;} }
   .turno-relogio-fatia{transition:stroke-width .15s ease;}
   .turno-relogio-bola-pulso{transform-box:fill-box;transform-origin:center;animation:turno-bola-pulso 1.8s ease-out infinite;}
   @keyframes turno-bola-pulso{0%{transform:scale(1);opacity:.9;}100%{transform:scale(1.7);opacity:0;}}
@@ -54730,6 +54742,19 @@ function buildPontoWidgetLocalizacao(rerender, diaHoje) {
 // desligado → picagem por localização (como sempre); ligado → picagem por QR code. O estado vem do servidor
 // (rpc_ponto_rede_estado) e é relido de 5 em 5 minutos; se mudar, o cartão redesenha-se sozinho.
 let PONTO_REDE_ESTADO_A_LER = false;
+// Picagem livre (2026-10-08, Hugo: "para o Paulo permite picagem por pc independentemente de estar ligado a BOJuncal"):
+// quem a tem pica carregando no círculo do cartão, em qualquer sítio e aparelho, e fica logo válida (servidor:
+// ponto_rede.ponto_livre_ids — sigajuncal_ponto_livre.sql).
+function pontoPicagemLivre() { return !!(PONTO_REDE_ESTADO_CACHE.dados && PONTO_REDE_ESTADO_CACHE.dados.picagem_livre); }
+function pontoTornarCirculoBotao(circulo, rotulo) {
+  circulo.setAttribute('role', 'button');
+  circulo.setAttribute('tabindex', '0');
+  circulo.setAttribute('aria-label', `Picar: ${rotulo}`);
+  circulo.style.cursor = 'pointer';
+  const picar = () => requireAuth(() => pontoQrProcessar('livre'));
+  circulo.addEventListener('click', picar);
+  circulo.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); picar(); } });
+}
 // Conteúdo do aviso "não estás no Wi-Fi da farmácia" (cartão Picar Ponto e ecrã do resultado).
 function pontoWifiAvisoConteudo(senha) {
   const partes = [
@@ -54922,10 +54947,11 @@ function buildPontoWidgetQr(rerender, diaHoje) {
     atualizarP();
     const relogioP = setInterval(() => { if (!circuloP.isConnected) { clearInterval(relogioP); return; } atualizarP(); }, 10000);
     if (planeadaP) pontoPausaAgendarLembrete(inicioMs + planeadaP.minutos * 60000, jornada.pausaAberta.id);
+    if (pontoPicagemLivre()) pontoTornarCirculoBotao(circuloP, 'regresso da pausa');
     card.appendChild(h('div', { class: 'ponto-centro' }, [
       circuloP,
       h('div', { class: 'ponto-pausa-contagem' }, [faltaEl, subEl, barraEl]),
-      h('p', { class: 'ponto-qr-instrucao' }, 'Ao regressar, lê o QR code da farmácia — fica registado o regresso da pausa.'),
+      h('p', { class: 'ponto-qr-instrucao' }, pontoPicagemLivre() ? 'Ao regressar, carrega no círculo — fica registado o regresso da pausa.' : 'Ao regressar, lê o QR code da farmácia — fica registado o regresso da pausa.'),
       etiquetasEl,
       configBtn,
     ]));
@@ -54947,7 +54973,11 @@ function buildPontoWidgetQr(rerender, diaHoje) {
   ]);
   const relogio = setInterval(() => { if (!circulo.isConnected) { clearInterval(relogio); return; } horaEl.textContent = horaAgora(); }, 15000);
   const pausaHoje = pausaPorPicar ? pontoPausaPlaneada(turnoHoje) : null;
-  const instrucaoEl = h('p', { class: 'ponto-qr-instrucao' }, pausaHoje
+  const livre = pontoPicagemLivre();
+  if (livre) pontoTornarCirculoBotao(circulo, rotulo);
+  const instrucaoEl = h('p', { class: 'ponto-qr-instrucao' }, livre
+    ? `Carrega no círculo para picar a ${rotulo.toLowerCase()}${pausaHoje ? ' (ou a saída no fim do dia)' : ''} — podes picar em qualquer sítio, no computador ou no telemóvel.`
+    : pausaHoje
     ? `Lê o QR code da farmácia ao sair para a pausa (${pausaHoje.inicio}–${pausaHoje.fim}) — ou no fim do dia, para picar a saída.`
     : `Lê o QR code da farmácia com a câmara do telemóvel para picar a ${rotulo.toLowerCase()}.`);
   const estadoEl = h('p', { class: 'ponto-estado' }, 'A verificar a rede…');
@@ -54962,6 +54992,8 @@ function buildPontoWidgetQr(rerender, diaHoje) {
       curto = 'Não foi possível verificar a rede'; longo = 'Não foi possível verificar a rede agora — podes picar na mesma; se não estiveres na rede da farmácia, fica por validar.';
     } else if (!est.qr_definido || !est.rede_definida) {
       curto = 'Ponto por QR code ainda por configurar'; longo = 'A Direção ainda tem de registar a rede da farmácia e criar o QR code (botão "Rede e QR code").';
+    } else if (est.picagem_livre) {
+      tom = 'ok'; curto = '✓ Picagem livre — conta logo, em qualquer sítio'; longo = 'Tens picagem livre: picas carregando no círculo, no computador ou no telemóvel, sem QR code nem Wi-Fi, e a picagem fica logo válida.';
     } else if (est.na_rede) {
       tom = 'ok'; curto = `📶 Na rede da farmácia`; longo = `Estás ligado à rede da farmácia (${PONTO_REDE_WIFI_NOME}) — a picagem conta logo.`;
     } else {
@@ -55141,7 +55173,7 @@ async function pontoQrProcessar(codigo) {
   };
   const seguir = () => {
     // Picou bastante depois da hora prevista: dá para indicar a hora certa (fica por validar), como já existia.
-    if (comp && !comp.dentro && comp.atraso > 10 && comp.atraso <= 240) { pontoQrPerguntarHoraCerta(tipoPrevisto, prevista, (hora) => enviar(hora, false)); return; }
+    if (codigo !== 'livre' && comp && !comp.dentro && comp.atraso > 10 && comp.atraso <= 240) { pontoQrPerguntarHoraCerta(tipoPrevisto, prevista, (hora) => enviar(hora, false)); return; }
     enviar('', false);
   };
   // Pausas (2026-10-08): em pausa → a leitura é o regresso; com pausa no horário ainda por fazer → pergunta.
@@ -61620,6 +61652,9 @@ function buildLinhaTemporalDiaWidget(opcoes) {
   const defs = el('defs');
   const grad = el('linearGradient', { id: `${uid}Grad`, x1: '0', y1: '1', x2: '1', y2: '0' });
   grad.append(el('stop', { offset: '0', 'stop-color': '#5aa7df' }), el('stop', { offset: '1', 'stop-color': '#1f6fb2' }));
+  const gradOk = el('linearGradient', { id: `${uid}GradOk`, x1: '0', y1: '1', x2: '1', y2: '0' });
+  gradOk.append(el('stop', { offset: '0', 'stop-color': '#4ade80' }), el('stop', { offset: '1', 'stop-color': '#15803d' }));
+  defs.appendChild(gradOk);
   const risca = el('pattern', { id: `${uid}Pausa`, width: '5', height: '5', patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)' });
   risca.append(el('rect', { width: '5', height: '5', fill: 'rgba(255,255,255,0.55)' }), el('rect', { width: '2.2', height: '5', fill: 'rgba(71,85,105,0.55)' }));
   const clip = el('clipPath', { id: `${uid}Centro` }); clip.append(el('circle', { cx, cy, r: 54 }));
@@ -61704,6 +61739,75 @@ function buildLinhaTemporalDiaWidget(opcoes) {
     b.g.style.display = 'none';
     svg.appendChild(b.g);
   });
+  // ---- Turno concluído (2026-10-08, Hugo: "quando turno terminado animação devia ser outra... algo que remeta para
+  // turno concluído"): o anel enche-se a verde, um visto desenha-se ao centro com um pulso de brilho, "Turno
+  // concluído" com as horas feitas (pelas picagens) e o próximo turno; depois das 20:00, umas estrelinhas discretas.
+  let concluidoMontado = false;
+  const horaTxt = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  const resumoHorasTexto = () => {
+    try {
+      const regs = pontoRegistosDoDia(activeUser.id, todayISO());
+      const ent = regs.find(r => r.tipo === 'entrada'), sai = regs.find(r => r.tipo === 'saida');
+      const pausaPlan = pontoPausaPlaneada(dia);
+      if (ent && sai) {
+        const pausas = pontoResumoPausasDia(activeUser.id, todayISO(), dia);
+        const pausaMin = pausas.total || (pausaPlan ? pausaPlan.minutos : 0);
+        const min = escalaMinutosAbsolutos(sai.horaReal, true) - escalaMinutosAbsolutos(ent.horaReal, false) - pausaMin;
+        if (min > 0 && min < 20 * 60) return `${pontoDuracaoTexto(min)} · ${ent.horaReal}–${sai.horaReal}`;
+      }
+      return `Turno de ${pontoDuracaoTexto(totalMin - (pausaPlan ? pausaPlan.minutos : 0))}`;
+    } catch (e) { return ''; }
+  };
+  const proximoTurnoTexto = () => {
+    try {
+      const base = new Date();
+      for (let i = 1; i <= 14; i++) {
+        const d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + i);
+        const iso = dateToISO(d);
+        const semana = escalaSemanaPorInicio(escalaSegundaFeiraDaSemanaDeISO(iso));
+        const turno = pontoTurnoPlaneado(activeUser.id, iso);
+        if (i === 1 && !turno) return semana ? 'Folga amanhã 🌿' : '';
+        if (!semana) return '';
+        if (turno) {
+          if (i === 1) return `Amanhã às ${turno.entrada}`;
+          const nomes = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+          return `Próximo: ${nomes[d.getDay()]} ${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}, ${turno.entrada}`;
+        }
+      }
+      return '';
+    } catch (e) { return ''; }
+  };
+  const montarConcluido = () => {
+    concluidoMontado = true;
+    svg.classList.add('concluido');
+    decorrido.setAttribute('stroke', `url(#${uid}GradOk)`);
+    decorrido.setAttribute('pathLength', '100');
+    decorrido.classList.add('turno-relogio-arco-ok');
+    brilho.style.display = 'none'; bolhas.style.display = 'none';
+    onda.style.display = 'none'; onda2.style.display = 'none';
+    aguaFundo.setAttribute('fill', '#f0fdf4');
+    txtGrande.style.display = 'none'; txtPequeno.style.display = 'none';
+    const g = el('g', { class: 'tr-ok' });
+    const cyV = cy - 25;
+    g.append(
+      el('circle', { cx, cy: cyV, r: '13', fill: '#4ade80', class: 'tr-ok-pulso' }),
+      el('circle', { cx, cy: cyV, r: '12', fill: '#dcfce7', stroke: '#86efac', 'stroke-width': '1' }),
+      el('path', { d: `M${cx - 5.5} ${cyV + 0.5} L${cx - 1.5} ${cyV + 4.5} L${cx + 6} ${cyV - 4}`, fill: 'none', stroke: '#16a34a', 'stroke-width': '3', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', pathLength: '40', class: 'tr-ok-visto' }),
+    );
+    const t1 = el('text', { x: cx, y: cy + 1, 'text-anchor': 'middle', class: 'tr-ok-titulo' }); t1.textContent = 'Turno concluído';
+    g.appendChild(t1);
+    const horas = resumoHorasTexto();
+    if (horas) { const t2 = el('text', { x: cx, y: cy + 14, 'text-anchor': 'middle', class: 'tr-ok-linha' }); t2.textContent = horas; g.appendChild(t2); }
+    const prox = proximoTurnoTexto();
+    if (prox) { const t3 = el('text', { x: cx, y: cy + 26, 'text-anchor': 'middle', class: 'tr-ok-linha2' }); t3.textContent = prox; g.appendChild(t3); }
+    const h = new Date().getHours();
+    if (h >= 20 || h < 6) {
+      const estrela = (x, y, s, atraso) => el('path', { d: `M${x} ${y - s} Q${x} ${y} ${x + s} ${y} Q${x} ${y} ${x} ${y + s} Q${x} ${y} ${x - s} ${y} Q${x} ${y} ${x} ${y - s}Z`, fill: '#f5b301', class: 'tr-ok-estrela', style: `animation-delay:${atraso}s` });
+      [[pt(212, 90), 4.6, 0], [pt(232, 99), 3.2, 0.9], [pt(258, 85), 4.6, 1.6], [pt(302, 101), 3.4, 0.4], [pt(328, 90), 4.4, 1.2], [pt(150, 96), 3, 2], [pt(30, 96), 3.2, 0.7]]
+        .forEach(([[x, y], s, a]) => g.appendChild(estrela(Math.round(x * 10) / 10, Math.round(y * 10) / 10, s, a)));
+    }
+    svg.appendChild(g);
+  };
   const txtGrande = el('text', { x: cx, y: cy - 2, 'text-anchor': 'middle', class: 'turno-relogio-centro-grande', 'data-volatil': '1' });
   const txtPequeno = el('text', { x: cx, y: cy + 17, 'text-anchor': 'middle', class: 'turno-relogio-centro-pequeno' });
   svg.append(txtGrande, txtPequeno);
@@ -61714,8 +61818,8 @@ function buildLinhaTemporalDiaWidget(opcoes) {
     const frac = Math.max(0, Math.min(1, (agora - inicioMin) / totalMin));
     if (frac > 0) {
       decorrido.setAttribute('d', arco(R_BASE, A0, A0 + frac * VARR)); decorrido.style.display = '';
-      brilho.setAttribute('d', arco(R_BASE - 3, A0 + 2, Math.max(A0 + 2.5, A0 + frac * VARR - 2))); brilho.style.display = '';
-      bolhas.style.display = frac > 0.04 ? '' : 'none';
+      brilho.setAttribute('d', arco(R_BASE - 3, A0 + 2, Math.max(A0 + 2.5, A0 + frac * VARR - 2))); brilho.style.display = concluidoMontado ? 'none' : '';
+      bolhas.style.display = frac > 0.04 && !concluidoMontado ? '' : 'none';
     } else { decorrido.style.display = 'none'; brilho.style.display = 'none'; bolhas.style.display = 'none'; }
     const dentro = agora >= inicioMin && agora <= fimMin;
     const [px, py] = pt(A0 + frac * VARR, R_BASE);
@@ -61736,7 +61840,7 @@ function buildLinhaTemporalDiaWidget(opcoes) {
     const agoraS = agoraSegundos(), inicioS = inicioMin * 60, fimS = fimMin * 60;
     if (agoraS < inicioS) { txtGrande.textContent = contadorTxt(inicioS - agoraS); txtPequeno.textContent = 'para começar'; }
     else if (agoraS < fimS) { txtGrande.textContent = contadorTxt(fimS - agoraS); txtPequeno.textContent = 'para terminar'; }
-    else { txtGrande.textContent = '✓'; txtPequeno.textContent = 'turno terminado'; }
+    else if (!concluidoMontado) { montarConcluido(); }
   };
   atualizar();
   const card = h('div', { class: 'turno-relogio-card' }, [
