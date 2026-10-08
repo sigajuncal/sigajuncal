@@ -5210,6 +5210,9 @@
   .tr-ok-titulo{font-size:11.5px;font-weight:800;fill:#166534;letter-spacing:.01em;}
   .tr-ok-linha{font-size:9.5px;font-weight:700;fill:#334155;font-variant-numeric:tabular-nums;}
   .tr-ok-linha2{font-size:8.6px;font-weight:600;fill:var(--pharm-500);}
+  .tr-ok-pausa{font-size:8.6px;font-weight:600;fill:#b45309;font-variant-numeric:tabular-nums;}
+  .turno-relogio-svg.sem-anim .turno-relogio-arco-ok,.turno-relogio-svg.sem-anim .tr-ok-pulso{animation:none;}
+  .turno-relogio-svg.sem-anim .tr-ok-visto{animation:none;stroke-dashoffset:0;}
   .turno-relogio-arco-ok{stroke-dasharray:100;animation:trOkAnel 1.1s cubic-bezier(.3,.7,.3,1) both;}
   @keyframes trOkAnel{from{stroke-dashoffset:100;}to{stroke-dashoffset:0;}}
   .tr-ok-visto{stroke-dasharray:40;stroke-dashoffset:40;animation:trOkVisto .55s .9s ease-out forwards;}
@@ -61592,6 +61595,9 @@ function buildBotaoEquipaHoje(cartao) {
   cartao.append(btn);
   return btn;
 }
+// A animação de "Turno concluído" só corre ao abrir a app (2026-10-08, Hugo): depois disso, voltar à Página Inicial
+// mostra logo o estado final. Uma janela curta cobre os redesenhos do arranque (dados a chegar logo a seguir).
+let TURNO_OK_ANIMAR_ATE = null;
 function buildLinhaTemporalDiaWidget(opcoes) {
   const meuDia = escalaMeuDiaHoje();
   if (!meuDia) { const descanso = buildIlustracaoDescanso(); buildBotaoEquipaHoje(descanso); return descanso; }
@@ -61758,6 +61764,13 @@ function buildLinhaTemporalDiaWidget(opcoes) {
       return `Turno de ${pontoDuracaoTexto(totalMin - (pausaPlan ? pausaPlan.minutos : 0))}`;
     } catch (e) { return ''; }
   };
+  const pausaPicadaTexto = () => {
+    try {
+      const pares = pontoPausasDoDia(activeUser.id, todayISO()).filter(p => p.inicio);
+      if (!pares.length) return '';
+      return 'Pausa ' + pares.map(p => `${p.inicio.horaReal}–${p.fim ? p.fim.horaReal : '…'}`).join(', ');
+    } catch (e) { return ''; }
+  };
   const proximoTurnoTexto = () => {
     try {
       const base = new Date();
@@ -61780,6 +61793,8 @@ function buildLinhaTemporalDiaWidget(opcoes) {
   const montarConcluido = () => {
     concluidoMontado = true;
     svg.classList.add('concluido');
+    if (TURNO_OK_ANIMAR_ATE === null) TURNO_OK_ANIMAR_ATE = Date.now() + 3000;
+    if (Date.now() > TURNO_OK_ANIMAR_ATE) svg.classList.add('sem-anim');
     decorrido.setAttribute('stroke', `url(#${uid}GradOk)`);
     decorrido.setAttribute('pathLength', '100');
     decorrido.classList.add('turno-relogio-arco-ok');
@@ -61788,18 +61803,22 @@ function buildLinhaTemporalDiaWidget(opcoes) {
     aguaFundo.setAttribute('fill', '#f0fdf4');
     txtGrande.style.display = 'none'; txtPequeno.style.display = 'none';
     const g = el('g', { class: 'tr-ok' });
-    const cyV = cy - 25;
+    const cyV = cy - 28;
     g.append(
       el('circle', { cx, cy: cyV, r: '13', fill: '#4ade80', class: 'tr-ok-pulso' }),
       el('circle', { cx, cy: cyV, r: '12', fill: '#dcfce7', stroke: '#86efac', 'stroke-width': '1' }),
       el('path', { d: `M${cx - 5.5} ${cyV + 0.5} L${cx - 1.5} ${cyV + 4.5} L${cx + 6} ${cyV - 4}`, fill: 'none', stroke: '#16a34a', 'stroke-width': '3', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', pathLength: '40', class: 'tr-ok-visto' }),
     );
-    const t1 = el('text', { x: cx, y: cy + 1, 'text-anchor': 'middle', class: 'tr-ok-titulo' }); t1.textContent = 'Turno concluído';
+    const t1 = el('text', { x: cx, y: cy - 3, 'text-anchor': 'middle', class: 'tr-ok-titulo' }); t1.textContent = 'Turno concluído';
     g.appendChild(t1);
+    let yLinha = cy + 10;
     const horas = resumoHorasTexto();
-    if (horas) { const t2 = el('text', { x: cx, y: cy + 14, 'text-anchor': 'middle', class: 'tr-ok-linha' }); t2.textContent = horas; g.appendChild(t2); }
+    if (horas) { const t2 = el('text', { x: cx, y: yLinha, 'text-anchor': 'middle', class: 'tr-ok-linha' }); t2.textContent = horas; g.appendChild(t2); yLinha += 11; }
+    // Pausa(s) picada(s): o período todo fica à vista — entrada–saída em cima e a pausa aqui.
+    const pausaTxt = pausaPicadaTexto();
+    if (pausaTxt) { const tp = el('text', { x: cx, y: yLinha, 'text-anchor': 'middle', class: 'tr-ok-pausa' }); tp.textContent = pausaTxt; g.appendChild(tp); yLinha += 11; }
     const prox = proximoTurnoTexto();
-    if (prox) { const t3 = el('text', { x: cx, y: cy + 26, 'text-anchor': 'middle', class: 'tr-ok-linha2' }); t3.textContent = prox; g.appendChild(t3); }
+    if (prox) { const t3 = el('text', { x: cx, y: yLinha + 1, 'text-anchor': 'middle', class: 'tr-ok-linha2' }); t3.textContent = prox; g.appendChild(t3); }
     const h = new Date().getHours();
     if (h >= 20 || h < 6) {
       const estrela = (x, y, s, atraso) => el('path', { d: `M${x} ${y - s} Q${x} ${y} ${x + s} ${y} Q${x} ${y} ${x} ${y + s} Q${x} ${y} ${x - s} ${y} Q${x} ${y} ${x} ${y - s}Z`, fill: '#f5b301', class: 'tr-ok-estrela', style: `animation-delay:${atraso}s` });
