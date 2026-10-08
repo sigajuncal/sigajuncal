@@ -3095,6 +3095,8 @@
   .troca-resumo-resultado.ok{background:#dcfce7;color:#166534;}
   .troca-resumo-resultado.divida{background:#fef3c7;color:#92400e;}
   .troca-resumo-extra,.troca-resumo-nota{font-size:12.5px;color:#475569;}
+  .troca-resumo-quem{display:flex;align-items:center;gap:6px;font-size:12.5px;color:#475569;}
+  .troca-resumo-quem b{color:#1e293b;}
   .troca-recado{display:flex;flex-direction:column;gap:8px;}
   .troca-recado-titulo{margin:0;font-size:13.5px;font-weight:700;color:#1e293b;}
   .troca-recado-resto{margin:0;font-size:12px;color:#64748b;}
@@ -38478,8 +38480,13 @@ function trocaResumoEl(t, opts) {
     ? h('div', { class: 'troca-resumo-resultado ok' }, [Icon('checkcircle', { size: 14, strokeWidth: 2.4 }), h('span', {}, 'Ninguém fica a dever horas')])
     : h('div', { class: 'troca-resumo-resultado divida' }, [Icon('balanca', { size: 14, strokeWidth: 2.2 }), h('span', {}, `${dif > 0 ? a : c} fica a dever ${trocasHorasTexto(dif)} a ${dif > 0 ? c : a}`)]);
   const banco = trocaTextoBancoLigado(t);
+  // Quem pediu e o que o colega respondeu (2026-10-08, Hugo: "convém ter essa informação de quem pediu inicialmente").
+  const resposta = ({ aguarda_colega: `à espera da resposta de ${c}`, recusada_colega: `recusado por ${c}` })[t.estado]
+    || ((t.estado && (t.colegaRespondeuEm || ['aguarda_direcao', 'validada', 'rejeitada'].includes(t.estado))) ? `aceite por ${c}` : '');
+  const quem = t.estado ? h('div', { class: 'troca-resumo-quem' }, [Icon('userIcon', { size: 12, strokeWidth: 2.3 }), h('span', {}, [h('span', {}, 'Pedido por '), h('b', {}, a), resposta ? ` · ${resposta}` : ''])]) : null;
   return h('div', { class: 'troca-resumo' }, [
     opts.semBadge ? null : trocaTipoBadge(t),
+    quem,
     h('div', { class: 'troca-resumo-linhas' }, linhas),
     resultado,
     banco ? h('div', { class: 'troca-resumo-extra' }, banco.trim()) : null,
@@ -38675,9 +38682,12 @@ function trocasDestinatariosDirecao(excluirIds) {
   if (!lista.length) lista = escalaUsuariosDirecao().filter(u => String(u.id) !== String(activeUser && activeUser.id));
   return lista;
 }
-async function trocasEnviarRecado(destinatarioId, mensagem, tipo, referenciaTabela, referenciaId) {
-  if (!destinatarioId || String(destinatarioId) === String(activeUser && activeUser.id)) return null;
-  const criado = await dbInsertRecado({ remetenteId: activeUser.id, destinatarioId, mensagem, tratado: false, tipo: tipo || 'mensagem', referenciaTabela, referenciaId });
+// remetenteId (opcional, 2026-10-08, Hugo: "a notificação deveria chegar de quem pediu originalmente"): o pedido de
+// validação à Direção sai em nome de quem PROPÔS a troca, mesmo sendo enviado no momento em que o colega a aceita.
+async function trocasEnviarRecado(destinatarioId, mensagem, tipo, referenciaTabela, referenciaId, remetenteId) {
+  const remetente = remetenteId || (activeUser && activeUser.id);
+  if (!destinatarioId || String(destinatarioId) === String(activeUser && activeUser.id) || String(destinatarioId) === String(remetente)) return null;
+  const criado = await dbInsertRecado({ remetenteId: remetente, destinatarioId, mensagem, tratado: false, tipo: tipo || 'mensagem', referenciaTabela, referenciaId });
   if (criado) STATE.gavetaRecados = [criado, ...(STATE.gavetaRecados || [])];
   return criado;
 }
@@ -38765,7 +38775,7 @@ async function trocaResponderColega(trocaOriginal, aceitar) {
     const prevB = nBanco && !nBanco.rejeitado ? escalaPrevisaoSaldoBanco(nBanco.autorId, escalaCalcularHoras(nBanco.horaInicio, nBanco.horaFim), nBanco.id) : null;
     const avisoSaldo = prevB && prevB.depois < 0 ? `\nAtenção: ${trocasNomeUtilizador(nBanco.autorId)} fica com saldo de Banco de Horas negativo (${escalaFormatarHorasDecimalComSinal(prevB.depois)}).` : '';
     const texto = `Troca para validar (aceite pelos dois): ${trocaDescricao(updated)}${updated.nota ? `\nNota: ${updated.nota}` : ''}${avisoSaldo}`;
-    for (const u of trocasDestinatariosDirecao([updated.autorId, updated.colegaId])) await trocasEnviarRecado(u.id, texto, 'tarefa', 'escala_trocas', updated.id);
+    for (const u of trocasDestinatariosDirecao([updated.autorId, updated.colegaId])) await trocasEnviarRecado(u.id, texto, 'tarefa', 'escala_trocas', updated.id, updated.autorId);
     await trocasEnviarRecado(updated.autorId, `${trocasNomeUtilizador(updated.colegaId)} aceitou a tua proposta de troca — aguarda agora validação da Direção.`, 'mensagem', 'escala_trocas', updated.id);
   } else {
     await trocasEnviarRecado(updated.autorId, `${trocasNomeUtilizador(updated.colegaId)} recusou a tua proposta de troca (${formatDate(updated.diaA)}).`, 'mensagem', 'escala_trocas', updated.id);
