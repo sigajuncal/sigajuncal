@@ -1051,6 +1051,13 @@
   .ponto-etiqueta-ponto{width:8px;height:8px;border-radius:50%;}
   .ponto-etiqueta-ponto.entrada{background:#16a34a;} .ponto-etiqueta-ponto.saida{background:#dc2626;} .ponto-etiqueta-ponto.pausa{background:#f59e0b;}
   .ponto-circulo.pausa{background:linear-gradient(160deg,#fbbf24,#d97706);}
+  .ponto-wifi-aviso{width:100%;max-width:320px;background:#fff7ed;border:2px solid #fb923c;border-radius:12px;padding:10px 12px;margin:2px auto 4px;text-align:left;display:flex;flex-direction:column;gap:5px;color:#7c2d12;font-size:13.5px;}
+  .ponto-wifi-aviso[hidden]{display:none;}
+  .ponto-wifi-aviso-titulo{font-weight:800;font-size:14px;color:#c2410c;}
+  .ponto-wifi-aviso-linha{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+  .ponto-wifi-senha{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:15px;letter-spacing:.3px;background:#fff;border:1px solid #fdba74;border-radius:6px;padding:1px 7px;color:#0f172a;}
+  .ponto-wifi-copiar{border:1px solid #fb923c;background:#fff;color:#c2410c;font-weight:700;font-size:12px;border-radius:999px;padding:3px 10px;cursor:pointer;}
+  .ponto-wifi-aviso-nota{font-size:11.5px;color:#9a3412;}
   .ponto-circulo.pausa.excedida{background:linear-gradient(160deg,#fb923c,#c2410c);}
   .ponto-pausa-contagem{display:flex;flex-direction:column;align-items:center;gap:2px;margin:2px 0 0;text-align:center;}
   .ponto-pausa-falta{font-size:26px;font-weight:800;color:#b45309;font-variant-numeric:tabular-nums;letter-spacing:-.01em;line-height:1.1;}
@@ -54723,6 +54730,23 @@ function buildPontoWidgetLocalizacao(rerender, diaHoje) {
 // desligado → picagem por localização (como sempre); ligado → picagem por QR code. O estado vem do servidor
 // (rpc_ponto_rede_estado) e é relido de 5 em 5 minutos; se mudar, o cartão redesenha-se sozinho.
 let PONTO_REDE_ESTADO_A_LER = false;
+// Conteúdo do aviso "não estás no Wi-Fi da farmácia" (cartão Picar Ponto e ecrã do resultado).
+function pontoWifiAvisoConteudo(senha) {
+  const partes = [
+    h('div', { class: 'ponto-wifi-aviso-titulo' }, ['📶 Não estás no Wi-Fi da farmácia']),
+    h('div', { class: 'ponto-wifi-aviso-linha' }, ['Liga-te à rede ', h('b', {}, PONTO_REDE_WIFI_NOME)]),
+  ];
+  if (senha) {
+    const copiar = h('button', { class: 'ponto-wifi-copiar', type: 'button' }, 'Copiar');
+    copiar.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(senha); copiar.textContent = 'Copiada ✓'; setTimeout(() => { copiar.textContent = 'Copiar'; }, 2000); }
+      catch (e) { showToast(`Palavra-passe: ${senha}`, 'info'); }
+    });
+    partes.push(h('div', { class: 'ponto-wifi-aviso-linha' }, ['Palavra-passe: ', h('b', { class: 'ponto-wifi-senha' }, senha), copiar]));
+  }
+  partes.push(h('div', { class: 'ponto-wifi-aviso-nota' }, 'Fora do Wi-Fi, a picagem fica por validar pela Direção.'));
+  return partes;
+}
 function pontoQrAtivoConhecido() { return !!(PONTO_REDE_ESTADO_CACHE.dados && PONTO_REDE_ESTADO_CACHE.dados.qr_ativo); }
 // As pausas só se picam depois de correr sigajuncal_ponto_pausas.sql (o servidor passa a responder pausas: true).
 function pontoPausasAtivas() { return !!(PONTO_REDE_ESTADO_CACHE.dados && PONTO_REDE_ESTADO_CACHE.dados.pausas); }
@@ -54927,7 +54951,8 @@ function buildPontoWidgetQr(rerender, diaHoje) {
     ? `Lê o QR code da farmácia ao sair para a pausa (${pausaHoje.inicio}–${pausaHoje.fim}) — ou no fim do dia, para picar a saída.`
     : `Lê o QR code da farmácia com a câmara do telemóvel para picar a ${rotulo.toLowerCase()}.`);
   const estadoEl = h('p', { class: 'ponto-estado' }, 'A verificar a rede…');
-  card.appendChild(h('div', { class: 'ponto-centro' }, [circulo, instrucaoEl, estadoEl, etiquetasEl, configBtn]));
+  const wifiAvisoEl = h('div', { class: 'ponto-wifi-aviso', hidden: 'hidden' });
+  card.appendChild(h('div', { class: 'ponto-centro' }, [circulo, instrucaoEl, estadoEl, wifiAvisoEl, etiquetasEl, configBtn]));
 
   (async () => {
     const est = await pontoRedeEstado();
@@ -54941,6 +54966,10 @@ function buildPontoWidgetQr(rerender, diaHoje) {
       tom = 'ok'; curto = `📶 Na rede da farmácia`; longo = `Estás ligado à rede da farmácia (${PONTO_REDE_WIFI_NOME}) — a picagem conta logo.`;
     } else {
       curto = `Liga-te ao Wi-Fi ${PONTO_REDE_WIFI_NOME}`; longo = `Não estás na rede da farmácia — liga-te ao Wi-Fi ${PONTO_REDE_WIFI_NOME} antes de ler o QR code. Fora da rede, a picagem fica por validar pela Direção.`;
+      // (2026-10-08, Hugo) Aviso claro com o nome da rede e a palavra-passe (vem do servidor — nunca escrita no código).
+      wifiAvisoEl.replaceChildren(...pontoWifiAvisoConteudo(est.wifi_senha));
+      wifiAvisoEl.removeAttribute('hidden');
+      estadoEl.setAttribute('hidden', 'hidden');
     }
     estadoEl.textContent = curto;
     estadoEl.className = `ponto-estado ${tom}`;
@@ -55102,7 +55131,8 @@ async function pontoQrProcessar(codigo) {
       pontoQrMostrarResultado({ estado: 'info', tipo: reg.tipo, titulo: `${nomeTipo} já ${registadaTxt}`, hora: reg.horaReal, texto: 'Leste o QR code outra vez — não ficou nada repetido.' });
     } else if (pontoRegistoEhPendente(reg)) {
       const motivos = pontoMotivosLista(reg);
-      const dica = motivos.includes('fora_rede') ? ` Da próxima vez liga-te primeiro ao Wi-Fi ${PONTO_REDE_WIFI_NOME}.` : '';
+      const senhaWifi = PONTO_REDE_ESTADO_CACHE.dados && PONTO_REDE_ESTADO_CACHE.dados.wifi_senha;
+      const dica = motivos.includes('fora_rede') ? ` Da próxima vez liga-te primeiro ao Wi-Fi ${PONTO_REDE_WIFI_NOME}${senhaWifi ? ` (palavra-passe: ${senhaWifi})` : ''}.` : '';
       pontoQrMostrarResultado({ estado: 'pendente', tipo: reg.tipo, titulo: `${nomeTipo} ${registadaTxt}`, hora: reg.horaReal, texto: `${textoPausa ? textoPausa + ' ' : ''}Fica por validar pela Direção (${pontoMotivosTexto(reg)}).${dica}` });
     } else {
       pontoQrMostrarResultado({ estado: 'ok', tipo: reg.tipo, titulo: `${nomeTipo} ${registadaTxt}`, hora: reg.horaReal, texto: res.aparelho_associado ? `${textoPausa ? textoPausa + ' ' : ''}Este telemóvel ficou associado a ti.` : (textoPausa || (reg.tipo === 'entrada' ? 'Bom trabalho! 👋' : 'Até amanhã! 👋')) });
