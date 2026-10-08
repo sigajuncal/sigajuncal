@@ -9237,6 +9237,11 @@ function buildBlocoNotasWidget(config) {
   // servidor; comparação sem distinguir maiúsculas/acentos (normalizarTexto,
   // já usado no resto da app para pesquisa tolerante).
   let searchQuery = '';
+  // Separadores Pendentes/Histórico (config.comHistorico) — as notas
+  // resolvidas saem da lista principal e passam para "Histórico", com o
+  // mesmo desenho dos separadores das Entregas (laranja/verde + contagem).
+  let separadorAtivo = 'pendentes';
+  const tabsEl = config.comHistorico ? h('div', { class: 'tabs-row', style: 'margin-bottom:12px;' }) : null;
 
   const wrap = h('div', { class: 'card card-pad nota-rapida-card' });
   const statusEl = h('span', { class: 'nota-rapida-status' }, '');
@@ -9251,7 +9256,14 @@ function buildBlocoNotasWidget(config) {
   // na ordem de inserção do array, para nunca desalinhar de dados antigos,
   // sincronizados de outro dispositivo, ou editados diretamente na BD).
   function notasOrdenadas() {
-    const lista = [...notas].sort((a, b) => String(b.criadoEm || '').localeCompare(String(a.criadoEm || '')));
+    let lista = [...notas].sort((a, b) => String(b.criadoEm || '').localeCompare(String(a.criadoEm || '')));
+    if (config.comHistorico) {
+      if (separadorAtivo === 'historico') {
+        lista = lista.filter(n => n.resolvidoEm).sort((a, b) => String(b.resolvidoEm || '').localeCompare(String(a.resolvidoEm || '')));
+      } else {
+        lista = lista.filter(n => !n.resolvidoEm);
+      }
+    }
     const q = normalizarTexto(searchQuery.trim());
     return q ? lista.filter(n => normalizarTexto(n.texto || '').includes(q)) : lista;
   }
@@ -9265,6 +9277,7 @@ function buildBlocoNotasWidget(config) {
       STATE.notaPessoalPendentesCount = notas.filter(n => !n.resolvidoEm).length;
     }
     clear(listEl);
+    if (tabsEl) renderSeparadores();
     if (loading) { listEl.appendChild(h('p', { class: 'cell-muted', style: 'margin:4px 0;' }, 'A carregar…')); return; }
     if (!notas.length) {
       listEl.appendChild(h('p', { class: 'cell-muted', style: 'margin:4px 0;' }, config.textoVazio || 'Sem notas por agora — escreve a primeira abaixo.'));
@@ -9272,7 +9285,9 @@ function buildBlocoNotasWidget(config) {
     }
     const filtradas = notasOrdenadas();
     if (!filtradas.length) {
-      listEl.appendChild(h('p', { class: 'cell-muted', style: 'margin:4px 0;' }, 'Sem notas para esta pesquisa.'));
+      let vazio = 'Sem notas para esta pesquisa.';
+      if (config.comHistorico && !searchQuery.trim()) vazio = separadorAtivo === 'historico' ? 'Ainda não há notas resolvidas.' : 'Sem notas por tratar — está tudo resolvido.';
+      listEl.appendChild(h('p', { class: 'cell-muted', style: 'margin:4px 0;' }, vazio));
       return;
     }
     filtradas.forEach(n => {
@@ -9294,6 +9309,17 @@ function buildBlocoNotasWidget(config) {
         delBtn,
       ]));
     });
+  }
+  function renderSeparadores() {
+    clear(tabsEl);
+    const nPend = notas.filter(n => !n.resolvidoEm).length;
+    const nHist = notas.length - nPend;
+    const btn = (chave, tom, icone, texto, n) => h('button', {
+      type: 'button', class: 'tab-btn ' + tom + (separadorAtivo === chave ? ' active' : ''),
+      onclick: () => { if (separadorAtivo !== chave) { separadorAtivo = chave; renderLista(); } },
+    }, [Icon(icone, { size: 14 }), h('span', {}, texto), h('span', { class: 'tab-count' }, String(n))]);
+    tabsEl.appendChild(btn('pendentes', 'tone-orange', 'clipboard', 'Por tratar', nPend));
+    tabsEl.appendChild(btn('historico', 'tone-green', 'checkcircle', 'Histórico', nHist));
   }
   async function carregar() {
     const owner = ownerIdFn();
@@ -9329,6 +9355,7 @@ function buildBlocoNotasWidget(config) {
     const limpo = String(valorBruto || '').trim().slice(0, maxChars);
     if (!limpo) return;
     notas = [{ id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, texto: limpo, autor: currentUserName() || '', criadoEm: new Date().toISOString(), resolvidoEm: null }, ...notas];
+    separadorAtivo = 'pendentes';
     renderLista();
     gravar();
   }
@@ -9397,6 +9424,7 @@ function buildBlocoNotasWidget(config) {
   // (escrever uma nota nova), por isso fica sempre à vista sem ter de
   // percorrer a lista de notas já existentes para lhe chegar.
   wrap.appendChild(h('div', { class: 'notas-pessoal-add-row', style: 'margin-bottom:12px;' }, [inputNovo, addBtn]));
+  if (tabsEl) wrap.appendChild(tabsEl);
   wrap.appendChild(listEl);
   return wrap;
 }
@@ -9415,6 +9443,7 @@ function buildBlocoNotasPessoalPanel() {
     subtitulo: 'Área privada — só o utilizador com a sessão ativa (tu) vê e gere estas notas.',
     mostrarAutor: false,
     comPesquisa: true,
+    comHistorico: true,
   });
 }
 // Página própria do Bloco de Notas Pessoal — deixou de ser um separador
@@ -27474,10 +27503,12 @@ const afaFichaSchema = [
   { name: 'rugasTexturaDistribuicao', label: 'Rugas e Textura — Profundidade e distribuição', type: 'text', col: 2, secao: 'Diagnóstico e avaliação clínica' },
   { name: 'rugasTexturaAconselhamento', label: 'Rugas e Textura — Aconselhamento', type: 'textarea', col: 2, secao: 'Diagnóstico e avaliação clínica' },
   { name: 'danoUvAconselhamento', label: 'Dano UV — Aconselhamento (envelhecimento oculto)', type: 'textarea', col: 2, secao: 'Diagnóstico e avaliação clínica' },
+  // Notas livres (pedido 2026-10-08) — tudo o que não cabe nos campos acima.
+  { name: 'notasDiversas', label: 'Notas diversas', type: 'textarea', col: 2, rows: '4', secao: 'Notas' },
 ];
 // Secções, pela ordem em que aparecem no formulário em papel — os campos
 // sem `secao` (Identificação) vêm sempre primeiro, sem cabeçalho de secção.
-const AFA_FICHA_SECOES = ['Condições de saúde', 'Estilo de vida', 'Rotina de cuidados atuais', 'Diagnóstico e avaliação clínica'];
+const AFA_FICHA_SECOES = ['Condições de saúde', 'Estilo de vida', 'Rotina de cuidados atuais', 'Diagnóstico e avaliação clínica', 'Notas'];
 function afaFichaCamposDaSecao(secao) { return afaFichaSchema.filter(f => f.secao === secao); }
 function afaFichaCamposIdentificacao() { return afaFichaSchema.filter(f => !f.secao); }
 function afaFichaEmptyDraft() {
@@ -55381,7 +55412,14 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
       if (f.name === 'entreguePor') {
         const estafetas = estafetasDisponiveis();
         const nomes = estafetas.map(u => u.nomeCompleto || u.username);
-        return Object.assign({}, f, { options: nomes.length ? nomes : [draft.entreguePor || ''].filter(Boolean) });
+        // Campo "combo": sugere os perfis Estafeta (lista ao clicar), mas
+        // também aceita escrever outro nome quando a entrega é feita por
+        // alguém que não tem perfil de estafeta na app.
+        return Object.assign({}, f, {
+          type: 'combo', options: nomes,
+          placeholder: nomes.length ? 'Escolher estafeta ou escrever outro nome...' : 'Escrever o nome de quem entrega...',
+          helperText: 'Escolhe da lista ou escreve outro nome.',
+        });
       }
       if (f.name === 'metodoPagamento') {
         return Object.assign({}, f, {
