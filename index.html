@@ -1057,6 +1057,9 @@
   .ponto-wifi-aviso-linha{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
   .ponto-wifi-senha{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:15px;letter-spacing:.3px;background:#fff;border:1px solid #fdba74;border-radius:6px;padding:1px 7px;color:#0f172a;}
   .ponto-wifi-copiar{border:1px solid #fb923c;background:#fff;color:#c2410c;font-weight:700;font-size:12px;border-radius:999px;padding:3px 10px;cursor:pointer;}
+  .ponto-wifi-dicas{font-size:12.5px;color:#7c2d12;}
+  .ponto-wifi-dicas summary{cursor:pointer;font-weight:700;color:#c2410c;}
+  .ponto-wifi-dicas ul{margin:4px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:3px;}
   .ponto-wifi-aviso-nota{font-size:11.5px;color:#9a3412;}
   .ponto-circulo.pausa.excedida{background:linear-gradient(160deg,#fb923c,#c2410c);}
   .ponto-pausa-contagem{display:flex;flex-direction:column;align-items:center;gap:2px;margin:2px 0 0;text-align:center;}
@@ -1074,6 +1077,11 @@
   @keyframes escalaDestaqueFaixa{0%,8%{opacity:0;transform:scale(1.08);}15%,70%{opacity:1;transform:scale(1);}100%{opacity:0;}}
   @keyframes escalaDestaqueTitulo{0%,70%{background:#fef3c7;color:#92400e;box-shadow:0 0 0 2px #f59e0b;}100%{}}
   @media (prefers-reduced-motion: reduce){.escala-vertical-destaque-faixa{animation:none;opacity:1;}}
+  .presenca-mobile-horarios{margin:10px 0 0;}
+  .presenca-mobile-horarios .presenca-online-badge{font-size:13px;padding:7px 12px;}
+  .presenca-mobile-horarios .presenca-online-nomes{font-size:13.5px !important;}
+  .presenca-mobile-horarios .presenca-nome-btn{padding:2px 0;}
+  .presenca-mobile-ninguem{font-size:12.5px;color:var(--pharm-500);}
   .vac-obs-icone{display:inline-flex;align-items:center;justify-content:center;margin-left:6px;width:24px;height:24px;border-radius:999px;
     color:#c2410c;background:#ffedd5;border:1px solid #fdba74;vertical-align:middle;cursor:pointer;flex-shrink:0;}
   .vac-obs-icone:hover,.vac-obs-icone:focus-visible{background:#fed7aa;outline:none;}
@@ -11996,6 +12004,7 @@ function atualizarIndicadoresChat() {
   atualizarTituloAba();
   atualizarNavChatBadge();
   refreshSidebarBadges();
+  atualizarGavetaBtnMobileHorarios();
 }
 function limparBadgeApp() {
   if (!('clearAppBadge' in navigator)) return;
@@ -18886,17 +18895,54 @@ function atualizarIndicadorDadosAtualizados() {
 // saudação e a frase: sem sino, atalhos nem "Atualizado agora mesmo". A
 // frase é a mesma da Página Inicial (mensagemMotivadoraJuncal — inclui o
 // contexto do turno de hoje).
+// Gaveta de Recados no topo de Horários (telemóvel, 2026-10-09, Hugo: "para permitir enviar mensagens ou tarefas a
+// partir de casa") — o número mostra o que há de novo por ver, como na barra lateral do computador.
+function buildGavetaBtnMobileHorarios() {
+  if (!utilizadorAtualTemGaveta()) return null;
+  const btn = h('button', { type: 'button', class: 'lembretes-bell-btn lembretes-bell-inativa', id: 'gaveta-btn-mobile-horarios', title: 'Gaveta de Recados', 'aria-label': 'Gaveta de Recados' },
+    [Icon('inbox', { size: 18, strokeWidth: 2.2 })]);
+  btn.addEventListener('click', () => requireAuth(() => abrirModalGaveta()));
+  atualizarGavetaBtnMobileHorarios(btn);
+  return btn;
+}
+function atualizarGavetaBtnMobileHorarios(btnDado) {
+  const btn = btnDado || document.getElementById('gaveta-btn-mobile-horarios');
+  if (!btn) return;
+  const n = utilizadorAtualTemGaveta() ? recadosNaoVistosDoUtilizador().length : 0;
+  let badge = btn.querySelector('.lembretes-bell-badge');
+  if (!n) { if (badge) badge.remove(); return; }
+  if (!badge) { badge = h('span', { class: 'lembretes-bell-badge' }); btn.appendChild(badge); }
+  badge.textContent = n > 99 ? '99+' : String(n);
+}
+// Quem está online (telemóvel, 2026-10-09): o mesmo indicador da Página Inicial do computador — tocar num nome
+// abre logo a conversa privada com essa pessoa na Gaveta. Horários não se reconstrói em segundo plano, por isso
+// este bloco é atualizado à parte sempre que a presença muda (ver iniciarPresenca).
+function buildPresencaMobileHorarios() {
+  const caixa = h('div', { id: 'presenca-mobile-horarios', class: 'presenca-mobile-horarios' });
+  preencherPresencaMobileHorarios(caixa);
+  return caixa;
+}
+function preencherPresencaMobileHorarios(caixaDada) {
+  const caixa = caixaDada || document.getElementById('presenca-mobile-horarios');
+  if (!caixa) return;
+  clear(caixa);
+  const badge = buildUtilizadoresOnlineBadge();
+  if (badge) caixa.appendChild(badge);
+  else caixa.appendChild(h('span', { class: 'presenca-mobile-ninguem' }, 'Mais ninguém online neste momento.'));
+}
 function buildSaudacaoMobileHorarios(goTo) {
   if (!activeUser || !mobileRestrito()) return null;
-  // Atalho para o Bloco de Notas Pessoal (2026-10-09) — o mesmo botão da Página Inicial, ao lado do "Bom dia".
+  // Atalhos (2026-10-09) ao lado do "Bom dia": Gaveta de Recados e Bloco de Notas Pessoal.
+  const atalhoGaveta = buildGavetaBtnMobileHorarios();
   const atalhoNotas = goTo ? buildBlocoNotasPessoalBtnHome(goTo) : null;
   return h('div', { class: 'saudacao-mobile-horarios', style: 'margin:0 0 18px;' }, [
     h('div', { style: 'display:flex;align-items:flex-start;justify-content:space-between;gap:10px;' }, [
       h('h2', { class: 'welcome-title', id: 'saudacao-mobile-titulo', style: 'margin:0;' }, saudacaoPersonalizadaDinamica(activeUser.nomeCompleto || activeUser.username)),
-      atalhoNotas,
+      (atalhoGaveta || atalhoNotas) ? h('div', { style: 'display:flex;gap:8px;flex-shrink:0;' }, [atalhoGaveta, atalhoNotas].filter(Boolean)) : null,
     ].filter(Boolean)),
     h('p', { class: 'welcome-sub mensagem-motivadora-dashboard', id: 'saudacao-mobile-frase' }, mensagemMotivadoraJuncal(activeUser)),
-  ]);
+    utilizadorAtualTemGaveta() ? buildPresencaMobileHorarios() : null,
+  ].filter(Boolean));
 }
 // Horários nunca é reconstruído em segundo plano (ver
 // PAGINAS_NUNCA_RECONSTROI_EM_FUNDO), por isso a saudação (Bom dia/Boa
@@ -55053,6 +55099,7 @@ function pontoTornarCirculoLeitor(circulo, rotulo) {
 }
 // Conteúdo do aviso "não estás no Wi-Fi da farmácia" (cartão Picar Ponto e ecrã do resultado).
 function pontoWifiAvisoConteudo(senha) {
+  const ehIPhone = /iPhone|iPad|iPod/.test(navigator.userAgent || '') || ((navigator.userAgent || '').includes('Macintosh') && navigator.maxTouchPoints > 1);
   const partes = [
     h('div', { class: 'ponto-wifi-aviso-titulo' }, ['📶 Não estás no Wi-Fi da farmácia']),
     h('div', { class: 'ponto-wifi-aviso-linha' }, ['Liga-te à rede ', h('b', {}, PONTO_REDE_WIFI_NOME)]),
@@ -55065,6 +55112,18 @@ function pontoWifiAvisoConteudo(senha) {
     });
     partes.push(h('div', { class: 'ponto-wifi-aviso-linha' }, ['Palavra-passe: ', h('b', { class: 'ponto-wifi-senha' }, senha), copiar]));
   }
+  // Já ligado ao BOJuncal e mesmo assim aparece este aviso? (2026-10-09, Hugo: iPhone com Wi-Fi e dados móveis
+  // ligados ao mesmo tempo) — o iPhone pode estar a mandar a ligação pelos dados móveis ou por um "reencaminhamento".
+  const dicas = ehIPhone
+    ? ['Desliga os dados móveis só enquanto picas (Centro de Controlo), ou',
+       `Definições › Wi-Fi › (i) ao lado de ${PONTO_REDE_WIFI_NOME} › desliga "Limitar rastreio do endereço IP"`,
+       'Definições › Dados móveis › (no fundo) desliga "Assistência Wi-Fi"']
+    : ['Desliga os dados móveis só enquanto picas — o telemóvel pode estar a usar os dados em vez do Wi-Fi.'];
+  const detalhe = h('details', { class: 'ponto-wifi-dicas' }, [
+    h('summary', {}, `Já estás ligado ao ${PONTO_REDE_WIFI_NOME}?`),
+    h('ul', {}, dicas.map(d => h('li', {}, d))),
+  ]);
+  partes.push(detalhe);
   partes.push(h('div', { class: 'ponto-wifi-aviso-nota' }, 'Fora do Wi-Fi, a picagem fica por validar pela Direção.'));
   return partes;
 }
@@ -55610,6 +55669,29 @@ function pontoAbrirConfigRedeQr(rerender) {
     if (!atualRegistada) {
       corpo.appendChild(h('button', { class: 'btn btn-primary', type: 'button', onClick: () => confirmDialog(`Confirmas que este aparelho está ligado ao Wi-Fi ${PONTO_REDE_WIFI_NOME} da farmácia (e não aos dados móveis nem a outra rede)?`, () => acao('rpc_ponto_registar_rede', {}, 'Rede da farmácia registada.'), { confirmLabel: `Sim, estou no ${PONTO_REDE_WIFI_NOME}` }) }, iconeTexto('wifi', 'Registar a rede onde estou agora')));
     }
+    // 1b) Endereços vistos em picagens por QR que ficaram "fora da rede" (2026-10-09, Hugo: iPhone ligado ao BOJuncal
+    // e aos dados móveis dizia "não estás no BOJuncal"). A mesma rede da farmácia pode chegar à internet por mais de
+    // um endereço (ex.: IPv6) — aqui a Direção vê esses endereços, quem e quando, e regista-os com um toque.
+    const vistasCaixa = h('div', { class: 'ponto-redes-vistas' }, h('p', { class: 'ponto-qr-nota' }, 'A procurar endereços de picagens fora da rede…'));
+    corpo.appendChild(vistasCaixa);
+    pontoChamarRpc('rpc_ponto_redes_vistas', {}).then(r => {
+      if (!vistasCaixa.isConnected) return;
+      clear(vistasCaixa);
+      if (!r) {
+        if (/sigajuncal_ponto_v2|does not exist|Could not find/i.test(lastDbError || '')) vistasCaixa.appendChild(h('p', { class: 'ponto-qr-nota' }, 'Para ver os endereços das picagens fora da rede, corre o SQL sigajuncal_ponto_redes_vistas.sql no Supabase.'));
+        return;
+      }
+      const vistas = Array.isArray(r.vistas) ? r.vistas : [];
+      if (!vistas.length) return;
+      vistasCaixa.appendChild(h('p', { class: 'ponto-qr-nota', style: 'margin:10px 0 4px;font-weight:700;' }, 'Picagens "fora da rede" nos últimos 30 dias vieram destes endereços:'));
+      vistasCaixa.appendChild(h('p', { class: 'ponto-qr-nota', style: 'margin:0 0 6px;' }, 'Se foram feitas dentro da farmácia (ex.: iPhone ligado ao Wi-Fi e aos dados móveis ao mesmo tempo, ou um endereço IPv6 da própria rede), regista o endereço: as próximas picagens a partir dele passam a contar logo. Nunca registes um endereço de casa de alguém.'));
+      vistasCaixa.appendChild(h('ul', { class: 'ponto-qr-redes' }, vistas.map(v => h('li', {}, [
+        h('span', { style: 'min-width:0;' }, [h('strong', { style: 'display:block;' }, v.chave),
+          h('span', { style: 'display:block;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;word-break:normal;overflow-wrap:break-word;font-size:12.5px;color:var(--pharm-600);margin-top:2px;' },
+            `${v.vezes} ${Number(v.vezes) === 1 ? 'picagem' : 'picagens'}${v.quem ? ` — ${v.quem}` : ''}${v.ultima ? ` · última a ${formatDate(String(v.ultima).slice(0, 10))}` : ''}`)]),
+        h('button', { class: 'btn btn-secondary', type: 'button', style: 'font-size:12px;padding:3px 10px;', onClick: () => confirmDialog(`Registar ${v.chave} como rede da farmácia? A partir daí, as picagens feitas a partir deste endereço contam logo (as anteriores continuam por validar).`, () => acao('rpc_ponto_adicionar_rede', { p_chave: v.chave }, 'Endereço registado como rede da farmácia.'), { confirmLabel: 'Registar' }) }, 'Registar'),
+      ]))));
+    });
     // 2) QR code
     corpo.appendChild(h('h3', { class: 'ponto-qr-secao' }, '2. QR code do ponto'));
     if (!est.qr_codigo) {
@@ -60610,6 +60692,7 @@ function iniciarPresenca() {
     const estado = presenceChannel.presenceState();
     STATE.utilizadoresOnline = sanitizarSupabase(Object.values(estado).map(arr => arr[0]).filter(Boolean));
     refreshSidebarBadges();
+    preencherPresencaMobileHorarios(); // telemóvel: Horários não se reconstrói em fundo
     if (STATE.page === 'home' || STATE.page === 'chat') render();
   });
   presenceChannel.subscribe(async (status) => {
