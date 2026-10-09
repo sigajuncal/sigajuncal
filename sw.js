@@ -75,16 +75,23 @@ self.addEventListener('push', (event) => {
   event.waitUntil(Promise.all(tarefas));
 });
 
+/* Clique na notificação (2026-10-09): volta SEMPRE à janela da app que já existe, em vez de abrir outra — uma
+   janela nova começa sem sessão. Dá preferência à janela da app instalada / já visível, e só abre uma nova se
+   não houver nenhuma. */
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  event.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((janelas) => {
-      for (const j of janelas) {
-        if ('focus' in j) return j.focus();
+  event.waitUntil((async () => {
+    const janelas = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const daApp = janelas.filter((j) => j.url && j.url.startsWith(self.registration.scope));
+    const candidatas = daApp.length ? daApp : janelas;
+    candidatas.sort((a, b) => (Number(b.focused) - Number(a.focused)) || (Number(b.visibilityState === 'visible') - Number(a.visibilityState === 'visible')));
+    for (const j of candidatas) {
+      if ('focus' in j) {
+        try { return await j.focus(); } catch (e) { /* tenta a seguinte */ }
       }
-      if (self.clients.openWindow) return self.clients.openWindow('./');
-    })
-  );
+    }
+    if (self.clients.openWindow) return self.clients.openWindow(self.registration.scope);
+  })());
 });
 
 /* NOTA IMPORTANTE — envio de push com a app fechada:

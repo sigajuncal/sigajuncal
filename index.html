@@ -1067,6 +1067,13 @@
   .ponto-pausa-barra > i{display:block;height:100%;background:#d97706;border-radius:999px;transition:width .4s;}
   .ponto-pausa-barra.excedida{background:#fed7aa;} .ponto-pausa-barra.excedida > i{background:#c2410c;}
   .ponto-qr-resultado.ok.pausa_inicio .ponto-qr-resultado-circulo,.ponto-qr-resultado.ok.pausa_fim .ponto-qr-resultado-circulo{background:#d97706;}
+  .ponto-leitor{max-width:380px;width:calc(100vw - 32px);display:flex;flex-direction:column;align-items:center;gap:12px;text-align:center;}
+  .ponto-leitor-titulo{margin:0;font-size:16px;font-weight:800;color:var(--pharm-800);}
+  .ponto-leitor-janela{position:relative;width:100%;aspect-ratio:1/1;border-radius:16px;overflow:hidden;background:#0f172a;}
+  .ponto-leitor-video{width:100%;height:100%;object-fit:cover;display:block;}
+  .ponto-leitor-mira{position:absolute;inset:16%;border:3px solid rgba(255,255,255,.9);border-radius:14px;box-shadow:0 0 0 999px rgba(15,23,42,.35);}
+  .ponto-leitor-estado{margin:0;font-size:13.5px;color:var(--pharm-600);line-height:1.45;}
+  .ponto-leitor-estado.erro{color:#b91c1c;font-weight:600;}
   .ponto-escolha-pausa{display:flex;flex-direction:column;gap:10px;align-items:stretch;}
   .ponto-escolha-pausa .btn{justify-content:center;font-size:15px;padding:12px 14px;}
   .pv-pausa{display:block;font-size:11px;color:#b45309;margin-top:2px;white-space:nowrap;}
@@ -31105,7 +31112,7 @@ function buildDefinicoesPage(container, goTo) {
       if (updated && String(draft.pin || '').trim() && (editingSelf || isMasterUser())) {
         const pinOk = await definirPinNoServidor(editingId, String(draft.pin).trim());
         if (!pinOk) formError = `Os dados foram guardados, mas o PIN não foi alterado. ${lastDbError || ''}`.trim();
-        else if (editingSelf) { activeUserPin = String(draft.pin).trim(); atualizarPinDaBiometriaGuardada(activeUser, activeUserPin); }
+        else if (editingSelf) { activeUserPin = String(draft.pin).trim(); atualizarPinDaBiometriaGuardada(activeUser, activeUserPin); guardarSessaoMovel(); }
       }
       if (updated) {
         STATE.usuarios = STATE.usuarios.map(u => u.id === editingId ? updated : u);
@@ -54758,6 +54765,140 @@ function pontoTornarCirculoBotao(circulo, rotulo) {
   circulo.addEventListener('click', picar);
   circulo.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); picar(); } });
 }
+/* ---- Ler o QR code DENTRO da app (2026-10-09) ----
+   Hugo: "app está aberta no telemóvel com sessão iniciada mas ao abrir a câmara e clicar no link pede login".
+   A câmara do telemóvel abre o link numa janela nova do browser — que não tem a sessão da app. Agora, no próprio
+   cartão "Picar Ponto", carregar no círculo abre a câmara AQUI, lê o QR code e pica logo, com a sessão que já
+   existe. Leitura: BarcodeDetector (Android/Chrome) ou, onde não existe (iPhone), a biblioteca jsQR (MIT), só
+   descarregada da primeira vez que é precisa. A câmara do telemóvel continua a funcionar como antes. */
+function pontoQrCodigoDoTexto(texto) {
+  const t = String(texto || '').trim();
+  try {
+    const u = new URL(t);
+    const c = u.searchParams.get('ponto');
+    if (c && u.origin === window.location.origin) return String(c).slice(0, 80);
+    return null; // QR de outro site — nunca se segue
+  } catch (e) { return null; }
+}
+let PONTO_JSQR_PROMESSA = null;
+function pontoCarregarJsQR() {
+  if (window.jsQR) return Promise.resolve(window.jsQR);
+  if (PONTO_JSQR_PROMESSA) return PONTO_JSQR_PROMESSA;
+  PONTO_JSQR_PROMESSA = new Promise((resolve, reject) => {
+    const sc = document.createElement('script');
+    sc.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js';
+    sc.async = true;
+    sc.onload = () => (window.jsQR ? resolve(window.jsQR) : reject(new Error('jsQR indisponível')));
+    sc.onerror = () => { PONTO_JSQR_PROMESSA = null; reject(new Error('Sem ligação para carregar o leitor')); };
+    document.head.appendChild(sc);
+  });
+  return PONTO_JSQR_PROMESSA;
+}
+async function pontoQrAbrirLeitor() {
+  if (!activeUser) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showToast('Este browser não deixa usar a câmara aqui — lê o QR code com a câmara do telemóvel.', 'info');
+    return;
+  }
+  document.querySelectorAll('.ponto-leitor-overlay').forEach(el => el.remove());
+  const video = h('video', { class: 'ponto-leitor-video', playsinline: 'playsinline', muted: 'muted', autoplay: 'autoplay' });
+  video.muted = true; video.setAttribute('playsinline', '');
+  const estado = h('p', { class: 'ponto-leitor-estado' }, 'A abrir a câmara…');
+  const cancelarBtn = h('button', { class: 'btn btn-secondary', type: 'button' }, 'Cancelar');
+  const overlay = h('div', { class: 'modal-overlay ponto-leitor-overlay' }, h('div', { class: 'modal-panel ponto-leitor' }, [
+    h('p', { class: 'ponto-leitor-titulo' }, 'Aponta para o QR code do ponto'),
+    h('div', { class: 'ponto-leitor-janela' }, [video, h('div', { class: 'ponto-leitor-mira', 'aria-hidden': 'true' })]),
+    estado,
+    cancelarBtn,
+  ]));
+  let stream = null, ativo = true, temporizador = null;
+  const fechar = () => {
+    ativo = false;
+    if (temporizador) clearTimeout(temporizador);
+    if (stream) stream.getTracks().forEach(t => { try { t.stop(); } catch (e) { /* ignora */ } });
+    overlay.remove();
+    document.removeEventListener('visibilitychange', aoEsconder);
+  };
+  const aoEsconder = () => { if (document.visibilityState === 'hidden') fechar(); };
+  document.addEventListener('visibilitychange', aoEsconder);
+  cancelarBtn.addEventListener('click', fechar);
+  document.body.appendChild(overlay);
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+  } catch (e) {
+    const negado = e && (e.name === 'NotAllowedError' || e.name === 'SecurityError');
+    estado.textContent = negado
+      ? 'Sem autorização para usar a câmara. Autoriza nas definições do browser/telemóvel, ou lê o QR code com a câmara do telemóvel.'
+      : 'Não foi possível abrir a câmara. Lê o QR code com a câmara do telemóvel.';
+    estado.classList.add('erro');
+    return;
+  }
+  if (!ativo) { stream.getTracks().forEach(t => t.stop()); return; }
+  video.srcObject = stream;
+  try { await video.play(); } catch (e) { /* alguns browsers já arrancam sozinhos */ }
+  estado.textContent = 'À procura do QR code…';
+  // Leitor: BarcodeDetector quando existe; senão jsQR.
+  let detetar = null;
+  try {
+    if ('BarcodeDetector' in window) {
+      const formatos = await window.BarcodeDetector.getSupportedFormats();
+      if (formatos.includes('qr_code')) {
+        const det = new window.BarcodeDetector({ formats: ['qr_code'] });
+        detetar = async () => { const r = await det.detect(video); return r && r[0] ? r[0].rawValue : null; };
+      }
+    }
+  } catch (e) { detetar = null; }
+  if (!detetar) {
+    try {
+      const jsQR = await pontoCarregarJsQR();
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      detetar = async () => {
+        const w = video.videoWidth, hh = video.videoHeight;
+        if (!w || !hh) return null;
+        const escala = Math.min(1, 720 / Math.max(w, hh));
+        canvas.width = Math.round(w * escala); canvas.height = Math.round(hh * escala);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const r = jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' });
+        return r ? r.data : null;
+      };
+    } catch (e) {
+      estado.textContent = 'Não foi possível preparar o leitor (sem internet?). Lê o QR code com a câmara do telemóvel.';
+      estado.classList.add('erro');
+      return;
+    }
+  }
+  let avisouOutro = false;
+  const ciclo = async () => {
+    if (!ativo) return;
+    let texto = null;
+    try { texto = await detetar(); } catch (e) { texto = null; }
+    if (!ativo) return;
+    if (texto) {
+      const codigo = pontoQrCodigoDoTexto(texto);
+      if (codigo) {
+        try { if (navigator.vibrate) navigator.vibrate(60); } catch (e) { /* ignora */ }
+        fechar();
+        if (!activeUserPin) { showToast('Para picar o ponto, termina a sessão e volta a entrar com o teu PIN.', 'error'); return; }
+        pontoQrProcessar(codigo);
+        return;
+      }
+      if (!avisouOutro) { estado.textContent = 'Este QR code não é o do ponto da farmácia.'; avisouOutro = true; }
+    }
+    temporizador = setTimeout(ciclo, 200);
+  };
+  ciclo();
+}
+function pontoTornarCirculoLeitor(circulo, rotulo) {
+  circulo.setAttribute('role', 'button');
+  circulo.setAttribute('tabindex', '0');
+  circulo.setAttribute('aria-label', `Ler o QR code para picar: ${rotulo}`);
+  circulo.style.cursor = 'pointer';
+  const abrir = () => requireAuth(() => pontoQrAbrirLeitor());
+  circulo.addEventListener('click', abrir);
+  circulo.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); abrir(); } });
+}
 // Conteúdo do aviso "não estás no Wi-Fi da farmácia" (cartão Picar Ponto e ecrã do resultado).
 function pontoWifiAvisoConteudo(senha) {
   const partes = [
@@ -54834,7 +54975,7 @@ function buildPontoWidgetQr(rerender, diaHoje) {
   const infoEstadoEl = h('li', {}, 'A verificar a rede…');
   if (modoTeste) infoLinhas.push(h('li', {}, `🧪 Modo de teste — até ${formatDate('2026-09-30')} só a Direção vê este cartão. Para toda a equipa a partir de ${formatDate(PONTO_DATA_INICIO)}.`));
   if (previstoTexto) infoLinhas.push(h('li', {}, `Horário previsto hoje: ${previstoTexto}.`));
-  infoLinhas.push(h('li', {}, `Para picar: liga-te ao Wi-Fi ${PONTO_REDE_WIFI_NOME}, abre a câmara do telemóvel e aponta para o QR code afixado na farmácia. A app regista sozinha a Entrada (ao chegar) ou a Saída (no fim do dia).`));
+  infoLinhas.push(h('li', {}, `Para picar: liga-te ao Wi-Fi ${PONTO_REDE_WIFI_NOME}, carrega no círculo aqui na app e aponta para o QR code afixado na farmácia (também dá com a câmara do telemóvel, mas aí pode pedir o login outra vez). A app regista sozinha a Entrada (ao chegar) ou a Saída (no fim do dia).`));
   infoLinhas.push(infoEstadoEl);
   infoLinhas.push(h('li', {}, 'Leste o QR code duas vezes seguidas? Só conta uma. Uma saída pouco depois da entrada pede sempre confirmação.'));
   if (!ehTelemovel) infoLinhas.push(h('li', {}, 'Estás num computador: pica sempre no teu telemóvel — no computador a picagem só conta depois de validada pela Direção.'));
@@ -54951,10 +55092,11 @@ function buildPontoWidgetQr(rerender, diaHoje) {
     const relogioP = setInterval(() => { if (!circuloP.isConnected) { clearInterval(relogioP); return; } atualizarP(); }, 10000);
     if (planeadaP) pontoPausaAgendarLembrete(inicioMs + planeadaP.minutos * 60000, jornada.pausaAberta.id);
     if (pontoPicagemLivre()) pontoTornarCirculoBotao(circuloP, 'regresso da pausa');
+    else if (ehTelemovel) pontoTornarCirculoLeitor(circuloP, 'regresso da pausa');
     card.appendChild(h('div', { class: 'ponto-centro' }, [
       circuloP,
       h('div', { class: 'ponto-pausa-contagem' }, [faltaEl, subEl, barraEl]),
-      h('p', { class: 'ponto-qr-instrucao' }, pontoPicagemLivre() ? 'Ao regressar, carrega no círculo — fica registado o regresso da pausa.' : 'Ao regressar, lê o QR code da farmácia — fica registado o regresso da pausa.'),
+      h('p', { class: 'ponto-qr-instrucao' }, pontoPicagemLivre() ? 'Ao regressar, carrega no círculo — fica registado o regresso da pausa.' : ehTelemovel ? 'Ao regressar, carrega no círculo e aponta para o QR code da farmácia — fica registado o regresso da pausa.' : 'Ao regressar, lê o QR code da farmácia — fica registado o regresso da pausa.'),
       etiquetasEl,
       configBtn,
     ]));
@@ -54977,9 +55119,15 @@ function buildPontoWidgetQr(rerender, diaHoje) {
   const relogio = setInterval(() => { if (!circulo.isConnected) { clearInterval(relogio); return; } horaEl.textContent = horaAgora(); }, 15000);
   const pausaHoje = pausaPorPicar ? pontoPausaPlaneada(turnoHoje) : null;
   const livre = pontoPicagemLivre();
+  const leitorNaApp = !livre && ehTelemovel;
   if (livre) pontoTornarCirculoBotao(circulo, rotulo);
+  else if (leitorNaApp) pontoTornarCirculoLeitor(circulo, rotulo);
   const instrucaoEl = h('p', { class: 'ponto-qr-instrucao' }, livre
     ? `Carrega no círculo para picar a ${rotulo.toLowerCase()}${pausaHoje ? ' (ou a saída no fim do dia)' : ''} — podes picar em qualquer sítio, no computador ou no telemóvel.`
+    : leitorNaApp
+    ? (pausaHoje
+      ? `Carrega no círculo e aponta para o QR code da farmácia ao sair para a pausa (${pausaHoje.inicio}–${pausaHoje.fim}) — ou no fim do dia, para picar a saída.`
+      : `Carrega no círculo e aponta para o QR code da farmácia para picar a ${rotulo.toLowerCase()}.`)
     : pausaHoje
     ? `Lê o QR code da farmácia ao sair para a pausa (${pausaHoje.inicio}–${pausaHoje.fim}) — ou no fim do dia, para picar a saída.`
     : `Lê o QR code da farmácia com a câmara do telemóvel para picar a ${rotulo.toLowerCase()}.`);
@@ -55031,6 +55179,8 @@ function buildPontoWidgetQr(rerender, diaHoje) {
 const PONTO_REDE_WIFI_NOME = 'BOJuncal';
 const PONTO_QR_PENDENTE_SS = 'sigajuncal_ponto_qr_pendente';
 const PONTO_QR_VALIDADE_MS = 10 * 60 * 1000; // um QR lido há mais de 10 min (ex.: página esquecida aberta) já não pica sozinho
+let PONTO_QR_CAPTURADO = null; // último código lido do endereço (evita tratar o mesmo QR duas vezes no arranque)
+let APP_ARRANQUE_CONCLUIDO = false;
 // Logo no carregamento da página: guarda o código do QR e limpa o endereço (assim recarregar a página, partilhar o
 // endereço ou voltar atrás nunca volta a picar).
 (function pontoQrCapturarDoEndereco() {
@@ -55039,9 +55189,28 @@ const PONTO_QR_VALIDADE_MS = 10 * 60 * 1000; // um QR lido há mais de 10 min (e
     const codigo = url.searchParams.get('ponto');
     if (!codigo) return;
     sessionStorage.setItem(PONTO_QR_PENDENTE_SS, JSON.stringify({ codigo: String(codigo).slice(0, 80), em: Date.now() }));
+    PONTO_QR_CAPTURADO = { codigo: String(codigo).slice(0, 80), em: Date.now() };
     url.searchParams.delete('ponto');
     window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash);
   } catch (e) { /* sem sessionStorage: a picagem por QR não arranca sozinha */ }
+})();
+// App instalada (2026-10-09): com "launch_handler: focus-existing" no manifest, ler o QR com a câmara do telemóvel
+// traz para a frente a app que JÁ está aberta (com a sessão) em vez de abrir outra janela; o endereço lido chega aqui.
+(function pontoQrOuvirLancamentos() {
+  try {
+    if (!('launchQueue' in window) || !window.launchQueue || typeof window.launchQueue.setConsumer !== 'function') return;
+    window.launchQueue.setConsumer((params) => {
+      if (!params || !params.targetURL) return;
+      let codigo = null;
+      try { const u = new URL(params.targetURL); if (u.origin === window.location.origin) codigo = u.searchParams.get('ponto'); } catch (e) { codigo = null; }
+      if (!codigo) return;
+      codigo = String(codigo).slice(0, 80);
+      if (PONTO_QR_CAPTURADO && PONTO_QR_CAPTURADO.codigo === codigo && Date.now() - PONTO_QR_CAPTURADO.em < 15000) return; // já tratado no arranque
+      PONTO_QR_CAPTURADO = { codigo, em: Date.now() };
+      try { sessionStorage.setItem(PONTO_QR_PENDENTE_SS, JSON.stringify({ codigo, em: Date.now() })); } catch (e) { return; }
+      if (APP_ARRANQUE_CONCLUIDO) pontoQrRetomarSeHouver();
+    });
+  } catch (e) { /* browser sem launchQueue — a câmara abre a app como antes */ }
 })();
 function pontoQrTirarPendente() {
   try {
@@ -59344,6 +59513,95 @@ function writeStoredAuth() {
 const ULTIMO_UTILIZADOR_KEY = 'sigajuncal_ultimo_utilizador';
 try { window.localStorage.removeItem(ULTIMO_UTILIZADOR_KEY); } catch (e) { /* sem localStorage — nada a limpar */ }
 
+/* ---- Sessão no telemóvel sobrevive a recarregar a MESMA janela (2026-10-09) ----
+   Hugo: "quando clico na notificação da app no telemóvel tenho de fazer login novamente mesmo ela já estando aberta".
+   No telemóvel o sistema (Android/iOS) descarta muitas vezes a app em segundo plano para poupar memória; ao voltar a
+   ela — por exemplo ao tocar numa notificação — a página é recarregada e a sessão, que só vivia em memória, perdia-se.
+   Agora, SÓ em telemóvel/tablet, a sessão fica também em sessionStorage: sobrevive a esse recarregamento da mesma
+   janela, mas desaparece quando a app é fechada por completo (deslizar para fora das apps recentes) — continua a
+   valer a regra "fechar por completo termina a sessão". Expira ao fim de 12 h sem uso. Nunca em computador
+   (balcões partilhados). Terminar sessão limpa-a sempre. */
+const SESSAO_MOVEL_SS = 'sigajuncal_sessao_movel';
+const SESSAO_MOVEL_VALIDADE_MS = 12 * 60 * 60 * 1000;
+let sessaoMovelTocadaEm = 0;
+function guardarSessaoMovel() {
+  if (!activeUser || !ehDispositivoMobileOuTablet()) return;
+  try {
+    sessionStorage.setItem(SESSAO_MOVEL_SS, JSON.stringify({ user: activeUser, pin: activeUserPin || null, em: Date.now() }));
+    sessaoMovelTocadaEm = Date.now();
+  } catch (e) { /* sem sessionStorage — a sessão fica só em memória, como antes */ }
+}
+function tocarSessaoMovel() {
+  if (!activeUser || !ehDispositivoMobileOuTablet() || Date.now() - sessaoMovelTocadaEm < 60000) return;
+  guardarSessaoMovel();
+}
+function limparSessaoMovel() {
+  try { sessionStorage.removeItem(SESSAO_MOVEL_SS); } catch (e) { /* ignora */ }
+  sessaoMovelTocadaEm = 0;
+}
+// Chamada no arranque ANTES de carregar os dados (a carga já precisa de saber quem está — ponto, financeiro…).
+function restaurarSessaoMovel() {
+  if (activeUser || !ehDispositivoMobileOuTablet()) return false;
+  let g = null;
+  try { g = JSON.parse(sessionStorage.getItem(SESSAO_MOVEL_SS) || 'null'); } catch (e) { g = null; }
+  if (!g || !g.user || !g.user.id || !g.user.username || !g.em || Date.now() - g.em > SESSAO_MOVEL_VALIDADE_MS) { limparSessaoMovel(); return false; }
+  activeUser = Object.assign({}, g.user);
+  activeUserPin = g.pin || null;
+  return true;
+}
+// Depois de carregados os utilizadores: a conta tem de continuar a existir e ativa, senão volta ao login.
+function confirmarSessaoMovelRestaurada() {
+  if (!activeUser) return false;
+  const u = (STATE.usuarios || []).find(x => String(x.id) === String(activeUser.id) && x.username === activeUser.username);
+  if (!u || u.ativo === false || u.eliminado) {
+    activeUser = null; activeUserPin = null; limparSessaoMovel();
+    return false;
+  }
+  activeUser = Object.assign({}, activeUser, { nomeCompleto: u.nomeCompleto || u.username, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', fundoAppId: u.fundoAppId || '', prestadorKey: u.prestadorKey || '', estatutoColaborador: u.estatutoColaborador || '' });
+  guardarSessaoMovel();
+  aplicarFundoAppDoUtilizador(activeUser);
+  iniciarPresenca();
+  registarLeituraMensagemDoDiaSeNecessario();
+  return true;
+}
+// Passagem de sessão entre janelas da app no MESMO telemóvel (2026-10-09): quando a câmara (QR do ponto) ou uma
+// notificação abre a app numa janela nova, essa janela pergunta às outras janelas abertas da app se alguém já tem
+// sessão iniciada e, se sim, continua com ela em vez de pedir o login outra vez. Só entre janelas deste aparelho e
+// deste endereço (BroadcastChannel nunca sai do browser); só em telemóvel/tablet.
+const SESSAO_CANAL_NOME = 'sigajuncal-sessao';
+let SESSAO_CANAL = null;
+function iniciarCanalSessao() {
+  if (SESSAO_CANAL || !('BroadcastChannel' in window) || !ehDispositivoMobileOuTablet()) return;
+  try {
+    SESSAO_CANAL = new BroadcastChannel(SESSAO_CANAL_NOME);
+    SESSAO_CANAL.addEventListener('message', (ev) => {
+      const d = ev.data || {};
+      if (d.tipo === 'pedido' && d.pedidoId && activeUser && activeUserPin) {
+        SESSAO_CANAL.postMessage({ tipo: 'resposta', pedidoId: d.pedidoId, user: activeUser, pin: activeUserPin });
+      }
+    });
+  } catch (e) { SESSAO_CANAL = null; }
+}
+function pedirSessaoAOutraJanela(esperaMs) {
+  if (!SESSAO_CANAL || activeUser) return Promise.resolve(false);
+  const pedidoId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return new Promise((resolve) => {
+    let feito = false;
+    const ouvir = (ev) => {
+      const d = ev.data || {};
+      if (feito || d.tipo !== 'resposta' || d.pedidoId !== pedidoId || !d.user || !d.user.id || activeUser) return;
+      feito = true;
+      SESSAO_CANAL.removeEventListener('message', ouvir);
+      activeUser = Object.assign({}, d.user);
+      activeUserPin = d.pin || null;
+      guardarSessaoMovel();
+      resolve(true);
+    };
+    SESSAO_CANAL.addEventListener('message', ouvir);
+    try { SESSAO_CANAL.postMessage({ tipo: 'pedido', pedidoId }); } catch (e) { /* ignora */ }
+    setTimeout(() => { if (!feito) { feito = true; SESSAO_CANAL.removeEventListener('message', ouvir); resolve(false); } }, esperaMs);
+  });
+}
 const SESSAO_PERSISTENTE_KEY = 'sigajuncal_sessao_persistente';
 function guardarSessaoPersistente(user) {
   if (!user || (user.perfilNivel !== 'Estafeta' && user.perfilNivel !== 'Farmácia Boa Nova')) return;
@@ -62414,6 +62672,7 @@ function showUserLoginScreen(onSuccess, opts) {
   async function concluirLogin(u, preservarEcra, pinUsado) {
     activeUser = { id: u.id, username: u.username, nomeCompleto: u.nomeCompleto || u.username, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', fundoAppId: u.fundoAppId || '', prestadorKey: u.prestadorKey || '', estatutoColaborador: u.estatutoColaborador || '' };
     activeUserPin = pinUsado || null; // 2026-09-25: o PIN já não vem da lista de utilizadores (fica só em memória)
+    guardarSessaoMovel(); // 2026-10-09: só telemóvel — sobrevive a recarregar a mesma janela (ver SESSAO_MOVEL_SS)
     aplicarFundoAppDoUtilizador(activeUser);
     // Herdar do modo convidado o que já tinha sido lido antes do login —
     // evita que o badge reconte mensagens já vistas no ecrã anterior.
@@ -62715,6 +62974,7 @@ const INACTIVITY_LIMIT_PRESTADOR_MS = 60 * 60 * 1000; // 1 hora (3600s) — só 
 let inactivityTimer = null;
 function resetInactivityTimer() {
   if (inactivityTimer) clearTimeout(inactivityTimer);
+  tocarSessaoMovel(); // telemóvel: a sessão guardada só expira ao fim de 12 h SEM uso
   adiamentoExpiracaoDesde = 0; // houve atividade — o limite de adiamento recomeça
   if (modoTesteAtivo) return; // bloqueio automático suspenso pelo Modo de Teste do Administrador
   // Telemóvel/Tablet: sessão nunca expira por inatividade, seja qual for o
@@ -62824,6 +63084,7 @@ function clearSessionSilently() {
   utilizadorSessaoExpiradaId = activeUser.id;
   activeUser = null;
   activeUserPin = null;
+  limparSessaoMovel();
   pontoLimparMemoria(); // 2026-09-25: as picagens de uma pessoa nunca ficam em memória depois de sair
   aplicarFundoAppPadrao(); // sessão terminada (inatividade) — fundo neutro até à próxima pessoa entrar
   financeiroLimparMemoria(); // privacidade — e obriga a voltar a ler na próxima sessão (ver FINANCEIRO_CARGA)
@@ -62851,6 +63112,7 @@ function manualLogout() {
   if (activeUser) propagarChatLastReadParaConvidado();
   activeUser = null;
   activeUserPin = null;
+  limparSessaoMovel();
   pontoLimparMemoria(); // 2026-09-25: as picagens de uma pessoa nunca ficam em memória depois de sair
   aplicarFundoAppPadrao(); // sessão terminada — fundo neutro até à próxima pessoa entrar
   financeiroLimparMemoria(); // privacidade — e obriga a voltar a ler na próxima sessão (ver FINANCEIRO_CARGA)
@@ -62965,6 +63227,12 @@ async function startApp() {
   if (filaOperacoesPendentes.length > 0 && conexaoOnline) sincronizarFilaOffline();
   const loadingEl = buildLoadingScreen();
   document.body.appendChild(loadingEl);
+  // Telemóvel: a mesma janela foi recarregada (ex.: o sistema descartou a app em segundo plano e voltou-se a ela por
+  // uma notificação) — retoma a sessão antes de carregar os dados (ver SESSAO_MOVEL_SS).
+  iniciarCanalSessao();
+  let sessaoMovelRetomada = restaurarSessaoMovel();
+  // Janela nova (câmara/notificação): pergunta às outras janelas abertas da app se já há sessão (ver SESSAO_CANAL_NOME).
+  if (!sessaoMovelRetomada && ehDispositivoMobileOuTablet()) sessaoMovelRetomada = await pedirSessaoAOutraJanela(450);
   // Rede de segurança de topo: loadAllData() e autoCancelOldOrders() já têm
   // o seu próprio tratamento de erro (nunca deviam rejeitar), mas este
   // último nível garante, sem exceção nenhuma, que o ecrã de carregamento
@@ -62987,7 +63255,8 @@ async function startApp() {
   purgarLixoAntigo();
   // Sessão persistente (só Estafeta / Farmácia Boa Nova) — se houver uma
   // guardada e ainda válida, a app arranca já autenticada, sem pedir PIN.
-  restaurarSessaoPersistente();
+  if (sessaoMovelRetomada) confirmarSessaoMovelRestaurada();
+  if (!activeUser) restaurarSessaoPersistente();
   // Sem sessão ativa (Camada 2), render() mostra de imediato o ecrã de
   // bloqueio "Iniciar Sessão" — e o próprio modal de autenticação abre-se
   // logo a seguir, sem precisar de um clique extra no badge, para o fluxo
@@ -62995,6 +63264,7 @@ async function startApp() {
   render();
   if (!activeUser) showUserLoginScreen(() => { pontoQrRetomarSeHouver(); }); // concluirLogin() já faz o render() único, com dados+sidebar frescos
   else pontoQrRetomarSeHouver(); // app aberta pelo QR code do ponto (ver PICAGEM DO PONTO POR QR CODE)
+  APP_ARRANQUE_CONCLUIDO = true;
   document.body.appendChild(buildSignature());
   // Confirmação: setupRealtime() e setupSilentDataRefreshWatcher() arrancam
   // aqui, no fim do arranque da Camada 1 (palavra-passe geral), SEM
