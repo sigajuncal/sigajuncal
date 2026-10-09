@@ -1067,6 +1067,15 @@
   .ponto-pausa-barra > i{display:block;height:100%;background:#d97706;border-radius:999px;transition:width .4s;}
   .ponto-pausa-barra.excedida{background:#fed7aa;} .ponto-pausa-barra.excedida > i{background:#c2410c;}
   .ponto-qr-resultado.ok.pausa_inicio .ponto-qr-resultado-circulo,.ponto-qr-resultado.ok.pausa_fim .ponto-qr-resultado-circulo{background:#d97706;}
+  /* Destaque vindo dos cartões de tarefas da Página Inicial (2026-10-09) — desaparece sozinho */
+  .escala-vertical-coluna-destaque .escala-vertical-coluna-titulo{animation:escalaDestaqueTitulo 6s ease-out forwards;}
+  .escala-vertical-destaque-faixa{position:absolute;left:-3px;right:-3px;border-radius:8px;border:3px solid #f59e0b;
+    box-shadow:0 0 0 4px rgba(245,158,11,.25);pointer-events:none;z-index:6;animation:escalaDestaqueFaixa 6s ease-out forwards;}
+  @keyframes escalaDestaqueFaixa{0%,8%{opacity:0;transform:scale(1.08);}15%,70%{opacity:1;transform:scale(1);}100%{opacity:0;}}
+  @keyframes escalaDestaqueTitulo{0%,70%{background:#fef3c7;color:#92400e;box-shadow:0 0 0 2px #f59e0b;}100%{}}
+  @media (prefers-reduced-motion: reduce){.escala-vertical-destaque-faixa{animation:none;opacity:1;}}
+  .marcacao-regresso-destaque{animation:marcacaoRegresso 1.6s ease-out;}
+  @keyframes marcacaoRegresso{0%,35%{box-shadow:inset 0 0 0 2px #f59e0b;background-color:#fef3c7;}100%{box-shadow:none;}}
   .ponto-leitor{max-width:380px;width:calc(100vw - 32px);display:flex;flex-direction:column;align-items:center;gap:12px;text-align:center;}
   .ponto-leitor-titulo{margin:0;font-size:16px;font-weight:800;color:var(--pharm-800);}
   .ponto-leitor-janela{position:relative;width:100%;aspect-ratio:1/1;border-radius:16px;overflow:hidden;background:#0f172a;}
@@ -4844,7 +4853,7 @@
     .gaveta-voltar-mobile{display:flex;}
   }
   .confirm-panel{max-width:420px;}
-  .confirm-message{font-size:14px;color:var(--pharm-800);line-height:1.55;margin:0 0 18px;}
+  .confirm-message{font-size:14px;color:var(--pharm-800);line-height:1.55;margin:0 0 18px;white-space:pre-line;}
   .btn-danger-solid{background:var(--red);color:#fff;font-weight:700;box-shadow:0 1px 2px rgba(0,0,0,.06);
     transition:background-color .15s ease;}
   .btn-danger-solid:hover{background:#b91c1c;}
@@ -6902,6 +6911,20 @@ function vacinacaoNumeroUtenteComparavel(valor) {
   if (n === '123456789' || n === '987654321') return '';
   return n;
 }
+// Mesma pessoa? (2026-10-09, Hugo: "confirmação por nome e/ou número de utente") — com Nº de Utente real dos dois
+// lados, só conta se forem iguais (casal com o mesmo contacto nunca se confunde); sem número de um dos lados, basta
+// o nome completo igual (sem acentos/maiúsculas). Usado só para PERGUNTAR — a colega confirma vendo nome, contacto e
+// Nº de Utente do registo encontrado.
+function vacinacaoPareceMesmaPessoa(dados, r) {
+  const numA = vacinacaoNumeroUtenteComparavel(dados.numeroUtente), numB = vacinacaoNumeroUtenteComparavel(r.numeroUtente);
+  if (numA && numB) return numA === numB;
+  const nomeA = normalizarTexto(dados.nome).replace(/\s+/g, ' ').trim(), nomeB = normalizarTexto(r.nome).replace(/\s+/g, ' ').trim();
+  return !!(nomeA && nomeA === nomeB);
+}
+// Texto curto para confirmar que é a mesma pessoa: nome · contacto · Nº de Utente.
+function vacinacaoIdentificacaoTexto(r) {
+  return [r.nome || 'Sem nome', r.contacto ? formatarTelefonePT(r.contacto) : null, r.numeroUtente ? `Utente ${r.numeroUtente}` : null].filter(Boolean).join(' · ');
+}
 function vacinacaoBuscarDuplicados(campanhaIdAtual, dados, excluirMarcacaoId, excluirEsperaId) {
   const numero = vacinacaoNumeroUtenteComparavel(dados.numeroUtente);
   const nome = normalizarTexto(dados.nome).trim();
@@ -6914,9 +6937,7 @@ function vacinacaoBuscarDuplicados(campanhaIdAtual, dados, excluirMarcacaoId, ex
   const bateCerto = (r) => {
     const mesmaVacina = (dados.gripe && r.gripe) || (dados.covid && r.covid);
     if (!mesmaVacina) return false;
-    if (numero && vacinacaoNumeroUtenteComparavel(r.numeroUtente) === numero) return true;
-    if (nome && contacto && normalizarTexto(r.nome).trim() === nome && String(r.contacto || '').trim() === contacto) return true;
-    return false;
+    return vacinacaoPareceMesmaPessoa(dados, r);
   };
   const marcs = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaIdAtual && m.estado !== 'Cancelada' && m.id !== excluirMarcacaoId && bateCerto(m));
   // Qualquer marcação ativa (Pendente) já existente para a MESMA vacina —
@@ -6933,7 +6954,8 @@ function vacinacaoAvisoDuplicadoTexto(dup) {
   if (dup.jaMarcada) linhas.push(`já tem uma marcação pendente para o dia ${formatDate(dup.jaMarcada.data)}${dup.jaMarcada.hora ? ' às ' + dup.jaMarcada.hora : ''}`);
   if (dup.jaAdministrada) linhas.push(`já foi administrada a vacina que estás a selecionar, nesta mesma época`);
   if (dup.naListaEspera) linhas.push(`já está na Lista de Espera desta campanha`);
-  return linhas.length ? `Esta pessoa ${linhas.join('; ')}. Queres continuar mesmo assim?` : '';
+  const ref = dup.jaMarcada || dup.jaAdministrada || dup.naListaEspera;
+  return linhas.length ? `Esta pessoa ${linhas.join('; ')}:\n${vacinacaoIdentificacaoTexto(ref)}\n\nSe for a mesma pessoa, queres continuar mesmo assim?` : '';
 }
 function vacinacaoInicioSemanaISO(dateISO) {
   const dt = new Date(dateISO + 'T12:00:00');
@@ -7455,6 +7477,21 @@ function agendaDiaTemMarcacaoAtiva(prestadorKey, dateISO) {
 // minutos, marcação de consultas (com deteção de sobreposição), bloqueio de
 // vagas com um clique, e criação de encaixes fora da grelha padrão. Dias já
 // passados ficam só para consulta — nenhuma ação de escrita é permitida.
+// Voltar ao sítio da marcação (2026-10-09, Hugo: "quando abro uma marcação para editar e volto atrás, a vista deve
+// estar ao nível dessa marcação"): depois de fechar o formulário (Cancelar ou Guardar), a lista/agenda desloca-se
+// até à linha da marcação ([data-marcacao-id]) e realça-a por um instante. Vale para Vacinação, Agendas e Eventos.
+function rolarParaMarcacaoAposFechar(raiz, id) {
+  if (id === null || id === undefined || id === '') return;
+  const seletor = `[data-marcacao-id="${String(id).replace(/["\\]/g, '')}"]`;
+  const tentar = (restantes) => {
+    const el = (raiz && raiz.isConnected ? raiz : document).querySelector(seletor);
+    if (!el) { if (restantes > 0) setTimeout(() => tentar(restantes - 1), 90); return; }
+    try { el.scrollIntoView({ block: 'center' }); } catch (e) { el.scrollIntoView(); }
+    el.classList.add('marcacao-regresso-destaque');
+    setTimeout(() => el.classList.remove('marcacao-regresso-destaque'), 1700);
+  };
+  requestAnimationFrame(() => requestAnimationFrame(() => tentar(6)));
+}
 function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   const overlay = h('div', { class: 'modal-overlay' });
   let regAoVivo = null; // atualização ao vivo enquanto o dia está aberto (2026-09-28)
@@ -7466,6 +7503,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   const prestador = PRESTADORES_AGENDA.find(p => p.key === prestadorKey);
   const isPast = dateISO < todayISO();
   let showForm = false; // false | 'nova' | 'encaixe'
+  let regressoMarcacaoId = null; // marcação a que se volta ao fechar o formulário
   let formDraft = {};
   let formError = '';
   let tipoConsultaInvalido = false;
@@ -7587,6 +7625,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   function avisoDiaPorAbrir() { showToast('Este dia ainda está por abrir — abre o dia (botão «Abrir Dia») antes de marcar.', 'error'); }
   function openNovaMarcacao(horaPreenchida, forcarEncaixe) {
     if (diaPorAbrirAgenda()) { avisoDiaPorAbrir(); return; }
+    regressoMarcacaoId = null;
     formDraft = { hora: horaPreenchida || agendaSlotsPara(prestadorKey)[0], tipoConsulta: '', duracaoManual: agendaDuracaoManualDefault(prestadorKey), nomeCliente: '', contacto: '', aviso: false, observacoes: '', responsavel: currentUserName(), forcarEncaixe: !!forcarEncaixe };
     formError = ''; tipoConsultaInvalido = false; showForm = 'nova'; render();
   }
@@ -7599,6 +7638,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   // mesmo formulário com todos os campos pré-preenchidos — permite alterar
   // horário, utente, telefone, serviço/tipo e notas.
   function openEditarMarcacao(m) {
+    regressoMarcacaoId = m.id;
     const ehEncaixe = !agendaSlotsPara(prestadorKey).includes(m.hora);
     formDraft = {
       editId: m.id, hora: m.hora, tipoConsulta: m.tipoConsulta || '',
@@ -7609,7 +7649,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     };
     formError = ''; tipoConsultaInvalido = false; showForm = ehEncaixe ? 'encaixe' : 'nova'; render();
   }
-  function cancelForm() { showForm = false; formError = ''; tipoConsultaInvalido = false; render(); }
+  function cancelForm() { showForm = false; formError = ''; tipoConsultaInvalido = false; render(); rolarParaMarcacaoAposFechar(overlay, regressoMarcacaoId); regressoMarcacaoId = null; }
 
   // ---- Controlo de Dia Aberto/Fechado ----
   async function abrirDiaAgenda() {
@@ -7840,6 +7880,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       await abrirDiaAgendaSilencioso();
       if (onSaved) onSaved();
       render();
+      rolarParaMarcacaoAposFechar(overlay, created.id || regressoMarcacaoId); regressoMarcacaoId = null;
     } else {
       formError = `Não foi possível guardar. ${lastDbError || 'Verifica a ligação e tenta novamente.'}`;
       render();
@@ -8377,7 +8418,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
         if (m.observacoes && m.observacoes.trim()) acoes.push(obsEyeButton(m.observacoes));
         if ((!isPast || isMasterUser()) && vagaCanceladaOuFaltou(m) && horaAindaNaoChegou(m.hora)) acoes.push(buildReaproveitarVagaBtn(m));
         if (!isPast || isMasterUser()) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
-        node = h('div', { class: 'agenda-slot-row agenda-slot-ocupado' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : '') }, [
+        node = h('div', { class: 'agenda-slot-row agenda-slot-ocupado' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : ''), 'data-marcacao-id': String(m.id) }, [
           h('span', { class: 'agenda-slot-hora' }, m.hora),
           h('span', { class: 'agenda-slot-label cell-strong' }, [
             h('span', { class: 'agenda-slot-nome' }, `${m.nomeCliente || '—'}${estadoSufixoVaga(m)}`),
@@ -26322,6 +26363,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
 
   // Formulário de nova marcação (ou encaixe) dentro de um grupo de vagas
   let showForm = false; // false | { grupo, hora, encaixe }
+  let regressoMarcacaoId = null; // marcação a que se volta ao fechar o formulário
   let formDraft = {};
   let formError = '';
   let saving = false;
@@ -26811,11 +26853,12 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
   // Edição de uma marcação existente do Evento: reabre o formulário com os
   // campos pré-preenchidos (utente, telefone, notas — e hora, se encaixe).
   function abrirEditarMarcacao(m, slotsPadrao) {
+    regressoMarcacaoId = m.id;
     const ehEncaixe = !slotsPadrao.includes(m.hora);
     formDraft = { hora: m.hora, nomeCliente: m.nomeCliente || '', nFicha: m.nFicha || '', contacto: m.contacto || '', observacoes: m.observacoes || '', aviso: !!m.aviso, estado: m.estado || 'agendada' };
     formError = ''; showForm = { grupo: m.grupoVaga, hora: m.hora, encaixe: ehEncaixe, vagaId: m.id, editar: true, base: m }; render();
   }
-  function cancelForm() { showForm = false; formError = ''; render(); }
+  function cancelForm() { showForm = false; formError = ''; render(); rolarParaMarcacaoAposFechar(overlay, regressoMarcacaoId); regressoMarcacaoId = null; }
 
   async function submitForm() {
     // BUG CORRIGIDO 2026-09-10 (Hugo: "quero que a vaga fique disponível,
@@ -26946,6 +26989,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       showForm = false;
       if (onSaved) onSaved();
       render();
+      rolarParaMarcacaoAposFechar(overlay, (created && created.id) || regressoMarcacaoId); regressoMarcacaoId = null;
     } else {
       formError = `Não foi possível guardar. ${lastDbError || 'Verifica a ligação e tenta novamente.'}`;
       render();
@@ -27350,7 +27394,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
         const acoes = [avisoToggleBtn(m)];
         if (m.observacoes && m.observacoes.trim()) acoes.push(obsEyeButton(m.observacoes));
         if (!isPast || isMasterUser()) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
-        node = h('div', { class: 'agenda-slot-row agenda-slot-ocupado' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : '') }, [
+        node = h('div', { class: 'agenda-slot-row agenda-slot-ocupado' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : ''), 'data-marcacao-id': String(m.id) }, [
           h('span', { class: 'agenda-slot-hora' }, hora),
           h('span', { class: 'agenda-slot-label cell-strong' }, [
             h('span', { class: 'agenda-slot-nome' }, `${m.nomeCliente || '—'}${estadoSufixoVaga(m)}`),
@@ -40289,6 +40333,16 @@ function buildCartaoTrocaNoFeed(t) {
 
 // Último sub-separador de "Gestão" usado (Horários) — o botão "Gestão" volta sempre a ele (2026-09-25).
 let HORARIOS_ULTIMA_TAB_GESTAO = 'gerador';
+// Cartões de tarefas da Página Inicial (2026-10-09, Hugo: "os cartões de tarefas são clicáveis mas não fazem nada…
+// ir para o horário do dia em questão na vista escala da equipa"): o clique abre Horários › Escala da Equipa, na
+// Timeline do dia, com a posição da pessoa e o período da tarefa em destaque durante uns segundos.
+// { data:'YYYY-MM-DD', codigo, inicio, fim, rotulo } — consumido uma única vez por buildHorariosPage.
+let HORARIOS_DESTAQUE_PEDIDO = null;
+function abrirEscalaEquipaComDestaque(goTo, destaque) {
+  HORARIOS_DESTAQUE_PEDIDO = Object.assign({ data: todayISO() }, destaque || {});
+  if (STATE.page === 'horarios') STATE.page = 'home'; // força uma entrada nova no módulo (aplica o destaque)
+  goTo('horarios');
+}
 function buildHorariosPage(container, goTo) {
   ESCALA_FN_SALDO_BANCO = escalaCalcularSaldoBancoHoras; // saldo de Banco de Horas visível ao pedido do botão "Propor"
   // Picagens de ponto (vêm por função segura, não por tempo real): ao abrir Horários pede só o que mudou.
@@ -40306,6 +40360,15 @@ function buildHorariosPage(container, goTo) {
   // do módulo, qualquer redesenho de fundo (Realtime, etc.) nunca chega
   // a chamar esta função outra vez (ver PAGINAS_NUNCA_RECONSTROI_EM_FUNDO),
   // por isso o separador escolhido durante a visita nunca salta sozinho.
+  // Pedido vindo de um cartão de tarefas da Página Inicial (ver HORARIOS_DESTAQUE_PEDIDO).
+  let destaqueEscala = null;
+  if (HORARIOS_DESTAQUE_PEDIDO) {
+    destaqueEscala = Object.assign({ jaPosicionado: false, ate: Date.now() + 8000 }, HORARIOS_DESTAQUE_PEDIDO);
+    HORARIOS_DESTAQUE_PEDIDO = null;
+    horariosContextoMemorizado.activeTab = 'equipa';
+    horariosContextoMemorizado.viewModeEquipa = 'vertical';
+    horariosContextoMemorizado.semanaSelecionadaData = escalaSegundaFeiraDaSemanaDeISO(destaqueEscala.data);
+  }
   let activeTab = horariosContextoMemorizado.activeTab; // 'pessoal' | 'equipa' | 'ferias' | 'vagas'
   let semanaSelecionadaData = horariosContextoMemorizado.semanaSelecionadaData; // 'YYYY-MM-DD' — sempre uma Segunda-feira; null até ao primeiro build()
   // Vista Mensal de "A Minha Semana" (pedido explícito 2026-08-09) — só
@@ -40575,6 +40638,7 @@ function buildHorariosPage(container, goTo) {
   let diaVerticalSelecionado = (!semanaSelecionadaData || semanaSelecionadaData === escalaSegundaFeiraHoje())
     ? ESCALA_DIAS[(new Date().getDay() + 6) % 7].key
     : 'seg';
+  if (destaqueEscala) diaVerticalSelecionado = ESCALA_DIAS[(new Date(destaqueEscala.data + 'T12:00:00').getDay() + 6) % 7].key;
   let configVisibilidadeDraft = null; // preenchido só quando o toggle é tocado
 
   // periodos: array de { dataInicio, dataFim } — suporta vários intervalos
@@ -48766,7 +48830,23 @@ function buildHorariosPage(container, goTo) {
         (horasTrabalhadasDia > 0 && dia.tipo === 'normal' && !ausenciaSobreposta && dia.entrada && dia.saida)
           ? `${dia.entrada} – ${dia.saida}${(dia.pausaInicio && dia.pausaFim) ? ` (pausa ${dia.pausaInicio}-${dia.pausaFim})` : ''}` : null,
       ].filter(Boolean).join('\n');
-      return h('div', { class: 'escala-vertical-coluna' }, [titulo, trilho, buildRodapeHorasDia(horasTrabalhadasDia, tooltipHorasDia)]);
+      const emDestaque = !!(destaqueEscala && Date.now() < destaqueEscala.ate && destaqueEscala.codigo === v.codigo && destaqueEscala.data === dataDoDiaSelecionado);
+      if (emDestaque && destaqueEscala.inicio && destaqueEscala.fim) {
+        const topPctD = (minutosNoIntervalo(destaqueEscala.inicio, false) / (totalHoras * 60)) * 100;
+        const alturaPctD = Math.max(2, ((minutosNoIntervalo(destaqueEscala.fim, true) - minutosNoIntervalo(destaqueEscala.inicio, false)) / (totalHoras * 60)) * 100);
+        trilho.appendChild(h('div', { class: 'escala-vertical-destaque-faixa', style: `top:${topPctD}%;height:${alturaPctD}%;`, 'aria-hidden': 'true' }));
+      }
+      const colunaEl = h('div', { class: 'escala-vertical-coluna' + (emDestaque ? ' escala-vertical-coluna-destaque' : '') }, [titulo, trilho, buildRodapeHorasDia(horasTrabalhadasDia, tooltipHorasDia)]);
+      if (emDestaque && !destaqueEscala.jaPosicionado) {
+        destaqueEscala.jaPosicionado = true;
+        // Depois de a Timeline estar no ecrã: traz a coluna (e a faixa da tarefa) para o meio do ecrã.
+        setTimeout(() => {
+          if (!colunaEl.isConnected) return;
+          const alvo = colunaEl.querySelector('.escala-vertical-destaque-faixa') || colunaEl;
+          try { alvo.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' }); } catch (e) { alvo.scrollIntoView(); }
+        }, 250);
+      }
+      return colunaEl;
     });
     // Colunas VIRTUAIS (pedido explícito de Hugo, 2026-08-20 — bug
     // relatado pelo Paulo: "coloco reivindicar horas para colaborador...
@@ -50236,6 +50316,8 @@ function buildVacinacaoPage(container, goTo) {
   let marcacaoSearch = '';
   let marcacaoTab = 'pendentes'; // pendentes | administradas | canceladas
   let marcacaoOrigemEsperaId = null; // preenchido quando se "Marca" a partir da Lista de Espera
+  let marcacaoSubstituirIds = []; // antecipação confirmada: marcações pendentes anteriores a eliminar depois de gravar a nova
+  let marcacaoRegressoId = null; // marcação a que a vista volta ao fechar o formulário (ver rolarParaMarcacaoAposFechar)
   let agendaView = 'calendario'; // calendario | lista
   let agendaDiaVista = 'grelha'; // grelha (vagas, como a Agenda de Serviços) | tabela (detalhe completo)
   let agendaDiaSelecionado = null; // dateISO — quando definido, mostra a agenda desse dia
@@ -50407,13 +50489,14 @@ function buildVacinacaoPage(container, goTo) {
   function marcacaoVazia() { return Object.assign(emptyRecord(vacinacaoMarcacaoSchema), { campanhaId, data: agendaDiaSelecionado || todayISO(), hora: pad2(Math.floor(VACINACAO_HORA_DEFAULT_INICIO / 60)) + ':' + pad2(VACINACAO_HORA_DEFAULT_INICIO % 60) }); }
   function openNewMarcacao(prefill) {
     // Responsável pelo Registo já preenchido com quem tem a sessão iniciada (2026-09-30) — também no "Adicionar Encaixe".
+    marcacaoRegressoId = null;
     marcacaoDraft = Object.assign(marcacaoVazia(), prefill || {}, { responsavel: currentUserName() });
-    marcacaoEditId = null; marcacaoOrigemEsperaId = null; marcacaoFormError = ''; showMarcacaoForm = true; showEsperaPicker = false; rerender(); // AUDITORIA 2026-09-29: nunca herda a origem da marcação anterior
+    marcacaoEditId = null; marcacaoOrigemEsperaId = null; marcacaoSubstituirIds = []; marcacaoFormError = ''; showMarcacaoForm = true; showEsperaPicker = false; rerender(); // AUDITORIA 2026-09-29: nunca herda a origem da marcação anterior
     anunciarVagaAtual();
     if (marcacaoDraft.data) vacinacaoRelerDiaDoServidor(campanhaId, marcacaoDraft.data, false);
   }
-  function openEditMarcacao(m) { marcacaoDraft = Object.assign({}, m); marcacaoEditId = m.id; marcacaoOrigemEsperaId = null; marcacaoFormError = ''; showMarcacaoForm = true; showEsperaPicker = false; rerender(); }
-  function cancelMarcacaoForm() { showMarcacaoForm = false; marcacaoFormError = ''; marcacaoOrigemEsperaId = null; showEsperaPicker = false; rerender(); anunciarVagaAtual(); }
+  function openEditMarcacao(m) { marcacaoRegressoId = m.id; marcacaoDraft = Object.assign({}, m); marcacaoEditId = m.id; marcacaoOrigemEsperaId = null; marcacaoFormError = ''; showMarcacaoForm = true; showEsperaPicker = false; rerender(); }
+  function cancelMarcacaoForm() { showMarcacaoForm = false; marcacaoFormError = ''; marcacaoOrigemEsperaId = null; marcacaoSubstituirIds = []; showEsperaPicker = false; rerender(); anunciarVagaAtual(); rolarParaMarcacaoAposFechar(container, marcacaoRegressoId); marcacaoRegressoId = null; }
   // Escolher alguém da Lista de Espera DE DENTRO do formulário de Nova
   // Marcação já aberto (ver showEsperaPicker) — preenche automaticamente
   // Nome/Contacto/Vacinas/Data de Nascimento SEM apagar Data/Hora se já
@@ -50584,10 +50667,31 @@ function buildVacinacaoPage(container, goTo) {
     if (!marcacaoEditId && !marcacaoOrigemEsperaId) {
       const preDup = vacinacaoBuscarDuplicados(campanhaId, marcacaoDraft, marcacaoEditId, marcacaoOrigemEsperaId);
       if (preDup.naListaEspera) {
-        confirmDialog(`⚠️ ${preDup.naListaEspera.nome || 'Esta pessoa'} está na Lista de Espera desta campanha para a mesma vacina. Ao confirmar esta marcação direta, será removida automaticamente da Lista de Espera. Queres continuar?`, () => {
+        rerender();
+        confirmDialog(`⚠️ Esta pessoa parece estar na Lista de Espera desta campanha para a mesma vacina:\n${vacinacaoIdentificacaoTexto(preDup.naListaEspera)} (${vacinacaoLabelVacinas(preDup.naListaEspera)}).\n\nSe for a mesma pessoa, ao confirmar esta marcação sai automaticamente da Lista de Espera.`, () => {
           marcacaoOrigemEsperaId = preDup.naListaEspera.id;
           submitMarcacao();
         }, { confirmLabel: 'Continuar e Remover da Lista' });
+        return;
+      }
+    }
+    // Antecipar (ou adiar) a vacinação (2026-10-09, Hugo): a pessoa já tem uma marcação PENDENTE para a mesma vacina
+    // noutro dia/hora → pergunta se é para trocar. Se sim, depois de gravar a nova, a anterior é eliminada e a vaga
+    // fica livre; se a anterior tinha também outra vacina que não está nesta, fica só com essa (não se perde).
+    if (!marcacaoEditId && !marcacaoSubstituirIds.length && (marcacaoDraft.gripe || marcacaoDraft.covid)) {
+      const pendentesMesmaPessoa = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.estado === 'Pendente' && !vacinacaoEhBloqueio(m)
+        && ((marcacaoDraft.gripe && m.gripe) || (marcacaoDraft.covid && m.covid)) && vacinacaoPareceMesmaPessoa(marcacaoDraft, m));
+      if (pendentesMesmaPessoa.length) {
+        const linhas = pendentesMesmaPessoa.map(m => {
+          const sobra = [m.gripe && !marcacaoDraft.gripe ? 'Gripe' : null, m.covid && !marcacaoDraft.covid ? 'COVID' : null].filter(Boolean);
+          return `• ${formatDate(m.data)}${m.hora ? ' às ' + m.hora : ''} — ${vacinacaoLabelVacinas(m)}\n  ${vacinacaoIdentificacaoTexto(m)}`
+            + (sobra.length ? `\n  (fica só com ${sobra.join(' e ')} nesse dia)` : '');
+        }).join('\n');
+        rerender(); // repõe o botão "Guardar" (as verificações no servidor acima deixam-no em "A guardar…")
+        confirmDialog(`Esta pessoa parece já ter marcação pendente para a mesma vacina:\n${linhas}\n\nÉ a mesma pessoa e queres trocar para ${formatDate(marcacaoDraft.data)}${marcacaoDraft.hora ? ' às ' + marcacaoDraft.hora : ''}? A marcação anterior é eliminada e a vaga fica livre.`, () => {
+          marcacaoSubstituirIds = pendentesMesmaPessoa.map(m => m.id);
+          submitMarcacao();
+        }, { confirmLabel: 'Sim, trocar e libertar a vaga' });
         return;
       }
     }
@@ -50595,13 +50699,14 @@ function buildVacinacaoPage(container, goTo) {
     // Verifica primeiro o que está no ecrã e depois o servidor (o que um colega gravou há segundos noutro posto).
     // Gripe num dia e COVID noutro (ou as duas juntas) continua permitido.
     if (marcacaoDraft.gripe || marcacaoDraft.covid) {
-      const locais = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.id !== marcacaoEditId && m.estado !== 'Cancelada' && !vacinacaoEhBloqueio(m));
+      const aSubstituir = new Set(marcacaoSubstituirIds.map(String));
+      const locais = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.id !== marcacaoEditId && m.estado !== 'Cancelada' && !vacinacaoEhBloqueio(m) && !aSubstituir.has(String(m.id)));
       let repetidas = vacinacaoVacinasRepetidas(marcacaoDraft, locais);
       if (!repetidas.length) {
         marcacaoSaving = true; rerender();
         const doServidor = await vacinacaoMesmaPessoaNoServidor(campanhaId, marcacaoDraft, marcacaoEditId);
         marcacaoSaving = false;
-        if (doServidor) repetidas = vacinacaoVacinasRepetidas(marcacaoDraft, doServidor);
+        if (doServidor) repetidas = vacinacaoVacinasRepetidas(marcacaoDraft, doServidor.filter(r => !aSubstituir.has(String(r.id))));
       }
       if (repetidas.length) { marcacaoFormError = vacinacaoTextoVacinasRepetidas(repetidas); rerender(); return; }
     }
@@ -50617,7 +50722,7 @@ function buildVacinacaoPage(container, goTo) {
       else marcacaoFormError = `Não foi possível guardar as alterações. ${lastDbError || 'Verifica a ligação e tenta novamente.'}`;
     } else {
       const created = await dbInsert('vacinacaoMarcacoes', Object.assign({ estado: 'Pendente' }, marcacaoDraft));
-      if (created) { STATE.vacinacaoMarcacoes = [created, ...STATE.vacinacaoMarcacoes]; ok = true; }
+      if (created) { STATE.vacinacaoMarcacoes = [created, ...STATE.vacinacaoMarcacoes]; ok = true; marcacaoRegressoId = created.id; }
       else marcacaoFormError = `Não foi possível adicionar a marcação. ${lastDbError || 'Verifica a ligação e tenta novamente.'}`;
       // Confirmação logo a seguir a gravar (2026-09-28): se dois colegas
       // gravaram a MESMA vaga no mesmo segundo, fica a que foi gravada
@@ -50638,6 +50743,29 @@ function buildVacinacaoPage(container, goTo) {
       }
     }
     marcacaoSaving = false;
+    if (ok && marcacaoSubstituirIds.length) {
+      // Antecipação/troca confirmada: a nova já está gravada — só agora se liberta a vaga anterior.
+      const ids = marcacaoSubstituirIds.slice();
+      marcacaoSubstituirIds = [];
+      const paraEliminar = [], libertadas = [];
+      for (const id of ids) {
+        const ant = STATE.vacinacaoMarcacoes.find(m => String(m.id) === String(id));
+        if (!ant) continue;
+        const ficaGripe = !!(ant.gripe && !marcacaoDraft.gripe), ficaCovid = !!(ant.covid && !marcacaoDraft.covid);
+        if (ficaGripe || ficaCovid) {
+          const upd = await dbUpdate('vacinacaoMarcacoes', ant.id, { gripe: ficaGripe, covid: ficaCovid, ultimaAtualizacaoPor: valorUltimaAtualizacao() });
+          if (upd) { STATE.vacinacaoMarcacoes = STATE.vacinacaoMarcacoes.map(m => m.id === ant.id ? upd : m); libertadas.push(`${formatDate(ant.data)} (fica só ${vacinacaoLabelVacinas(upd)})`); }
+        } else paraEliminar.push(ant);
+      }
+      if (paraEliminar.length) {
+        const apagados = await bulkSoftDelete('vacinacaoMarcacoes', paraEliminar.map(m => m.id));
+        STATE.vacinacaoMarcacoes = STATE.vacinacaoMarcacoes.filter(m => !apagados.has(m.id));
+        paraEliminar.filter(m => apagados.has(m.id)).forEach(m => libertadas.push(`${formatDate(m.data)}${m.hora ? ' às ' + m.hora : ''}`));
+        if (apagados.size < paraEliminar.length) showDbErrorToast('A nova marcação ficou gravada, mas não foi possível eliminar a anterior — elimina-a à mão');
+      }
+      if (libertadas.length) showToast(`Marcação anterior libertada: ${libertadas.join('; ')}.`, 'success');
+    }
+    if (!ok) marcacaoSubstituirIds = [];
     if (ok) {
       // A marcação foi criada com sucesso a partir da Lista de Espera —
       // remove agora (e só agora) o registo de origem, para nunca perder a
@@ -50656,6 +50784,7 @@ function buildVacinacaoPage(container, goTo) {
       if (marcacaoDraft && marcacaoDraft.data && !realtimeAtivo('vacinacaoMarcacoes')) vacinacaoRelerDiaDoServidor(campanhaId, marcacaoDraft.data, 'depois-de-gravar');
     }
     rerender();
+    if (ok) { rolarParaMarcacaoAposFechar(container, marcacaoRegressoId); marcacaoRegressoId = null; }
   }
   // Seleção (2026-09-30, Hugo: "clicar num utente e depois noutro não devem ficar os dois selecionados, a menos que
   // eu queira selecionar mais do que um"): por omissão só UMA marcação selecionada — clicar noutra troca a seleção;
@@ -60501,7 +60630,7 @@ function buildTarefasAtivasWidget(goTo) {
         h('span', { class: 'tarefa-atual-nome', style: `font-size:${tamanhoNomeAdaptativo(nomeCompletoAtual, 19)}px;` }, nomeCompletoAtual),
       ].filter(Boolean),
       aDecorrer: true,
-      onClick: () => goTo('horarios'),
+      onClick: () => abrirEscalaEquipaComDestaque(goTo, { codigo: a.codigo, inicio: a.tarefa && a.tarefa.inicio, fim: a.tarefa && a.tarefa.fim }),
     };
   });
   const cartaoEmCurso = buildProximoServicoRotativoCard({ labelTitulo: 'Em Curso Agora', labelVazio: '', tone: 'tone-indigo', itens });
@@ -62168,7 +62297,7 @@ function buildTarefasHojeEquipaCard(goTo) {
         `${nomes || '—'} · ${item0.inicio}–${item0.fim}` + (ROTULO_ESTADO[f.estado] ? ` · ${ROTULO_ESTADO[f.estado]}` : ''),
       ].filter(Boolean),
       aDecorrer: f.estado === 'decorrer',
-      onClick: () => goTo('horarios'),
+      onClick: () => abrirEscalaEquipaComDestaque(goTo, { codigo: item0.codigo, inicio: item0.inicio, fim: item0.fim }),
     };
   });
   return buildProximoServicoRotativoCard({ labelTitulo: 'Tarefas da Equipa', labelVazio: '', tone: 'tone-green', itens });
