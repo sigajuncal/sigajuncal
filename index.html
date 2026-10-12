@@ -1396,6 +1396,8 @@
     border-radius:7px;padding:5px 9px;margin-top:6px;font-weight:700;line-height:1.4;}
   /* Erro de contacto inválido (não são 9 dígitos) — vermelho, para se
      distinguir claramente do aviso âmbar (ex: CNP já pendente). */
+  /* Agenda — ao abrir um dia: outros serviços/eventos nesse dia (2026-10-12). */
+  .agenda-dia-outros-servicos{border:1px solid #fde68a;background:#fffbeb;color:#78350f;border-radius:10px;padding:10px 14px;margin:0 0 12px;font-size:13px;}
   .field-error-red{font-size:11.5px;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;
     border-radius:7px;padding:5px 9px;margin-top:6px;font-weight:700;line-height:1.4;}
   /* Nota de rodapé do formulário (Entregas/Pedidos/Declarações) — substitui
@@ -8568,6 +8570,29 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
         Icon('lockClosed', { size: 15, strokeWidth: 2.3 }),
         h('span', {}, [h('strong', {}, 'Dia por abrir. '), 'As vagas ficam bloqueadas até abrires o dia — usa o botão «Abrir Dia», no topo.']),
       ]));
+      // Antes de abrir: o que mais acontece neste dia na farmácia (outros serviços e eventos) e se é feriado — o
+      // calendário da agenda já não o mostra (2026-10-12).
+      const outrosNoDia = calendarioItensDoDia(dateISO, false, { excluirPrestadorKey: prestadorKey, semLimite: true });
+      const feriadoDoDia = (() => {
+        const ano = Number(String(dateISO).slice(0, 4));
+        const f = (STATE.escalaFeriados || []).find(x => x.data === dateISO) || escalaFeriadosNacionaisDoAno(ano).find(x => x.data === dateISO);
+        return f ? f.nome : '';
+      })();
+      if (outrosNoDia.length || feriadoDoDia) {
+        bodyEl.appendChild(h('div', { class: 'agenda-dia-outros-servicos' }, [
+          h('p', { style: 'margin:0 0 6px;font-weight:700;' }, 'Neste dia também há:'),
+          h('ul', { style: 'margin:0;padding-left:18px;' }, [
+            feriadoDoDia ? h('li', {}, `Feriado — ${feriadoDoDia}`) : null,
+            ...outrosNoDia.map(it => h('li', {}, [
+              h('span', { style: `display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;background:${it.cor};` }),
+              it.tipo === 'evento' ? `Evento: ${it.label}` : it.label,
+              it.tipo === 'agenda' && it.horaInicio && it.horaInicio !== '99:99' ? ` (a partir das ${it.horaInicio})` : '',
+            ])),
+          ].filter(Boolean)),
+        ]));
+      } else {
+        bodyEl.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 10px;' }, 'Não há outros serviços nem eventos marcados para este dia.'));
+      }
       linhas.forEach(n => {
         if (!n || !n.classList || !n.classList.contains('agenda-slot-livre')) return;
         n.classList.add('agenda-slot-dia-fechado');
@@ -8624,7 +8649,11 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   return overlay;
 }
 
-function calendarioItensDoDia(dateISO, restringirPorPerfil) {
+// opcoes (2026-10-12): { soPrestadorKey } → só os dias desta agenda (calendário da página de cada prestador, sem
+// eventos nem outros serviços); { excluirPrestadorKey, semLimite } → tudo o resto que acontece nesse dia (aviso ao
+// abrir um dia numa agenda).
+function calendarioItensDoDia(dateISO, restringirPorPerfil, opcoes) {
+  const op = opcoes || {};
   const itens = [];
   // BUG CORRIGIDO 2026-09-15 (Hugo: "Conselheira · Sesderma" a aparecer
   // DUAS VEZES no popup de "vários serviços/eventos" do mesmo dia): o
@@ -8697,7 +8726,12 @@ function calendarioItensDoDia(dateISO, restringirPorPerfil) {
   const itensVisiveis = (restringirPorPerfil && isPrestadorServico() && activeUser && activeUser.prestadorKey)
     ? itens.filter(it => it.tipo !== 'agenda' || it.prestadorKey === activeUser.prestadorKey)
     : itens;
-  return itensVisiveis.slice(0, 3); // limite de 3 por dia
+  if (op.soPrestadorKey) return itensVisiveis.filter(it => it.tipo === 'agenda' && it.prestadorKey === op.soPrestadorKey);
+  if (op.excluirPrestadorKey) {
+    const outros = itensVisiveis.filter(it => !(it.tipo === 'agenda' && it.prestadorKey === op.excluirPrestadorKey));
+    return op.semLimite ? outros : outros.slice(0, 3);
+  }
+  return op.semLimite ? itensVisiveis : itensVisiveis.slice(0, 3); // limite de 3 por dia
 }
 // Abre o Modal de Vista Geral de UM item do calendário (agenda de
 // prestador ou evento) diretamente por cima da página atual — NUNCA
@@ -8847,7 +8881,12 @@ function buildMonthCalendar(year, month, posicao, onDayClick, prestadorKey, cale
   for (let i = 0; i < startWeekday; i++) cells.push(h('div', { class: 'cal-cell cal-cell-empty' }));
   for (let d = 1; d <= daysInMonth; d++) {
     const dateISO = `${year}-${pad2(month + 1)}-${pad2(d)}`;
-    const itens = calendarioItensDoDia(dateISO, restringirPorPerfil);
+    // Página da Agenda de um prestador (2026-10-12, Hugo: "a vista do calendário deve mostrar somente os seus
+    // próprios dias... mesmo para os colaboradores"): só os dias DESTA agenda — sem eventos nem outros serviços. O que
+    // mais acontece nesse dia só aparece quando se vai abrir o dia (ver buildAgendaDiaModal → «Dia por abrir»).
+    const itens = (prestadorKey && onDayClick)
+      ? calendarioItensDoDia(dateISO, false, { soPrestadorKey: prestadorKey })
+      : calendarioItensDoDia(dateISO, restringirPorPerfil);
     // Cores do fundo em riscas: só das Agendas de serviço — a cor "cósmica"
     // roxa de um evento fica de fora de propósito (corrigido 2026-09-15,
     // Hugo: "o símbolo já indica que há evento, não é preciso também a
