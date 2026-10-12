@@ -2055,6 +2055,8 @@
      quando ativo (mesmo padrão dos restantes .tab-btn.tone-*). */
   .tab-btn.tab-btn-highlight-amarelo{color:#92400e;border-color:#fde68a;background:#fffbeb;}
   .tab-btn.tab-btn-highlight-amarelo.active{background:#f59e0b;border-color:#f59e0b;color:#fff;}
+  /* Lista de Espera da AFA (2026-10-12): mesmo amarelo do botão da Vacinação. */
+  .btn.btn-lista-espera{color:#92400e;border-color:#fde68a;background:#fffbeb;}
   /* Botão "Adicionar Encaixe" da Vacinação — destacado a laranja (pedido
      explícito 2026-08-11) para se distinguir dos restantes botões
      secundários do cabeçalho do dia. */
@@ -7152,6 +7154,12 @@ ALTER TABLE clientes_habituais ADD COLUMN IF NOT EXISTS genero text DEFAULT '';
 --    clientes (mesmo padrão da secção 4) e à tabela de documentos emitidos.
 ALTER TABLE clientes_juncal RENAME COLUMN num_cc TO nif;
 ALTER TABLE clientes_juncal ADD COLUMN IF NOT EXISTS data_nascimento date;
+-- 7) (2026-10-12) Familiares de cada ficha, vindos do export «Fichas» do 4DigitalCare (converter_fichas_4digitalcare.py).
+--    familiares = [{nome, ficha, morada, localidade, tlm}] — ficha só quando o familiar tem ficha própria; senão morada e
+--    tlm são os do titular. morada_do_familiar = true quando a ficha não tinha morada e herdou a de um familiar.
+--    Sem estas colunas a pesquisa funciona como antes, só não pergunta "em que nome colocar".
+ALTER TABLE clientes_juncal ADD COLUMN IF NOT EXISTS familiares jsonb NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE clientes_juncal ADD COLUMN IF NOT EXISTS morada_do_familiar boolean NOT NULL DEFAULT false;
 ALTER TABLE clientes_habituais RENAME COLUMN num_cc TO nif;
 ALTER TABLE clientes_habituais ADD COLUMN IF NOT EXISTS data_nascimento date;
 ALTER TABLE documentos_emitidos RENAME COLUMN cc_utente TO nif_utente;
@@ -9159,6 +9167,47 @@ function mapHabitualParaCandidato(doHabituais) {
     numeroFicha: doHabituais.numeroFicha || '',
   };
 }
+// Familiares de uma ficha do 4DigitalCare (coluna "familiares", JSON gerado pelo
+// converter_fichas_4digitalcare.py): [{nome, ficha, morada, localidade, tlm}]. "ficha" só vem preenchido quando o
+// familiar tem ficha própria; senão morada/tlm são os do titular (mesma casa — decisão Hugo, 2026-10-12).
+// Aceita o valor já como array (jsonb no Supabase / json no PocketBase) ou como texto JSON.
+function lerFamiliaresClienteJuncal(valor) {
+  let lista = valor;
+  if (typeof lista === 'string') { try { lista = JSON.parse(lista); } catch (e) { lista = null; } }
+  if (!Array.isArray(lista)) return [];
+  return lista.filter(x => x && String(x.nome || '').trim()).map(x => ({
+    nome: String(x.nome || '').trim(),
+    ficha: (x.ficha === null || x.ficha === undefined || x.ficha === '') ? null : String(x.ficha).trim(),
+    morada: String(x.morada || '').trim(),
+    localidade: String(x.localidade || '').trim(),
+    contacto: (String(x.tlm || '').trim() === '0') ? '' : String(x.tlm || '').trim(),
+  }));
+}
+// Junta numa só lista de escolha o titular e os familiares de uma ficha da Juncal (pedido Hugo 2026-10-12: "caso
+// surja um número de ficha com mais do que uma pessoa associada perguntar em que nome colocar"). Devolve null quando a
+// ficha não tem familiares (o chamador segue o caminho de sempre). Se já existir UMA correção em clientes_habituais para
+// esta ficha, ela substitui o candidato com o mesmo nome (ou o titular, se o nome não bater com nenhum) — nunca esconde
+// o resto da família, porque a correção é gravada por Nº de Ficha e não por pessoa.
+function candidatosFamiliaClienteJuncal(numero, doJuncal, habitualUnico) {
+  if (!doJuncal || !doJuncal.familiares || !doJuncal.familiares.length) return null;
+  const numeroTexto = String(numero || '').trim();
+  const lista = [Object.assign({ fonte: 'clientes_juncal', id: null, numeroFicha: numeroTexto, etiqueta: 'Titular da ficha' }, doJuncal)];
+  doJuncal.familiares.forEach(fam => {
+    lista.push({
+      fonte: 'clientes_juncal', id: null, nome: fam.nome, morada: fam.morada, localidade: fam.localidade, contacto: fam.contacto,
+      nif: '', dataNascimento: '', genero: '', numeroFicha: numeroTexto, familiar: true,
+      etiqueta: fam.ficha ? `Familiar · tem ficha própria (nº ${fam.ficha})` : 'Familiar · morada e contacto do titular',
+    });
+  });
+  if (habitualUnico) {
+    const alvo = normalizarTexto(habitualUnico.nome || '').trim();
+    let idx = lista.findIndex(c => normalizarTexto(c.nome || '').trim() === alvo);
+    if (idx < 0) idx = 0;
+    lista[idx] = Object.assign({}, habitualUnico, { etiqueta: lista[idx].etiqueta, familiar: !!lista[idx].familiar });
+  }
+  lista.forEach(c => { delete c.familiares; });
+  return lista;
+}
 async function dbBuscarClienteJuncalPorNumero(numero) {
   const numeroNorm = parseInt(String(numero || '').trim(), 10);
   if (!sb || isNaN(numeroNorm)) return null;
@@ -9170,8 +9219,10 @@ async function dbBuscarClienteJuncalPorNumero(numero) {
   // "num_cc" (nome antigo da coluna, antes de ser renomeada para "nif")
   // entra também no select como rede de segurança: se por algum motivo
   // ainda for essa a coluna em uso, o NIF lê-se dali.
-  let colunas = ['numero', 'nome', 'morada', 'localidade', 'tlm', 'nif', 'num_cc', 'data_nascimento', 'genero'];
-  for (let tentativa = 0; tentativa < 5; tentativa++) {
+  // "familiares"/"morada_do_familiar" (2026-10-12, importação do 4DigitalCare com familiares) entram pela mesma
+  // rede de segurança: se ainda não existirem na tabela, a pesquisa continua a funcionar como antes, sem família.
+  let colunas = ['numero', 'nome', 'morada', 'localidade', 'tlm', 'nif', 'num_cc', 'data_nascimento', 'genero', 'familiares', 'morada_do_familiar'];
+  for (let tentativa = 0; tentativa < 8; tentativa++) {
     try {
       const { data, error } = await sb.from('clientes_juncal').select(colunas.join(', ')).eq('numero', numeroNorm).maybeSingle();
       if (error) {
@@ -9200,6 +9251,8 @@ async function dbBuscarClienteJuncalPorNumero(numero) {
         nif: lerCampoComFallback(limpo, ['nif', 'num_cc', 'numCc']),
         dataNascimento: lerCampoComFallback(limpo, ['data_nascimento', 'dataNascimento']),
         genero: String(limpo.genero || '').trim(),
+        familiares: lerFamiliaresClienteJuncal(limpo.familiares),
+        moradaDoFamiliar: limpo.morada_do_familiar === true,
       };
     } catch (e) { console.error('[Supabase] erro de rede ao consultar clientes_juncal:', formatarErroSeguro(e)); return null; }
   }
@@ -9270,9 +9323,13 @@ async function dbBuscarClienteJuncalPorNif(nif) {
 async function buscarClienteFichaJuncal(numero) {
   const candidatosHabituais = (STATE.clientesHabituais || []).filter(c => c.farmaciaId === 'juncal' && fichaValoresIguais(c.numeroFicha, numero));
   if (candidatosHabituais.length > 1) return { duplicados: candidatosHabituais.map(mapHabitualParaCandidato) };
-  if (candidatosHabituais.length === 1) return mapHabitualParaCandidato(candidatosHabituais[0]);
+  const habitualUnico = candidatosHabituais.length === 1 ? mapHabitualParaCandidato(candidatosHabituais[0]) : null;
+  // Consulta sempre a referência, mesmo com uma correção local, para saber se a ficha tem familiares (1 registo).
   const doJuncal = await dbBuscarClienteJuncalPorNumero(numero);
-  if (doJuncal) return Object.assign({ fonte: 'clientes_juncal', id: null }, doJuncal);
+  const familia = candidatosFamiliaClienteJuncal(numero, doJuncal, habitualUnico);
+  if (familia) return { duplicados: familia };
+  if (habitualUnico) return habitualUnico;
+  if (doJuncal) { const r = Object.assign({ fonte: 'clientes_juncal', id: null }, doJuncal); delete r.familiares; return r; }
   return null;
 }
 // Pesquisa "inversa" pelo NIF — mesma prioridade clientes_habituais (Juncal)
@@ -10676,6 +10733,8 @@ const TABLES = {
   // 2026-09-15 (Hugo, com base no formulário em papel "Avaliação de pele —
   // SMART MIRROR"), para organização e pesquisa futura. Ver afaFichaSchema.
   afaFichas: 'afa_fichas_clientes',
+  // Lista de Espera da AFA (2026-10-12) — ver buildAfaListaEsperaPage.
+  afaListaEspera: 'afa_lista_espera',
   // Picagem de Ponto por geolocalização (planeamento 2026-09-17) — cada
   // picagem (entrada/saída) é um registo próprio, nunca escreve por cima
   // do horário planeado (ver buildPontoWidget/RAIO_PONTO_METROS).
@@ -10714,7 +10773,7 @@ const LAZY_TABLE_KEYS = [
   'reclamacoes', 'mapa48h',
   'vacinacaoMarcacoes', 'vacinacaoEncomendas', 'vacinacaoListaEspera', 'vacinacaoResponsaveis', 'vacinacaoQuebras',
   'recolhas', 'consumiveis', 'tarefas', 'mapaTarefas', 'formacoes',
-  'afaFichas',
+  'afaFichas', 'afaListaEspera',
 ];
 // Tabelas lazy que cada página do router precisa de ter carregadas antes
 // de se construir — ver garantirTabelasCarregadas() chamado em render().
@@ -10745,6 +10804,10 @@ const PAGINA_TABELAS_LAZY = {
   'mapa-tarefas': ['mapaTarefas'],
   formacoes: ['formacoes'],
   'afa-fichas': ['afaFichas'],
+  'afa-lista-espera': ['afaListaEspera'],
+  // Página da AFA: só para o botão mostrar quantas pessoas estão em espera e para o «Escolher da Lista de Espera»
+  // dos dias AFA já ter os dados (1 tabela pequena).
+  'agenda-afa': ['afaListaEspera'],
 };
 
 function camelToSnake(s) { return s.replace(/[A-Z]/g, m => '_' + m.toLowerCase()); }
@@ -12673,6 +12736,7 @@ const STATE = {
   empresasParceiras: [],
   clientesHabituais: [],
   afaFichas: [],
+  afaListaEspera: [],
   pontoRegistos: [],
   pontoObservacoes: [],
   validades: [],
@@ -14361,22 +14425,43 @@ function abrirModalDesambiguacaoUtente(numeroFicha, candidatos, onEscolher) {
   function onKeydown(e) { if (e.key === 'Escape') fechar(); }
   document.addEventListener('keydown', onKeydown);
   const linhas = candidatos.map(c => {
-    const linhaDetalhe = [c.nif ? `NIF: ${c.nif}` : 'Sem NIF associado', c.localidade].filter(Boolean).join(' · ');
+    // Família vinda do 4DigitalCare (etiqueta "Titular da ficha"/"Familiar · …"): mostra a etiqueta e a morada em vez
+    // do NIF (os familiares não trazem NIF). Restantes casos: exatamente como antes.
+    const linhaDetalhe = c.etiqueta
+      ? c.etiqueta
+      : [c.nif ? `NIF: ${c.nif}` : 'Sem NIF associado', c.localidade].filter(Boolean).join(' · ');
+    const linhaMorada = c.etiqueta ? ([c.morada, c.localidade].filter(Boolean).join(', ') || 'Sem morada') : null;
     const btn = h('button', {
       type: 'button', class: 'btn btn-secondary',
       style: 'width:100%;text-align:left;display:flex;flex-direction:column;align-items:flex-start;gap:2px;margin-bottom:8px;padding:10px 14px;',
     }, [
       h('span', { style: 'font-weight:700;' }, c.nome || '(sem nome)'),
-      h('span', { style: 'font-size:12px;color:var(--pharm-600);' }, linhaDetalhe),
+      h('span', { style: 'font-size:12px;color:var(--pharm-600);white-space:normal;' }, linhaDetalhe),
+      linhaMorada ? h('span', { style: 'font-size:12px;font-weight:400;color:var(--pharm-600);white-space:normal;' }, linhaMorada) : null,
     ]);
     btn.addEventListener('click', () => escolher(c));
+    btn.dataset.pesquisa = normalizarTexto([c.nome, c.etiqueta, c.morada, c.localidade].filter(Boolean).join(' '));
     return btn;
   });
   const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: fechar }, 'Cancelar');
-  const panel = h('div', { class: 'modal-panel', style: 'max-width:400px;' }, [
+  const ehFamilia = candidatos.some(c => c.etiqueta);
+  const listaEl = h('div', { style: 'max-height:55vh;overflow-y:auto;' }, linhas);
+  // Fichas com muitas pessoas (ex.: uma instituição com dezenas de familiares): caixa de pesquisa acima da lista.
+  let pesquisaEl = null;
+  if (candidatos.length > 8) {
+    pesquisaEl = h('input', { class: 'input', type: 'text', placeholder: 'Procurar pelo nome…', style: 'width:100%;margin-bottom:10px;' });
+    pesquisaEl.addEventListener('input', () => {
+      const q = normalizarTexto(pesquisaEl.value).trim();
+      linhas.forEach(b => { b.style.display = (!q || b.dataset.pesquisa.includes(q)) ? 'flex' : 'none'; });
+    });
+  }
+  const panel = h('div', { class: 'modal-panel', style: 'max-width:440px;' }, [
     h('p', { class: 'modal-title', style: 'margin-bottom:4px;' }, `Ficha Nº ${numeroFicha}`),
-    h('p', { class: 'confirm-message', style: 'margin-bottom:14px;' }, 'Existe mais do que um utente associado a esta Ficha. Escolhe o membro da família pretendido:'),
-    h('div', {}, linhas),
+    h('p', { class: 'confirm-message', style: 'margin-bottom:14px;' }, ehFamilia
+      ? `Esta ficha tem ${candidatos.length} pessoas associadas. Em que nome queres colocar?`
+      : 'Existe mais do que um utente associado a esta Ficha. Escolhe o membro da família pretendido:'),
+    pesquisaEl,
+    listaEl,
     h('div', { class: 'form-actions' }, [cancelBtn]),
   ]);
   overlay.appendChild(panel);
@@ -14693,6 +14778,8 @@ const PREFIXO_NUMERO_PEDIDO = {
   // colide com nenhum dos prefixos já existentes acima nem com "E"
   // (Entregas) ou "R" (Reclamações).
   vacinacaoListaEspera: 'LE',
+  // Lista de Espera da AFA (2026-10-12): "AF" — distinto do "LE" da Vacinação.
+  afaListaEspera: 'AF',
 };
 function formatarNumeroPedido(listKey, r) {
   const prefixo = PREFIXO_NUMERO_PEDIDO[listKey];
@@ -14952,6 +15039,7 @@ const PAGINA_PAI = {
   'eventos-rastreio': 'eventos', 'eventos-conselheira': 'eventos', 'eventos-dia-especial': 'eventos',
   'agenda-afa': 'hub-agendas', // AFA: card próprio no hub de Agendas, não passa pelo hub "Eventos"
   'afa-fichas': 'agenda-afa', // Fichas de Clientes da AFA — geridas a partir da própria página da AFA
+  'afa-lista-espera': 'agenda-afa', // Lista de Espera da AFA (2026-10-12)
 
   // Documentos
   'hub-documentos': 'home',
@@ -26638,6 +26726,11 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
   let formDraft = {};
   let formError = '';
   let saving = false;
+  // Lista de Espera da AFA (2026-10-12): painel de escolha dentro do formulário de nova marcação e registo de onde
+  // veio a pessoa (sai da lista só quando a marcação fica mesmo gravada).
+  let afaEsperaPickerAberto = false;
+  let afaEsperaOrigemId = null;
+  if (tipo === 'AFA') garantirTabelasCarregadas(['afaListaEspera']);
   // Editar a Hora de uma vaga livre já existente (pedido explícito
   // 2026-09-10: "não era mais fácil eu chegar a essa de 15:15 e alterar
   // para 15?" — em vez de criar um Encaixe novo a par, que deixava a
@@ -27017,15 +27110,18 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     perguntandoMotivo = false;
     if (!lista.length) { sincronizarBarraSelecaoEventos(); return; }
     let houveConflito = false;
+    const canceladasAgora = [];
     for (const m of lista) {
       const updated = await dbUpdateMarcacao(m.id, { estado: estadoFinal }, m.updatedAt);
-      if (updated) marcacoes = marcacoes.map(x => x.id === updated.id ? updated : x);
+      if (updated) { marcacoes = marcacoes.map(x => x.id === updated.id ? updated : x); canceladasAgora.push(updated); }
       else houveConflito = true;
     }
     selecionadas.clear();
     if (houveConflito) await carregarMarcacoes();
     if (onSaved) onSaved();
     render();
+    // AFA: "Cliente Cancelou" de uma só marcação → oferece pôr a pessoa na Lista de Espera (2026-10-12).
+    if (tipo === 'AFA' && estadoFinal === 'cancelada' && canceladasAgora.length === 1) afaOferecerVoltarListaEspera(canceladasAgora[0]);
   }
   function aplicarEstadoSelecionadas(estado) {
     const lista = marcacoesSelecionadasLista();
@@ -27114,22 +27210,55 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       else if ([...(anteriores || []), ...PRESENCA_MARCACOES.outros].some(doEvento)) agendarRedesenhoTempoRealEvento(40);
     });
   function abrirNovaMarcacao(grupo, hora, vagaExistente) {
+    afaEsperaPickerAberto = false; afaEsperaOrigemId = null;
     formDraft = { nomeCliente: '', nFicha: '', contacto: '', observacoes: '', aviso: false };
     formError = ''; showForm = { grupo, hora, encaixe: false, vagaId: vagaExistente ? vagaExistente.id : null }; render();
   }
   function abrirEncaixe(grupo) {
+    afaEsperaPickerAberto = false; afaEsperaOrigemId = null;
     formDraft = { hora: '', nomeCliente: '', nFicha: '', contacto: '', observacoes: '', aviso: false };
     formError = ''; showForm = { grupo, hora: '', encaixe: true }; render();
   }
   // Edição de uma marcação existente do Evento: reabre o formulário com os
   // campos pré-preenchidos (utente, telefone, notas — e hora, se encaixe).
   function abrirEditarMarcacao(m, slotsPadrao) {
+    afaEsperaPickerAberto = false; afaEsperaOrigemId = null;
     regressoMarcacaoId = m.id;
     const ehEncaixe = !slotsPadrao.includes(m.hora);
     formDraft = { hora: m.hora, nomeCliente: m.nomeCliente || '', nFicha: m.nFicha || '', contacto: m.contacto || '', observacoes: m.observacoes || '', aviso: !!m.aviso, estado: m.estado || 'agendada' };
     formError = ''; showForm = { grupo: m.grupoVaga, hora: m.hora, encaixe: ehEncaixe, vagaId: m.id, editar: true, base: m }; render();
   }
-  function cancelForm() { showForm = false; formError = ''; render(); rolarParaMarcacaoAposFechar(overlay, regressoMarcacaoId); regressoMarcacaoId = null; }
+  function cancelForm() { afaEsperaPickerAberto = false; afaEsperaOrigemId = null; showForm = false; formError = ''; render(); rolarParaMarcacaoAposFechar(overlay, regressoMarcacaoId); regressoMarcacaoId = null; }
+  // Escolher alguém da Lista de Espera da AFA: preenche Nome/Nº Ficha/Contacto/Observações (junta a disponibilidade
+  // às observações só se ainda não houver nenhuma); a pessoa só sai da lista quando a marcação ficar gravada.
+  function escolherDaListaEsperaAFA(e) {
+    afaEsperaOrigemId = e.id;
+    afaEsperaPickerAberto = false;
+    formDraft = Object.assign({}, formDraft, {
+      nomeCliente: e.nome || '', nFicha: e.numFicha || '', contacto: e.contacto || '',
+      observacoes: String(formDraft.observacoes || '').trim() || String(e.observacoes || '').trim(),
+    });
+    formError = '';
+    render();
+  }
+  // Depois de gravar uma marcação AFA nova: tira a pessoa da Lista de Espera (se veio de lá), ou, numa marcação feita
+  // à mão, pergunta se é alguém que estava em espera (mesmo contacto/ficha + nome) para não ficar lá esquecida.
+  async function afaTratarListaEsperaAposMarcar(created) {
+    if (tipo !== 'AFA' || !created || !String(created.nomeCliente || '').trim()) return;
+    const origem = afaEsperaOrigemId ? (STATE.afaListaEspera || []).find(e => e.id === afaEsperaOrigemId) : null;
+    afaEsperaOrigemId = null;
+    if (origem) {
+      if (await afaListaEsperaRetirar(origem.id)) showToast(`${origem.nome || 'Cliente'} saiu da Lista de Espera (marcado/a).`, 'success');
+      else showDbErrorToast('A marcação ficou gravada, mas não foi possível retirar a pessoa da Lista de Espera');
+      return;
+    }
+    const naLista = afaListaEsperaDuplicado({ nome: created.nomeCliente, contacto: created.contacto, numFicha: created.nFicha });
+    if (!naLista) return;
+    confirmDialog(`${naLista.nome} está na Lista de Espera da AFA (${formatarNumeroPedido('afaListaEspera', naLista)}).\n\nRetirar da lista, já que ficou marcado/a?`, async () => {
+      if (await afaListaEsperaRetirar(naLista.id)) showToast(`${naLista.nome} saiu da Lista de Espera.`, 'success');
+      else showDbErrorToast('Não foi possível retirar da Lista de Espera');
+    }, { confirmLabel: 'Sim, retirar', cancelLabel: 'Não' });
+  }
 
   async function submitForm() {
     // BUG CORRIGIDO 2026-09-10 (Hugo: "quero que a vaga fique disponível,
@@ -27244,6 +27373,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     }
     if (created) {
       const horaAntiga = showForm.hora;
+      if (!showForm.editar) afaTratarListaEsperaAposMarcar(created);
       marcacoes = showForm.vagaId ? marcacoes.map(x => x.id === created.id ? created : x) : [...marcacoes, created];
       // Mesma proteção de guardarEdicaoHoraVaga (Editar Hora avulso, agora
       // só usado em vagas livres): mudar a hora de uma marcação que estava
@@ -27358,7 +27488,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
   function cancelarMarcacao(m) {
     confirmDialog('Tens a certeza que pretendes cancelar esta vaga?', async () => {
       const updated = await dbUpdateMarcacao(m.id, { estado: 'cancelada' }, m.updatedAt);
-      if (updated) { marcacoes = marcacoes.map(x => x.id === m.id ? updated : x); if (onSaved) onSaved(); render(); }
+      if (updated) { marcacoes = marcacoes.map(x => x.id === m.id ? updated : x); if (onSaved) onSaved(); render(); if (tipo === 'AFA') afaOferecerVoltarListaEspera(updated); }
       else { await carregarMarcacoes(); showDbErrorToast('Não foi possível cancelar a vaga'); }
     }, { danger: true, confirmLabel: 'Sim, Cancelar Vaga' });
   }
@@ -27531,6 +27661,53 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     // com a hora e o grupo (Mini-Faciais, quando aplicável).
     const nomeGrupo = showForm.grupo === 'mini_facial' ? ' · Mini-Faciais' : '';
     const children = [];
+    // AFA: escolher alguém da Lista de Espera (2026-10-12) — só numa marcação nova, como na Vacinação. Aparece logo a
+    // seguir à hora da vaga (acrescentado a children mais abaixo).
+    const blocoEspera = [];
+    if (tipo === 'AFA' && !showForm.editar) {
+      const carregada = STATE.tabelasLazyCarregadas.has('afaListaEspera');
+      const listaEsp = afaListaEsperaOrdenada();
+      const origem = afaEsperaOrigemId ? listaEsp.find(e => e.id === afaEsperaOrigemId) : null;
+      if (origem) {
+        blocoEspera.push(h('p', { class: 'field-helper-text', style: 'margin:0 0 10px;color:#92400e;font-weight:600;' }, `Da Lista de Espera (${formatarNumeroPedido('afaListaEspera', origem)}) — sai da lista quando gravares a marcação.`));
+      } else {
+        const toggleBtn = h('button', { type: 'button', class: 'btn btn-secondary btn-lista-espera', style: 'margin-bottom:12px;' },
+          [Icon('users', { size: 14, strokeWidth: 2.2 }), afaEsperaPickerAberto ? ' Fechar Lista de Espera' : ` Escolher da Lista de Espera${carregada ? ` (${listaEsp.length})` : ''}`]);
+        toggleBtn.addEventListener('click', () => {
+          afaEsperaPickerAberto = !afaEsperaPickerAberto;
+          render();
+          if (afaEsperaPickerAberto && !STATE.tabelasLazyCarregadas.has('afaListaEspera')) {
+            garantirTabelasCarregadas(['afaListaEspera']);
+            let tentativas = 0;
+            const esperar = setInterval(() => {
+              tentativas++;
+              if (STATE.tabelasLazyCarregadas.has('afaListaEspera') || tentativas > 40 || !overlay.isConnected) { clearInterval(esperar); if (overlay.isConnected) render(); }
+            }, 250);
+          }
+        });
+        blocoEspera.push(toggleBtn);
+        if (afaEsperaPickerAberto) {
+          if (!carregada) blocoEspera.push(h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, 'A carregar a Lista de Espera…'));
+          else if (!listaEsp.length) blocoEspera.push(h('p', { class: 'field-helper-text', style: 'margin:0 0 12px;' }, 'A Lista de Espera da AFA está vazia.'));
+          else {
+            const thead = h('thead', {}, h('tr', {}, ['Nº', 'Nome', 'Contacto', 'Disponibilidade', ''].map(t => h('th', {}, t))));
+            const tbody = h('tbody', {}, listaEsp.map(e => {
+              const escolherBtn = h('button', { type: 'button', class: 'btn btn-secondary', style: 'padding:6px 10px;font-size:12px;' }, 'Escolher');
+              escolherBtn.addEventListener('click', (ev) => { ev.stopPropagation(); requireAuth(() => escolherDaListaEsperaAFA(e)); });
+              return h('tr', {}, [
+                h('td', { class: 'cell-numero-pedido' }, h('span', { class: 'badge-numero-pedido' }, formatarNumeroPedido('afaListaEspera', e))),
+                h('td', { class: 'cell-strong', title: String(e.observacoes || '') }, [e.nome || '—',
+                  String(e.observacoes || '').trim() ? h('span', { style: 'display:block;font-size:11.5px;font-weight:500;color:#c2410c;white-space:normal;' }, String(e.observacoes).trim()) : null].filter(Boolean)),
+                h('td', {}, e.contacto ? formatarTelefonePT(e.contacto) : '—'),
+                h('td', { style: 'white-space:normal;' }, String(e.disponibilidade || '').trim() || '—'),
+                h('td', {}, escolherBtn),
+              ]);
+            }));
+            blocoEspera.push(h('div', { class: 'card', style: 'margin-bottom:12px;max-height:40vh;overflow:auto;' }, h('div', { class: 'table-wrap' }, h('table', {}, [thead, tbody]))));
+          }
+        }
+      }
+    }
     if (!showForm.encaixe && !showForm.editar) {
       // Só ao CRIAR uma marcação nova numa vaga fixa da grelha — aí a hora
       // não é editável (é a da própria vaga clicada), por isso mostra-se
@@ -27538,6 +27715,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       // campo próprio acima ("Hora *"), nunca os dois em simultâneo.
       children.push(h('p', { class: 'cell-strong', style: 'margin:0 0 12px;font-size:14px;' }, `🕐 Vaga das ${showForm.hora}${nomeGrupo}`));
     }
+    children.push(...blocoEspera);
     children.push(h('div', { class: 'form-grid' }, campos));
     if (formError) children.push(h('p', { class: 'form-error' }, formError));
     children.push(h('div', { class: 'form-actions' }, [saveBtn, cancelBtn]));
@@ -27876,6 +28054,9 @@ function buildEventoTipoPage(container, goTo, tipo) {
     const acoesHeader = tipo === 'AFA'
       ? h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;' }, [
           h('button', { class: 'btn btn-secondary', onclick: () => goTo('afa-fichas') }, [Icon('users', { size: 14, strokeWidth: 2.2 }), ' Fichas de Clientes']),
+          // Lista de Espera (2026-10-12) — com o nº de pessoas em espera, quando a tabela já está carregada.
+          h('button', { class: 'btn btn-secondary btn-lista-espera', onclick: () => goTo('afa-lista-espera') }, [Icon('clipboard', { size: 14, strokeWidth: 2.2 }), ' Lista de Espera',
+            STATE.tabelasLazyCarregadas.has('afaListaEspera') ? ` (${(STATE.afaListaEspera || []).length})` : '']),
         ])
       : null;
     wrap.appendChild(withBackButton(buildPageHeader(tipoInfo.icon, tipoInfo.nome, subtitulo, undefined), goTo));
@@ -28106,6 +28287,212 @@ function buildAfaFichasPage(container, goTo) {
 
   function build() { return showForm ? buildForm() : buildLista(); }
   container.appendChild(build());
+}
+
+/* =================================================================
+   AFA — LISTA DE ESPERA (pedido Hugo, 2026-10-12: "para AFA cria uma lista de espera, com funcionalidades semelhantes
+   às da vacinação, para pescar pessoas da lista de espera para se marcar, claro que com os dados necessários apenas").
+   Só os dados precisos para contactar e marcar: Nº de Ficha (opcional, autopreenche Nome/Contacto — incluindo a
+   escolha do familiar), Nome, Contacto, Disponibilidade (quando dá jeito à pessoa) e Observações. Ordem de registo
+   (#AF1, #AF2…) = ordem de marcação. A pessoa sai da lista quando é marcada a partir dela num dia AFA (ver
+   buildEventoDiaModal → "Escolher da Lista de Espera"); ao cancelar uma marcação AFA ("Cliente Cancelou") a app
+   oferece devolvê-la à lista. Tabela afa_lista_espera (SQL entregue à parte), lazy como as Fichas de Clientes.
+================================================================= */
+const afaListaEsperaSchema = [
+  { name: 'numFicha', label: '🔎 Nº de Ficha', type: 'text', size: 'xs', maxLength: 6, placeholder: 'Nº Ficha' },
+  { name: 'nome', label: 'Nome *', type: 'text', col: 2, maxLength: 80 },
+  { name: 'contacto', label: 'Contacto *', type: 'text', size: 'sm', maxLength: 11, inputmode: 'numeric', digitsOnly: true, placeholder: '9 dígitos' },
+  { name: 'disponibilidade', label: 'Disponibilidade', type: 'text', col: 2, maxLength: 120, placeholder: 'Ex: sábados de manhã; depois das 18h' },
+  { name: 'observacoes', label: 'Observações', type: 'textarea', col: 2, maxLength: 200 },
+];
+function afaListaEsperaOrdenada() {
+  return (STATE.afaListaEspera || []).slice().sort((a, b) => (Number(a.numero) || 1e12) - (Number(b.numero) || 1e12)
+    || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+}
+// Mesma pessoa já na lista: mesmo contacto, ou mesmo Nº de Ficha + mesmo nome (familiares partilham a ficha).
+function afaListaEsperaDuplicado(dados, ignorarId) {
+  const contacto = String(dados.contacto || '').replace(/\D/g, '');
+  const ficha = String(dados.numFicha || '').trim();
+  const nome = normalizarTexto(dados.nome || '').trim();
+  return (STATE.afaListaEspera || []).find(e => e.id !== ignorarId && (
+    (contacto && String(e.contacto || '').replace(/\D/g, '') === contacto && normalizarTexto(e.nome || '').trim() === nome)
+    || (ficha && fichaValoresIguais(e.numFicha, ficha) && normalizarTexto(e.nome || '').trim() === nome)
+  )) || null;
+}
+function afaDesdeTexto(e) { return e && e.createdAt ? formatDate(String(e.createdAt).slice(0, 10)) : '—'; }
+async function afaListaEsperaAdicionar(dados) {
+  const payload = {
+    numFicha: String(dados.numFicha || '').trim(), nome: formatarNomeUtente(dados.nome || ''),
+    contacto: String(dados.contacto || '').replace(/\D/g, ''), disponibilidade: String(dados.disponibilidade || '').trim(),
+    observacoes: String(dados.observacoes || '').trim(), registadoPor: currentUserName(),
+  };
+  const created = await dbInsert('afaListaEspera', payload);
+  if (created) STATE.afaListaEspera = [created, ...(STATE.afaListaEspera || [])];
+  return created;
+}
+async function afaListaEsperaRetirar(id) {
+  const ok = await dbDelete('afaListaEspera', id);
+  if (ok) STATE.afaListaEspera = (STATE.afaListaEspera || []).filter(e => e.id !== id);
+  return ok;
+}
+// Marcação AFA cancelada pelo cliente → pergunta se volta à Lista de Espera (nunca insere sozinho; nunca duplica).
+function afaOferecerVoltarListaEspera(m) {
+  if (!m || !String(m.nomeCliente || '').trim()) return;
+  garantirTabelasCarregadas(['afaListaEspera']);
+  const dados = { numFicha: m.nFicha || '', nome: m.nomeCliente, contacto: m.contacto || '', observacoes: m.observacoes || '' };
+  if (afaListaEsperaDuplicado(dados)) return;
+  confirmDialog(`Marcação cancelada.\n\nQueres colocar ${m.nomeCliente} na Lista de Espera da AFA, para voltar a ser marcado(a) quando houver vaga?`, async () => {
+    const created = await afaListaEsperaAdicionar(dados);
+    if (created) showToast(`${created.nome || 'Cliente'} ficou na Lista de Espera da AFA.`, 'success');
+    else showDbErrorToast('Não foi possível adicionar à Lista de Espera');
+  }, { confirmLabel: 'Sim, pôr na Lista de Espera', cancelLabel: 'Não' });
+}
+function buildImpressaoAfaListaEsperaDoc(lista, pesquisa) {
+  const filtro = String(pesquisa || '').trim();
+  const cabecalho = [
+    buildDocLetterhead(),
+    h('h1', { class: 'doc-title', style: 'font-size:16px;letter-spacing:.02em;text-transform:none;margin-bottom:4px;' }, 'Análise Facial Avançada — Lista de Espera'),
+    h('p', { style: 'font-size:10px;color:#555;margin:0 0 10px;' },
+      `Impresso a ${formatDate(todayISO())} · ${lista.length} pessoa${lista.length !== 1 ? 's' : ''}${filtro ? ` · filtro de pesquisa: "${filtro}"` : ''}`),
+  ];
+  return buildListaMultiPaginaDoc({
+    cabecalho,
+    colunas: [
+      { label: '✓', width: '5%', align: 'center' },
+      { label: 'Nº', width: '8%', align: 'center' },
+      { label: 'Nome', width: '27%', align: 'left', nowrap: true },
+      { label: 'Contacto', width: '13%', align: 'center' },
+      { label: 'Desde', width: '11%', align: 'center' },
+      { label: 'Disponibilidade / Observações', width: '36%', align: 'left', quebra: true },
+    ],
+    linhas: lista.map(e => [
+      h('span', { style: 'display:inline-block;width:11px;height:11px;border:1.3px solid #000;' }),
+      formatarNumeroPedido('afaListaEspera', e),
+      e.nome || '—',
+      e.contacto ? formatarTelefonePT(e.contacto) : '—',
+      afaDesdeTexto(e),
+      [e.disponibilidade, e.observacoes].map(x => String(x || '').trim()).filter(Boolean).join(' · ') || '—',
+    ]),
+    semDadosTexto: 'Lista de espera vazia.',
+  });
+}
+function buildAfaListaEsperaPage(container, goTo) {
+  let search = '';
+  let selectedIds = new Set();
+  let showForm = false; // false | { editingId, draft }
+  let formError = '';
+  let saving = false;
+
+  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
+  function lista() {
+    const q = normalizarTexto(search).trim();
+    const todos = afaListaEsperaOrdenada();
+    if (!q) return todos;
+    return todos.filter(e => [e.nome, e.contacto, e.numFicha, e.disponibilidade].some(v => normalizarTexto(v || '').includes(q)));
+  }
+  function toggleSelect(id) { if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id); rerender(); }
+  function openNew() { showForm = { editingId: null, draft: { numFicha: '', nome: '', contacto: '', disponibilidade: '', observacoes: '' } }; formError = ''; rerender(); }
+  function openEdit(e) { if (!e) return; showForm = { editingId: e.id, draft: Object.assign({}, e) }; formError = ''; rerender(); }
+  function cancelForm() { showForm = false; formError = ''; rerender(); }
+  async function submit() {
+    if (saving) return;
+    const d = showForm.draft;
+    d.contacto = String(d.contacto || '').replace(/\D/g, '');
+    if (!String(d.nome || '').trim()) { formError = 'Por favor, preenche o Nome.'; rerender(); return; }
+    if (!d.contacto) { formError = 'Por favor, preenche o Contacto — é por ele que se avisa a pessoa quando houver vaga.'; rerender(); return; }
+    if (!/^[0-9]{9}$/.test(d.contacto)) { formError = 'O Contacto deve ter exatamente 9 dígitos.'; rerender(); return; }
+    const dup = afaListaEsperaDuplicado(d, showForm.editingId);
+    if (dup) { formError = `${dup.nome || 'Esta pessoa'} já está na Lista de Espera (${formatarNumeroPedido('afaListaEspera', dup)}).`; rerender(); return; }
+    saving = true; rerender();
+    let resultado;
+    if (showForm.editingId) {
+      const patch = { numFicha: String(d.numFicha || '').trim(), nome: formatarNomeUtente(d.nome), contacto: d.contacto, disponibilidade: String(d.disponibilidade || '').trim(), observacoes: String(d.observacoes || '').trim() };
+      resultado = await dbUpdate('afaListaEspera', showForm.editingId, patch);
+      if (resultado) STATE.afaListaEspera = STATE.afaListaEspera.map(x => x.id === resultado.id ? resultado : x);
+    } else {
+      resultado = await afaListaEsperaAdicionar(d);
+    }
+    saving = false;
+    if (!resultado) { formError = `Não foi possível guardar. ${lastDbError || 'Verifica a ligação e tenta novamente.'}`; rerender(); return; }
+    showToast(showForm.editingId ? 'Registo atualizado.' : `${resultado.nome || 'Cliente'} adicionado(a) à Lista de Espera.`, 'success');
+    showForm = false; selectedIds.clear();
+    rerender();
+  }
+  function removerSelecionados() {
+    const ids = [...selectedIds];
+    if (!ids.length) return;
+    const plural = ids.length > 1;
+    confirmDialog(`Tens a certeza de que queres remover ${ids.length} pessoa${plural ? 's' : ''} da Lista de Espera?`, async () => {
+      let falhas = 0;
+      for (const id of ids) { if (!(await afaListaEsperaRetirar(id))) falhas++; }
+      selectedIds.clear();
+      if (falhas) showDbErrorToast('Não foi possível remover todos os registos');
+      rerender();
+    }, { danger: true, confirmLabel: 'Remover' });
+  }
+
+  function buildFormView() {
+    const d = showForm.draft;
+    const wrap = h('div', { class: 'animate-in' });
+    wrap.appendChild(withCustomBackButton(buildPageHeader('users', showForm.editingId ? 'Editar — Lista de Espera' : 'Adicionar à Lista de Espera', 'Análise Facial Avançada — só os dados necessários para contactar e marcar.', undefined), cancelForm));
+    wrap.appendChild(h('div', { class: 'card card-pad', style: 'max-width:720px;' }, [
+      h('div', { class: 'form-grid' }, afaListaEsperaSchema.map(f => buildAfaFichaCampo(f, d, rerender))),
+      formError ? h('p', { class: 'form-error' }, formError) : null,
+      h('div', { class: 'form-actions' }, [
+        h('button', { class: 'btn btn-primary', onclick: saving ? null : () => requireAuth(submit), disabled: saving ? 'disabled' : undefined }, saving ? 'A guardar…' : (showForm.editingId ? 'Guardar Alterações' : 'Adicionar à Lista de Espera')),
+        h('button', { class: 'btn btn-secondary', onclick: cancelForm }, 'Cancelar'),
+      ]),
+    ].filter(Boolean)));
+    return wrap;
+  }
+  function buildListaView() {
+    const wrap = h('div', { class: 'animate-in' });
+    const todos = STATE.afaListaEspera || [];
+    wrap.appendChild(withBackButton(buildPageHeader('users', 'Lista de Espera — AFA', 'Quem quer fazer a Análise Facial Avançada e ainda não tem vaga. Para marcar, abre um dia AFA, escolhe a vaga e usa «Escolher da Lista de Espera».', todos.length), goTo));
+    const list = lista();
+    const searchInput = h('input', { class: 'search-input', type: 'text', placeholder: 'Pesquisar por nome, contacto, nº de ficha ou disponibilidade…' });
+    searchInput.value = search;
+    searchInput.addEventListener('input', debounce(() => { search = searchInput.value; rerender(); }, 120));
+    const imprimirBtn = h('button', { class: 'btn btn-secondary', title: 'Imprimir a Lista de Espera da AFA', disabled: list.length ? undefined : 'disabled' }, [Icon('printer', { size: 14, strokeWidth: 2.2 }), ' Imprimir']);
+    imprimirBtn.addEventListener('click', () => { if (list.length) imprimirDocumento(buildImpressaoAfaListaEsperaDoc(list, search), { titulo: `afa_lista_espera_${todayISO()}` }); });
+    wrap.appendChild(h('div', { style: 'display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px;' }, [
+      h('span', { class: 'badge badge-gray' }, `${todos.length} ${todos.length === 1 ? 'pessoa' : 'pessoas'} em espera`),
+      imprimirBtn,
+    ]));
+    wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:14px;' }, searchInput));
+    if (!list.length) {
+      wrap.appendChild(EmptyState(search ? 'Nenhum resultado para essa pesquisa.' : 'Lista de espera vazia.'));
+    } else {
+      const colgroup = h('colgroup', {}, [34, 64, null, 120, 104, null].map(w => h('col', w ? { style: `width:${w}px;` } : {})));
+      const thead = h('thead', {}, h('tr', {}, ['', 'Nº', 'Nome', 'Contacto', 'Desde', 'Disponibilidade'].map(t => h('th', {}, t))));
+      const tbody = h('tbody', {}, list.map(e => {
+        const selected = selectedIds.has(e.id);
+        return h('tr', { class: 'selectable-row' + (selected ? ' row-selected' : '') }, [
+          buildSelectionCheckbox(e.id, selectedIds, toggleSelect),
+          h('td', { class: 'cell-numero-pedido' }, h('span', { class: 'badge-numero-pedido', title: 'Nº de registo na Lista de Espera — ordem de marcação' }, formatarNumeroPedido('afaListaEspera', e))),
+          h('td', { class: 'cell-strong espera-nome-cel', title: [e.nome, e.numFicha ? `Nº Ficha ${e.numFicha}` : '', e.observacoes ? `Obs.: ${e.observacoes}` : ''].filter(Boolean).join('\n') }, [
+            h('span', { class: 'espera-nome' }, e.nome || '—'),
+            e.numFicha ? h('span', { class: 'cell-muted', style: 'display:block;font-size:11px;font-weight:500;' }, `Nº Ficha ${e.numFicha}`) : null,
+            String(e.observacoes || '').trim() ? h('span', { class: 'espera-obs-linha' }, String(e.observacoes).trim()) : null,
+          ].filter(Boolean)),
+          h('td', {}, e.contacto ? formatarTelefonePT(e.contacto) : '—'),
+          h('td', {}, afaDesdeTexto(e)),
+          h('td', { style: 'white-space:normal;' }, String(e.disponibilidade || '').trim() || '—'),
+        ]);
+      }));
+      wrap.appendChild(h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', { class: 'tabela-espera' }, [colgroup, thead, tbody]))));
+    }
+    wrap.appendChild(buildBottomActionBar({
+      selectedCount: selectedIds.size,
+      addLabel: 'Adicionar à Lista de Espera',
+      onAdd: openNew,
+      onEdit: () => { if (selectedIds.size === 1) openEdit((STATE.afaListaEspera || []).find(e => e.id === [...selectedIds][0])); },
+      onDelete: removerSelecionados,
+    }));
+    return wrap;
+  }
+  function build() { return showForm ? buildFormView() : buildListaView(); }
+  rerender();
 }
 
 
@@ -56898,11 +57285,9 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
     // completa em vez de um só, para o chamador poder abrir a modal de
     // desambiguação e deixar o operador escolher.
     if (candidatosHabituais.length > 1) return { duplicados: candidatosHabituais.map(mapHabitualParaCandidato) };
+    // Juncal: mesma lógica (titular + familiares) que buscarClienteFichaJuncal, usada por Pedidos/Reclamações.
+    if (farmaciaAtiva === 'Juncal') return buscarClienteFichaJuncal(numero);
     if (candidatosHabituais.length === 1) return mapHabitualParaCandidato(candidatosHabituais[0]);
-    if (farmaciaAtiva === 'Juncal') {
-      const doJuncal = await dbBuscarClienteJuncalPorNumero(numero);
-      if (doJuncal) return Object.assign({ fonte: 'clientes_juncal', id: null }, doJuncal);
-    }
     return null;
   }
   // Troco = Valor Entregue - Valor a Pagar — recalculado sempre que um dos
@@ -59968,6 +60353,7 @@ function renderInterno(ehTransicaoDePagina) {
       case 'eventos-dia-especial': buildEventoTipoPage(pageContainer, goTo, 'DiaEspecial'); break;
       case 'agenda-afa': buildEventoTipoPage(pageContainer, goTo, 'AFA'); break;
       case 'afa-fichas': if (tabelasProntas) buildAfaFichasPage(pageContainer, goTo); else pageContainer.appendChild(CarregandoState('A carregar Fichas de Clientes…')); break;
+      case 'afa-lista-espera': if (tabelasProntas) buildAfaListaEsperaPage(pageContainer, goTo); else pageContainer.appendChild(CarregandoState('A carregar Lista de Espera…')); break;
       case 'mapa48h': if (tabelasProntas) buildMapa48hPage(pageContainer, goTo); else pageContainer.appendChild(CarregandoState('A carregar Mapa 48h…')); break;
       case 'vacinacao': if (tabelasProntas) buildVacinacaoPage(pageContainer, goTo); else pageContainer.appendChild(CarregandoState('A carregar Vacinação…')); break;
       case 'mapa-tarefas': if (tabelasProntas) buildMapaTarefasPage(pageContainer, goTo); else pageContainer.appendChild(CarregandoState('A carregar Mapa de Tarefas…')); break;
