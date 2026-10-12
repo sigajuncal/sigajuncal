@@ -758,6 +758,22 @@
     font-size:10.5pt;letter-spacing:.01em;white-space:nowrap;}
   /* Espaço em branco para apontamentos manuais do estafeta, no Formulário
      de Entrega impresso — nunca mostra o texto das Observações da app. */
+  /* Formulário de Entrega (2026-10-12): bloco principal para o estafeta — letra grande, sem fundos de cor. */
+  .doc-entrega-urgente{border:3px solid #000;padding:8px 14px;margin:0 0 12px;font-weight:900;font-size:16pt;
+    letter-spacing:.03em;text-align:center;color:#000;background:#fff;}
+  .doc-entrega-destaque{border:2px solid #000;border-radius:6px;padding:12px 16px;margin:0 0 14px;color:#000;}
+  .doc-entrega-rotulo{font-size:9pt;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#333;}
+  .doc-entrega-nome{font-size:17pt;font-weight:800;line-height:1.2;margin:1px 0 6px;}
+  .doc-entrega-morada{font-size:14pt;font-weight:700;line-height:1.3;}
+  .doc-entrega-localidade{font-size:13pt;font-weight:800;text-transform:uppercase;letter-spacing:.02em;margin-top:1px;}
+  .doc-entrega-linha{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:6px 18px;
+    margin-top:10px;padding-top:8px;border-top:1px solid #000;}
+  .doc-entrega-contacto{font-size:16pt;font-weight:800;white-space:nowrap;}
+  .doc-entrega-quando{font-size:11.5pt;font-weight:700;}
+  .doc-table-entrega-admin td{font-size:10px;padding-top:3px;padding-bottom:3px;}
+  .doc-table-entrega-admin{margin-top:12px;}
+  .doc-entrega-destaque + .doc-pagamento-box{margin-bottom:12px;}
+  .doc-pagamento-saco{border-top:2px dashed #000;padding-top:8px;font-size:13pt;font-weight:900;}
   .doc-obs-estafeta{margin-top:14px;}
   .doc-obs-estafeta-titulo{font-size:12px;font-weight:700;color:#1e293b;margin:0 0 8px;}
   .doc-obs-estafeta-caixa{border:1px solid #cbd5e1;border-radius:8px;padding:8px 14px;}
@@ -7030,6 +7046,8 @@ const entregasSchema = [
   { name: 'precisaTroco', label: 'Cliente necessita de troco?', type: 'checkbox' },
   { name: 'valorEntregue', label: 'Valor entregue pelo cliente (€)', type: 'number', size: 'xs' },
   { name: 'troco', label: 'Troco (€)', type: 'number', size: 'xs' },
+  // 2026-10-12 (Hugo: "falta uma opção que diga o troco está no saco... muitas vezes têm de escrever isso à mão").
+  { name: 'trocoNoSaco', label: '👜 Troco já preparado no saco', type: 'checkbox' },
   { name: 'observacoes', label: 'Notas Internas (não impresso)', type: 'textarea', col: 2, maxLength: 500 },
   { name: 'observacoesEntrega', label: 'Instruções para o Estafeta (impresso na folha)', type: 'textarea', col: 2, maxLength: 150, placeholder: 'Ex: Tocar à campainha do 2º Esq. / Entregar na portaria (máx. 150 caracteres)' },
 ];
@@ -9308,6 +9326,43 @@ async function dbBuscarClienteJuncalPorNif(nif) {
   }
   return null;
 }
+// ---- Pesquisa por NIF no mesmo campo do Nº de Ficha (2026-10-12, Hugo: "possibilidade de pesquisar por nif também,
+// é o principal número que usamos para pesquisar fichas além do número de ficha"). 9 dígitos = NIF (nenhuma ficha da
+// Juncal chega perto dos 9 dígitos); até 6 = Nº de Ficha, como sempre. Quando se encontra pelo NIF, o campo passa a
+// mostrar o Nº de Ficha certo, para o registo ficar sempre ligado à ficha. Vários NIF iguais em fichas diferentes →
+// janela para escolher a ficha. Só a Juncal tem fichas importadas (Entregas da Boa Nova continuam só por ficha).
+// Aviso "NIF sem ficha" guardado por formulário (draft), para sobreviver ao redesenho do formulário.
+const AVISOS_NIF_POR_DRAFT = new WeakMap();
+function valorPareceNif(v) { return /^[0-9]{9}$/.test(String(v || '').trim()); }
+async function dbBuscarFichasJuncalPorNif(nif) {
+  const nifNorm = String(nif || '').trim();
+  if (!sb || !valorPareceNif(nifNorm)) return [];
+  try {
+    const { data, error } = await sb.from('clientes_juncal').select('numero, nome, morada, localidade, tlm, nif, data_nascimento, genero').eq('nif', nifNorm).limit(10);
+    if (error) { console.error('[Supabase] erro ao consultar clientes_juncal por NIF:', error.message); return []; }
+    return (data || []).map(x => sanitizarSupabase(x)).map(l => ({
+      fonte: 'clientes_juncal', id: null,
+      numeroFicha: (l.numero !== null && l.numero !== undefined) ? String(l.numero) : '',
+      nome: String(l.nome || '').trim(), morada: String(l.morada || '').trim(), localidade: String(l.localidade || '').trim(),
+      contacto: (String(l.tlm || '').trim() === '0') ? '' : String(l.tlm || '').trim(),
+      nif: String(l.nif || '').trim(), dataNascimento: lerCampoComFallback(l, ['data_nascimento', 'dataNascimento']), genero: String(l.genero || '').trim(),
+    }));
+  } catch (e) { console.error('[Supabase] erro de rede ao consultar clientes_juncal por NIF:', formatarErroSeguro(e)); return []; }
+}
+async function buscarClienteFichaOuNifJuncal(valor) {
+  const v = String(valor || '').trim();
+  if (!valorPareceNif(v)) return buscarClienteFichaJuncal(v);
+  const remotos = await dbBuscarFichasJuncalPorNif(v);
+  // Correções locais (clientes_habituais da Juncal) com este NIF têm prioridade sobre a ficha importada do mesmo nº.
+  const locais = (STATE.clientesHabituais || []).filter(c => c.farmaciaId === 'juncal' && (String(c.nif || '').trim() === v || String(c.numCc || '').trim() === v)).map(mapHabitualParaCandidato);
+  const porFicha = new Map();
+  remotos.forEach(c => porFicha.set(c.numeroFicha || `r${porFicha.size}`, c));
+  locais.forEach(c => porFicha.set(c.numeroFicha || `l${porFicha.size}`, c));
+  const lista = [...porFicha.values()];
+  if (!lista.length) return null;
+  if (lista.length === 1) return Object.assign({ viaNif: true }, lista[0]);
+  return { viaNif: true, duplicados: lista.map(c => Object.assign({}, c, { etiqueta: c.numeroFicha ? `Ficha nº ${c.numeroFicha}` : 'Sem nº de ficha' })) };
+}
 // Lookup por Nº de Ficha para módulos SEM contexto de farmácia (Pedidos:
 // Manipulados, Ortopedia, etc. — ao contrário de Entregas, que distingue
 // Juncal/Boa Nova via farmaciaAtiva). Estes módulos são sempre da Farmácia
@@ -9424,7 +9479,7 @@ async function dbUpsertClienteHabitual(payload) {
 // apagado; onCarregado(estado) guarda o snapshot no closure do chamador,
 // para o submit poder detetar alterações manuais depois.
 function buildNumFichaCategoriaField(f, draft, rerender, onCarregado) {
-  const control = h('input', { class: 'input input-destaque', type: 'text', inputmode: 'numeric', maxlength: '6', style: 'max-width:150px;', placeholder: f.placeholder || 'Nº Ficha' });
+  const control = h('input', { class: 'input input-destaque', type: 'text', inputmode: 'numeric', maxlength: '9', style: 'max-width:150px;', placeholder: 'Nº Ficha ou NIF' });
   control.value = draft[f.name] || '';
   let debounceTimer = null;
   let ultimoConsultado = null;
@@ -9435,6 +9490,9 @@ function buildNumFichaCategoriaField(f, draft, rerender, onCarregado) {
   // número que não corresponde a ficha nenhuma (mesmo bug corrigido nas
   // Declarações — ver buildFichaClienteDeclaracaoFields, 2026-08-13).
   let fichaFoiCarregadaNestaSessao = false;
+  const avisoNifEl = h('p', { class: 'field-helper-text', style: 'color:#b45309;font-weight:600;display:none;margin-top:4px;' }, '');
+  function mostrarAvisoNif(txt) { if (txt) AVISOS_NIF_POR_DRAFT.set(draft, txt); else AVISOS_NIF_POR_DRAFT.delete(draft); avisoNifEl.textContent = txt || ''; avisoNifEl.style.display = txt ? '' : 'none'; }
+  if (AVISOS_NIF_POR_DRAFT.has(draft)) { avisoNifEl.textContent = AVISOS_NIF_POR_DRAFT.get(draft); avisoNifEl.style.display = ''; }
   function limparCamposCliente() {
     draft.nome = ''; draft.contacto = '';
   }
@@ -9442,32 +9500,46 @@ function buildNumFichaCategoriaField(f, draft, rerender, onCarregado) {
     const atual = String(draft[f.name] || '').trim();
     if (atual === ultimoConsultado) return;
     ultimoConsultado = atual;
+    mostrarAvisoNif('');
     if (!atual) { onCarregado(null); if (fichaFoiCarregadaNestaSessao) { limparCamposCliente(); fichaFoiCarregadaNestaSessao = false; } rerender(); return; }
-    const encontrado = await buscarClienteFichaJuncal(atual);
+    const encontrado = await buscarClienteFichaOuNifJuncal(atual);
     if (String(draft[f.name] || '').trim() !== atual) return; // Nº mudou entretanto — descarta resposta tardia
-    if (!encontrado) { onCarregado(null); if (fichaFoiCarregadaNestaSessao) { limparCamposCliente(); fichaFoiCarregadaNestaSessao = false; } rerender(); return; }
+    if (!encontrado) {
+      // NIF sem ficha: não se deixa o NIF a fazer de Nº de Ficha (ficaria gravado como ficha errada).
+      if (valorPareceNif(atual)) {
+        draft[f.name] = ''; control.value = ''; ultimoConsultado = '';
+        mostrarAvisoNif(`Nenhuma ficha com o NIF ${atual}. Preenche os dados à mão.`);
+        if (fichaFoiCarregadaNestaSessao) { onCarregado(null); limparCamposCliente(); fichaFoiCarregadaNestaSessao = false; rerender(); }
+        return;
+      }
+      onCarregado(null); if (fichaFoiCarregadaNestaSessao) { limparCamposCliente(); fichaFoiCarregadaNestaSessao = false; } rerender(); return;
+    }
     if (encontrado.duplicados) {
       // Esta Ficha tem mais do que um utente associado (família a
       // partilhar o mesmo Nº de Ficha) — pede ao operador para escolher
       // qual, em vez de preencher com um ao acaso.
       abrirModalDesambiguacaoUtente(atual, encontrado.duplicados, (escolhido) => {
         if (String(draft[f.name] || '').trim() !== atual) return; // Nº mudou entretanto — descarta escolha tardia
-        aplicarEscolha(escolhido);
+        aplicarEscolha(escolhido, atual);
       });
       return;
     }
-    aplicarEscolha(encontrado);
+    aplicarEscolha(encontrado, atual);
   }
-  function aplicarEscolha(encontrado) {
+  function aplicarEscolha(encontrado, pesquisado) {
     fichaFoiCarregadaNestaSessao = true;
+    // Encontrado pelo NIF: o campo passa a ter o Nº de Ficha (e não volta a pesquisar por ele).
+    if (valorPareceNif(pesquisado) && encontrado.numeroFicha) {
+      draft[f.name] = String(encontrado.numeroFicha); control.value = draft[f.name]; ultimoConsultado = draft[f.name];
+    }
     onCarregado({ fonte: encontrado.fonte, id: encontrado.id, nome: encontrado.nome, contacto: encontrado.contacto });
     if (encontrado.nome) draft.nome = encontrado.nome;
     if (encontrado.contacto) draft.contacto = encontrado.contacto;
     rerender();
   }
   control.addEventListener('input', () => {
-    // Só dígitos, no máximo 6 — impede letras/símbolos mesmo colados.
-    const cleaned = control.value.replace(/\D/g, '').slice(0, 6);
+    // Só dígitos, no máximo 9 (Nº de Ficha até 6, NIF com 9) — impede letras/símbolos mesmo colados.
+    const cleaned = control.value.replace(/\D/g, '').slice(0, 9);
     if (cleaned !== control.value) control.value = cleaned;
     draft[f.name] = control.value;
     if (debounceTimer) clearTimeout(debounceTimer);
@@ -9477,8 +9549,8 @@ function buildNumFichaCategoriaField(f, draft, rerender, onCarregado) {
     if (e.key === 'Enter') { e.preventDefault(); if (debounceTimer) clearTimeout(debounceTimer); consultarEPreencher(); }
   });
   control.addEventListener('blur', () => { if (debounceTimer) clearTimeout(debounceTimer); consultarEPreencher(); });
-  const kids = [h('label', {}, f.label), control];
-  kids.push(h('p', { class: 'field-helper-text' }, 'Substitui sempre Nome e Contacto pelos dados da ficha encontrada — ou limpa-os, se não encontrar nenhuma.'));
+  const kids = [h('label', {}, f.label), control, avisoNifEl];
+  kids.push(h('p', { class: 'field-helper-text' }, 'Escreve o Nº de Ficha ou o NIF. Substitui Nome e Contacto pelos dados da ficha encontrada.'));
   return h('div', { class: 'field' + (f.col === 2 ? ' span2' : (f.size ? ' field-' + f.size : '')) }, kids);
 }
 // Dono da nota no Supabase: 'equipa' (valor fixo) para um bloco partilhado
@@ -14456,8 +14528,10 @@ function abrirModalDesambiguacaoUtente(numeroFicha, candidatos, onEscolher) {
     });
   }
   const panel = h('div', { class: 'modal-panel', style: 'max-width:440px;' }, [
-    h('p', { class: 'modal-title', style: 'margin-bottom:4px;' }, `Ficha Nº ${numeroFicha}`),
-    h('p', { class: 'confirm-message', style: 'margin-bottom:14px;' }, ehFamilia
+    h('p', { class: 'modal-title', style: 'margin-bottom:4px;' }, valorPareceNif(numeroFicha) ? `NIF ${numeroFicha}` : `Ficha Nº ${numeroFicha}`),
+    h('p', { class: 'confirm-message', style: 'margin-bottom:14px;' }, valorPareceNif(numeroFicha)
+      ? `Este NIF aparece em ${candidatos.length} fichas. Escolhe a ficha certa:`
+      : ehFamilia
       ? `Esta ficha tem ${candidatos.length} pessoas associadas. Em que nome queres colocar?`
       : 'Existe mais do que um utente associado a esta Ficha. Escolhe o membro da família pretendido:'),
     pesquisaEl,
@@ -53999,60 +54073,45 @@ function buildFormularioEntregaDoc(r) {
         h('td', {}, h('span', { class: 'doc-empresa-parceira-destaque' }, empresaEnderecoEmprestado.nome)),
       ])
     : null;
-  const linhasAntes = [
-    ['Nº', formatarNumeroEntrega(r) || '—'],
-    ['Farmácia', r.farmacia || '—'],
-    ['Cliente / Destinatário', clienteDestinatarioTxt],
+  // REDESENHO 2026-10-12 (Hugo: "vê o que pode ser melhorado, especialmente os dados que precisam de ser facilmente
+  // vistos pelo estafeta"): o que o estafeta usa na rua vem primeiro e em letra grande, numa caixa só — a quem
+  // entregar, onde (morada + localidade), telefone e até quando. Depois o pagamento. Os dados administrativos (Nº,
+  // Doc/Reserva, Entregue por, Responsável) passam para uma tabela pequena no fim. "Farmácia" saiu (já está no
+  // cabeçalho) e "Urgente: Não" também — urgente só aparece, e bem visível, quando é mesmo urgente. Sem fundos de
+  // cor (poupa tinta e funciona em impressoras a preto e branco).
+  const horaLimite = entregaHoraLimiteEfetiva(r);
+  const quandoTxt = [formatDate(r.dataEntrega), r.blocoHorario || null, horaLimite ? `até às ${horaLimite}` : null].filter(Boolean).join('  ·  ');
+  const urgenteBanner = r.urgente
+    ? h('div', { class: 'doc-entrega-urgente' }, '⚡ URGENTE — ENTREGA IMEDIATA')
+    : null;
+  const destaqueEntrega = h('div', { class: 'doc-entrega-destaque' }, [
+    h('div', { class: 'doc-entrega-rotulo' }, 'Entregar a'),
+    h('div', { class: 'doc-entrega-nome' }, clienteDestinatarioTxt),
+    empresaEnderecoEmprestado ? h('div', { style: 'margin:4px 0 2px;' }, [h('span', { class: 'doc-entrega-rotulo', style: 'margin-right:6px;' }, 'Ao cuidado de'), h('span', { class: 'doc-empresa-parceira-destaque' }, empresaEnderecoEmprestado.nome)]) : null,
+    h('div', { class: 'doc-entrega-morada' }, r.morada || '— sem morada —'),
+    r.localidade ? h('div', { class: 'doc-entrega-localidade' }, r.localidade) : null,
+    h('div', { class: 'doc-entrega-linha' }, [
+      h('span', { class: 'doc-entrega-contacto' }, r.contacto ? `☎ ${formatarTelefonePT(r.contacto)}` : '☎ sem contacto'),
+      h('span', { class: 'doc-entrega-quando' }, quandoTxt),
+    ]),
+  ].filter(Boolean));
+  const linhasAdmin = [
+    ['Nº da Entrega', formatarNumeroEntrega(r) || '—'],
     ['Doc/Reserva', r.docReserva ? String(r.docReserva).toUpperCase() : '—'],
-    ['Morada', [r.morada, r.localidade].filter(Boolean).join(', ') || '—'],
-    ['Contacto', r.contacto ? formatarTelefonePT(r.contacto) : '—'],
-    ['Data de Entrega', formatDate(r.dataEntrega)],
-    ['Bloco Horário', r.blocoHorario || '—'],
-    ['Hora Limite', entregaHoraLimiteEfetiva(r) || '—'],
     ['Entregue por', r.entreguePor || '—'],
-    // Cargo acrescentado só aqui, no documento impresso (ver
-    // entregaResponsavelComCargo) — o campo registadoPor em si continua só
-    // com o nome, para não poluir o formulário/tabela do dia-a-dia.
+    // Cargo acrescentado só aqui, no documento impresso (ver entregaResponsavelComCargo).
     ['Responsável pelo Pedido', entregaResponsavelComCargo(r.registadoPor)],
-    ['Urgente', r.urgente ? 'SIM — Entrega Imediata' : 'Não'],
   ];
   const pago = r.estadoPagamento === 'Pago';
   const aCobrar = r.estadoPagamento === 'Não Pago';
-  const linhasDepois = [];
-  if (aCobrar) {
-    if (r.metodoPagamento === 'Dinheiro') {
-      if (r.valorAPagar !== '' && r.valorAPagar !== undefined && r.valorAPagar !== null) linhasDepois.push(['Valor a Cobrar', `${Number(r.valorAPagar).toFixed(2)}€`]);
-      if (r.precisaTroco && r.troco !== '' && r.troco !== undefined && r.troco !== null) {
-        if (r.valorEntregue !== '' && r.valorEntregue !== undefined && r.valorEntregue !== null) {
-          linhasDepois.push(['Valor Entregue pelo Utente', `${Number(r.valorEntregue).toFixed(2)}€`]);
-        }
-        linhasDepois.push(['Troco a Entregar', `${Number(r.troco).toFixed(2)}€`]);
-      }
-    }
-    // O aviso de Terminal MB (TPA) já não sai como linha própria aqui —
-    // passa a ficar embutido na própria caixa de destaque "A COBRAR" (ver
-    // pagamentoBox abaixo), na mesma linha do valor a cobrar, para nunca
-    // ficar separado da informação de quanto/como cobrar.
-  }
-  // As Notas Internas (campo "observacoes") escritas na app NUNCA são
-  // impressas — ficam só para consulta interna (ver helperText junto ao
-  // campo no formulário). Só o campo dedicado "Observações de Entrega"
-  // (observacoesEntrega), curto e limitado a 150 caracteres, sai impresso
-  // — a seguir fica ainda um pequeno espaço em branco para apontamentos
-  // manuais do próprio estafeta.
-
-  const rowNormal = ([label, valor]) => h('tr', {}, [
-    h('td', { style: 'font-weight:700;width:38%;' }, label),
-    h('td', {}, valor),
-  ]);
-
-  const tbody = h('tbody', {}, [
-    rowNormal(linhasAntes[0]), // Farmácia
-    rowNormal(linhasAntes[1]), // Cliente / Destinatário
-    ...(linhaEmpresaParceiraDestaque ? [linhaEmpresaParceiraDestaque] : []),
-    ...linhasAntes.slice(2).map(rowNormal),
-    ...linhasDepois.map(rowNormal),
-  ]);
+  // As Notas Internas (campo "observacoes") NUNCA são impressas — só as "Instruções para o Estafeta"
+  // (observacoesEntrega), mais abaixo.
+  // Duas colunas de pares (rótulo | valor | rótulo | valor) — ocupa metade da altura, para a folha nunca passar
+  // para uma 2.ª página mesmo com morada, empresa parceira, troco e instruções compridas.
+  const tbody = h('tbody', {}, [linhasAdmin.slice(0, 2), linhasAdmin.slice(2, 4)].map(par => h('tr', {}, par.flatMap(([label, valor]) => [
+    h('td', { style: 'font-weight:700;width:18%;' }, label),
+    h('td', { style: 'width:32%;' }, valor),
+  ]))));
 
   // Estado de Pagamento em destaque — desenhado como caixa autónoma com
   // borda preta grossa e texto em maiúsculas, SEM depender de cor de
@@ -54092,6 +54151,10 @@ function buildFormularioEntregaDoc(r) {
     const temTroco = r.metodoPagamento === 'Dinheiro' && r.precisaTroco
       && r.valorEntregue !== '' && r.valorEntregue !== undefined && r.valorEntregue !== null
       && r.troco !== '' && r.troco !== undefined && r.troco !== null;
+    // "Troco já preparado no saco" (2026-10-12) — evita escrever à mão na folha.
+    const avisoTrocoNoSaco = (r.metodoPagamento === 'Dinheiro' && r.precisaTroco && r.trocoNoSaco)
+      ? h('div', { class: 'doc-pagamento-saco' }, '[ ✓ ] TROCO JÁ ESTÁ NO SACO')
+      : null;
     if (temTroco) {
       const linhaDetalhe = (rotulo, valor, destaque) => h('div', { class: destaque ? 'doc-pagamento-troco-destaque' : 'doc-pagamento-troco-linha-simples' }, [
         h('span', {}, rotulo), h('span', { class: 'doc-pagamento-troco-valor' }, `${Number(valor).toFixed(2)} €`),
@@ -54101,7 +54164,9 @@ function buildFormularioEntregaDoc(r) {
         linhaDetalhe('Valor Entregue em Notas/Moedas pelo Cliente', r.valorEntregue, false),
         linhaDetalhe('TROCO A LEVAR PELA FARMÁCIA', r.troco, true),
       ]);
-      pagamentoBox = h('div', { class: 'doc-pagamento-box doc-pagamento-alerta doc-pagamento-alerta-troco' }, [linha1, linha2]);
+      pagamentoBox = h('div', { class: 'doc-pagamento-box doc-pagamento-alerta doc-pagamento-alerta-troco' }, [linha1, linha2, avisoTrocoNoSaco].filter(Boolean));
+    } else if (avisoTrocoNoSaco) {
+      pagamentoBox = h('div', { class: 'doc-pagamento-box doc-pagamento-alerta doc-pagamento-alerta-troco' }, [linha1, avisoTrocoNoSaco]);
     } else {
       pagamentoBox = h('div', { class: 'doc-pagamento-box doc-pagamento-alerta' }, [linha1]);
     }
@@ -54125,12 +54190,14 @@ function buildFormularioEntregaDoc(r) {
   ]);
   const kids = [
     buildDocLetterhead(r.farmacia, true),
-    h('h1', { class: 'doc-title' }, 'Formulário de Entrega'),
-    h('table', { class: 'doc-table' }, [tbody]),
+    h('h1', { class: 'doc-title' }, `Formulário de Entrega${formatarNumeroEntrega(r) ? ` · ${formatarNumeroEntrega(r)}` : ''}`),
+    urgenteBanner,
+    destaqueEntrega,
     pagamentoBox,
     obsEntregaBox,
+    h('table', { class: 'doc-table doc-table-entrega-admin' }, [tbody]),
     obsEstafetaBox,
-  ];
+  ].filter(Boolean);
   const nomeFarmaciaDeclaracao = r.farmacia === 'Boa Nova' ? 'Farmácia Boa Nova' : 'Farmácia Juncal';
   // Canto inferior esquerdo: Aviso Legal do Fornecimento ao Domicílio +
   // Verificação Interna (sem título próprio), numa caixa tracejada — em
@@ -57286,7 +57353,7 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
     // desambiguação e deixar o operador escolher.
     if (candidatosHabituais.length > 1) return { duplicados: candidatosHabituais.map(mapHabitualParaCandidato) };
     // Juncal: mesma lógica (titular + familiares) que buscarClienteFichaJuncal, usada por Pedidos/Reclamações.
-    if (farmaciaAtiva === 'Juncal') return buscarClienteFichaJuncal(numero);
+    if (farmaciaAtiva === 'Juncal') return buscarClienteFichaOuNifJuncal(numero);
     if (candidatosHabituais.length === 1) return mapHabitualParaCandidato(candidatosHabituais[0]);
     return null;
   }
@@ -57319,7 +57386,7 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
       dataEntrega: hoje,
       blocoHorario: entregaEhSabado(hoje) ? BLOCO_SABADO : '', horaLimite: '', urgente: false,
       entreguePor: estafetaPredefinidoNome(), estadoPagamento: '', metodoPagamento: '', levarTerminalMb: false,
-      valorAPagar: '', precisaTroco: false, valorEntregue: '', troco: '',
+      valorAPagar: '', precisaTroco: false, valorEntregue: '', troco: '', trocoNoSaco: false,
       observacoes: '', observacoesEntrega: '', estadoEntrega: 'Pendente',
     };
     editingId = null; formError = ''; showForm = true; rerender();
@@ -57376,6 +57443,7 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
     else if (!draft.entregaEmpresaParceira) camposOcultos.add('enderecoEmpresaParceiraId');
     if (!ehDinheiro) camposOcultos.add('precisaTroco');
     if (!ehDinheiro || !draft.precisaTroco) { camposOcultos.add('valorEntregue'); camposOcultos.add('troco'); }
+    if (!ehDinheiro || !draft.precisaTroco || pago) camposOcultos.add('trocoNoSaco');
     // TPA só faz sentido quando ainda há algo a cobrar na rua — com a
     // entrega já paga, o campo desaparece e a checkbox fica sempre desmarcada.
     if (!ehMB || pago) camposOcultos.add('levarTerminalMb');
@@ -57457,7 +57525,7 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
       if (f.name === 'metodoPagamento') {
         return Object.assign({}, f, {
           onChange: () => {
-            if (draft.metodoPagamento !== 'Dinheiro') draft.precisaTroco = false;
+            if (draft.metodoPagamento !== 'Dinheiro') { draft.precisaTroco = false; draft.trocoNoSaco = false; }
             if (draft.metodoPagamento !== 'MB') draft.levarTerminalMb = false;
             rerender();
           },
@@ -57472,7 +57540,7 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
         });
       }
       if (f.name === 'precisaTroco') {
-        return Object.assign({}, f, { onChange: () => { recalcularTroco(); rerender(); } });
+        return Object.assign({}, f, { onChange: () => { if (!draft.precisaTroco) draft.trocoNoSaco = false; recalcularTroco(); rerender(); } });
       }
       if (f.name === 'valorEntregue') {
         return Object.assign({}, f, { onChange: () => { recalcularTroco(); rerender(); } });
@@ -57527,7 +57595,7 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
   // Ficha muda; depois de carregados, os campos continuam 100% editáveis à
   // mão sem qualquer interferência.
   function buildNumeroFichaField(f) {
-    const control = h('input', { class: 'input input-destaque', type: 'text', inputmode: 'numeric', maxlength: '6', style: 'max-width:150px;', placeholder: f.placeholder || '' });
+    const control = h('input', { class: 'input input-destaque', type: 'text', inputmode: 'numeric', maxlength: '9', style: 'max-width:150px;', placeholder: farmaciaAtiva === 'Juncal' ? 'Nº Ficha ou NIF' : (f.placeholder || '') });
     control.value = draft.numeroFicha || '';
     let debounceTimer = null;
     let ultimoConsultado = null;
@@ -57544,6 +57612,9 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
     // carregado) continua a substituir/limpar normalmente — só deixa de
     // disparar por um blur/consulta que não mudou nada de facto.
     let fichaFoiCarregadaNestaSessao = false;
+    const avisoNifEl = h('p', { class: 'field-helper-text', style: 'color:#b45309;font-weight:600;display:none;margin-top:4px;' }, '');
+    function mostrarAvisoNif(txt) { if (txt) AVISOS_NIF_POR_DRAFT.set(draft, txt); else AVISOS_NIF_POR_DRAFT.delete(draft); avisoNifEl.textContent = txt || ''; avisoNifEl.style.display = txt ? '' : 'none'; }
+    if (AVISOS_NIF_POR_DRAFT.has(draft)) { avisoNifEl.textContent = AVISOS_NIF_POR_DRAFT.get(draft); avisoNifEl.style.display = ''; }
     function limparCamposCliente() {
       draft.nomeCliente = ''; draft.morada = ''; draft.localidade = ''; draft.contacto = '';
     }
@@ -57551,9 +57622,17 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
       const atual = String(draft.numeroFicha || '').trim();
       if (atual === ultimoConsultado) return;
       ultimoConsultado = atual;
+      mostrarAvisoNif('');
       if (!atual) { clienteFichaCarregada = null; if (fichaFoiCarregadaNestaSessao) { limparCamposCliente(); fichaFoiCarregadaNestaSessao = false; } rerender(); return; }
       const encontrado = await buscarClienteFicha(atual);
       if (String(draft.numeroFicha || '').trim() !== atual) return; // Nº mudou entretanto — descarta resposta tardia
+      // NIF (Juncal) sem ficha: o NIF nunca fica gravado como Nº de Ficha.
+      if (!encontrado && farmaciaAtiva === 'Juncal' && valorPareceNif(atual)) {
+        draft.numeroFicha = ''; control.value = ''; ultimoConsultado = '';
+        mostrarAvisoNif(`Nenhuma ficha com o NIF ${atual}. Preenche os dados à mão.`);
+        if (fichaFoiCarregadaNestaSessao) { clienteFichaCarregada = null; limparCamposCliente(); fichaFoiCarregadaNestaSessao = false; rerender(); }
+        return;
+      }
       if (!encontrado) { clienteFichaCarregada = null; if (fichaFoiCarregadaNestaSessao) { limparCamposCliente(); fichaFoiCarregadaNestaSessao = false; } rerender(); return; }
       if (encontrado.duplicados) {
         // Esta Ficha tem mais do que um utente associado (família a
@@ -57561,14 +57640,16 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
         // qual, em vez de preencher com um ao acaso.
         abrirModalDesambiguacaoUtente(atual, encontrado.duplicados, (escolhido) => {
           if (String(draft.numeroFicha || '').trim() !== atual) return; // Nº mudou entretanto — descarta escolha tardia
-          aplicarEscolha(escolhido);
+          aplicarEscolha(escolhido, atual);
         });
         return;
       }
-      aplicarEscolha(encontrado);
+      aplicarEscolha(encontrado, atual);
     }
-    function aplicarEscolha(encontrado) {
+    function aplicarEscolha(encontrado, pesquisado) {
       fichaFoiCarregadaNestaSessao = true;
+      // Encontrado pelo NIF: o campo passa a mostrar o Nº de Ficha (é esse que fica gravado na entrega).
+      if (farmaciaAtiva === 'Juncal' && valorPareceNif(pesquisado) && encontrado.numeroFicha) draft.numeroFicha = String(encontrado.numeroFicha);
       clienteFichaCarregada = { fonte: encontrado.fonte, id: encontrado.id, nome: encontrado.nome, morada: encontrado.morada, localidade: encontrado.localidade, contacto: encontrado.contacto };
       // CORRIGIDO 2026-10-02 (Hugo: 3 entregas de clientes/fichas diferentes, todas com "Rua Igreja Velha 436"):
       // só se substituía um campo quando a ficha encontrada o tinha preenchido — uma ficha SEM morada (ou sem
@@ -57582,8 +57663,8 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
       rerender();
     }
     control.addEventListener('input', () => {
-      // Só dígitos, no máximo 6 — impede letras/símbolos mesmo colados.
-      const cleaned = control.value.replace(/\D/g, '').slice(0, 6);
+      // Só dígitos, no máximo 9 (Nº de Ficha até 6, NIF com 9) — impede letras/símbolos mesmo colados.
+      const cleaned = control.value.replace(/\D/g, '').slice(0, 9);
       if (cleaned !== control.value) control.value = cleaned;
       draft.numeroFicha = control.value;
       if (debounceTimer) clearTimeout(debounceTimer);
@@ -57593,8 +57674,10 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
       if (e.key === 'Enter') { e.preventDefault(); if (debounceTimer) clearTimeout(debounceTimer); consultarEPreencher(); }
     });
     control.addEventListener('blur', () => { if (debounceTimer) clearTimeout(debounceTimer); consultarEPreencher(); });
-    const kids = [h('label', {}, f.label), control];
-    kids.push(h('p', { class: 'field-helper-text' }, 'Substitui sempre Nome, Morada, Localidade e Contacto pelos dados da ficha encontrada — ou limpa-os, se não encontrar nenhuma.'));
+    const kids = [h('label', {}, f.label), control, avisoNifEl];
+    kids.push(h('p', { class: 'field-helper-text' }, farmaciaAtiva === 'Juncal'
+      ? 'Escreve o Nº de Ficha ou o NIF. Substitui Nome, Morada, Localidade e Contacto pelos dados da ficha encontrada.'
+      : 'Substitui sempre Nome, Morada, Localidade e Contacto pelos dados da ficha encontrada — ou limpa-os, se não encontrar nenhuma.'));
     return h('div', { class: 'field' + (f.col === 2 ? ' span2' : (f.size ? ' field-' + f.size : '')) }, kids);
   }
   function buildEnderecoEmpresaParceiraField(f) {
@@ -57637,7 +57720,7 @@ function buildEntregasPage(container, goTo, ehTransicaoDePagina) {
         // "Pago" — já não há nada a cobrar pelo estafeta, por isso o campo
         // fica bloqueado e limpo; "Não Pago" liberta-o de imediato para
         // se indicar o valor a cobrar.
-        if (o.value === 'Pago') { draft.valorAPagar = ''; draft.levarTerminalMb = false; recalcularTroco(); }
+        if (o.value === 'Pago') { draft.valorAPagar = ''; draft.levarTerminalMb = false; draft.trocoNoSaco = false; recalcularTroco(); }
         rerender();
       });
       return btn;
