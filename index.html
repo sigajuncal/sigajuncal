@@ -13929,6 +13929,8 @@ function melhorarInputData(input) {
 // da mesma forma em QUALQUER campo de data da app, instalada uma única vez
 // em melhorarInputData(), em vez de cada sítio ter de pedir/repetir a regra.
 function instalarPreenchimentoInteligenteData(input) {
+  if (input.__sigaDataInteligente) return;
+  input.__sigaDataInteligente = true;
   let buffer = '';
   function calcularIso() {
     const n = buffer.length;
@@ -13976,6 +13978,61 @@ function instalarPreenchimentoInteligenteData(input) {
   });
 }
 
+// ---- Datas e horas: escrever primeiro, validar depois (2026-10-12, Hugo: "avalia o preenchimento de datas e outros
+// campos em toda a app, para permitir o preenchimento antes de validação... sem quebras nem bugs") ----
+// Causa raiz: um <input type="date"/"time"> dispara 'change' a CADA tecla que deixe um valor válido — ao escrever o
+// ano, o 1.º algarismo já dá "0002-10-12"; ao corrigir o dia de uma data já preenchida, o 1.º algarismo já dá o dia
+// "01". Muitos campos reagem ao 'change' redesenhando o formulário (idade, vagas, períodos, conflitos…) ou validando
+// (data passada → repõe hoje): o campo era recriado a meio da escrita, perdia o foco e a data ficava errada.
+// Correção única, para TODOS os campos de data/hora da app (de schema, feitos à mão e futuros): enquanto se está a
+// ESCREVER no campo pelo teclado, o 'change' fica em espera e só segue ao sair do campo (ou com Enter). O 'input'
+// continua a passar sempre (o valor fica guardado no rascunho a cada tecla). Escolher no calendário/relógio, sem
+// teclado, continua a reagir de imediato. Também instala aqui o preenchimento por dígitos corridos nos campos de
+// data feitos à mão que não passavam por melhorarInputData().
+(function instalarEscritaFluidaDatasGlobal() {
+  const TIPOS = new Set(['date', 'time', 'datetime-local', 'month']);
+  const ehCampoTempo = (t) => !!t && t.tagName === 'INPUT' && TIPOS.has(t.type);
+  const escritoPeloTeclado = new WeakSet();
+  const changePendente = new WeakSet();
+  function libertar(t) {
+    if (!changePendente.has(t)) return;
+    changePendente.delete(t);
+    if (!t.isConnected) return;
+    const ev = new Event('change', { bubbles: true });
+    ev.__sigaLibertado = true;
+    t.dispatchEvent(ev);
+  }
+  document.addEventListener('focusin', (e) => {
+    const t = e.target;
+    if (!ehCampoTempo(t)) return;
+    escritoPeloTeclado.delete(t);
+    if (t.type === 'date') instalarPreenchimentoInteligenteData(t);
+  }, true);
+  document.addEventListener('keydown', (e) => {
+    const t = e.target;
+    if (!ehCampoTempo(t)) return;
+    if (e.key === 'Enter') { escritoPeloTeclado.delete(t); libertar(t); return; }
+    if (/^[0-9]$/.test(e.key) || e.key === 'Backspace' || e.key === 'Delete' || e.key === 'ArrowUp' || e.key === 'ArrowDown') escritoPeloTeclado.add(t);
+  }, true);
+  document.addEventListener('change', (e) => {
+    const t = e.target;
+    if (!ehCampoTempo(t) || e.__sigaLibertado) return;
+    if (document.activeElement === t && escritoPeloTeclado.has(t)) {
+      e.stopImmediatePropagation();
+      changePendente.add(t);
+      return;
+    }
+    changePendente.delete(t); // segue normalmente (calendário, ou já fora do campo)
+  }, true);
+  document.addEventListener('focusout', (e) => {
+    const t = e.target;
+    if (!ehCampoTempo(t)) return;
+    escritoPeloTeclado.delete(t);
+    // Depois dos 'blur' do próprio campo (ex: o preenchimento por dígitos corridos, que pode corrigir o valor).
+    if (changePendente.has(t)) setTimeout(() => libertar(t), 0);
+  }, true);
+})();
+
 // ---- Campos de preenchimento (2026-09-26, Hugo: "verifica que todos os campos de preenchimento permitem
 // escrever... preenchimento de datas antes bugava um pouco... verificação exaustiva") ----
 // 1) Cursor que não salta: quando um campo se reformata enquanto se escreve (telefone com espaços, só algarismos,
@@ -14004,11 +14061,30 @@ function formatarCampoMantendoCursor(input, funcaoFormatar, contaCaracter) {
   return novo;
 }
 const ehAlgarismo = (c) => /\d/.test(c);
+// Reações a um campo (onChange que redesenha o formulário) sem roubar o foco (2026-10-12): o 'change' de um campo de
+// texto/número dispara quando se SAI dele — se a reação redesenhar logo o formulário, o campo para onde se acabou de
+// clicar (ou de ir com Tab) é recriado e perde o foco: era preciso clicar duas vezes. Agora a reação corre logo a
+// seguir à mudança de foco e devolve o foco (e a posição do cursor) ao campo equivalente do formulário novo.
+function executarOnChangeMantendoFoco(fn) {
+  setTimeout(() => {
+    const el = document.activeElement;
+    const campo = el && el.getAttribute ? el.getAttribute('data-campo') : null;
+    let sel = null;
+    try { sel = [el.selectionStart, el.selectionEnd]; } catch (e) { sel = null; }
+    fn();
+    if (!campo || el.isConnected) return;
+    const novo = document.querySelector(`[data-campo="${String(campo).replace(/["\\]/g, '')}"]`);
+    if (!novo) return;
+    try { novo.focus({ preventScroll: true }); } catch (e) { novo.focus(); }
+    try { if (sel && sel[0] !== null && sel[0] !== undefined) novo.setSelectionRange(sel[0], sel[1]); } catch (e) { /* campos sem cursor */ }
+  }, 0);
+}
 function buildField(field, draft) {
   const colClass = field.col === 2 ? ' span2' : (field.size ? ' field-' + field.size : '');
   if (field.type === 'checkbox') {
     const cb = h('input', { type: 'checkbox', checked: !!draft[field.name] });
-    cb.addEventListener('change', () => { draft[field.name] = cb.checked; if (field.onChange) field.onChange(); });
+    cb.setAttribute('data-campo', field.name);
+    cb.addEventListener('change', () => { draft[field.name] = cb.checked; if (field.onChange) executarOnChangeMantendoFoco(() => field.onChange()); });
     const kids = [cb, h('span', {}, field.label)];
     // "help": tooltip nativo + ícone ⓘ ao lado da checkbox (usado, por
     // exemplo, na Rota dos Manipulados para explicar quando deve ser marcada).
@@ -14039,7 +14115,7 @@ function buildField(field, draft) {
     const currentValLower = String(currentVal).toLowerCase();
     control = h('select', { class: 'select' }, opts.map((o, i) => h('option', { value: o, selected: currentValLower === String(o).toLowerCase() ? 'selected' : undefined }, labels[i] || o)));
     control.value = currentVal;
-    control.addEventListener('change', () => { draft[field.name] = control.value; if (field.onChange) field.onChange(); });
+    control.addEventListener('change', () => { draft[field.name] = control.value; if (field.onChange) executarOnChangeMantendoFoco(() => field.onChange()); });
   } else if (field.type === 'combo') {
     const listId = 'dl-' + (__datalistCounter++);
     // optionLabels (opcional): texto extra mostrado na lista nativa do
@@ -14059,7 +14135,7 @@ function buildField(field, draft) {
     control.value = draft[field.name] || '';
     repararDatalistAoEditar(control, listId);
     control.addEventListener('input', () => { draft[field.name] = control.value; });
-    if (field.onChange) control.addEventListener('change', () => field.onChange());
+    if (field.onChange) control.addEventListener('change', () => executarOnChangeMantendoFoco(() => field.onChange()));
   } else if (field.integer) {
     control = h('input', {
       class: 'input', type: 'number', step: '1', inputmode: 'numeric',
@@ -14159,13 +14235,16 @@ function buildField(field, draft) {
     // schemas — a obrigatoriedade em si é tratada à parte).
     if (field.phone) {
       telefoneErroEl = h('p', { class: 'field-error-red', style: 'display:none;' }, '⚠️ O contacto deve conter exatamente 9 dígitos (ex: 912345678).');
-      const validarTelefoneInline = () => {
+      // 2026-10-12: enquanto se escreve, o aviso só DESAPARECE (quando o número fica certo) — nunca aparece a meio da
+      // escrita (antes surgia logo ao 1.º algarismo). Aparece ao sair do campo, se o número ficar incompleto.
+      const validarTelefoneInline = (aEscrever) => {
         const digitos = draft[field.name] || '';
-        telefoneErroEl.style.display = (digitos && digitos.length !== 9) ? '' : 'none';
+        const invalido = !!digitos && digitos.length !== 9;
+        if (!invalido) telefoneErroEl.style.display = 'none';
+        else if (!aEscrever) telefoneErroEl.style.display = '';
       };
-      control.addEventListener('input', validarTelefoneInline);
-      control.addEventListener('blur', validarTelefoneInline);
-      validarTelefoneInline(); // estado inicial (ex: reabrir para editar)
+      control.addEventListener('blur', () => validarTelefoneInline(false));
+      validarTelefoneInline(false); // estado inicial (ex: reabrir para editar)
       control.__validarTelefoneInline = validarTelefoneInline;
     }
     control.addEventListener('input', () => {
@@ -14177,7 +14256,7 @@ function buildField(field, draft) {
         const digitos = normalizarTelefone(v);
         formatarCampoMantendoCursor(control, () => formatarTelefonePT(digitos), ehAlgarismo);
         draft[field.name] = digitos;
-        if (control.__validarTelefoneInline) control.__validarTelefoneInline();
+        if (control.__validarTelefoneInline) control.__validarTelefoneInline(true);
         return;
       }
       if (field.digitsOnly) {
@@ -14217,12 +14296,13 @@ function buildField(field, draft) {
         if (control.value) { control.value = formatarNomeUtente(control.value); draft[field.name] = control.value; }
       });
     }
-    if (field.onChange) control.addEventListener('change', () => field.onChange());
+    if (field.onChange) control.addEventListener('change', () => executarOnChangeMantendoFoco(() => field.onChange()));
   }
   // Campos de data (type:'date') ganham o wrapper com ícone próprio (ver
   // melhorarInputData) — `control` continua a ser o <input> real usado no
   // resto desta função (maxLength, disabled, etc. abaixo); só a peça
   // inserida no DOM é que passa a ser o wrapper.
+  if (control && control.setAttribute) control.setAttribute('data-campo', field.name); // ver executarOnChangeMantendoFoco
   const controlParaInserir = field.type === 'date' ? melhorarInputData(control) : control;
   const kids = [h('label', {}, field.label), controlParaInserir];
   // Rede de segurança: todo o campo de texto livre tem sempre um limite de
@@ -45266,10 +45346,13 @@ function buildHorariosPage(container, goTo) {
     const linhasPeriodos = feriasDraft.periodos.map((periodo, idx) => {
       const iniInput = h('input', { class: 'input', type: 'date' });
       iniInput.value = periodo.dataInicio || '';
-      iniInput.addEventListener('input', () => { periodo.dataInicio = iniInput.value; if (!periodo.dataFim) periodo.dataFim = iniInput.value; feriasConflitosPendentes = null; rerender(); });
+      // 'input' só guarda; redesenhar só no 'change' (2026-10-12) — redesenhar a cada tecla tirava o foco a meio da data.
+      iniInput.addEventListener('input', () => { periodo.dataInicio = iniInput.value; feriasConflitosPendentes = null; });
+      iniInput.addEventListener('change', () => { periodo.dataInicio = iniInput.value; if (!periodo.dataFim) periodo.dataFim = iniInput.value; feriasConflitosPendentes = null; rerender(); });
       const fimInput = h('input', { class: 'input', type: 'date' });
       fimInput.value = periodo.dataFim || '';
-      fimInput.addEventListener('input', () => { periodo.dataFim = fimInput.value; feriasConflitosPendentes = null; rerender(); });
+      fimInput.addEventListener('input', () => { periodo.dataFim = fimInput.value; feriasConflitosPendentes = null; });
+      fimInput.addEventListener('change', () => { periodo.dataFim = fimInput.value; feriasConflitosPendentes = null; rerender(); });
       const blocoBtn = h('button', { type: 'button', class: 'btn btn-secondary', style: 'padding:6px 10px;font-size:11.5px;white-space:nowrap;' }, 'Bloco 5 dias úteis');
       blocoBtn.addEventListener('click', () => { feriasAplicarBlocoSemanaUtil(periodo, periodo.dataInicio || todayISO()); feriasConflitosPendentes = null; rerender(); });
       const diasUteis = periodo.dataInicio && periodo.dataFim ? escalaContarDiasUteis(periodo.dataInicio, periodo.dataFim) : 0;
