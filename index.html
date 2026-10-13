@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-13 15:20" />
+<meta name="siga-versao" content="2026-10-13 15:30" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>SigaFarmácia · Farmácia Juncal</title>
 
@@ -8357,26 +8357,38 @@ function agendaDiaTemMarcacaoAtiva(prestadorKey, dateISO) {
 // mexe se a pesquisa estiver a levar a vista a uma marcação concreta (PG_REALCE_ATE) nem se a vaga já estiver à vista.
 let PG_REALCE_ATE = 0;
 function rolarParaPrimeiraVagaLivre(raiz, aindaACarregar) {
-  let tentativas = 0;
+  // 2.ª correção (2026-10-13, Hugo: "continua a mostrar assim"): ao abrir, o dia relê-se do servidor e redesenha-se
+  // (guardando a posição do scroll) — isso cortava o deslocamento suave a meio e a lista ficava no topo. Agora o
+  // deslocamento é instantâneo e é reconfirmado durante 3 s depois de haver dados, até a pessoa mexer ela própria na
+  // lista (roda do rato, toque, tecla ou clique), momento a partir do qual nunca mais se mexe.
+  const inicio = Date.now();
+  let mexeuManualmente = false;
+  const marcarManual = () => { mexeuManualmente = true; };
+  const eventos = ['wheel', 'touchstart', 'keydown', 'mousedown'];
+  const ligar = () => { if (raiz) eventos.forEach(ev => raiz.addEventListener(ev, marcarManual, { passive: true, capture: true })); };
+  const desligar = () => { if (raiz) eventos.forEach(ev => raiz.removeEventListener(ev, marcarManual, { capture: true })); };
+  ligar();
+  let comDadosDesde = 0;
   (function tentar() {
-    if (Date.now() < PG_REALCE_ATE) return;
-    const pronto = raiz && raiz.isConnected && !(aindaACarregar && aindaACarregar());
-    const el = pronto ? raiz.querySelector('.agenda-slot-livre.agenda-vaga-futura') : null;
-    if (!el) { if (tentativas++ < 30) setTimeout(tentar, 100); return; }
-    // "À vista" mede-se contra a área visível da LISTA que tem scroll próprio (ex.: o corpo da janela do dia), não
-    // contra a janela inteira — uma vaga escondida mais abaixo nessa lista também está "dentro" da janela do browser
-    // (2026-10-13, Hugo: "não abriu na primeira vaga disponível").
-    const r = el.getBoundingClientRect();
-    let cima = 0, baixo = window.innerHeight;
-    for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
-      const st = getComputedStyle(p);
-      if (/(auto|scroll)/.test(st.overflowY) && p.scrollHeight > p.clientHeight + 2) {
-        const pr = p.getBoundingClientRect();
-        cima = Math.max(cima, pr.top); baixo = Math.min(baixo, pr.bottom);
+    if (mexeuManualmente || !raiz || Date.now() < PG_REALCE_ATE || Date.now() - inicio > 8000) { desligar(); return; }
+    if (!raiz.isConnected) { if (Date.now() - inicio < 1500) { setTimeout(tentar, 80); return; } desligar(); return; }
+    if (aindaACarregar && aindaACarregar()) { setTimeout(tentar, 100); return; }
+    const el = raiz.querySelector('.agenda-slot-livre.agenda-vaga-futura');
+    if (!comDadosDesde) comDadosDesde = Date.now();
+    if (el) {
+      // "À vista" mede-se contra a área visível da LISTA com scroll próprio, não contra a janela inteira.
+      const r = el.getBoundingClientRect();
+      let cima = 0, baixo = window.innerHeight;
+      for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+        const st = getComputedStyle(p);
+        if (/(auto|scroll)/.test(st.overflowY) && p.scrollHeight > p.clientHeight + 2) {
+          const pr = p.getBoundingClientRect();
+          cima = Math.max(cima, pr.top); baixo = Math.min(baixo, pr.bottom);
+        }
       }
+      if (!(r.top >= cima + 8 && r.bottom <= baixo - 8)) { try { el.scrollIntoView({ block: 'center' }); } catch (e) { el.scrollIntoView(); } }
     }
-    if (r.top >= cima + 8 && r.bottom <= baixo - 8) return; // já está à vista
-    try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { el.scrollIntoView(); }
+    if (Date.now() - comDadosDesde < 3000) setTimeout(tentar, 150); else desligar();
   })();
 }
 function rolarParaMarcacaoAposFechar(raiz, id) {
