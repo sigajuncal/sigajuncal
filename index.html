@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-13 14:40" />
+<meta name="siga-versao" content="2026-10-13 15:00" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>SigaFarmácia · Farmácia Juncal</title>
 
@@ -3209,7 +3209,9 @@
      como antes e sem o calendário. */
   .escala-pessoal-topo{display:flex;flex-direction:column;gap:16px;min-width:0;}
   .escala-pessoal-topo > .ponto-card{margin-bottom:0;}
-  .escala-semanas-horario{display:none;}
+  /* Telemóvel/ecrãs estreitos (2026-10-13, Hugo: "podem aparecer, desde que ajustadas à vista telemóvel"): por baixo de
+     A Minha Semana, só a semana passada e as 7 seguintes (2 linhas de 4). */
+  @media (max-width:1149px){ .esh-grelha .esh-semana:nth-child(n+9){display:none;} }
   @media (min-width:1150px){
     .escala-pessoal-topo{display:grid;grid-template-columns:minmax(0,780px) 300px;align-items:start;justify-content:start;}
     .escala-pessoal-topo.com-ponto{grid-template-columns:400px minmax(0,780px);}
@@ -3222,6 +3224,15 @@
     .escala-pessoal-topo.com-ponto{grid-template-columns:400px minmax(0,780px) 300px;}
     .escala-pessoal-topo.com-ponto > .escala-semanas-horario{grid-column:auto;}
     .escala-pessoal-topo > .escala-minha-semana-card{grid-row:auto;}
+  }
+  /* Cartão de planeamento da EQUIPA (não pessoal): fundo próprio, para não se confundir com A Minha Semana. */
+  .escala-semanas-horario{background:linear-gradient(180deg,#f4f7fc 0%,#eef3fa 100%) !important;border:1px solid #d6e1f0 !important;}
+  .esh-titulo{display:flex;align-items:center;gap:6px;color:#1e3a8a !important;}
+  .escala-semanas-horario .esh-semana:not(.publicado):not(.rascunho){background:#fff;}
+  .escala-mes-com-semanas{display:flex;flex-direction:column;gap:16px;}
+  @media (min-width:1150px){
+    .escala-mes-com-semanas{display:grid;grid-template-columns:minmax(0,max-content) 300px;align-items:start;gap:16px;}
+    .escala-mes-com-semanas > .escala-semanas-horario{margin-top:46px;}
   }
   .esh-resumo{margin:0 0 8px;font-size:12.5px;color:#047857;font-weight:600;}
   .esh-resumo.curto{color:#b45309;}
@@ -8340,6 +8351,23 @@ function agendaDiaTemMarcacaoAtiva(prestadorKey, dateISO) {
 // Voltar ao sítio da marcação (2026-10-09, Hugo: "quando abro uma marcação para editar e volto atrás, a vista deve
 // estar ao nível dessa marcação"): depois de fechar o formulário (Cancelar ou Guardar), a lista/agenda desloca-se
 // até à linha da marcação ([data-marcacao-id]) e realça-a por um instante. Vale para Vacinação, Agendas e Eventos.
+// Ao abrir um dia de agenda (2026-10-13, Hugo: "quando clicas num dia de podologia para marcar, a vista deve ir logo
+// para a primeira vaga disponível, sem scroll pelas indisponíveis — para tudo"): desloca até à primeira vaga livre
+// ainda por vir (.agenda-slot-livre.agenda-vaga-futura). Vale para Agendas de serviços, Eventos/AFA e Vacinação. Não
+// mexe se a pesquisa estiver a levar a vista a uma marcação concreta (PG_REALCE_ATE) nem se a vaga já estiver à vista.
+let PG_REALCE_ATE = 0;
+function rolarParaPrimeiraVagaLivre(raiz, aindaACarregar) {
+  let tentativas = 0;
+  (function tentar() {
+    if (Date.now() < PG_REALCE_ATE) return;
+    const pronto = raiz && raiz.isConnected && !(aindaACarregar && aindaACarregar());
+    const el = pronto ? raiz.querySelector('.agenda-slot-livre.agenda-vaga-futura') : null;
+    if (!el) { if (tentativas++ < 30) setTimeout(tentar, 100); return; }
+    const r = el.getBoundingClientRect();
+    if (r.top >= 80 && r.bottom <= window.innerHeight - 40) return; // já está à vista
+    try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { el.scrollIntoView(); }
+  })();
+}
 function rolarParaMarcacaoAposFechar(raiz, id) {
   if (id === null || id === undefined || id === '') return;
   const seletor = `[data-marcacao-id="${String(id).replace(/["\\]/g, '')}"]`;
@@ -9417,6 +9445,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
   render();
+  rolarParaPrimeiraVagaLivre(overlay);
   return overlay;
 }
 
@@ -29886,6 +29915,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
   document.body.appendChild(overlay);
   render();
   if (currentEvento) carregarMarcacoes();
+  rolarParaPrimeiraVagaLivre(overlay, () => loadingMarc);
   return overlay;
 }
 
@@ -46522,7 +46552,7 @@ function buildHorariosPage(container, goTo) {
     });
     const blocos = [h('div', { class: 'esh-grelha' }, chips)];
     return h('div', { class: 'card card-pad escala-semanas-horario' }, [
-      h('h3', { class: 'dash-card-title', style: 'margin:0 0 4px;' }, 'Semanas com horário'),
+      h('h3', { class: 'dash-card-title esh-titulo', style: 'margin:0 0 4px;' }, [Icon('users', { size: 15, strokeWidth: 2.2 }), ' Semanas com horário da equipa']),
       h('p', { class: 'esh-resumo' + (semanasAFrente < 2 ? ' curto' : '') }, resumo),
       h('div', { class: 'esh-legenda' }, [
         h('span', {}, [h('i', { class: 'publicado' }), 'Publicado']),
@@ -52050,7 +52080,8 @@ function buildHorariosPage(container, goTo) {
       if (cartaoTrocas) { cartaoTrocas.style.marginTop = '16px'; wrap.appendChild(cartaoTrocas); }
     };
     if (activeTab === 'pessoal' && viewModePessoal === 'mes') {
-      wrap.appendChild(buildVistaPessoalMensal());
+      // Vista Mês também com o cartão das semanas com horário, ao lado (computador) ou por baixo (telemóvel).
+      wrap.appendChild(h('div', { class: 'escala-mes-com-semanas' }, [buildVistaPessoalMensal(), buildCalendarioSemanasComHorario()]));
       juntarCartaoTrocas();
       return wrap;
     }
@@ -53056,7 +53087,13 @@ function buildVacinacaoPage(container, goTo) {
   let responsavelSelectedIds = new Set();
 
 
-  function rerender() { comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); }); }
+  let ultimoDiaRoladoParaVaga = null; // dia em que já se foi à primeira vaga livre (só uma vez por abertura do dia)
+  function rerender() {
+    comScrollPreservado(() => { clear(container); container.appendChild(construirComRedeDeSeguranca(build)); });
+    if (activeSubTab === 'agenda' && agendaDiaSelecionado && !showMarcacaoForm) {
+      if (agendaDiaSelecionado !== ultimoDiaRoladoParaVaga) { ultimoDiaRoladoParaVaga = agendaDiaSelecionado; rolarParaPrimeiraVagaLivre(container); }
+    } else if (!agendaDiaSelecionado) ultimoDiaRoladoParaVaga = null;
+  }
   // Atualização ao vivo (2026-09-28): a página está protegida contra
   // redesenhos de fundo (PAGINAS_NUNCA_RECONSTROI_EM_FUNDO), por isso uma
   // marcação de um colega só aparecia depois de mexer em algo. Agora
@@ -61966,6 +62003,7 @@ function pgRealcarRegisto(id, raiz, aoFalhar) {
   const v = String(id).replace(/["\\]/g, '');
   const seletor = `[data-registo-id="${v}"], [data-marcacao-id="${v}"]`;
   const inicio = Date.now();
+  PG_REALCE_ATE = Date.now() + 6500; // a ida à primeira vaga livre não se sobrepõe a este destino
   (function tentar() {
     const base = raiz && raiz.isConnected ? raiz : document;
     const el = [...base.querySelectorAll(seletor)].find(x => x.offsetParent !== null);
