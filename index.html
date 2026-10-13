@@ -19097,9 +19097,35 @@ async function concluirTarefaPartilhada(r) {
   return true;
 }
 // Recados antigos com "semana de 05/10/2026 — dia 07/10/2026" mostram-se no formato simples de agora ("quarta, 07/10").
+// Datas por extenso relativo (2026-10-13, Hugo: "«nesse dia» e vais a ver e é hoje... tornar tudo menos robótico"):
+// ao MOSTRAR um recado, uma data que é hoje/ontem/anteontem/amanhã passa a dizer isso mesmo (calculado na altura
+// em que se lê — um recado lido no dia seguinte diz «ontem», nunca um «hoje» errado guardado na base de dados).
+function textoComDatasRelativas(texto) {
+  const hoje = todayISO();
+  const desloca = (n) => { const d = new Date(hoje + 'T12:00:00'); d.setDate(d.getDate() + n); return dateToISO(d); };
+  const rel = { [hoje]: 'hoje', [desloca(-1)]: 'ontem', [desloca(-2)]: 'anteontem', [desloca(1)]: 'amanhã' };
+  let mudou = false;
+  let t = String(texto || '').replace(/(^|[^\p{L}])(de|a|para|em|no dia|do dia|dia)\s(\d{2})\/(\d{2})\/(\d{4})(?!\s*—\s*dia)/gu, (m, antes, prep, dd, mm, aaaa, off, todo) => {
+    if (/semana\s+$/i.test(todo.slice(Math.max(0, off - 8), off + antes.length))) return m;
+    const r = rel[`${aaaa}-${mm}-${dd}`];
+    if (!r) return m;
+    mudou = true;
+    const p = prep.toLowerCase();
+    return antes + ((p === 'de' || p === 'do dia') ? `de ${r}` : (p === 'a' ? `a ${r}` : (p === 'para' ? `para ${r}` : r)));
+  });
+  if (mudou) {
+    t = t.replace(/\s+desse dia/g, '');
+    // Recados antigos (antes desta mudança): o fim também fica mais natural.
+    t = t.replace(/\. Regista a entrada na Validação de Horários\.$/, '. Podes registá-la na Validação de Horários?')
+      .replace(/\. Corrige a saída na Validação de Horários\.$/, '. Podes corrigi-la na Validação de Horários?')
+      .replace(/ não picou a entrada de /, ' esqueceu-se de picar a entrada de ')
+      .replace(/ e indica que entrou às /, '. Diz que entrou às ');
+  }
+  return t;
+}
 function gavetaTextoRecado(texto) {
   const nomes = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
-  return String(texto || '').replace(/(\(semana de \d{2}\/\d{2}\/\d{4}) — dia (\d{2})\/(\d{2})\/(\d{4})\)/g, (m, ini, dd, mm, aaaa) => {
+  return textoComDatasRelativas(texto).replace(/(\(semana de \d{2}\/\d{2}\/\d{4}) — dia (\d{2})\/(\d{2})\/(\d{4})\)/g, (m, ini, dd, mm, aaaa) => {
     const d = new Date(`${aaaa}-${mm}-${dd}T12:00:00`);
     return isNaN(d) ? m : `${ini} — ${nomes[d.getDay()]}, ${dd}/${mm})`;
   });
@@ -19709,7 +19735,7 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
             // recebida por mim a aguardar a minha ação).
             const ultimaPendente = !c.ultima.tratado && (c.ultima.tipo || 'mensagem') === 'tarefa';
             const itemConversa = buildContactoItem(c.outroId, nomeUtilizador(c.outroId),
-              { texto: prefixo + (c.ultima.mensagem || ''), tipo: c.ultima.tipo, pendente: ultimaPendente, pendentes: c.pendentes, souEuRemetente }, false,
+              { texto: prefixo + gavetaTextoRecado(c.ultima.mensagem || ''), tipo: c.ultima.tipo, pendente: ultimaPendente, pendentes: c.pendentes, souEuRemetente }, false,
               ultimaEhTarefaPendenteParaMim ? c.ultima : null);
             // "Novo" (2026-09-30, Hugo: "nova notificação mas não sei a que se refere"): a conversa com o que ainda não
             // tinhas visto quando abriste a Gaveta fica destacada, com uma etiqueta NOVO e o texto do que chegou —
@@ -57001,7 +57027,7 @@ function pontoJornadaAtual(utilizadorId) {
 async function pontoAvisarSaidaEsquecida(entrada) {
   const destinatarios = escalaUsuariosDirecao().filter(u => String(u.id) !== String(activeUser.id));
   const lista = destinatarios.length ? destinatarios : escalaUsuariosDirecao();
-  const mensagem = `${activeUser.nomeCompleto || activeUser.username} esqueceu-se de picar a saída de ${formatDate(entrada.data)} (entrada às ${entrada.horaReal}). Corrige a saída na Validação de Horários.`;
+  const mensagem = `${activeUser.nomeCompleto || activeUser.username} esqueceu-se de picar a saída de ${formatDate(entrada.data)} — tinha entrado às ${entrada.horaReal}. Podes corrigi-la na Validação de Horários?`;
   let ok = false;
   for (const u of lista) {
     const criado = await dbInsertRecado({ remetenteId: activeUser.id, destinatarioId: u.id, mensagem, tratado: false, tipo: 'tarefa', referenciaTabela: 'ponto_registos', referenciaId: entrada.id });
@@ -63664,7 +63690,10 @@ const PONTO_LEMBRETE_ADIADO = {};
 let PONTO_LEMBRETE_ABERTO = false;
 function pontoDataExtenso(iso) {
   const t = new Date(iso + 'T12:00:00').toLocaleDateString('pt-PT', { weekday: 'long', day: '2-digit', month: '2-digit' });
-  return iso === todayISO() ? `hoje (${t})` : t;
+  if (iso === todayISO()) return `hoje (${t})`;
+  const ontem = new Date(); ontem.setDate(ontem.getDate() - 1);
+  if (iso === dateToISO(ontem)) return `ontem (${t})`;
+  return t;
 }
 function pontoMomentoDoDia(dataISO, hhmm, ehSaida) {
   const [a, m, d] = dataISO.split('-').map(Number);
@@ -63753,7 +63782,7 @@ function mostrarLembretePonto(s) {
 
   if (s.tipo === 'entrada') {
     titulo = 'Ainda não picaste a entrada';
-    linhas.push(`${pontoDataExtenso(s.data).replace(/^./, c => c.toUpperCase())} — o teu turno começa às ${s.turno.entrada}.`);
+    linhas.push(s.data === todayISO() ? `O teu turno de hoje começa às ${s.turno.entrada}.` : `${pontoDataExtenso(s.data).replace(/^./, c => c.toUpperCase())} — o teu turno começa às ${s.turno.entrada}.`);
     if (telemovel) {
       acoes.push(h('button', { type: 'button', class: 'btn btn-primary', onclick: () => { fechar(); requireAuth(pontoAbrirPicagem); } }, [Icon('arrowright', { size: 16, strokeWidth: 2.6 }), h('span', {}, 'Picar a entrada agora')]));
       linhas.push('Se entraste mais cedo, a picagem pergunta-te a hora certa.');
@@ -63770,18 +63799,18 @@ function mostrarLembretePonto(s) {
         if (min > agora.getHours() * 60 + agora.getMinutes()) { mostrarErro('A hora de entrada não pode ser depois de agora.'); return; }
         if (min < inicioMin - 120) { mostrarErro(`Essa hora é muito antes do teu turno (${s.turno.entrada}). Confirma a hora.`); return; }
         e.currentTarget.disabled = true;
-        const ok = await pontoPedirRegistoDirecao(`${nome} não picou a entrada de ${formatDate(s.data)} e indica que entrou às ${hora} desse dia (turno das ${s.turno.entrada}). Regista a entrada na Validação de Horários.`);
+        const ok = await pontoPedirRegistoDirecao(`${nome} esqueceu-se de picar a entrada de ${formatDate(s.data)}. Diz que entrou às ${hora}${hora === s.turno.entrada ? ', à hora do turno' : ` (o turno começava às ${s.turno.entrada})`}. Podes registá-la na Validação de Horários?`);
         if (!ok) { e.currentTarget.disabled = false; mostrarErro('Não foi possível avisar a Direção — tenta de novo.'); return; }
         pontoLembreteMarcarPedido(s.chave);
         fechar();
-        showToast(`Pedido enviado: entrada de ${formatDate(s.data)} às ${hora}. A Direção regista-a.`, 'success');
+        showToast(`Pronto, a Direção já sabe que entraste às ${hora}${s.data === todayISO() ? '' : ` de ${formatDate(s.data)}`} e vai registá-lo.`, 'success');
       } }, 'Pedir à Direção para registar esta hora'));
       acoes.push(h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => adiar(15) }, 'Vou picar já no telemóvel'));
     }
     acoes.push(h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => adiar(30) }, 'Ainda não estou ao serviço'));
   } else if (s.tipo === 'saida') {
     titulo = 'Ainda não picaste a saída';
-    linhas.push(`Entrada ${pontoDataExtenso(s.data)} às ${s.entrada.horaReal} — o teu turno acabava às ${s.turno.saida}.`);
+    linhas.push(s.data === todayISO() ? `Entraste às ${s.entrada.horaReal} e o teu turno acabava às ${s.turno.saida}.` : `Entraste ${pontoDataExtenso(s.data)} às ${s.entrada.horaReal} e o turno acabava às ${s.turno.saida}.`);
     if (telemovel) {
       acoes.push(h('button', { type: 'button', class: 'btn btn-primary ponto-lembrete-saida', onclick: () => { fechar(); requireAuth(pontoAbrirPicagem); } }, [Icon('arrowleft', { size: 16, strokeWidth: 2.6 }), h('span', {}, 'Picar a saída agora')]));
       linhas.push('Se já saíste há algum tempo, a picagem pergunta-te a hora certa.');
@@ -63794,7 +63823,7 @@ function mostrarLembretePonto(s) {
     // Saída esquecida de um dia anterior — a hora é sempre desse dia (ou da madrugada seguinte, se o turno acabava à meia-noite).
     const dataTxt = `${s.data.slice(8, 10)}/${s.data.slice(5, 7)}`;
     titulo = `Não picaste a saída de ${pontoDataExtenso(s.data)}`;
-    linhas.push(`Nesse dia entraste às ${s.entrada.horaReal}${s.turno ? ` (turno até às ${s.turno.saida})` : ''}. Essa saída já não dá para picar — indica a hora e a Direção corrige.`);
+    linhas.push(`Entraste às ${s.entrada.horaReal}${s.turno ? ` e o turno acabava às ${s.turno.saida}` : ''}. Essa saída já não dá para picar, mas diz-nos a que horas saíste e a Direção trata do resto.`);
     const inp = h('input', { class: 'input', type: 'time', value: s.turno ? s.turno.saida.replace('24:00', '00:00') : '', 'aria-label': `Hora a que saíste no dia ${dataTxt}` });
     const madrugadaEl = h('p', { class: 'ponto-lembrete-nota' });
     const entradaMin = escalaMinutosAbsolutos(s.entrada.horaReal, false);
@@ -63822,13 +63851,13 @@ function mostrarLembretePonto(s) {
       if (r.erro) { mostrarErro(r.erro); return; }
       e.currentTarget.disabled = true;
       const seg = new Date(s.data + 'T12:00:00'); seg.setDate(seg.getDate() + 1);
-      const quando = r.diaSeguinte ? `${r.hora} da madrugada de ${formatDate(dateToISO(seg))}` : `${r.hora} de ${formatDate(s.data)}`;
-      const ok = await pontoPedirRegistoDirecao(`${nome} esqueceu-se de picar a saída de ${formatDate(s.data)} (entrada às ${s.entrada.horaReal}) e indica que saiu às ${quando}. Corrige a saída na Validação de Horários.`,
+      const quando = r.diaSeguinte ? `${r.hora}, já de madrugada (dia ${formatDate(dateToISO(seg))})` : r.hora;
+      const ok = await pontoPedirRegistoDirecao(`${nome} esqueceu-se de picar a saída de ${formatDate(s.data)}. Entrou às ${s.entrada.horaReal} e diz que saiu às ${quando}. Podes corrigi-la na Validação de Horários?`,
         { referenciaTabela: 'ponto_registos', referenciaId: s.entrada.id });
       if (!ok) { e.currentTarget.disabled = false; mostrarErro('Não foi possível avisar a Direção — tenta de novo.'); return; }
       pontoLembreteMarcarPedido(s.chave);
       fechar();
-      showToast(`Direção avisada: saída de ${formatDate(s.data)} às ${r.hora}.`, 'success');
+      showToast(`Pronto, a Direção já sabe que saíste às ${r.hora} e vai corrigir.`, 'success');
       setTimeout(verificarLembretePonto, 800); // a seguir pode faltar a entrada de hoje
     } }, 'Enviar à Direção'));
     acoes.push(h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => adiar(60) }, 'Lembrar mais tarde'));
