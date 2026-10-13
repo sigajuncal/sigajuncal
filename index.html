@@ -1361,7 +1361,7 @@
   .campo-ajuda-icon{position:relative;display:inline-flex;color:var(--pharm-300);cursor:help;flex-shrink:0;}
   .campo-ajuda-icon:hover,.campo-ajuda-icon:focus-visible{color:var(--pharm-500);outline:none;}
   .campo-ajuda-tooltip-flutuante{
-    display:none;position:fixed;z-index:9999;width:max-content;max-width:min(280px,calc(100vw - 24px));
+    display:none;position:fixed;z-index:9999;width:max-content;max-width:min(340px,calc(100vw - 24px));
     background:var(--pharm-900);color:#fff;font-size:12px;font-weight:500;line-height:1.6;
     white-space:pre-line;padding:11px 13px;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.28);
     pointer-events:none;}
@@ -4230,6 +4230,20 @@
   .cal-carousel-5{display:flex;gap:10px;max-width:1350px;}
   .cal-carousel-5 .cal-card{flex:0 0 calc((100% - 40px) / 5);min-width:240px;padding:12px 8px;}
   .cal-carousel-5 .cal-cell{min-height:34px;}
+  /* Página Inicial (2026-10-13, Hugo): o mês atual maior, em destaque; o mês anterior mais pequeno; ao passar o
+     rato por outro mês, esse mês cresce (e o atual volta ao tamanho normal) para ser mais fácil escolher o dia.
+     A soma das larguras mínimas (200 + 280 + 240 × resto) é igual à de antes (240 × N), por isso a conta de
+     quantos meses cabem (CAL_CARD_SLOT) continua certa. */
+  @media (min-width:1200px){
+    .cal-destaque-atual .cal-card{flex:1 1 0 !important;min-width:240px;transition:flex-grow .28s ease,background-color .2s ease,opacity .2s ease,filter .2s ease;}
+    .cal-destaque-atual .cal-card.cal-card-passado{flex-grow:.72 !important;min-width:200px;}
+    .cal-destaque-atual .cal-card.cal-card-atual{flex-grow:1.4 !important;min-width:280px;}
+    .cal-destaque-atual .cal-card.cal-card-atual .dash-card-title{font-size:15px;}
+  }
+  @media (min-width:1200px) and (hover:hover){
+    .cal-destaque-atual:has(.cal-card:not(.cal-card-atual):hover) .cal-card.cal-card-atual{flex-grow:1 !important;}
+    .cal-destaque-atual .cal-card:not(.cal-card-atual):hover{flex-grow:1.4 !important;opacity:1;filter:none;}
+  }
   .cal-carousel-outer{width:100%;overflow:hidden;}
   /* flex-wrap:nowrap explícito — os cartões de mês NUNCA quebram para uma
      2ª linha, seja qual for o zoom/largura. overflow:hidden ESTRITO (não
@@ -5713,6 +5727,18 @@ body.protecao-ecra-ativa .toast-stack,body.protecao-ecra-ativa .versao-nova-barr
    uma frase curta já não fica perdida numa caixa enorme. */
 .modal-panel.confirm-panel,.modal-panel.msg-popup-painel,.modal-panel.ponto-lembrete-painel{width:fit-content;min-width:min(340px,100%);box-sizing:border-box;}
 .confirm-panel .form-actions{justify-content:flex-end;}
+/* Entregas Pendentes por dia — Página Inicial (2026-10-13) */
+.entregas-por-dia{display:flex;align-items:flex-end;gap:8px;flex-wrap:nowrap;margin-top:2px;}
+.entregas-dia{display:flex;flex-direction:column;align-items:flex-start;line-height:1.05;}
+.entregas-dia-n{font-weight:800;font-variant-numeric:tabular-nums;color:var(--pharm-800);}
+.entregas-dia-rotulo{font-size:9.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--n-500,#64748b);margin-top:2px;}
+.entregas-dia-hoje .entregas-dia-n{font-size:26px;color:#b45309;}
+.entregas-dia-hoje .entregas-dia-rotulo{color:#b45309;}
+.entregas-dia-amanha .entregas-dia-n,.entregas-dia-depois .entregas-dia-n{font-size:17px;}
+.entregas-dia-amanha,.entregas-dia-depois{padding-left:8px;border-left:1px solid var(--pharm-100,#e2e8f0);}
+.entregas-dia.vazio .entregas-dia-n{color:var(--n-400,#94a3b8);}
+.entregas-dia-hoje.vazio .entregas-dia-n,.entregas-dia-hoje.vazio .entregas-dia-rotulo{color:#15803d;}
+.entregas-dia-atraso{margin:5px 0 0;font-size:11px;font-weight:700;color:#b91c1c;}
 /* Lembrete de picagem (2026-10-13) */
 .ponto-lembrete-overlay{z-index:1890;}
 .ponto-lembrete-painel{max-width:480px;width:100%;}
@@ -8963,6 +8989,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     const children = [camposGrid, duracaoInfo];
     if (formError) children.push(h('p', { class: 'form-error' }, formError));
     children.push(h('div', { class: 'form-actions' }, [saveBtn, cancelBtn]));
+    if (formDraft.editId) { const autoria = buildLinhaAutoriaDe(STATE.agendaMarcacoes, formDraft.editId, formDraft); if (autoria) children.push(autoria); }
     return h('div', { class: 'card card-pad' }, children);
   }
 
@@ -9660,7 +9687,7 @@ function buildCalendarioCarrossel(onDayClick, prestadorKey, calendarioGoTo, rest
 
     wrap.appendChild(h('div', { class: 'cal-carousel-row' }, [
       prevBtn,
-      h('div', { class: `cal-pair cal-carousel-${4 + extra}` }, meses),
+      h('div', { class: `cal-pair cal-carousel-${4 + extra}${expandirDesktop ? ' cal-destaque-atual' : ''}` }, meses),
       nextBtn,
     ]));
   }
@@ -14139,6 +14166,7 @@ function wireRowSelectOnClick(cellEl, id, onToggle, rowSelector, selectedIds, on
       row.dataset.selectRowWired = '1';
       row.classList.add('selectable-row');
       row.dataset.selId = String(id);
+      instalarHoverDadosRegisto(row, id);
       row.addEventListener('click', (e) => {
         if (ehElementoInterativoDaLinha(e.target)) return;
         // Uma linha de cada vez (ver selecaoMultiplaAtiva): antes de marcar esta, desmarca as outras.
@@ -14437,14 +14465,16 @@ function vacinacaoIconeObservacao(m) {
 // rato (no telemóvel um toque seleciona a linha, como sempre). Sobre o olho laranja das Observações fica só o balão
 // da observação, nunca os dois ao mesmo tempo.
 function vacinacaoTextoDadosUtente(m) {
+  const autoria = textoAutoriaRegisto(m);
   return [
     m.nome || 'Sem nome',
     `Nº de Utente: ${String(m.numeroUtente || '').trim() || '—'}`,
     `Contacto: ${m.contacto ? formatarTelefonePT(m.contacto) : '—'}`,
-  ].join('\n');
+  ].concat(autoria.length ? [''].concat(autoria) : []).join('\n');
 }
 function vacinacaoInstalarHoverDadosUtente(el, m) {
   if (!(window.matchMedia && window.matchMedia('(hover: hover)').matches)) return;
+  el.dataset.hoverDados = '1';
   const texto = vacinacaoTextoDadosUtente(m);
   const mostrar = (e) => {
     if (e.target && e.target.closest && e.target.closest('.vac-obs-icone, button')) { esconderTooltipFlutuante(); return; }
@@ -15061,17 +15091,84 @@ function buildCampoAutomaticoReadonly(f, draft) {
   return buildField(Object.assign({}, f, { disabled: true }), draft);
 }
 // «Criado por … · Última alteração por …» no fundo de qualquer formulário de edição (2026-10-13).
-function buildLinhaAutoria(r) {
-  if (!r) return null;
+function textoAutoriaRegisto(r) {
+  if (!r) return [];
   const quando = (iso) => { const d = iso ? new Date(iso) : null; return d && !isNaN(d) ? d.toLocaleString('pt-PT', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''; };
   const nome = (v) => String(v || '').split(/\s+·\s+/)[0].trim();
   const criado = nome(r.criadoPor || r.registadoPor || r.responsavel);
-  const alterado = nome(r.atualizadoPor || r.ultimaAtualizacaoPor);
+  const alterado = nome(r.atualizadoPor || r.ultimaAtualizacaoPor || r.ultimaEdicaoPor);
   const partes = [];
   if (criado || r.createdAt) partes.push(`Criado${criado ? ' por ' + criado : ''}${r.createdAt ? ' em ' + quando(r.createdAt) : ''}`);
   if (alterado && (r.updatedAt || alterado !== criado)) partes.push(`Última alteração por ${alterado}${r.updatedAt ? ' em ' + quando(r.updatedAt) : ''}`);
+  return partes;
+}
+function buildLinhaAutoria(r) {
+  const partes = textoAutoriaRegisto(r);
   if (!partes.length) return null;
   return h('p', { class: 'linha-autoria' }, [Icon('userIcon', { size: 13 }), h('span', {}, partes.join(' · '))]);
+}
+// Igual, mas procura o registo original na lista (o rascunho do formulário pode não trazer as colunas de autoria).
+function buildLinhaAutoriaDe(lista, id, rascunho) {
+  if (id === null || id === undefined || id === '' || id === false) return null;
+  const original = (Array.isArray(lista) ? lista : []).find(x => x && String(x.id) === String(id));
+  return buildLinhaAutoria(Object.assign({}, rascunho || {}, original || {}));
+}
+
+// Hover nas linhas de QUALQUER tabela/lista selecionável (2026-10-13, Hugo: "permite hover nas linhas das tabelas
+// com a informação mais relevante, para toda a app") — mesmo balão e mesmo comportamento do hover da Vacinação:
+// nome, nº de ficha/utente, contacto, estado, observações e quem criou/alterou o registo. Só com rato (no
+// telemóvel um toque continua a selecionar a linha). O registo é encontrado pelo id da linha; se o mesmo id
+// existir em várias tabelas, fica o que tem mais dados visíveis na própria linha.
+function localizarRegistoDaLinha(row, id) {
+  const texto = (row.textContent || '').toLowerCase();
+  let melhor = null, melhorPontos = 0;
+  Object.keys(STATE).forEach(k => {
+    const lista = STATE[k];
+    if (!Array.isArray(lista) || !lista.length || typeof lista[0] !== 'object' || lista[0] === null) return;
+    const r = lista.find(x => x && x.id !== undefined && String(x.id) === String(id));
+    if (!r) return;
+    let pontos = 0.01;
+    Object.values(r).forEach(v => {
+      if (typeof v !== 'string') return;
+      const t = v.trim().toLowerCase();
+      if (t.length >= 3 && t.length <= 80 && texto.includes(t)) pontos += 1;
+    });
+    if (pontos > melhorPontos) { melhor = r; melhorPontos = pontos; }
+  });
+  return melhorPontos >= 1 ? melhor : null;
+}
+function textoHoverRegisto(r) {
+  if (!r) return '';
+  const primeiro = (...ks) => { for (const k of ks) { const v = r[k]; if (v !== null && v !== undefined && String(v).trim() !== '') return String(v).trim(); } return ''; };
+  const linhas = [];
+  const titulo = primeiro('nomeCliente', 'nome', 'cliente', 'utente', 'produto', 'descricaoArtigo', 'descricao', 'titulo', 'designacao', 'colaborador');
+  if (titulo) linhas.push(titulo);
+  const ficha = primeiro('numeroFicha', 'numFicha', 'nFicha', 'numCliente');
+  if (ficha) linhas.push(`Nº de Ficha: ${ficha}`);
+  const utente = primeiro('numeroUtente');
+  if (utente) linhas.push(`Nº de Utente: ${utente}`);
+  const contacto = primeiro('contacto', 'telefone', 'telemovel');
+  if (contacto) linhas.push(`Contacto: ${typeof formatarTelefonePT === 'function' ? formatarTelefonePT(contacto) : contacto}`);
+  const estado = primeiro('estado');
+  if (estado) linhas.push(`Estado: ${estado}`);
+  const obs = primeiro('observacoes', 'obs', 'notas');
+  if (obs) linhas.push(`Observações: ${obs.length > 140 ? obs.slice(0, 137) + '…' : obs}`);
+  const autoria = textoAutoriaRegisto(r);
+  if (autoria.length) { if (linhas.length) linhas.push(''); autoria.forEach(a => linhas.push(a)); }
+  return linhas.join('\n');
+}
+function instalarHoverDadosRegisto(row, id, registoFixo) {
+  if (!row || row.dataset.hoverDados) return;
+  if (!(window.matchMedia && window.matchMedia('(hover: hover)').matches)) return;
+  row.dataset.hoverDados = '1';
+  let texto = '';
+  const sobreInterativo = (t) => t && t.closest && t.closest('button, a, input, select, textarea, .vac-obs-icone, .cell-tooltip-bubble');
+  row.addEventListener('mouseenter', () => { texto = textoHoverRegisto(registoFixo || localizarRegistoDaLinha(row, id)); });
+  row.addEventListener('mousemove', (e) => {
+    if (!texto || sobreInterativo(e.target)) { if (AVISO_FLUTUANTE_ORIGEM === row) esconderTooltipFlutuante(); return; }
+    mostrarTooltipFlutuante(row, texto, { x: e.clientX, y: e.clientY + 14 });
+  });
+  row.addEventListener('mouseleave', () => { if (AVISO_FLUTUANTE_ORIGEM === row) esconderTooltipFlutuante(); });
 }
 function buildRecordForm(schema, draft, opts) {
   const overrides = opts.fieldOverrides || {};
@@ -16197,6 +16294,7 @@ function buildOrtopediaPage(container, goTo) {
     ];
     if (formError) children.push(h('p', { class: 'form-error' }, formError));
     children.push(h('div', { class: 'form-actions' }, [submitBtn, cancelBtn]));
+    if (editingId) { const autoria = buildLinhaAutoriaDe([], editingId, draft); if (autoria) children.push(autoria); }
     return h('div', { class: 'card card-pad animate-in form-registo-ativo', style: 'margin-bottom:24px;max-width:960px;' }, children);
   }
 
@@ -20688,9 +20786,9 @@ function buildHomepage(container, goTo) {
   const entregaUrgenteAgora = homeEntregaUrgenteAgora();
   const entregasCard = h('button', { class: 'stat-card tone-card entregas-badge-card clickable next-evento-card', onclick: () => goTo('entregas') }, [
     h('div', { class: 'stat-icon' }, Icon('truck', { size: 19 })),
-    h('div', { style: 'min-width:0;' }, [
+    h('div', { style: 'min-width:0;flex:1;' }, [
       h('p', { class: 'stat-label' }, 'Entregas Pendentes'),
-      h('p', { class: 'entregas-count-big' }, String(entregasCounts.juncal)),
+      buildEntregasPendentesPorDia(),
     ]),
     temEntregasPendentes
       ? h('span', { class: entregaUrgenteAgora ? 'entregas-led-pulse' : 'entregas-led-static', 'aria-hidden': 'true' })
@@ -22094,6 +22192,7 @@ function buildValidadesPage(container, goTo) {
     ];
     if (formError) children.push(h('p', { class: 'form-error' }, formError));
     children.push(h('div', { class: 'form-actions' }, [saveBtn, cancelBtn]));
+    if (editingId) { const autoria = buildLinhaAutoriaDe([], editingId, draft); if (autoria) children.push(autoria); }
     return h('div', { class: 'card card-pad' }, children);
   }
 
@@ -27112,6 +27211,7 @@ function buildLembretesPage(container, goTo, embedded) {
       ]),
       formError ? h('p', { class: 'form-error' }, formError) : null,
       h('div', { class: 'form-actions' }, actionsRow),
+      editingId ? buildLinhaAutoriaDe([], editingId, draft) : null,
     ]);
   }
 
@@ -27957,6 +28057,7 @@ function buildDiaEspecialViewModal(dateISO, evento, onSaved) {
       descricaoNode,
     ]),
     evento.responsavel ? h('p', { style: 'margin:0 0 14px;font-size:13px;color:var(--pharm-600);' }, [h('strong', {}, 'Responsável: '), evento.responsavel]) : null,
+    buildLinhaAutoria(evento),
     h('div', { class: 'form-actions' }, [editarBtn, abrirLinkBtn, fecharBtn].filter(Boolean)),
   ].filter(Boolean));
   overlay.appendChild(panel);
@@ -28081,6 +28182,7 @@ function buildDiaEspecialModal(dateISO, evento, onSaved) {
     grid,
     errorEl,
     h('div', { class: 'form-actions' }, actions),
+    evento ? buildLinhaAutoria(evento) : null,
   ]);
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
@@ -28490,6 +28592,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     const children = [heading, h('div', { class: 'form-grid' }, campos)];
     if (cfgError) children.push(h('p', { class: 'form-error' }, cfgError));
     children.push(h('div', { class: 'form-actions' }, [saveBtn, cancelBtn]));
+    if (editingEvento && typeof currentEvento !== 'undefined' && currentEvento) { const autoria = buildLinhaAutoria(currentEvento); if (autoria) children.push(autoria); }
     return h('div', { class: 'card card-pad' }, children);
   }
 
@@ -29139,6 +29242,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     children.push(h('div', { class: 'form-grid' }, campos));
     if (formError) children.push(h('p', { class: 'form-error' }, formError));
     children.push(h('div', { class: 'form-actions' }, [saveBtn, cancelBtn]));
+    if (showForm && showForm.editar && showForm.base) { const autoria = buildLinhaAutoria(showForm.base); if (autoria) children.push(autoria); }
     return h('div', { class: 'card card-pad' }, children);
   }
 
@@ -29672,6 +29776,7 @@ function buildAfaFichasPage(container, goTo) {
     const saveBtn = h('button', { class: 'btn btn-primary', onclick: saving ? null : () => requireAuth(submit), disabled: saving ? 'disabled' : undefined }, saving ? 'A guardar…' : 'Guardar Ficha');
     const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: cancelForm }, 'Cancelar');
     wrap.appendChild(h('div', { class: 'form-actions' }, [saveBtn, cancelBtn]));
+    if (showForm.editingId) { const autoria = buildLinhaAutoriaDe([], showForm.editingId, showForm.draft); if (autoria) wrap.appendChild(autoria); }
     return wrap;
   }
 
@@ -29862,6 +29967,7 @@ function buildAfaListaEsperaPage(container, goTo) {
         h('button', { class: 'btn btn-primary', onclick: saving ? null : () => requireAuth(submit), disabled: saving ? 'disabled' : undefined }, saving ? 'A guardar…' : (showForm.editingId ? 'Guardar Alterações' : 'Adicionar à Lista de Espera')),
         h('button', { class: 'btn btn-secondary', onclick: cancelForm }, 'Cancelar'),
       ]),
+      showForm.editingId ? buildLinhaAutoriaDe(STATE.afaListaEspera, showForm.editingId, d) : null,
     ].filter(Boolean)));
     return wrap;
   }
@@ -30716,6 +30822,7 @@ function buildObjetivosPage(container, goTo, embedded) {
     ];
     if (formError) children.push(h('p', { class: 'form-error' }, formError));
     children.push(h('div', { class: 'form-actions' }, actionsRow));
+    if (editingId) { const autoria = buildLinhaAutoriaDe(STATE.objetivos, editingId, draft); if (autoria) children.push(autoria); }
     return h('div', { class: 'card card-pad animate-in form-registo-ativo', style: 'margin-bottom:24px;max-width:960px;' }, children);
   }
 
@@ -46698,6 +46805,7 @@ function buildHorariosPage(container, goTo) {
         h('button', { class: 'btn btn-primary', disabled: feriasSaving ? 'disabled' : undefined, onclick: feriasSaving ? null : () => requireAuth(() => submeterPedidoFerias(false)) }, feriasSaving ? 'A guardar…' : (feriasEditandoId ? 'Guardar Alterações' : 'Guardar Período(s)')),
         h('button', { type: 'button', class: 'btn btn-secondary', onclick: fecharModalMarcacaoFerias }, 'Cancelar'),
       ]),
+      feriasEditandoId ? buildLinhaAutoriaDe(STATE.escalaFerias, feriasEditandoId) : null,
     ]);
   }
   // Modal Contextual de Marcação — envolve buildFormPedidoFerias() (o
@@ -48221,6 +48329,7 @@ function buildHorariosPage(container, goTo) {
       h('div', { class: 'form-grid' }, campos),
       pedidoEspecialFormError ? h('p', { class: 'form-error' }, pedidoEspecialFormError) : null,
       h('div', { class: 'form-actions' }, [submeterBtn, cancelarBtn]),
+      pedidoEspecialEditandoId ? buildLinhaAutoriaDe(escalaPedidosEspeciaisAtivos(), pedidoEspecialEditandoId) : null,
     ]);
   }
   function buildCartaoPedido(pedido) {
@@ -48404,6 +48513,7 @@ function buildHorariosPage(container, goTo) {
       h('div', { class: 'form-grid' }, campos),
       disponibilidadeFormError ? h('p', { class: 'form-error' }, disponibilidadeFormError) : null,
       h('div', { class: 'form-actions' }, [submeterBtn, cancelarBtn]),
+      disponibilidadeEditandoId ? buildLinhaAutoriaDe(escalaDisponibilidadesAtivas(), disponibilidadeEditandoId) : null,
     ]);
   }
   function buildCartaoDisponibilidade(disp) {
@@ -49170,6 +49280,7 @@ function buildHorariosPage(container, goTo) {
       buildReposicaoAutoForm(),
       vagaFormError ? h('p', { class: 'form-error', style: 'margin-top:14px;' }, vagaFormError) : null,
       h('div', { class: 'form-actions' }, actionsRow),
+      editingVagaId ? buildLinhaAutoriaDe(STATE.escalaVagas, editingVagaId) : null,
     ]);
   }
 
@@ -55645,6 +55756,37 @@ function perguntarImprimirFormularioEntrega(registo) {
   }, { confirmLabel: 'Sim, imprimir', cancelLabel: 'Não' });
 }
 
+// Cartão «Entregas Pendentes» da Página Inicial (2026-10-13, Hugo: "distinguir melhor o que é pendente para hoje
+// do que está pendente para amanhã ou depois"): Hoje em destaque (inclui as atrasadas e as sem data), Amanhã e
+// Depois mais discretos; as atrasadas ficam assinaladas a vermelho.
+function entregasPendentesJuncalPorDia() {
+  const hoje = todayISO();
+  const am = new Date(hoje + 'T12:00:00'); am.setDate(am.getDate() + 1);
+  const amanha = dateToISO(am);
+  const r = { hoje: 0, atrasadas: 0, amanha: 0, depois: 0 };
+  (STATE.entregas || []).forEach(e => {
+    if (e.farmacia !== 'Juncal' || e.estadoEntrega === 'Entregue') return;
+    const d = String(e.dataEntrega || '').slice(0, 10);
+    if (!d || d <= hoje) { r.hoje += 1; if (d && d < hoje) r.atrasadas += 1; }
+    else if (d === amanha) r.amanha += 1;
+    else r.depois += 1;
+  });
+  return r;
+}
+function buildEntregasPendentesPorDia() {
+  const c = entregasPendentesJuncalPorDia();
+  const seg = (rotulo, n, classe) => h('span', { class: 'entregas-dia ' + classe + (n ? '' : ' vazio') }, [
+    h('span', { class: 'entregas-dia-n' }, String(n)), h('span', { class: 'entregas-dia-rotulo' }, rotulo),
+  ]);
+  return h('div', {}, [
+    h('div', { class: 'entregas-por-dia' }, [
+      seg('Hoje', c.hoje, 'entregas-dia-hoje'),
+      seg('Amanhã', c.amanha, 'entregas-dia-amanha'),
+      seg('Depois', c.depois, 'entregas-dia-depois'),
+    ]),
+    c.atrasadas ? h('p', { class: 'entregas-dia-atraso' }, `${c.atrasadas} em atraso`) : null,
+  ].filter(Boolean));
+}
 function entregasPendentesPorFarmacia() {
   const juncal = STATE.entregas.filter(r => r.farmacia === 'Juncal' && r.estadoEntrega !== 'Entregue').length;
   const boaNova = STATE.entregas.filter(r => r.farmacia === 'Boa Nova' && r.estadoEntrega !== 'Entregue').length;
@@ -60440,6 +60582,7 @@ function buildFormacoesPage(container, goTo) {
     ];
     if (formError) children.push(h('p', { class: 'form-error' }, formError));
     children.push(h('div', { class: 'form-actions' }, [submitBtn, cancelBtn]));
+    if (editingId) { const autoria = buildLinhaAutoriaDe([], editingId, draft); if (autoria) children.push(autoria); }
     return h('div', { class: 'card card-pad animate-in', style: 'margin-bottom:24px;' }, children);
   }
 
@@ -63068,14 +63211,14 @@ const SESSAO_MOVEL_SS = 'sigajuncal_sessao_movel';
 const SESSAO_MOVEL_VALIDADE_MS = 12 * 60 * 60 * 1000;
 let sessaoMovelTocadaEm = 0;
 function guardarSessaoMovel() {
-  if (!activeUser || !ehDispositivoMobileOuTablet() || aparelhoEhTelemovelPosto()) return;
+  if (!activeUser || !aparelhoEhPessoal()) return;
   try {
     sessionStorage.setItem(SESSAO_MOVEL_SS, JSON.stringify({ user: activeUser, pin: activeUserPin || null, em: Date.now() }));
     sessaoMovelTocadaEm = Date.now();
   } catch (e) { /* sem sessionStorage — a sessão fica só em memória, como antes */ }
 }
 function tocarSessaoMovel() {
-  if (!activeUser || !ehDispositivoMobileOuTablet() || aparelhoEhTelemovelPosto() || Date.now() - sessaoMovelTocadaEm < 60000) return;
+  if (!activeUser || !aparelhoEhPessoal() || Date.now() - sessaoMovelTocadaEm < 60000) return;
   guardarSessaoMovel();
 }
 function limparSessaoMovel() {
@@ -63084,7 +63227,7 @@ function limparSessaoMovel() {
 }
 // Chamada no arranque ANTES de carregar os dados (a carga já precisa de saber quem está — ponto, financeiro…).
 function restaurarSessaoMovel() {
-  if (activeUser || !ehDispositivoMobileOuTablet() || aparelhoEhTelemovelPosto()) return false;
+  if (activeUser || !aparelhoEhPessoal()) return false;
   let g = null;
   try { g = JSON.parse(sessionStorage.getItem(SESSAO_MOVEL_SS) || 'null'); } catch (e) { g = null; }
   if (!g || !g.user || !g.user.id || !g.user.username || !g.em || Date.now() - g.em > SESSAO_MOVEL_VALIDADE_MS) { limparSessaoMovel(); return false; }
@@ -66775,10 +66918,24 @@ const POSTO_TIPO_CHAVE = 'sigajuncal_posto_tipo';
 function postoTipoDesteComputador() {
   // 2026-10-13 (Hugo): por omissão todos os computadores contam como Backoffice / outro computador; os postos de
   // atendimento são marcados à mão pela Direção.
-  try { return window.localStorage.getItem(POSTO_TIPO_CHAVE) === 'atendimento' ? 'atendimento' : 'escritorio'; } catch (e) { return 'escritorio'; }
+  // 2026-10-13 (Hugo): «Computador pessoal» (portáteis/iMacs com impressão digital) — a sessão não caduca. Um Mac
+  // ainda sem escolha feita conta logo como pessoal (a farmácia só tem PCs Windows).
+  try {
+    const v = window.localStorage.getItem(POSTO_TIPO_CHAVE);
+    if (v === 'atendimento' || v === 'pessoal' || v === 'escritorio') return v;
+    return ehMacComputador() ? 'pessoal' : 'escritorio';
+  } catch (e) { return 'escritorio'; }
 }
 function definirPostoTipoDesteComputador(tipo) {
-  try { window.localStorage.setItem(POSTO_TIPO_CHAVE, tipo === 'escritorio' ? 'escritorio' : 'atendimento'); } catch (e) { /* ignora */ }
+  const v = (tipo === 'atendimento' || tipo === 'pessoal') ? tipo : 'escritorio';
+  try { window.localStorage.setItem(POSTO_TIPO_CHAVE, v); } catch (e) { /* ignora */ }
+}
+// Aparelho pessoal = telemóvel/tablet de um colaborador (não o telemóvel da farmácia) ou computador marcado como
+// pessoal. Nestes a sessão não caduca por inatividade e sobrevive a recarregar a página (12 h sem uso); se ainda
+// assim terminar, o Face ID / Touch ID abre sozinho no ecrã de login.
+function aparelhoEhPessoal() {
+  if (ehDispositivoMobileOuTablet()) return !aparelhoEhTelemovelPosto();
+  return postoTipoDesteComputador() === 'pessoal';
 }
 function usaProtecaoDeEcra() {
   if (aparelhoEhTelemovelPosto()) return true;
@@ -66884,7 +67041,7 @@ function buildCartaoPostoComputador() {
   const atual = postoTipoDesteComputador();
   const podeMudar = isMasterUser();
   const opcao = (tipo, titulo, texto, icone) => h('button', { type: 'button', class: 'posto-opcao' + (atual === tipo ? ' ativo' : ''), 'aria-pressed': atual === tipo ? 'true' : 'false', disabled: podeMudar ? undefined : 'disabled',
-    onclick: () => { if (tipo === atual) { marcarAparelhoConfigurado(currentUserName()); return; } definirPostoTipoDesteComputador(tipo); marcarAparelhoConfigurado(currentUserName()); showToast(tipo === 'atendimento' ? 'Este computador ficou marcado como Posto de atendimento.' : 'Este computador ficou marcado como Backoffice / outro computador.', 'success'); render(); } }, [
+    onclick: () => { if (tipo === atual) { marcarAparelhoConfigurado(currentUserName()); return; } definirPostoTipoDesteComputador(tipo); marcarAparelhoConfigurado(currentUserName()); showToast(tipo === 'atendimento' ? 'Este computador ficou marcado como Posto de atendimento.' : (tipo === 'pessoal' ? 'Este computador ficou marcado como Computador pessoal — a sessão deixa de caducar.' : 'Este computador ficou marcado como Backoffice / outro computador.'), 'success'); resetInactivityTimer(); render(); } }, [
     h('span', { class: 'posto-opcao-icone' }, Icon(icone, { size: 20 })),
     h('span', { class: 'posto-opcao-texto' }, [h('strong', {}, titulo), h('span', {}, texto)]),
     atual === tipo ? h('span', { class: 'posto-opcao-check' }, Icon('checkcircle', { size: 18 })) : null,
@@ -66899,6 +67056,7 @@ function buildCartaoPostoComputador() {
     mobile ? null : h('div', { class: 'posto-opcoes' }, [
       opcao('atendimento', 'Posto de atendimento', 'Quando a sessão caduca, o ecrã fica tapado com o logótipo até alguém mexer no rato — nada fica à vista de quem está ao balcão.', 'users'),
       opcao('escritorio', 'Backoffice / outro computador', 'Backoffice, escritório ou gabinete (fora da vista dos clientes): quando a sessão caduca aparece só o pedido de login por cima do ecrã, como antes.', 'briefcase'),
+      opcao('pessoal', 'Computador pessoal', 'Portátil ou iMac de uso pessoal (ex.: com Touch ID). A sessão não caduca; se terminar, entra-se logo com a impressão digital.', 'userIcon'),
     ]),
     mobile ? null : h('button', { type: 'button', class: 'btn btn-secondary btn-sm', style: 'margin-top:12px;',
       onclick: () => mostrarProtecaoDeEcra(null) }, [Icon('eye', { size: 14 }), ' Ver a proteção de ecrã']),
@@ -66951,6 +67109,7 @@ function abrirConfiguracaoAparelho(mobile, nomeDirecao) {
   ] : [
     opcao('atendimento', 'Posto de atendimento', 'Ao balcão: quando a sessão caduca, o ecrã fica tapado com o logótipo.', 'users'),
     opcao('escritorio', 'Backoffice / outro computador', 'Backoffice, escritório ou gabinete (fora da vista dos clientes): quando a sessão caduca, aparece só o pedido de login.', 'briefcase'),
+    opcao('pessoal', 'Computador pessoal', 'Portátil ou iMac de uso pessoal (ex.: com Touch ID): a sessão não caduca.', 'userIcon'),
   ]);
   const caixaWa = h('input', { type: 'checkbox' });
   caixaWa.addEventListener('change', () => { whatsapp = caixaWa.checked; });
@@ -67007,7 +67166,7 @@ function resetInactivityTimer() {
   if (modoTesteAtivo) return; // bloqueio automático suspenso pelo Modo de Teste do Administrador
   // Telemóvel/Tablet: sessão nunca expira por inatividade, seja qual for o
   // perfil (ver explicação completa no comentário acima desta função).
-  if (ehDispositivoMobileOuTablet() && !aparelhoEhTelemovelPosto()) return; // o telemóvel da farmácia caduca como um computador
+  if (aparelhoEhPessoal()) return; // telemóvel pessoal ou computador pessoal: não caduca; o telemóvel da farmácia e os postos caducam
   // Estafeta e Farmácia Boa Nova: nunca expira por inatividade.
   if (isEstafeta() || isBoaNovaOperador()) return;
   const limite = isPrestadorServico() ? INACTIVITY_LIMIT_PRESTADOR_MS : INACTIVITY_LIMIT_MS;
