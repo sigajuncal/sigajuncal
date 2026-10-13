@@ -1932,8 +1932,10 @@
      ficarem "a flutuar" a meio do cartão. */
   .card-cabecalho-controlos{display:flex;gap:6px;flex-wrap:wrap;align-items:center;justify-content:flex-end;margin-left:auto;}
   .card-cabecalho-controlos .select{width:auto;}
-  [style*="justify-content:space-between"][style*="flex-wrap:wrap"] > :last-child:not(:first-child){margin-left:auto;}
-  [style*="justify-content:space-between"][style*="flex-wrap:wrap"] > div:last-child:not(:first-child){justify-content:flex-end;}
+  @media (min-width:700px){
+    [style*="justify-content:space-between"][style*="flex-wrap:wrap"] > :last-child:not(:first-child){margin-left:auto;}
+    [style*="justify-content:space-between"][style*="flex-wrap:wrap"] > div:last-child:not(:first-child){justify-content:flex-end;}
+  }
   /* Recordes (2026-10-12) */
   .fin-recordes-grelha{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;}
   .fin-recordes-semana{grid-template-columns:repeat(auto-fit,minmax(140px,1fr));}
@@ -5182,6 +5184,11 @@
     .agenda-slot-hora{width:auto;order:1;}
     .row-actions{order:2;margin-left:auto;flex-wrap:wrap;justify-content:flex-end;gap:6px;}
     .agenda-slot-label{order:3;flex-basis:100%;white-space:normal;overflow-wrap:anywhere;}
+    /* 2026-10-13: hora sempre primeiro; responsável e botões à direita na 1.ª linha; nome/detalhes por baixo. */
+    .agenda-slot-row > .agenda-slot-responsavel{order:2;margin-left:auto;}
+    .agenda-slot-row > .agenda-slot-responsavel + .row-actions{margin-left:0;}
+    .agenda-slot-row > .agenda-slot-corpo{order:3;flex-basis:100%;}
+    .agenda-slot-detalhes-acoes{margin-left:0;justify-content:flex-start;}
 
     /* Cartões/linhas de tabela com ações à direita — nunca sobrepor texto */
     .row-actions{gap:6px;}
@@ -5750,6 +5757,17 @@ body.protecao-ecra-ativa .toast-stack,body.protecao-ecra-ativa .versao-nova-barr
 .entregas-dia.vazio .entregas-dia-n{color:var(--n-400,#94a3b8);}
 .entregas-dia-hoje.vazio .entregas-dia-n,.entregas-dia-hoje.vazio .entregas-dia-rotulo{color:#15803d;}
 .entregas-dia-atraso{margin:5px 0 0;font-size:11px;font-weight:700;color:#b91c1c;}
+/* Vacinação › dia, no telemóvel (2026-10-13): botões do topo numa grelha de 2 colunas, e a navegação
+   « ‹ data › » sempre numa só linha. */
+@media (max-width:600px){
+  .vac-dia-cabecalho{flex-direction:column;align-items:stretch !important;}
+  .vac-dia-cabecalho > .btn{justify-content:center;}
+  .vac-dia-acoes{display:grid !important;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;}
+  .vac-dia-acoes > .btn{width:100%;justify-content:center;padding-left:8px;padding-right:8px;white-space:nowrap;}
+  .vac-dia-nav{gap:6px !important;}
+  .vac-dia-nav > h3{flex:0 0 calc(100% - 168px);min-width:0 !important;font-size:14.5px;margin:0 !important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .vac-dia-nav > .btn{min-width:36px !important;padding:6px 8px !important;}
+}
 /* Lembrete de picagem (2026-10-13) */
 .ponto-lembrete-overlay{z-index:1890;}
 .ponto-lembrete-painel{max-width:480px;width:100%;}
@@ -7434,15 +7452,37 @@ function vacinacaoNomeTemporada(temporada) { return `${temporada.inicio}/${tempo
 // Semeia (só se ainda não existir) a campanha da temporada corrente —
 // idêntico em espírito ao escalaAutoSemearFeriados: silencioso, nunca
 // bloqueia nada, e nunca duplica se já existir uma campanha com este nome.
+let VACINACAO_SEMEADURA_EM_CURSO = false;
 async function vacinacaoAutoSemearCampanha() {
   const temporada = vacinacaoTemporadaAtual();
   const nome = vacinacaoNomeTemporada(temporada);
   if ((STATE.vacinacaoCampanhas || []).some(c => c.nome === nome)) return;
-  const created = await dbInsert('vacinacaoCampanhas', {
-    nome, dataInicio: `${temporada.inicio}-09-01`, dataFim: `${temporada.fim}-04-30`,
-    stockInicialGripe: 0, stockInicialCovid: 0,
-  });
-  if (created) STATE.vacinacaoCampanhas = [created, ...STATE.vacinacaoCampanhas];
+  // BUG CORRIGIDO 2026-10-13 (Joana: "Siga sem acesso à agenda de marcações das vacinas"): se a lista de campanhas
+  // ainda não tivesse chegado (arranque a meio, sessão retomada no telemóvel, falha de rede), a app achava que não
+  // havia campanha e criava OUTRA "2026/2027" vazia — e passava a mostrar essa, sem marcações nem dias abertos.
+  // Agora pergunta sempre ao servidor antes de criar, e nunca cria se a leitura falhar.
+  if (!sb || DB_FETCH_ALL_FALHOU.vacinacaoCampanhas || VACINACAO_SEMEADURA_EM_CURSO) return;
+  VACINACAO_SEMEADURA_EM_CURSO = true;
+  try {
+    const { data: existentes, error } = await sb.from(TABLES.vacinacaoCampanhas).select('*').eq('nome', nome);
+    if (error) return;
+    if (existentes && existentes.length) {
+      const porId = new Map((STATE.vacinacaoCampanhas || []).map(c => [String(c.id), c]));
+      sanitizarSupabase(existentes.map(rowToRecord)).forEach(c => porId.set(String(c.id), c));
+      STATE.vacinacaoCampanhas = [...porId.values()];
+      return;
+    }
+    if ((STATE.vacinacaoCampanhas || []).some(c => c.nome === nome)) return;
+    const created = await dbInsert('vacinacaoCampanhas', {
+      nome, dataInicio: `${temporada.inicio}-09-01`, dataFim: `${temporada.fim}-04-30`,
+      stockInicialGripe: 0, stockInicialCovid: 0,
+    });
+    if (created) STATE.vacinacaoCampanhas = [created, ...STATE.vacinacaoCampanhas];
+  } catch (e) {
+    /* nunca bloqueia nada */
+  } finally {
+    VACINACAO_SEMEADURA_EM_CURSO = false;
+  }
 }
 // A vacina COVID vem em frascos de 6 doses — para nunca desperdiçar um
 // frasco aberto, o ideal é que o número de vacinas COVID dadas num dia seja
@@ -52586,7 +52626,13 @@ function buildVacinacaoPage(container, goTo) {
   // semeada) a partir do botão Voltar.
   function campanhaTemporadaAtualId() {
     const nome = vacinacaoNomeTemporada(vacinacaoTemporadaAtual());
-    const c = STATE.vacinacaoCampanhas.find(x => x.nome === nome);
+    // Havendo campanhas repetidas com o mesmo nome (ver vacinacaoAutoSemearCampanha), fica sempre a que tem
+    // marcações/dias abertos — nunca uma cópia vazia criada por engano. Empate: a mais antiga.
+    const candidatas = STATE.vacinacaoCampanhas.filter(x => x.nome === nome);
+    if (!candidatas.length) return null;
+    const peso = (c) => (STATE.vacinacaoMarcacoes || []).filter(m => m.campanhaId === c.id).length * 10
+      + (STATE.agendaDias || []).filter(d => d.prestadorKey === `vacinacao-${c.id}`).length;
+    const c = candidatas.slice().sort((a, b) => (peso(b) - peso(a)) || (Number(a.id) - Number(b.id)))[0];
     return c ? c.id : null;
   }
   let campanhaId = campanhaTemporadaAtualId(); // null só no instante antes da 1ª autossemeadura terminar
@@ -54300,7 +54346,7 @@ function buildVacinacaoPage(container, goTo) {
     };
     const aberto = vacinacaoDiaAberto(dateISO);
     const dt = new Date(dateISO + 'T12:00:00');
-    return h('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;' }, [
+    return h('div', { class: 'vac-dia-nav', style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;' }, [
       botao('«', abertoAnterior, 'Dia aberto anterior'),
       botao(Icon('arrowleft', { size: 14, strokeWidth: 2.4 }), anterior, 'Dia anterior'),
       h('h3', { class: 'dash-card-title', style: 'margin:0 4px;min-width:190px;text-align:center;' }, `${DIAS_SEMANA_PT[(dt.getDay() + 6) % 7]}, ${formatDate(dateISO)}`),
@@ -54362,9 +54408,9 @@ function buildVacinacaoPage(container, goTo) {
   function buildAgendaDiaView(dateISO) {
     vacinacaoRelerDiaDoServidor(campanhaId, dateISO, false); // no máximo 1× a cada 20 s por dia — ecrã sempre certo
     const wrap = h('div', {});
-    const cabecalho = h('div', { style: 'display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px;' }, [
+    const cabecalho = h('div', { class: 'vac-dia-cabecalho', style: 'display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px;' }, [
       h('button', { class: 'btn btn-secondary', onclick: () => { agendaDiaSelecionado = null; marcacaoSelectedIds = new Set(); rerender(); } }, [Icon('arrowleft', { size: 14, strokeWidth: 2.4 }), ' Voltar ao Calendário']),
-      h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;' }, [
+      h('div', { class: 'vac-dia-acoes', style: 'display:flex;gap:8px;flex-wrap:wrap;' }, [
         buildAbrirFecharDiaBtn(dateISO),
         (() => {
           const btn = h('button', { class: 'btn btn-secondary btn-destaque-laranja', title: 'Registo tardio — predefine a hora atual, mas podes escolher outra' }, [Icon('plus', { size: 14, strokeWidth: 2.4 }), ' Adicionar Encaixe']);
