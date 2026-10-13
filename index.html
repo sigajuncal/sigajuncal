@@ -5768,6 +5768,10 @@ body.protecao-ecra-ativa .toast-stack,body.protecao-ecra-ativa .versao-nova-barr
   .vac-dia-nav > :nth-child(-n+5){order:1;}
   .vac-dia-nav > :nth-child(n+6){order:3;}
 }
+/* Indicador de «há mais para o lado» (2026-10-13): a borda onde o conteúdo continua esbate-se. */
+.desloca-dir:not(.desloca-esq){-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 48px),rgba(0,0,0,.08));mask-image:linear-gradient(to right,#000 calc(100% - 48px),rgba(0,0,0,.08));}
+.desloca-esq:not(.desloca-dir){-webkit-mask-image:linear-gradient(to left,#000 calc(100% - 48px),rgba(0,0,0,.08));mask-image:linear-gradient(to left,#000 calc(100% - 48px),rgba(0,0,0,.08));}
+.desloca-esq.desloca-dir{-webkit-mask-image:linear-gradient(to right,rgba(0,0,0,.08),#000 48px,#000 calc(100% - 48px),rgba(0,0,0,.08));mask-image:linear-gradient(to right,rgba(0,0,0,.08),#000 48px,#000 calc(100% - 48px),rgba(0,0,0,.08));}
 /* Vacinação › barra do dia (2026-10-13) */
 .vac-dia-barra{display:flex;align-items:center;justify-content:space-between;gap:10px 16px;flex-wrap:wrap;padding:10px 12px !important;margin-bottom:14px;}
 .vac-dia-barra-nav{display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-width:0;}
@@ -5775,8 +5779,11 @@ body.protecao-ecra-ativa .toast-stack,body.protecao-ecra-ativa .versao-nova-barr
 .vac-dia-acoes{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin-left:auto;}
 .vac-dia-acoes > .btn{display:inline-flex;align-items:center;gap:6px;}
 .vac-dia-acoes > .vac-dia-fechar{border-style:dashed;}
+.vac-dia-voltar .ic-pc,.vac-dia-voltar .ic-tlm{display:inline-flex;}
+.vac-dia-voltar .ic-tlm{display:none;}
+@media (max-width:600px){.vac-dia-voltar .ic-pc{display:none;}.vac-dia-voltar .ic-tlm{display:inline-flex;}.vac-dia-ano{display:none;}}
 .vac-dia-barra .vac-dia-nav > h3{min-width:0 !important;margin:0 6px !important;}
-@media (max-width:1560px){.vac-dia-barra .lbl-longo{display:none;}.vac-dia-barra-nav > .vac-dia-voltar .lbl-longo{display:inline;}}
+@media (min-width:601px) and (max-width:1560px){.vac-dia-barra .lbl-longo{display:none;}.vac-dia-barra-nav > .vac-dia-voltar .lbl-longo{display:inline;}}
 @media (max-width:600px){
   .vac-dia-barra{flex-direction:column;align-items:stretch;}
   .vac-dia-barra-nav{flex-wrap:nowrap;gap:6px;align-items:flex-start;}
@@ -5784,7 +5791,7 @@ body.protecao-ecra-ativa .toast-stack,body.protecao-ecra-ativa .versao-nova-barr
   .vac-dia-barra .lbl-longo{display:none;}
   .vac-dia-barra-nav > .vac-dia-nav{flex:1 1 auto;min-width:0;}
   .vac-dia-nav{gap:6px !important;}
-  .vac-dia-nav > h3{flex:1 1 auto;min-width:0 !important;font-size:14px;margin:0 !important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;}
+  .vac-dia-nav > h3{flex:1 1 0;min-width:0 !important;font-size:14px;margin:0 !important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;}
   .vac-dia-nav > .btn{min-width:34px !important;padding:6px 7px !important;}
   .vac-dia-acoes{display:flex;flex-wrap:nowrap;gap:6px;margin-left:0;}
   .vac-dia-acoes > .btn{flex:1 1 0;min-width:0;flex-direction:column;gap:3px;padding:7px 2px !important;font-size:11.5px;line-height:1.15;min-height:52px;justify-content:center;white-space:nowrap;}
@@ -15186,22 +15193,51 @@ function buildLinhaAutoriaDe(lista, id, rascunho) {
   return buildLinhaAutoria(Object.assign({}, rascunho || {}, original || {}));
 }
 
-// Telemóvel: em cada linha de separadores que desliza, traz o separador ativo para a vista (2026-10-13).
-(function separadorAtivoSempreAVista() {
+// Zonas que deslizam na horizontal (2026-10-13, Hugo: "se há secções que são deslocáveis dar essa indicação de forma
+// intuitiva"): separadores no telemóvel, tabelas largas, horários. Enquanto há mais conteúdo para um dos lados, essa
+// borda esbate-se (sinal claro de que continua); no telemóvel, a 1.ª vez que uma linha de separadores aparece cortada
+// em cada página, desliza um pouco e volta, para mostrar que se pode arrastar. O separador ativo fica sempre à vista.
+const DESLOCAVEIS_SELETOR = '.tabs-row, .table-wrap, .estatisticas-table-wrap, .escala-vertical-wrap';
+function atualizarIndicadorDeslocavel(el) {
+  const max = el.scrollWidth - el.clientWidth;
+  const temMais = max > 4 && getComputedStyle(el).overflowX !== 'visible' && getComputedStyle(el).overflowX !== 'hidden';
+  el.classList.toggle('desloca-dir', temMais && el.scrollLeft < max - 4);
+  el.classList.toggle('desloca-esq', temMais && el.scrollLeft > 4);
+  return temMais;
+}
+(function indicadoresDeslocaveis() {
   if (typeof MutationObserver === 'undefined') return;
   let t = null;
+  const pagina = () => (document.querySelector('.page-container') || {}).dataset ? document.querySelector('.page-container').dataset.pagina || '' : '';
   const ajustar = () => {
-    if (window.innerWidth > 600) return;
-    document.querySelectorAll('.tabs-row').forEach(r => {
-      if (r.scrollWidth <= r.clientWidth + 2) return;
-      const a = r.querySelector('.tab-btn.active');
-      if (!a || r.dataset.ativoVisto === (a.textContent || '')) return;
-      r.dataset.ativoVisto = a.textContent || '';
-      const esq = a.offsetLeft - r.offsetLeft - 16, dir = esq + a.offsetWidth + 32;
-      if (esq < r.scrollLeft || dir > r.scrollLeft + r.clientWidth) r.scrollLeft = Math.max(0, esq);
+    document.querySelectorAll(DESLOCAVEIS_SELETOR).forEach(el => {
+      if (!el.dataset.deslocavelLigado) {
+        el.dataset.deslocavelLigado = '1';
+        el.addEventListener('scroll', () => atualizarIndicadorDeslocavel(el), { passive: true });
+      }
+      const temMais = atualizarIndicadorDeslocavel(el);
+      if (!temMais || !el.classList.contains('tabs-row')) return;
+      // Separador ativo à vista.
+      const a = el.querySelector('.tab-btn.active');
+      if (a && el.dataset.ativoVisto !== (a.textContent || '')) {
+        el.dataset.ativoVisto = a.textContent || '';
+        const esq = a.offsetLeft - el.offsetLeft - 16, dir = esq + a.offsetWidth + 32;
+        if (esq < el.scrollLeft || dir > el.scrollLeft + el.clientWidth) { el.scrollLeft = Math.max(0, esq); atualizarIndicadorDeslocavel(el); return; }
+      }
+      // Pequeno empurrão de demonstração (só telemóvel/tablet, 1× por página e por sessão).
+      if (el.scrollLeft > 4 || !(window.matchMedia && window.matchMedia('(pointer: coarse)').matches)) return;
+      const chave = 'sigajuncal_desloca_demo_' + pagina();
+      try { if (sessionStorage.getItem(chave)) return; sessionStorage.setItem(chave, '1'); } catch (e) { return; }
+      setTimeout(() => {
+        if (!el.isConnected || el.scrollLeft > 4) return;
+        try { el.scrollTo({ left: 56, behavior: 'smooth' }); setTimeout(() => { if (el.isConnected) el.scrollTo({ left: 0, behavior: 'smooth' }); }, 650); } catch (e) { /* ignora */ }
+      }, 500);
     });
   };
-  const iniciar = () => new MutationObserver(() => { clearTimeout(t); t = setTimeout(ajustar, 60); }).observe(document.body, { childList: true, subtree: true });
+  const iniciar = () => {
+    new MutationObserver(() => { clearTimeout(t); t = setTimeout(ajustar, 80); }).observe(document.body, { childList: true, subtree: true });
+    window.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(ajustar, 120); });
+  };
   if (document.body) iniciar(); else document.addEventListener('DOMContentLoaded', iniciar);
 })();
 // Hover nas linhas de QUALQUER tabela/lista selecionável (2026-10-13, Hugo: "permite hover nas linhas das tabelas
@@ -54414,7 +54450,7 @@ function buildVacinacaoPage(container, goTo) {
     return h('div', { class: 'vac-dia-nav', style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;' }, [
       botao('«', abertoAnterior, 'Dia aberto anterior'),
       botao(Icon('arrowleft', { size: 14, strokeWidth: 2.4 }), anterior, 'Dia anterior'),
-      h('h3', { class: 'dash-card-title', style: 'margin:0 4px;min-width:190px;text-align:center;' }, `${DIAS_SEMANA_PT[(dt.getDay() + 6) % 7]}, ${formatDate(dateISO)}`),
+      h('h3', { class: 'dash-card-title', style: 'margin:0 4px;min-width:190px;text-align:center;' }, [`${DIAS_SEMANA_PT[(dt.getDay() + 6) % 7]}, ${formatDate(dateISO).slice(0, 5)}`, h('span', { class: 'vac-dia-ano' }, formatDate(dateISO).slice(5))]),
       botao(Icon('arrowright', { size: 14, strokeWidth: 2.4 }), seguinte, 'Dia seguinte'),
       botao('»', abertoSeguinte, 'Dia aberto seguinte'),
       buildEstadoBadge(aberto ? 'Dia aberto' : 'Dia por abrir', { tom: aberto ? 'ok' : 'neutro' }),
@@ -54476,7 +54512,7 @@ function buildVacinacaoPage(container, goTo) {
     // Barra do dia (2026-10-13, Hugo: "melhorar a organização de todos estes botões"): numa só faixa —
     // à esquerda voltar + navegação entre dias; à direita as ações do dia, sempre pela mesma ordem.
     // No telemóvel: voltar só com o ícone, data numa linha, e as 4 ações numa barra de ícones com rótulo curto.
-    const voltarBtn = h('button', { class: 'btn btn-secondary vac-dia-voltar', title: 'Voltar ao calendário', 'aria-label': 'Voltar ao calendário', onclick: () => { agendaDiaSelecionado = null; marcacaoSelectedIds = new Set(); rerender(); } }, [Icon('arrowleft', { size: 14, strokeWidth: 2.4 }), h('span', { class: 'lbl-longo' }, 'Calendário')]);
+    const voltarBtn = h('button', { class: 'btn btn-secondary vac-dia-voltar', title: 'Voltar ao calendário', 'aria-label': 'Voltar ao calendário', onclick: () => { agendaDiaSelecionado = null; marcacaoSelectedIds = new Set(); rerender(); } }, [h('span', { class: 'ic-pc' }, Icon('arrowleft', { size: 14, strokeWidth: 2.4 })), h('span', { class: 'ic-tlm' }, Icon('calendar', { size: 16, strokeWidth: 2.2 })), h('span', { class: 'lbl-longo' }, 'Calendário')]);
     const encaixeBtn = h('button', { class: 'btn btn-secondary btn-destaque-laranja', title: 'Registo tardio — predefine a hora atual, mas podes escolher outra' }, [Icon('plus', { size: 14, strokeWidth: 2.4 }), h('span', {}, [h('span', { class: 'lbl-longo' }, 'Adicionar '), 'Encaixe'])]);
     if (!vacinacaoDiaAberto(dateISO)) { encaixeBtn.disabled = true; encaixeBtn.title = 'Abre o dia primeiro'; encaixeBtn.style.opacity = '.5'; encaixeBtn.style.cursor = 'not-allowed'; }
     encaixeBtn.addEventListener('click', () => { if (!vacinacaoDiaAberto(dateISO)) { avisoVacinacaoDiaPorAbrir(); return; } requireAuth(() => openNewMarcacao({ data: dateISO, hora: horaAtualHHMM() })); });
