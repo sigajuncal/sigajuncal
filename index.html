@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-13 14:00" />
+<meta name="siga-versao" content="2026-10-13 14:10" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>SigaFarmácia · Farmácia Juncal</title>
 
@@ -5850,6 +5850,9 @@ body.protecao-ecra-ativa .toast-stack,body.protecao-ecra-ativa .versao-nova-barr
 .topbar-pesquisa:focus-within{border-color:var(--pharm-500);background:#fff;box-shadow:0 0 0 3px rgba(37,99,235,.12);}
 .topbar-pesquisa-input{flex:1;min-width:0;border:0;outline:0;background:transparent;font:inherit;font-size:13.5px;color:var(--n-800);padding:0;height:100%;}
 .topbar-pesquisa-input::placeholder{color:var(--n-500);}
+.pg-item-remover{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:6px;color:var(--n-400);flex-shrink:0;opacity:0;transition:opacity .12s;}
+.pg-item:hover .pg-item-remover,.pg-item.ativo .pg-item-remover{opacity:1;}
+.pg-item-remover:hover{background:var(--n-100);color:var(--n-700);}
 .pg-painel.pg-painel-topo{position:fixed;z-index:2000;max-width:none;max-height:min(70vh,640px);animation:pgEntrar .12s ease-out;}
 .topbar-pesquisa-texto{flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .topbar-pesquisa kbd{font:inherit;font-size:11px;font-weight:600;color:var(--n-500);background:#fff;border:1px solid var(--n-200);border-radius:5px;padding:1px 6px;}
@@ -62241,6 +62244,48 @@ function pgCriar(consulta) {
   return out;
 }
 
+// ---------- Recentes e mais visitados (2026-10-13, Hugo: "clicando na barra surgem logo os mais visitados ou os
+// últimos visitados; mal se começa a escrever funcionam as sugestões do costume") ----------
+// Guardado só neste aparelho e por utilizador (cada colega vê os seus). Fichas de clientes ficam de fora (NIF/telemóvel).
+// Um destino guardado reabre-se repetindo a pesquisa que o encontrou e escolhendo o mesmo resultado — assim abre sempre
+// com os dados de agora (ex.: «Vacinação — dia de hoje» é mesmo o dia de hoje, não o do dia em que foi guardado).
+const PG_HIST_MAX = 40;
+function pgHistChave() { return activeUser ? `sigafarmacia_pesquisa_hist_${activeUser.id}` : null; }
+function pgHistLer() {
+  const chave = pgHistChave(); if (!chave) return [];
+  try { const v = JSON.parse(window.localStorage.getItem(chave) || '[]'); return Array.isArray(v) ? v.filter(x => x && x.titulo && x.q) : []; } catch (e) { return []; }
+}
+function pgHistGuardar(it, q) {
+  const chave = pgHistChave(); if (!chave || !it || !it.titulo || !q || it.grupo === 'Fichas de clientes' || it.semHistorico) return;
+  try {
+    const lista = pgHistLer();
+    const i = lista.findIndex(x => x.titulo === it.titulo);
+    const antigo = i >= 0 ? lista.splice(i, 1)[0] : null;
+    lista.unshift({ titulo: it.titulo, sub: it.sub && typeof it.sub === 'string' ? it.sub : '', icon: it.icon || 'search', grupo: it.grupo || '', q: String(q).trim(), n: (antigo ? antigo.n : 0) + 1, em: Date.now() });
+    window.localStorage.setItem(chave, JSON.stringify(lista.slice(0, PG_HIST_MAX)));
+  } catch (e) { /* sem espaço / modo privado — fica sem histórico */ }
+}
+function pgHistRemover(titulo) {
+  const chave = pgHistChave(); if (!chave) return;
+  try { window.localStorage.setItem(chave, JSON.stringify(pgHistLer().filter(x => x.titulo !== titulo))); } catch (e) { /* ignora */ }
+}
+
+function pgHistReabrir(x) {
+  const consulta = pgPrepararConsulta(x.q);
+  const candidatos = [...pgSugestoes(consulta), ...pgPaginas(consulta), ...pgCriar(consulta)];
+  pgRegistos(consulta).forEach(g => g.itens.forEach(i => candidatos.push(i)));
+  const alvo = candidatos.find(c => c.titulo === x.titulo)
+    // «Vacinação — dia de hoje» guardado ontem chama-se hoje «próximo dia…»: mesmo começo de título serve.
+    || candidatos.find(c => String(c.titulo).split(' — ')[0] === String(x.titulo).split(' — ')[0] && x.titulo.includes(' — ') && c.titulo.includes(' — ') && /dia/.test(c.titulo) && /dia/.test(x.titulo));
+  if (alvo) { alvo.abrir(); return; }
+  // Já não existe tal e qual (ex.: registo apagado): abre a pesquisa com o que se tinha escrito.
+  setTimeout(() => {
+    abrirPesquisaGeral();
+    const campo = PG_TOPO && PG_TOPO.aberto ? PG_TOPO.input : (PG_ABERTA ? PG_ABERTA.input : null);
+    if (campo) { campo.value = x.q; campo.dispatchEvent(new Event('input', { bubbles: true })); }
+    showToast('Esse registo já não aparece tal e qual — aqui fica a pesquisa que o encontrou.', 'info');
+  }, 80);
+}
 // ---------- Motor da pesquisa (partilhado pela caixa do topo e pela janela do telemóvel) ----------
 function pgCriarMotor(input, lista, aoEscolher) {
   const motor = { vivo: true };
@@ -62248,16 +62293,29 @@ function pgCriarMotor(input, lista, aoEscolher) {
 
   function desenhar() {
     if (!motor.vivo) return;
+    // Nunca redesenhar a meio de um clique (o resultado onde se carregou seria substituído e o clique perdia-se).
+    if (cliqueAMeio()) { clearTimeout(motor.redesenhoAdiado); motor.redesenhoAdiado = setTimeout(desenhar, 120); return; }
     const consulta = pgPrepararConsulta(input.value);
     clear(lista); itens = [];
-    if (!consulta.palavras.length) {
-      lista.appendChild(h('div', { class: 'pg-vazio' }, [
-        h('p', { class: 'pg-vazio-titulo' }, 'O que procuras?'),
-        h('p', {}, 'Escreve o nome de um cliente, um contacto, Nº de ficha ou NIF, um produto, ou o que queres abrir (ex.: «vac», «entregas», «férias»).'),
-      ]));
-      return;
-    }
     const grupos = [];
+    if (!consulta.palavras.length) {
+      const hist = pgHistLer();
+      const reabrir = (x) => ({ icon: x.icon, titulo: x.titulo, sub: x.sub, grupo: x.grupo, semHistorico: true, historico: x,
+        abrir: () => pgHistReabrir(x) });
+      const recentes = hist.slice().sort((a, b) => b.em - a.em).slice(0, 5);
+      const vistos = new Set(recentes.map(x => x.titulo));
+      const maisVistos = hist.filter(x => x.n >= 2 && !vistos.has(x.titulo)).sort((a, b) => (b.n - a.n) || (b.em - a.em)).slice(0, 5);
+      if (recentes.length) grupos.push({ nome: 'Recentes', itens: recentes.map(reabrir), total: recentes.length });
+      if (maisVistos.length) grupos.push({ nome: 'Mais visitados', itens: maisVistos.map(reabrir), total: maisVistos.length });
+      if (!grupos.length) {
+        lista.appendChild(h('div', { class: 'pg-vazio' }, [
+          h('p', { class: 'pg-vazio-titulo' }, 'O que procuras?'),
+          h('p', {}, 'Escreve o nome de um cliente, um contacto, Nº de ficha ou NIF, um produto, ou o que queres abrir (ex.: «vac», «entregas», «férias»). O que abrires fica aqui, para voltares num clique.'),
+        ]));
+        return;
+      }
+    }
+    if (consulta.palavras.length) {
     const sugestoes = pgSugestoes(consulta);
     if (sugestoes.length) grupos.push({ nome: 'Sugestões', itens: sugestoes.slice(0, 6), total: sugestoes.length });
     const paginas = pgPaginas(consulta).filter(p => !sugestoes.some(s => normalizarTexto(s.titulo).startsWith(normalizarTexto(p.titulo) + ' —')));
@@ -62266,6 +62324,7 @@ function pgCriarMotor(input, lista, aoEscolher) {
     if (fichas.length) grupos.push({ nome: 'Fichas de clientes', itens: fichas, total: fichas.length });
     const criar = pgCriar(consulta);
     if (criar.length) grupos.push({ nome: 'Criar', itens: criar.slice(0, 3), total: criar.length });
+    }
     const aCarregar = PG_TABELAS_LAZY.some(k => LAZY_TABLE_KEYS.includes(k) && !STATE.tabelasLazyCarregadas.has(k));
     if (!grupos.length) {
       lista.appendChild(h('div', { class: 'pg-vazio' }, [h('p', { class: 'pg-vazio-titulo' }, aCarregar || temporizadorFichas ? 'A procurar…' : `Nada encontrado para «${consulta.texto}»`),
@@ -62275,14 +62334,23 @@ function pgCriarMotor(input, lista, aoEscolher) {
     grupos.forEach(g => {
       lista.appendChild(h('div', { class: 'pg-grupo' }, [h('span', {}, g.nome), g.total > g.itens.length ? h('span', { class: 'pg-grupo-mais' }, `${g.itens.length} de ${g.total} — escreve mais para afinar`) : null].filter(Boolean)));
       g.itens.forEach(it => {
+        if (!it.grupo) it.grupo = g.nome;
         const idx = itens.length; itens.push(it);
+        const remover = it.historico ? h('span', { class: 'pg-item-remover', role: 'button', title: 'Tirar desta lista', 'aria-label': 'Tirar desta lista',
+          onpointerdown: (e) => { e.preventDefault(); e.stopPropagation(); },
+          onpointerup: (e) => { e.preventDefault(); e.stopPropagation(); pgHistRemover(it.titulo); desenhar(); } }, Icon('x', { size: 14 })) : null;
+        // Escolhe ao LARGAR o botão do rato/trackpad (pointerup), não no "click": mesmo que a lista seja redesenhada
+        // entre carregar e largar, o resultado que está debaixo do cursor é escolhido na mesma.
         lista.appendChild(h('button', { type: 'button', class: 'pg-item' + (idx === ativo ? ' ativo' : ''), role: 'option', 'data-idx': String(idx),
           onmousedown: (e) => e.preventDefault(), // o clique não tira o foco da caixa
-          onmousemove: () => { if (ativo !== idx) { ativo = idx; marcarAtivo(); } }, onclick: () => escolher(idx) }, [
+          onpointerup: (e) => { if (e.button === 0 || e.pointerType !== 'mouse') escolher(Number(e.currentTarget.dataset.idx)); },
+          onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); escolher(idx); } },
+          onmousemove: () => { if (ativo !== idx) { ativo = idx; marcarAtivo(); } } }, [
           h('span', { class: 'pg-item-icone' }, Icon(it.icon || 'search', { size: 17 })),
           h('span', { class: 'pg-item-texto' }, [h('span', { class: 'pg-item-titulo' }, it.titulo), it.sub ? h('span', { class: 'pg-item-sub' }, it.sub) : null].filter(Boolean)),
           it.estado ? buildEstadoBadge(it.estado) : null,
           h('span', { class: 'pg-item-acao' }, it.acaoLabel || 'Abrir'),
+          remover,
         ].filter(Boolean)));
       });
     });
@@ -62294,7 +62362,14 @@ function pgCriarMotor(input, lista, aoEscolher) {
     lista.querySelectorAll('.pg-item').forEach(b => b.classList.toggle('ativo', Number(b.dataset.idx) === ativo));
     const el = lista.querySelector(`.pg-item[data-idx="${ativo}"]`); if (el) el.scrollIntoView({ block: 'nearest' });
   }
-  function escolher(idx) { const it = itens[idx]; if (!it) return; aoEscolher(); requireAuth(() => it.abrir()); }
+  function escolher(idx) {
+    const it = itens[idx]; if (!it || motor.escolhido) return;
+    motor.escolhido = true;
+    if (!it.historico) pgHistGuardar(it, input.value);
+    else pgHistGuardar(it.historico, it.historico.q);
+    aoEscolher();
+    requireAuth(() => it.abrir());
+  }
   function agendarFichas() {
     clearTimeout(temporizadorFichas); temporizadorFichas = null; fichas = [];
     const consulta = pgPrepararConsulta(input.value);
@@ -67919,7 +67994,10 @@ async function versaoAppVerificar(forcar) {
 function iniciarAvisoVersaoNova() {
   if (!/^https?:$/.test(window.location.protocol)) return;
   versaoAppVerificar(true); // fixa a versão carregada
-  setInterval(() => versaoAppVerificar(true), 5 * 60 * 1000);
+  setInterval(() => versaoAppVerificar(true), 2 * 60 * 1000);
+  // App instalada na Dock do Mac: trocar de app nem sempre muda a "visibilidade" — voltar à janela também verifica.
+  window.addEventListener('focus', () => versaoAppVerificar(false));
+  window.addEventListener('pageshow', () => versaoAppVerificar(false));
   // Com versão nova já detetada: assim que a sessão terminar e não houver nada a meio, recarrega (verificação barata, local).
   setInterval(() => { if (VERSAO_APP_NOVA && versaoAppPodeRecarregarSozinha()) versaoAppRecarregar(); }, 20 * 1000);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') versaoAppVerificar(false); });
