@@ -4238,15 +4238,25 @@
      quantos meses cabem (CAL_CARD_SLOT) continua certa. */
   @media (min-width:1200px){
     .cal-destaque-atual{flex:1 1 auto;min-width:0;}
-    .cal-destaque-atual .cal-cell{max-height:40px;} /* ao abrir um mês os dias alargam, mas a altura não dispara (a página não salta) */
+    /* 2026-10-13 (Hugo): o mês aberto cresce nos DOIS eixos — os dias continuam quadrados (aspect-ratio 1/1 da .cal-cell),
+       sem teto de altura que os achatava em retângulos; o número do dia acompanha a largura do mês (unidades cqi do cartão). */
+    .cal-destaque-atual .cal-cell{font-size:clamp(10.5px,3.4cqi,15px);border-radius:clamp(6px,1.6cqi,9px);transition:font-size .28s ease;}
+    /* Todos os meses ocupam sempre a altura de 6 semanas (linha invisível no fim dos meses com 5 ou 4): trocar o mês
+       aberto com o rato nunca muda a altura do calendário, por isso a página não salta. */
+    .cal-destaque-atual .cal-grid:not(:has(> .cal-cell:nth-child(36)))::after{content:'';grid-column:1/-1;height:max(calc((100cqi - 24px) / 7), 34px);}
+    .cal-destaque-atual .cal-grid:not(:has(> .cal-cell:nth-child(29)))::after{height:calc(2 * max(calc((100cqi - 24px) / 7), 34px) + 4px);}
     .cal-destaque-atual .cal-card{flex:1 1 0 !important;min-width:200px;transition:flex-grow .28s ease,background-color .2s ease,opacity .2s ease,filter .2s ease;}
     .cal-destaque-atual .cal-card.cal-card-passado{flex-grow:.7 !important;min-width:190px;}
     .cal-destaque-atual .cal-card.cal-card-atual{flex-grow:1.6 !important;min-width:280px;}
     .cal-destaque-atual .cal-card.cal-card-atual .dash-card-title{font-size:15px;}
   }
-  @media (min-width:1200px) and (hover:hover){
-    .cal-destaque-atual:has(.cal-card:not(.cal-card-atual):hover) .cal-card.cal-card-atual{flex-grow:1 !important;min-width:220px;}
-    .cal-destaque-atual .cal-card:not(.cal-card-atual):hover{flex-grow:1.8 !important;min-width:300px;opacity:1;filter:none;}
+  /* 2026-10-13 (Hugo, vídeo): o mês aberto deixou de depender de :hover — ao crescer, a disposição mexia-se por baixo do
+     rato parado, o rato passava a estar sobre outro mês, que abria, e assim sucessivamente ("pingue-pongue"). Agora é o JS
+     (instalarAberturaMesCalendario) que marca .cal-card-aberto, só com movimento real do rato e bem dentro do mês. Mesmo
+     tamanho que o mês atual em destaque: trocar de mês nunca muda a altura da linha (a página não salta). */
+  @media (min-width:1200px){
+    .cal-destaque-atual.cal-ha-aberto .cal-card.cal-card-atual{flex-grow:1 !important;min-width:220px;}
+    .cal-destaque-atual .cal-card.cal-card-aberto{flex-grow:1.6 !important;min-width:280px;opacity:1;filter:none;}
   }
   /* Cartões de mês estreitos (o anterior, ou os que encolhem enquanto outro está aberto): dias da semana numa só
      letra (S T Q Q S S D) para nunca ficarem colados uns aos outros. */
@@ -9543,6 +9553,48 @@ function calendarioCellStyle(cores) {
 // estiver no centro é sempre o ponto focal, mesmo que já não seja o mês
 // presente verdadeiro. O destaque do Dia Presente é a única coisa que segue
 // sempre a data real, esteja o cartão onde estiver.
+// Página Inicial: abre (aumenta) o mês por onde o rato passa — 2026-10-13, Hugo (vídeo do calendário a "tremer").
+// Regras para nunca haver "pingue-pongue" entre meses:
+//  - só reage a movimento REAL do rato (a disposição a mudar por baixo de um rato parado não conta);
+//  - só abre um mês quando o rato está bem dentro dele (margem de 12px das bordas);
+//  - durante a animação (320ms) não troca de mês;
+//  - ao sair do calendário, volta ao mês atual passado um instante (os espaços entre meses não contam como sair).
+function instalarAberturaMesCalendario(par) {
+  if (!par || !window.matchMedia || !window.matchMedia('(hover: hover)').matches) return;
+  const MARGEM = 12;
+  let bloqueadoAte = 0;
+  let temporizadorSaida = null;
+  let ultimoX = null;
+  let ultimoY = null;
+  const abrir = (card) => {
+    const aberto = par.querySelector('.cal-card-aberto');
+    const voltarAoAtual = !card || card.classList.contains('cal-card-atual');
+    if (voltarAoAtual ? !aberto : card === aberto) return;
+    if (aberto) aberto.classList.remove('cal-card-aberto');
+    if (!voltarAoAtual) card.classList.add('cal-card-aberto');
+    par.classList.toggle('cal-ha-aberto', !voltarAoAtual);
+    bloqueadoAte = performance.now() + 320;
+  };
+  par.addEventListener('mousemove', (ev) => {
+    if (ev.clientX === ultimoX && ev.clientY === ultimoY) return;
+    ultimoX = ev.clientX;
+    ultimoY = ev.clientY;
+    clearTimeout(temporizadorSaida);
+    if (performance.now() < bloqueadoAte) return;
+    const card = ev.target && ev.target.closest ? ev.target.closest('.cal-card') : null;
+    if (!card || !par.contains(card)) return;
+    const r = card.getBoundingClientRect();
+    if (ev.clientX < r.left + MARGEM || ev.clientX > r.right - MARGEM) return;
+    abrir(card);
+  });
+  par.addEventListener('mouseleave', () => {
+    ultimoX = null;
+    ultimoY = null;
+    clearTimeout(temporizadorSaida);
+    temporizadorSaida = setTimeout(() => abrir(null), 350);
+  });
+}
+
 function buildMonthCalendar(year, month, posicao, onDayClick, prestadorKey, calendarioGoTo, restringirPorPerfil) {
   const firstDay = new Date(year, month, 1);
   const startWeekday = (firstDay.getDay() + 6) % 7; // segunda-feira = 0
@@ -9764,11 +9816,13 @@ function buildCalendarioCarrossel(onDayClick, prestadorKey, calendarioGoTo, rest
     const nextBtn = h('button', { class: 'cal-nav-btn-grande', title: 'Avançar um mês', 'aria-label': 'Avançar um mês' }, Icon('arrowright', { size: 24, strokeWidth: 2.6 }));
     nextBtn.addEventListener('click', () => { offset += 1; render(); });
 
+    const parMeses = h('div', { class: `cal-pair cal-carousel-${4 + extra}${expandirDesktop ? ' cal-destaque-atual' : ''}` }, meses);
     wrap.appendChild(h('div', { class: 'cal-carousel-row' }, [
       prevBtn,
-      h('div', { class: `cal-pair cal-carousel-${4 + extra}${expandirDesktop ? ' cal-destaque-atual' : ''}` }, meses),
+      parMeses,
       nextBtn,
     ]));
+    if (expandirDesktop) instalarAberturaMesCalendario(parMeses);
   }
 
   render();
