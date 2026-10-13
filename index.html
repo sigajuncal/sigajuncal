@@ -2,6 +2,8 @@
 <html lang="pt-PT">
 <head>
 <meta charset="UTF-8" />
+<!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
+<meta name="siga-versao" content="2026-10-13 13:50" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>SigaFarmácia · Farmácia Juncal</title>
 
@@ -19253,8 +19255,21 @@ let GAVETA_ABERTA = null;
 // fundo quando o clique COMEÇOU também no fundo (carregar mesmo fora dela, de propósito).
 let PONTEIRO_DESCEU_EM = null;
 let PONTEIRO_PREMIDO = false;
-['pointerdown', 'mousedown', 'touchstart'].forEach(tipo => document.addEventListener(tipo, (e) => { PONTEIRO_DESCEU_EM = e.target; PONTEIRO_PREMIDO = true; }, true));
-['pointerup', 'pointercancel', 'mouseup', 'touchend', 'touchcancel'].forEach(tipo => document.addEventListener(tipo, () => { PONTEIRO_PREMIDO = false; }, true));
+let PONTEIRO_PREMIDO_DESDE = 0;
+// 2026-10-13 (Hugo: "antes clicava nas tarefas da Página Inicial e ia para o horário dessa pessoa, agora não faz"):
+// a mesma causa, na app inteira — um redesenho de fundo (Realtime, presença, relógios) a meio de um clique substitui
+// o cartão onde se carregou e o clique perde-se. Agora, com um clique a meio, o redesenho espera que o botão seja
+// largado e corre logo A SEGUIR ao clique. Rede de segurança: um clique "preso" há mais de 3 s (ex.: o botão foi
+// largado fora da janela) deixa de contar, para os redesenhos nunca ficarem parados.
+let RENDER_ADIADO_POR_CLIQUE = false;
+function cliqueAMeio() { return PONTEIRO_PREMIDO && Date.now() - PONTEIRO_PREMIDO_DESDE < 3000; }
+function libertarRenderAdiado() {
+  if (!RENDER_ADIADO_POR_CLIQUE) return;
+  setTimeout(() => { if (RENDER_ADIADO_POR_CLIQUE && !cliqueAMeio()) { RENDER_ADIADO_POR_CLIQUE = false; render(); } }, 0);
+}
+['pointerdown', 'mousedown', 'touchstart'].forEach(tipo => document.addEventListener(tipo, (e) => { PONTEIRO_DESCEU_EM = e.target; PONTEIRO_PREMIDO = true; PONTEIRO_PREMIDO_DESDE = Date.now(); }, true));
+['pointerup', 'pointercancel', 'mouseup', 'touchend', 'touchcancel'].forEach(tipo => document.addEventListener(tipo, () => { PONTEIRO_PREMIDO = false; libertarRenderAdiado(); }, true));
+window.addEventListener('blur', () => { PONTEIRO_PREMIDO = false; libertarRenderAdiado(); });
 function cliqueComecouEm(el) {
   return !PONTEIRO_DESCEU_EM || PONTEIRO_DESCEU_EM === el;
 }
@@ -62975,6 +62990,10 @@ document.addEventListener('focusin', (e) => {
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') ultimoFocoEmCampoEm = Date.now();
 }, true);
 function uiEstaOcupada() {
+  // 2026-10-13 (Hugo: "antes clicava nas tarefas da Página Inicial e ia para o horário dessa pessoa, agora não faz"):
+  // com o botão do rato/dedo em baixo, um redesenho de fundo (Realtime, presença) substituía o cartão entre o
+  // carregar e o largar — o browser não chegava a dar o clique a ninguém. Enquanto houver um clique a meio, espera.
+  if (cliqueAMeio()) return true;
   // Qualquer modal aberto (Agenda, Eventos, formulários de registo, etc.)
   // vive fora de #root, em document.body — nunca é destruído por um
   // render() global, mas a PÁGINA por trás dele seria, por isso conta como
@@ -63037,6 +63056,9 @@ let ultimaPaginaRenderizada = null;
 let ultimoUtilizadorRenderizado = undefined; // undefined = ainda não houve nenhum render
 let jaFezPrimeiraRenderizacao = false;
 function render() {
+  if (cliqueAMeio() && jaFezPrimeiraRenderizacao) { RENDER_ADIADO_POR_CLIQUE = true; setTimeout(libertarRenderAdiado, 3100); return; }
+  RENDER_ADIADO_POR_CLIQUE = false;
+  try { agendarPreCargaVacinacao(); } catch (_) {}
   try { atualizarAssinatura(); } catch (_) {}
   try { aplicarNomesAgendasPersonalizados(); } catch (e) { /* nunca impede o resto da app de desenhar */ }
   // Limpeza forçada do tooltip flutuante da sidebar — SEMPRE, em toda e
@@ -64502,15 +64524,105 @@ function agendarReleituraTabelaLazy(k, restantes) {
     renderOuAdiarSeOcupado();
   }, 20000);
 }
+/* ---- Cópia local das tabelas lazy (2026-10-13, Hugo: "vacinação demora imenso a apresentar resultado") ----
+   As tabelas que só carregam ao abrir o módulo (Vacinação, Pedidos, …) vinham INTEIRAS do servidor de cada vez que a
+   app abria — a Vacinação são ~1000 marcações. Agora fica uma cópia no próprio aparelho (IndexedDB: tem muito mais
+   espaço do que o localStorage, que já está ocupado pelas outras tabelas). Ao abrir o módulo: mostra logo a cópia e,
+   em segundo plano, pede só o que mudou desde então (updated_at). Uma vez por dia volta a ler tudo de raiz (apanha
+   registos apagados em definitivo noutro posto). Sem IndexedDB (modo privado, etc.) funciona exatamente como antes. */
+const CACHE_LAZY_MAX_IDADE_MS = 24 * 60 * 60 * 1000;
+let CACHE_LAZY_DB = null;
+function cacheLazyAbrir() {
+  if (CACHE_LAZY_DB) return CACHE_LAZY_DB;
+  CACHE_LAZY_DB = new Promise((res) => {
+    try {
+      if (!window.indexedDB) { res(null); return; }
+      const pedido = indexedDB.open('sigafarmacia_cache_lazy', 1);
+      pedido.onupgradeneeded = () => { try { pedido.result.createObjectStore('tabelas'); } catch (e) { /* ignora */ } };
+      pedido.onsuccess = () => res(pedido.result);
+      pedido.onerror = () => res(null);
+      pedido.onblocked = () => res(null);
+    } catch (e) { res(null); }
+  });
+  return CACHE_LAZY_DB;
+}
+async function cacheLazyLer(k) {
+  const db = await cacheLazyAbrir();
+  if (!db) return null;
+  return new Promise((res) => {
+    try {
+      const req = db.transaction('tabelas', 'readonly').objectStore('tabelas').get(k);
+      req.onsuccess = () => {
+        const v = req.result;
+        if (!v || v.versao !== STATE_CACHE_VERSION || !Array.isArray(v.registos) || !v.lidoDeRaizEm || Date.now() - v.lidoDeRaizEm > CACHE_LAZY_MAX_IDADE_MS) { res(null); return; }
+        res(v);
+      };
+      req.onerror = () => res(null);
+    } catch (e) { res(null); }
+  });
+}
+async function cacheLazyGuardar(k, registos, lidoDeRaizEm) {
+  const db = await cacheLazyAbrir();
+  if (!db) return;
+  try {
+    const copia = JSON.parse(JSON.stringify(registos || []));
+    db.transaction('tabelas', 'readwrite').objectStore('tabelas').put({ versao: STATE_CACHE_VERSION, lidoDeRaizEm, registos: copia }, k);
+  } catch (e) { /* sem espaço ou outro motivo — fica sem cópia, como antes */ }
+}
+function posCargaTabelaLazy(k) {
+  if (k === 'ortopedia') ortopediaMigrarFornecedorAntigo();
+  if (PEDIDO_LIST_KEYS.includes(k)) autoCancelOldOrdersDaTabela(k);
+}
+// Pré-carga da Vacinação em segundo plano, uns segundos depois de entrar (é o módulo mais usado na campanha) — com a
+// cópia local isto é quase sempre só "o que mudou", por isso abrir a Vacinação passa a ser imediato.
+let PRE_CARGA_VACINACAO_PARA = null;
+function agendarPreCargaVacinacao() {
+  if (!activeUser || PRE_CARGA_VACINACAO_PARA === activeUser.id) return;
+  PRE_CARGA_VACINACAO_PARA = activeUser.id;
+  setTimeout(() => {
+    try {
+      if (!activeUser || menuPerfilRestrito() || !menuSecoesDisponiveis().includes('Agendas')) return;
+      garantirTabelasCarregadas(PAGINA_TABELAS_LAZY.vacinacao);
+    } catch (e) { /* ignora */ }
+  }, 4000);
+}
 function garantirTabelasCarregadas(keys) {
   const emFalta = keys.filter(k => !STATE.tabelasLazyCarregadas.has(k) && !tabelasLazyEmCarregamento[k]);
   emFalta.forEach(k => {
     tabelasLazyEmCarregamento[k] = true;
     (async () => {
+      // 1) Há cópia local recente: mostra-a já e traz só o que mudou.
+      let copia = null;
+      try { copia = await cacheLazyLer(k); } catch (e) { copia = null; }
+      if (copia && !STATE.tabelasLazyCarregadas.has(k)) {
+        try {
+          STATE[k] = sanitizarSupabase(copia.registos);
+          STATE.tabelasLazyCarregadas.add(k);
+          subscreverTabelaRealtime(k);
+          renderOuAdiarSeOcupado();
+          const marca = watermarkDaTabela(STATE[k]);
+          const delta = marca ? await dbFetchAllDesde(k, marca) : null;
+          let lidoDeRaizEm = copia.lidoDeRaizEm;
+          if (delta !== null) aplicarLoteAoState(k, delta);
+          else {
+            const dados = await lerTabelaLazyComTentativas(k, 3);
+            if (dados !== null) { STATE[k] = sanitizarSupabase(dados); lidoDeRaizEm = Date.now(); }
+          }
+          cacheLazyGuardar(k, STATE[k], lidoDeRaizEm);
+          posCargaTabelaLazy(k);
+        } catch (e) {
+          console.error(`[SigaJuncal] erro ao atualizar a cópia local de ${k}:`, formatarErroSeguro(e));
+        }
+        delete tabelasLazyEmCarregamento[k];
+        renderOuAdiarSeOcupado();
+        return;
+      }
+      // 2) Sem cópia: leitura completa, como sempre — e fica guardada para a próxima vez.
       try {
         const dados = await lerTabelaLazyComTentativas(k, 3);
         if (dados !== null) {
           STATE[k] = sanitizarSupabase(dados);
+          cacheLazyGuardar(k, STATE[k], Date.now());
         } else {
           // Nunca apaga o que já houvesse em memória; a página abre, mas
           // com aviso claro e releitura automática em segundo plano.
@@ -64526,17 +64638,9 @@ function garantirTabelasCarregadas(keys) {
       STATE.tabelasLazyCarregadas.add(k);
       delete tabelasLazyEmCarregamento[k];
       subscreverTabelaRealtime(k);
-      // Migração silenciosa "Sr. Luís"→"STOP Ortopedia" (ver
-      // ortopediaMigrarFornecedorAntigo) já não corre no arranque para
-      // esta tabela (deixou de ser eager) — preservada aqui, na primeira
-      // vez que Ortopedia é mesmo aberta nesta sessão, para nunca perder
-      // o seu efeito autolimitado.
-      if (k === 'ortopedia') ortopediaMigrarFornecedorAntigo();
-      // BUG CORRIGIDO 2026-09-05 — ver comentário completo junto a
-      // autoCancelOldOrdersDaTabela: preserva o cancelamento automático
-      // de pedidos parados há >6 meses, que só corria no arranque
-      // (quando estas 5 tabelas ainda eram eager).
-      if (PEDIDO_LIST_KEYS.includes(k)) autoCancelOldOrdersDaTabela(k);
+      // Migração "Sr. Luís"→"STOP Ortopedia" e cancelamento automático de pedidos parados há >6 meses (corriam no
+      // arranque quando estas tabelas eram eager) — ver posCargaTabelaLazy.
+      posCargaTabelaLazy(k);
       renderOuAdiarSeOcupado();
     })();
   });
@@ -67714,15 +67818,58 @@ function versaoAppMostrarAviso() {
   if (document.querySelector('.versao-nova-barra')) return;
   const barra = h('div', { class: 'versao-nova-barra', role: 'status' }, [
     h('span', {}, '✨ Há uma versão nova do SigaFarmácia.'),
-    h('button', { class: 'btn btn-primary', type: 'button', onClick: () => window.location.reload() }, 'Atualizar'),
+    h('button', { class: 'btn btn-primary', type: 'button', onClick: () => versaoAppRecarregar() }, 'Atualizar'),
     h('button', { class: 'versao-nova-depois', type: 'button', 'aria-label': 'Mais tarde', title: 'Mais tarde (atualiza sozinha quando a sessão terminar)', onClick: () => barra.remove() }, '✕'),
   ]);
   document.body.appendChild(barra);
 }
+// 2026-10-13 (Hugo: "a app na dock continua por atualizar, o telemóvel atualizou"): a app do Mac pode arrancar com
+// uma cópia antiga guardada pelo Safari; a 1.ª verificação tomava então a versão do SERVIDOR como sendo a carregada e
+// nunca mais via diferença. Agora compara também a versão escrita no próprio ficheiro (<meta name="siga-versao">,
+// nos primeiros bytes) com a do servidor — lê só o início do ficheiro e pára, nunca os ~4 MB.
+const VERSAO_APP_MARCA_LOCAL = (() => { try { const m = document.querySelector('meta[name="siga-versao"]'); return m ? m.getAttribute('content') : null; } catch (e) { return null; } })();
+let VERSAO_APP_MARCA_SERVIDOR = null;
+// Recarrega com um endereço novo (?atualizar=…): o Safari não pode responder com a cópia antiga guardada. O parâmetro
+// é retirado do endereço logo a seguir ao arranque (ver limpeza no fim deste bloco).
+function versaoAppRecarregar() {
+  if (!VERSAO_APP_MARCA_SERVIDOR) { window.location.reload(); return; }
+  window.location.replace(window.location.pathname + '?atualizar=' + encodeURIComponent(VERSAO_APP_MARCA_SERVIDOR) + window.location.hash);
+}
+try {
+  if (/[?&]atualizar=/.test(window.location.search)) history.replaceState(history.state, '', window.location.pathname + window.location.hash);
+} catch (e) { /* ignora */ }
+async function versaoAppMarcaServidor() {
+  try {
+    const r = await fetch(window.location.pathname, { cache: 'no-store', credentials: 'same-origin', headers: { Range: 'bytes=0-4095' } });
+    if (!r.ok || !r.body) return null;
+    const leitor = r.body.getReader();
+    const dec = new TextDecoder();
+    let txt = '';
+    while (txt.length < 16384) {
+      const { done, value } = await leitor.read();
+      if (done) break;
+      txt += dec.decode(value, { stream: true });
+      if (/name="siga-versao"[^>]*>/.test(txt) || txt.includes('</head>')) break;
+    }
+    try { leitor.cancel(); } catch (e) { /* ignora */ }
+    const m = /<meta name="siga-versao" content="([^"]*)"/.exec(txt);
+    return m ? m[1] : null;
+  } catch (e) { return null; }
+}
 async function versaoAppVerificar(forcar) {
   if (!forcar && Date.now() - VERSAO_APP_ULTIMA_VERIFICACAO < 60 * 1000) return;
   VERSAO_APP_ULTIMA_VERIFICACAO = Date.now();
-  if (VERSAO_APP_NOVA) { if (versaoAppPodeRecarregarSozinha()) window.location.reload(); return; }
+  if (VERSAO_APP_NOVA) { if (versaoAppPodeRecarregarSozinha()) versaoAppRecarregar(); return; }
+  if (VERSAO_APP_MARCA_LOCAL) {
+    const marcaServidor = await versaoAppMarcaServidor();
+    if (marcaServidor && marcaServidor !== VERSAO_APP_MARCA_LOCAL) {
+      VERSAO_APP_NOVA = true;
+      VERSAO_APP_MARCA_SERVIDOR = marcaServidor;
+      if (versaoAppPodeRecarregarSozinha()) { versaoAppRecarregar(); return; }
+      versaoAppMostrarAviso();
+      return;
+    }
+  }
   const atual = await versaoAppImpressaoAtual();
   if (!atual) return;
   if (VERSAO_APP_IMPRESSAO === null) { VERSAO_APP_IMPRESSAO = atual; return; }
@@ -67736,7 +67883,7 @@ function iniciarAvisoVersaoNova() {
   versaoAppVerificar(true); // fixa a versão carregada
   setInterval(() => versaoAppVerificar(true), 5 * 60 * 1000);
   // Com versão nova já detetada: assim que a sessão terminar e não houver nada a meio, recarrega (verificação barata, local).
-  setInterval(() => { if (VERSAO_APP_NOVA && versaoAppPodeRecarregarSozinha()) window.location.reload(); }, 20 * 1000);
+  setInterval(() => { if (VERSAO_APP_NOVA && versaoAppPodeRecarregarSozinha()) versaoAppRecarregar(); }, 20 * 1000);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') versaoAppVerificar(false); });
 }
 function clearSessionSilently() {
