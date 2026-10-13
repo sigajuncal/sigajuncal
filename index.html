@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-13 15:40" />
+<meta name="siga-versao" content="2026-10-13 17:45" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>SigaFarmácia · Farmácia Juncal</title>
 
@@ -7594,9 +7594,12 @@ async function vacinacaoAutoSemearCampanha() {
     const { data: existentes, error } = await sb.from(TABLES.vacinacaoCampanhas).select('*').eq('nome', nome);
     if (error) return;
     if (existentes && existentes.length) {
+      // BUG CORRIGIDO 2026-10-13 (Hugo, telemóvel: duas "2026/2027" em Campanhas de Vacinação): a pergunta ao servidor
+      // trazia também a cópia duplicada já ELIMINADA (eliminado=true, no Lixo) e juntava-a à lista. Só as ativas entram;
+      // havendo uma com este nome (mesmo eliminada), nunca se cria outra.
       const porId = new Map((STATE.vacinacaoCampanhas || []).map(c => [String(c.id), c]));
-      sanitizarSupabase(existentes.map(rowToRecord)).forEach(c => porId.set(String(c.id), c));
-      STATE.vacinacaoCampanhas = [...porId.values()];
+      sanitizarSupabase(existentes.map(rowToRecord)).filter(c => c.eliminado !== true).forEach(c => porId.set(String(c.id), c));
+      STATE.vacinacaoCampanhas = [...porId.values()].filter(c => c.eliminado !== true);
       return;
     }
     if ((STATE.vacinacaoCampanhas || []).some(c => c.nome === nome)) return;
@@ -53189,7 +53192,7 @@ function buildVacinacaoPage(container, goTo) {
   // cronológica decrescente (pedido explícito 2026-08-11).
   function campanhas() {
     const hoje = todayISO();
-    return STATE.vacinacaoCampanhas.slice().sort((a, b) => {
+    return STATE.vacinacaoCampanhas.filter(c => c.eliminado !== true).slice().sort((a, b) => {
       const aAtual = a.dataInicio && a.dataFim && a.dataInicio <= hoje && hoje <= a.dataFim;
       const bAtual = b.dataInicio && b.dataFim && b.dataInicio <= hoje && hoje <= b.dataFim;
       if (aAtual !== bAtual) return aAtual ? -1 : 1;
@@ -54059,7 +54062,7 @@ function buildVacinacaoPage(container, goTo) {
 
   function buildCampanhasView() {
     const wrap = h('div', { class: 'animate-in' });
-    wrap.appendChild(withBackButton(buildPageHeader('syringe', 'Campanhas de Vacinação', 'Todas as campanhas (criadas automaticamente por temporada — Setembro a Abril).', STATE.vacinacaoCampanhas.length), goTo, showCampanhaForm ? cancelCampanha : undefined));
+    wrap.appendChild(withBackButton(buildPageHeader('syringe', 'Campanhas de Vacinação', 'Todas as campanhas (criadas automaticamente por temporada — Setembro a Abril).', STATE.vacinacaoCampanhas.filter(c => c.eliminado !== true).length), goTo, showCampanhaForm ? cancelCampanha : undefined));
     if (showCampanhaForm) {
       wrap.appendChild(buildRecordFormEstreito(vacinacaoCampanhaSchema, campanhaDraft, {
         editing: !!campanhaEditId, onSubmit: submitCampanha, onCancel: cancelCampanha, errorMessage: campanhaFormError, saving: campanhaSaving,
