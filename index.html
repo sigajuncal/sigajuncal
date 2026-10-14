@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-14 14:00" />
+<meta name="siga-versao" content="2026-10-14 15:45" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>SigaFarmácia · Farmácia Juncal</title>
 
@@ -6186,6 +6186,8 @@ body:has(.bottom-action-bar):not(:has(.horarios-mobile)) .toast-stack{bottom:cal
       TAREFA_COR_DO_ICONE, ESCALA_FAMILIAS_TAREFA_HOME e TIPOS_ATRIBUICAO_RAPIDA.
   11. FICHAS COM FAMÍLIA — o mesmo Nº de Ficha (e às vezes o contacto) é de várias pessoas: comparar sempre também o
       nome (nomesCompativeis) antes de ligar um registo, histórico ou ficha a uma pessoa.
+  12. GABINETES — a farmácia tem 2 (GABINETES_TOTAL). Serviço novo que ocupa gabinete: entra em gabineteServicosNoDia
+      e a abertura do dia passa por confirmarGabineteDisponivel (como Agendas, Vacinação, AFA, Rastreio, Mini-Faciais).
 ===================================================================================================================== */
 /* =================================================================
    HELPER DOM
@@ -8423,6 +8425,82 @@ function agendaContagemLabel(n) {
 function agendaDiaAbertoRegisto(prestadorKey, dateISO) {
   return (STATE.agendaDias || []).find(d => d.prestadorKey === prestadorKey && d.data === dateISO);
 }
+// ---- GABINETES (2026-10-14, Hugo: "quando alguém quiser abrir vacinação confirmar disponibilidade de gabinetes,
+// a farmácia tem apenas dois... AFA, nutrição, podologia, vacinação, mini-faciais — todos estes serviços usam
+// gabinetes") ----
+// Antes de abrir um dia de um serviço que ocupa gabinete, conta o que já ocupa gabinetes nesse dia e nessas horas.
+// Horas de cada serviço: AFA/Rastreio = Hora Inicial–Final do dia; Mini-Faciais = da 1.ª à última vaga; Agendas dos
+// profissionais e Vacinação = da 1.ª à última marcação desse dia (sem marcações ainda, conta como o dia todo — o
+// profissional/a vacinação pode estar lá a qualquer hora). Com os 2 gabinetes já ocupados, pergunta antes de abrir.
+const GABINETES_TOTAL = 2;
+const GABINETE_TIPOS_EVENTO = ['AFA', 'Rastreio'];
+function gabineteMin(hora) { const m = /^(\d{1,2}):(\d{2})/.exec(String(hora || '')); return m ? Number(m[1]) * 60 + Number(m[2]) : null; }
+function gabineteHoraTxt(min) { return min >= 1440 ? '24:00' : `${pad2(Math.floor(min / 60))}:${pad2(min % 60)}`; }
+function gabineteIntervaloDasHoras(horas, duracaoMin) {
+  const mins = horas.map(gabineteMin).filter(x => x !== null);
+  if (!mins.length) return { ini: 0, fim: 1440, diaTodo: true };
+  return { ini: Math.min(...mins), fim: Math.max(...mins) + (duracaoMin || 15), diaTodo: false };
+}
+function gabineteServicosNoDia(dateISO) {
+  const out = [];
+  (STATE.eventos || []).filter(e => !e.eliminado && e.dataEvento === dateISO).forEach(e => {
+    if (GABINETE_TIPOS_EVENTO.includes(e.tipoEvento)) {
+      const ini = gabineteMin(e.horaInicial), fim = gabineteMin(e.horaFinal);
+      out.push({ chave: `evento-${e.id}`, nome: e.tipoEvento === 'AFA' ? 'Análise Facial (AFA)' : `Rastreio${e.subtipoRastreio ? ' — ' + e.subtipoRastreio : ''}`, ini: ini === null ? 0 : ini, fim: fim === null ? 1440 : fim, diaTodo: ini === null || fim === null });
+    } else if (e.tipoEvento === 'Conselheira' && e.miniFaciais) {
+      const slots = eventoSlotsMiniFaciais(e);
+      const intervalo = gabineteIntervaloDasHoras(slots, Number(e.miniFaciaisIntervaloMin) || 20);
+      out.push(Object.assign({ chave: `evento-${e.id}`, nome: `Mini-Faciais${e.marcaConselheira ? ' — ' + e.marcaConselheira : ''}` }, intervalo));
+    }
+  });
+  (STATE.agendaDias || []).filter(d => !d.eliminado && d.data === dateISO).forEach(d => {
+    const key = String(d.prestadorKey || '');
+    if (key.startsWith('vacinacao-')) {
+      const campanhaId = key.slice('vacinacao-'.length);
+      const marc = (STATE.vacinacaoMarcacoes || []).filter(m => !m.eliminado && String(m.campanhaId) === campanhaId && m.data === dateISO && m.estado !== 'Cancelada' && m.hora);
+      out.push(Object.assign({ chave: key, nome: 'Vacinação' }, gabineteIntervaloDasHoras(marc.map(m => m.hora), 15)));
+      return;
+    }
+    const p = PRESTADORES_AGENDA.find(x => x.key === key);
+    if (!p) return;
+    const marc = (STATE.agendaMarcacoes || []).filter(m => !m.eliminado && m.prestadorKey === key && m.data === dateISO && m.tipoLinha !== 'bloqueado'
+      && String(m.nomeCliente || '').trim() && !['cancelada', 'cancelado', 'faltou'].includes(m.estado));
+    const intervalo = marc.length
+      ? { ini: Math.min(...marc.map(m => gabineteMin(m.hora)).filter(x => x !== null)), fim: Math.max(...marc.map(m => (gabineteMin(m.hora) || 0) + (Number(m.duracaoMin) || agendaSlotMinPara(key)))), diaTodo: false }
+      : { ini: 0, fim: 1440, diaTodo: true };
+    out.push(Object.assign({ chave: `agenda-${key}`, nome: `${p.especialidade} (${p.nome})` }, intervalo));
+  });
+  // O mesmo serviço conta uma vez só (ex.: dia aberto duas vezes por dois colegas ao mesmo tempo).
+  const porChave = new Map();
+  out.forEach(x => { if (!porChave.has(x.chave)) porChave.set(x.chave, x); });
+  return [...porChave.values()];
+}
+// Serviços que, juntos, já enchem os gabinetes em algum momento de [ini, fim) — [] quando há gabinete livre.
+function gabineteConflitos(dateISO, ini, fim, excluirChave) {
+  const outros = gabineteServicosNoDia(dateISO).filter(x => x.chave !== excluirChave && x.ini < fim && x.fim > ini);
+  if (outros.length < GABINETES_TOTAL) return [];
+  const pontos = [...new Set([ini, ...outros.map(x => x.ini), ...outros.map(x => x.fim)])].filter(t => t >= ini && t < fim).sort((a, b) => a - b);
+  for (const t of pontos) {
+    const ativos = outros.filter(x => x.ini <= t && x.fim > t);
+    if (ativos.length >= GABINETES_TOTAL) return ativos;
+  }
+  return [];
+}
+// Versão para usar com await: true = pode abrir; false = a pessoa escolheu não abrir.
+function gabineteConfirmarAsync(dateISO, novo) {
+  return new Promise(resolve => confirmarGabineteDisponivel(dateISO, novo, () => resolve(true), () => resolve(false)));
+}
+// Abre o dia (prosseguir) logo se houver gabinete; senão explica quem está a ocupar e só abre se a pessoa confirmar.
+function confirmarGabineteDisponivel(dateISO, novo, prosseguir, aoCancelar) {
+  const ini = novo.ini === null || novo.ini === undefined ? 0 : novo.ini;
+  const fim = novo.fim === null || novo.fim === undefined ? 1440 : novo.fim;
+  const conflito = gabineteConflitos(dateISO, ini, fim, novo.chave);
+  if (!conflito.length) { prosseguir(); return; }
+  const linhas = conflito.map(x => `• ${x.nome} — ${x.diaTodo ? 'dia aberto (sem horas marcadas ainda)' : `${gabineteHoraTxt(x.ini)}–${gabineteHoraTxt(x.fim)}`}`).join('\n');
+  const quando = novo.diaTodo === false ? ` entre as ${gabineteHoraTxt(ini)} e as ${gabineteHoraTxt(fim)}` : '';
+  confirmDialog(`Atenção aos gabinetes: a farmácia tem ${GABINETES_TOTAL} e, em ${formatDate(dateISO)}${quando}, já estão ocupados por:\n${linhas}\n\nAbrir ${novo.nome} mesmo assim? Confirma primeiro que há onde atender.`,
+    prosseguir, { confirmLabel: 'Abrir mesmo assim', cancelLabel: 'Não abrir', danger: true, onCancel: aoCancelar });
+}
 function agendaDiaAberto(prestadorKey, dateISO) {
   return !!agendaDiaAbertoRegisto(prestadorKey, dateISO);
 }
@@ -8659,6 +8737,10 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
 
   // ---- Controlo de Dia Aberto/Fechado ----
   async function abrirDiaAgenda() {
+    const p = PRESTADORES_AGENDA.find(x => x.key === prestadorKey);
+    confirmarGabineteDisponivel(dateISO, { chave: `agenda-${prestadorKey}`, nome: p ? `${p.especialidade} (${p.nome})` : 'esta agenda', ini: 0, fim: 1440, diaTodo: true }, abrirDiaAgendaConfirmado);
+  }
+  async function abrirDiaAgendaConfirmado() {
     const created = await dbInsert('agendaDias', { prestadorKey, data: dateISO, responsavel: currentUserName() });
     if (created) { STATE.agendaDias = [created, ...STATE.agendaDias]; renderHeaderAcoes(); if (onSaved) onSaved(); render(); }   // render(): desbloqueia as vagas
     else showDbErrorToast('Não foi possível abrir o dia');
@@ -8668,6 +8750,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   // "Aberto" sem exigir um passo manual extra do utilizador.
   async function abrirDiaAgendaSilencioso() {
     if (agendaDiaAberto(prestadorKey, dateISO)) return;
+    { const c = gabineteConflitos(dateISO, 0, 1440, `agenda-${prestadorKey}`); if (c.length) showToast(`Atenção: os ${GABINETES_TOTAL} gabinetes já estão ocupados neste dia (${c.map(x => x.nome).join(' e ')}). Confirma onde vais atender.`, 'info', { duracao: 9000 }); }
     const created = await dbInsert('agendaDias', { prestadorKey, data: dateISO, responsavel: currentUserName() });
     if (created) { STATE.agendaDias = [created, ...STATE.agendaDias]; renderHeaderAcoes(); }
   }
@@ -11158,12 +11241,12 @@ function abrirRemarcacaoAgenda(m, onSaved) {
     corpo.appendChild(h('p', { style: 'margin:10px 0 8px;font-weight:700;' }, `${semana.charAt(0).toUpperCase() + semana.slice(1)}, ${formatDate(dia)}`));
     if (!agendaDiaAberto(prestadorKey, dia)) {
       const abrirBtn = h('button', { type: 'button', class: 'btn btn-secondary' }, [Icon('lockOpen', { size: 14, strokeWidth: 2.2 }), ' Abrir este dia']);
-      abrirBtn.addEventListener('click', () => requireAuth(async () => {
+      abrirBtn.addEventListener('click', () => requireAuth(() => { const pAg = PRESTADORES_AGENDA.find(x => x.key === prestadorKey); confirmarGabineteDisponivel(dia, { chave: `agenda-${prestadorKey}`, nome: pAg ? `${pAg.especialidade} (${pAg.nome})` : 'esta agenda', ini: 0, fim: 1440, diaTodo: true }, async () => {
         abrirBtn.disabled = true;
         const created = await dbInsert('agendaDias', { prestadorKey, data: dia, responsavel: currentUserName() });
         if (created) { STATE.agendaDias = [created, ...STATE.agendaDias]; if (onSaved) onSaved(); desenhar(); }
         else { abrirBtn.disabled = false; showDbErrorToast('Não foi possível abrir o dia'); }
-      }));
+      }); }));
       corpo.appendChild(h('div', { class: 'agenda-dia-por-abrir', style: 'margin-bottom:10px;' }, [
         Icon('lockClosed', { size: 15, strokeWidth: 2.3 }),
         h('span', {}, [h('strong', {}, 'Dia por abrir. '), 'Escolhe outro dia ou abre este dia nesta agenda.']),
@@ -29395,6 +29478,24 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       cfgError = 'Indica a Hora Inicial e a Hora Final das Mini-Faciais no formato HH:MM.'; render(); return;
     }
     cfgError = '';
+    // Gabinetes (2026-10-14): AFA, Rastreio e Mini-Faciais ocupam gabinete — ao abrir o dia (ou ao mudar-lhe as
+    // horas) confirma que não estão já os 2 ocupados nessas horas.
+    {
+      let novoGab = null;
+      if (GABINETE_TIPOS_EVENTO.includes(tipo)) {
+        const ini = gabineteMin(cfgDraft.horaInicial), fim = gabineteMin(cfgDraft.horaFinal);
+        const mudou = !editingEvento || !currentEvento || currentEvento.horaInicial !== cfgDraft.horaInicial || currentEvento.horaFinal !== cfgDraft.horaFinal;
+        if (mudou) novoGab = { nome: tipo === 'AFA' ? 'a AFA' : 'o Rastreio', ini: ini === null ? 0 : ini, fim: fim === null ? 1440 : fim, diaTodo: ini === null || fim === null };
+      } else if (tipo === 'Conselheira' && cfgDraft.miniFaciais) {
+        const slots = cfgDraft.miniFaciaisModoManual ? parseHorasManuais(cfgDraft.miniFaciaisHorasManual) : eventoGerarSlots(cfgDraft.miniFaciaisHoraInicial, cfgDraft.miniFaciaisHoraFinal, cfgDraft.miniFaciaisIntervaloMin);
+        const antes = editingEvento && currentEvento && currentEvento.miniFaciais ? eventoSlotsMiniFaciais(currentEvento).join(',') : null;
+        if (antes !== slots.join(',')) novoGab = Object.assign({ nome: 'as Mini-Faciais' }, gabineteIntervaloDasHoras(slots, Number(cfgDraft.miniFaciaisIntervaloMin) || 20));
+      }
+      if (novoGab) {
+        novoGab.chave = editingEvento && currentEvento ? `evento-${currentEvento.id}` : 'evento-novo';
+        if (!(await gabineteConfirmarAsync(dateISO, novoGab))) return;
+      }
+    }
     cfgSaving = true; render();
 
     const payload = {
@@ -55635,6 +55736,8 @@ function buildVacinacaoPage(container, goTo) {
   }
   function vacinacaoEhDomingo(dateISO) { return new Date(dateISO + 'T00:00:00').getDay() === 0; }
   async function vacinacaoAbrirDiaConfirmado(dateISO, depois) {
+    // Gabinetes (2026-10-14): a Vacinação ocupa um dos 2 gabinetes — confirma antes de abrir o dia.
+    if (!(await gabineteConfirmarAsync(dateISO, { chave: vacinacaoPrestadorKey(), nome: 'a Vacinação', ini: 0, fim: 1440, diaTodo: true }))) return;
     const created = await dbInsert('agendaDias', { prestadorKey: vacinacaoPrestadorKey(), data: dateISO, responsavel: currentUserName() });
     if (created) { STATE.agendaDias = [created, ...STATE.agendaDias]; if (depois) depois(); else rerender(); }
     else showDbErrorToast('Não foi possível abrir o dia');
