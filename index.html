@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-14 15:45" />
+<meta name="siga-versao" content="2026-10-14 23:05" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>SigaFarmácia · Farmácia Juncal</title>
 
@@ -5513,6 +5513,7 @@
   .equipa-hoje-legenda span{display:inline-flex;align-items:center;gap:5px;}
   .equipa-hoje-legenda i{display:inline-block;width:8px;height:8px;border-radius:50%;}
   .turno-relogio-titulo{align-self:flex-start;display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:700;color:var(--pharm-900);}
+  .turno-relogio-he{font-size:10.5px;font-weight:800;color:#b45309;background:#fef3c7;border:1px solid #fcd34d;border-radius:999px;padding:1px 7px;cursor:help;}
   .turno-relogio-svg{width:100%;max-width:330px;height:auto;display:block;margin:auto;overflow:visible;}
   .turno-relogio-hora{font-size:11px;font-weight:700;fill:var(--pharm-500);font-variant-numeric:tabular-nums;}
   .turno-relogio-centro-grande{font-size:19px;font-weight:800;fill:var(--pharm-900);font-variant-numeric:tabular-nums;letter-spacing:.01em;}
@@ -6188,6 +6189,9 @@ body:has(.bottom-action-bar):not(:has(.horarios-mobile)) .toast-stack{bottom:cal
       nome (nomesCompativeis) antes de ligar um registo, histórico ou ficha a uma pessoa.
   12. GABINETES — a farmácia tem 2 (GABINETES_TOTAL). Serviço novo que ocupa gabinete: entra em gabineteServicosNoDia
       e a abertura do dia passa por confirmarGabineteDisponivel (como Agendas, Vacinação, AFA, Rastreio, Mini-Faciais).
+  13. HORAS EXTRA REIVINDICADAS — nunca escrevem escala_semanas.dados. Tudo o que mostra "a que horas entras/sais"
+      (A Minha Semana, relógio da Home, frases do dia, Ponto, exportar .ics) usa escalaTurnoComReivindicacoes; as
+      horas somam-se à parte com escalaHorasReivindicacao (pausa do bloco só conta se ficar no MEIO da reivindicação).
 ===================================================================================================================== */
 /* =================================================================
    HELPER DOM
@@ -18457,13 +18461,16 @@ function escalaSituacaoTurnoHoje(utilizadorId) {
   const diaKey = escalaDiaKeyDeData(agora);
   const uid = isNaN(uidN) ? utilizadorId : uidN;
   const vaga = escalaVagaDoColaboradorNoDia(semana, diaKey, uid);
-  if (!vaga) {
+  // 2026-10-14: Horas Extra reivindicadas contam como turno (entrada mais cedo / saída mais tarde, ou um dia de
+  // folga que passa a ter HE) — ver escalaTurnoComReivindicacoes.
+  const efetivo = escalaTurnoComReivindicacoes(vaga && vaga.dia, semana.id, diaKey, uid);
+  if (!efetivo) {
     const cel = escalaCelulaColaboradorNoDia(semana, diaKey, uid);
     const tipoCel = cel && cel.dia && cel.dia.tipo;
     if (tipoCel && !['normal', 'folga'].includes(tipoCel)) return { estado: 'ausencia', tipo: tipoCel, dataFim: hojeISO };
     return { estado: 'folga' };
   }
-  const dia = vaga.dia;
+  const dia = efetivo;
   const entradaMin = escalaMinutosAbsolutos(dia.entrada, false);
   const saidaMin = escalaMinutosAbsolutos(dia.saida, true);
   const agoraMin = agora.getHours() * 60 + agora.getMinutes();
@@ -38231,9 +38238,10 @@ function descarregarICSSemanaPessoal(semana) {
       const dataDoDia = escalaDataDoDia(semana.semanaInicio, d.key);
       if (escalaCelulaColaboradorNoDia(semana, d.key, activeUser.id)) temPosicao = true;
       const vaga = escalaVagaDoColaboradorNoDia(semana, d.key, activeUser.id);
-      if (!vaga) return;
-      const codigo = vaga.codigo;
-      const dia = vaga.dia;
+      // 2026-10-14: o turno exportado inclui as Horas Extra reivindicadas (e um dia só de HE também é exportado).
+      const dia = (vaga || !escalaAusenciaDoDia(activeUser.id, dataDoDia)) ? escalaTurnoComReivindicacoes(vaga && vaga.dia, semana.id, d.key, activeUser.id) : null;
+      if (!dia) return;
+      const codigo = vaga ? vaga.codigo : 'HE';
       let dataFimISO = dataDoDia;
       let horaFim = dia.saida;
       // "00:00"/"24:00" (meia-noite) ou uma saída antes da entrada = termina no dia seguinte.
@@ -38245,6 +38253,7 @@ function descarregarICSSemanaPessoal(semana) {
       }
       const partesDescricao = [];
       if (dia.pausaInicio && dia.pausaFim) partesDescricao.push(`Pausa: ${dia.pausaInicio}-${dia.pausaFim}`);
+      if (dia.alargadoPorHE) partesDescricao.push(`Horas Extra: ${dia.reivindicacoes.map(r => `${r.intervaloInicio}-${r.intervaloFim}`).join(', ')}${dia.entradaBase ? ` (turno base ${dia.entradaBase}-${dia.saidaBase})` : ''}`);
       escalaTarefasDoDia(dia).forEach(t => {
         const texto = escalaTarefaTextoItem(t);
         if (texto) partesDescricao.push(`${texto}${(t.inicio && t.fim) ? ` ${t.inicio}-${t.fim}` : ''}`);
@@ -38504,8 +38513,20 @@ function escalaHorasReivindicacao(r) {
   if (!bloco || !bloco.pausaInicio || !bloco.pausaFim) return brutas;
   const ini = escalaMinutosAbsolutos(r.intervaloInicio, false), fim = escalaMinutosAbsolutos(r.intervaloFim, true);
   const pi = escalaMinutosAbsolutos(bloco.pausaInicio, false), pf = escalaMinutosAbsolutos(bloco.pausaFim, true);
-  const sobrepostos = Math.max(0, Math.min(fim, pf) - Math.max(ini, pi));
-  return Math.max(0, Math.round((brutas - sobrepostos / 60) * 100) / 100);
+  // 2026-10-14 (Hugo: "queria reivindicar das 9h às 13h (entrava às 13h)… todo o período, sem pausa"): a pausa só
+  // é pausa quando fica MESMO NO MEIO do que a pessoa reivindica (trabalha antes E depois dela). Uma reivindicação
+  // que começa ou acaba dentro/na fronteira da pausa (ex: 09:00–13:00 num bloco com pausa 12:00–13:00, seguida do
+  // turno das 13:00) é trabalho contínuo — antes descontava 1 h e ficava como se fossem só 09:00–12:00.
+  if (!(pi > ini && pf < fim)) return brutas;
+  return Math.max(0, Math.round((brutas - (pf - pi) / 60) * 100) / 100);
+}
+// Pausa de um bloco que conta MESMO para esta reivindicação (ver regra acima) — null quando não desconta nada.
+function escalaPausaQueContaNaReivindicacao(r) {
+  const bloco = r && (STATE.escalaHorasExtra || []).find(b => String(b.id) === String(r.blocoId));
+  if (!bloco || !bloco.pausaInicio || !bloco.pausaFim) return null;
+  const ini = escalaMinutosAbsolutos(r.intervaloInicio, false), fim = escalaMinutosAbsolutos(r.intervaloFim, true);
+  const pi = escalaMinutosAbsolutos(bloco.pausaInicio, false), pf = escalaMinutosAbsolutos(bloco.pausaFim, true);
+  return (pi > ini && pf < fim) ? { inicio: bloco.pausaInicio, fim: bloco.pausaFim } : null;
 }
 function escalaReivindicacoesDoBloco(blocoId) {
   // CORRIGIDO 2026-08-30 (BUG GRAVE, Hugo: "continuava a contabilizar as
@@ -38559,6 +38580,52 @@ function escalaReivindicacoesDoColaboradorNoDia(semanaId, diaKey, colaboradorId)
   if (!colaboradorId) return [];
   return escalaHorasExtraDoDia(semanaId, diaKey).flatMap(bloco =>
     escalaReivindicacoesDoBloco(bloco.id).filter(r => String(r.utilizadorId) === String(colaboradorId)));
+}
+// TURNO EFETIVO DO DIA (2026-10-14, Hugo: "quando se reivindicam horas extra atualiza o turno da pessoa para saber
+// quando tem de entrar… contagem de horas etc."). As reivindicações continuam a NUNCA escrever escala_semanas.dados
+// (um colaborador não pode gravar o horário, e a Direção pode retirá-las a qualquer momento) — em vez disso, tudo o
+// que mostra "a que horas entras/sais" passa por aqui: turno base + Horas Extra reivindicadas ativas desse dia.
+// Ex: turno 13:00–21:00 + reivindicadas 09:00–13:00 → entrada 09:00, saída 21:00, sem pausa no meio. Um intervalo
+// livre entre a reivindicação e o turno (ex: HE 09:00–12:00 + turno 13:00) fica como pausa, se o dia ainda não
+// tiver nenhuma. Sem turno nesse dia mas com HE reivindicada → devolve um dia "normal" só com a HE.
+// Devolve null se não houver nem turno nem HE. As HORAS do dia continuam a ser somadas à parte (turno +
+// escalaHorasReivindicacao) — este objeto serve só para horários, nunca para somar horas outra vez.
+function escalaTurnoComReivindicacoes(dia, semanaId, diaKey, utilizadorId) {
+  const temBase = !!(dia && dia.tipo === 'normal' && dia.entrada && dia.saida);
+  const reivs = (semanaId && utilizadorId) ? escalaReivindicacoesDoColaboradorNoDia(semanaId, diaKey, utilizadorId) : [];
+  if (!reivs.length) return temBase ? Object.assign({}, dia, { reivindicacoes: [], alargadoPorHE: false, entradaBase: dia.entrada, saidaBase: dia.saida }) : null;
+  const segs = [];
+  if (temBase) segs.push([escalaMinutosAbsolutos(dia.entrada, false), escalaMinutosAbsolutos(dia.saida, true)]);
+  reivs.forEach(r => segs.push([escalaMinutosAbsolutos(r.intervaloInicio, false), escalaMinutosAbsolutos(r.intervaloFim, true)]));
+  segs.sort((a, b) => a[0] - b[0]);
+  const juntos = [];
+  segs.forEach(s => {
+    const ult = juntos[juntos.length - 1];
+    if (ult && s[0] <= ult[1]) ult[1] = Math.max(ult[1], s[1]);
+    else juntos.push([s[0], s[1]]);
+  });
+  const paraHora = (min) => (min >= 1440 ? '00:00' : `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`);
+  const entrada = paraHora(juntos[0][0]), saida = paraHora(juntos[juntos.length - 1][1]);
+  let pausaInicio = temBase ? (dia.pausaInicio || '') : '', pausaFim = temBase ? (dia.pausaFim || '') : '';
+  if (juntos.length === 2 && !(pausaInicio && pausaFim)) { pausaInicio = paraHora(juntos[0][1]); pausaFim = paraHora(juntos[1][0]); }
+  const base = temBase ? dia : { tipo: 'normal' };
+  return Object.assign({}, base, {
+    tipo: 'normal', entrada, saida, pausaInicio, pausaFim,
+    reivindicacoes: reivs, alargadoPorHE: true,
+    entradaBase: temBase ? dia.entrada : '', saidaBase: temBase ? dia.saida : '',
+  });
+}
+// Atalho para um utilizador numa data (Home, Ponto, frases do dia): procura a semana e a vaga dele e aplica as HE.
+function escalaTurnoEfetivoDoUtilizadorNaData(utilizadorId, dataISO) {
+  try {
+    const semana = escalaSemanaPorInicio(escalaSegundaFeiraDaSemanaDeISO(dataISO));
+    if (!semana || semana.eliminado || !semana.dados) return null;
+    const diaInfo = ESCALA_DIAS.find(d => escalaDataDoDia(semana.semanaInicio, d.key) === dataISO);
+    if (!diaInfo) return null;
+    if (escalaAusenciaDoDia(utilizadorId, dataISO)) return null;
+    const vaga = escalaVagaDoColaboradorNoDia(semana, diaInfo.key, utilizadorId);
+    return escalaTurnoComReivindicacoes(vaga && vaga.dia, semana.id, diaInfo.key, utilizadorId);
+  } catch (e) { return null; }
 }
 // O turno "normal" (Entrada/Saída) que ESTE colaborador já tem nesse dia,
 // em qualquer vaga da semana — para nunca deixar reivindicar horas que já
@@ -39201,7 +39268,17 @@ function afaAgendarMigracaoDias() {
     }
     afaMigracaoDiasEstado = 'feita';
     if (feitos.length) showToast(`✨ Tarefa AFA colocada no horário (Responsável da Agenda): ${feitos.join(', ')}.`, 'success', { duracao: 8000 });
-    if (avisos.length) showToast(`AFA — por acertar nos Horários: ${avisos.join(' · ')}`, 'info', { duracao: 12000 });
+    // Dias por acertar: avisa uma vez por dia em cada aparelho (não a cada vez que se abre a app).
+    if (avisos.length) {
+      const chave = 'siga_afa_por_acertar_' + activeUser.id;
+      const marca = todayISO() + '|' + avisos.join('|');
+      let visto = '';
+      try { visto = localStorage.getItem(chave) || ''; } catch (e) { /* sem armazenamento: avisa */ }
+      if (visto !== marca) {
+        try { localStorage.setItem(chave, marca); } catch (e) { /* ignora */ }
+        showToast(`✨ AFA por acertar nos Horários — ${avisos.join(' · ')}`, 'info', { duracao: 15000, onClick: () => navegarParaPagina('horarios') });
+      }
+    }
   }, 6000);
 }
 // Agenda → Horário: ao guardar o dia AFA com um Responsável, a tarefa AFA ✨ passa para essa(s) pessoa(s) no horário
@@ -39233,7 +39310,7 @@ async function afaSincronizarHorarioComAgenda(evento) {
     linha.dias[diaInfo.key] = Object.assign({}, dia, { tarefas: restantes, tarefaTipo: primeira.tipo, tarefaOutro: primeira.outro, tarefaInicio: primeira.inicio, tarefaFim: primeira.fim });
   });
   const minParaHora = (m) => m >= 1440 ? '00:00' : `${pad2(Math.floor(m / 60))}:${pad2(m % 60)}`;
-  const semTurno = [], postos = [];
+  const semTurno = [], cheias = [], postos = [];
   utilizadores.forEach(u => {
     const nome = u.nomeCompleto || u.username;
     const cel = escalaVagaDoColaboradorNoDia(Object.assign({}, semana, { dados: novoDados }), diaInfo.key, u.id);
@@ -39241,17 +39318,21 @@ async function afaSincronizarHorarioComAgenda(evento) {
     const ini = Math.max(escalaMinutosAbsolutos(evento.horaInicial || cel.dia.entrada, false), escalaMinutosAbsolutos(cel.dia.entrada, false));
     const fim = Math.min(escalaMinutosAbsolutos(evento.horaFinal || cel.dia.saida, true), escalaMinutosAbsolutos(cel.dia.saida, true));
     if (fim <= ini) { semTurno.push(nome); return; }
-    if (!escalaAdicionarTarefaComumAoDia(novoDados, cel.codigo, diaInfo.key, 'afa', minParaHora(ini), minParaHora(fim), { daAgenda: true })) { semTurno.push(`${nome} (já tem 3 tarefas)`); return; }
+    if (!escalaAdicionarTarefaComumAoDia(novoDados, cel.codigo, diaInfo.key, 'afa', minParaHora(ini), minParaHora(fim), { daAgenda: true })) { cheias.push(nome); return; }
     postos.push(`${nome} ${minParaHora(ini)}–${minParaHora(fim)}`);
   });
   // Ninguém do Responsável escrito tem turno nessas horas: o horário fica como estava (nunca tira a tarefa a quem a tem).
-  if (!postos.length) return semTurno.length ? `${afaJuntarNomes(semTurno)} não tem turno nessas horas no horário — a tarefa AFA não mudou.` : '';
+  // Mensagens separadas (2026-10-14): "sem turno" e "já tem 3 tarefas" são problemas diferentes, com soluções diferentes.
+  const motivos = [];
+  if (semTurno.length) motivos.push(`${afaJuntarNomes(semTurno)} não ${semTurno.length > 1 ? 'têm' : 'tem'} turno nas horas da AFA`);
+  if (cheias.length) motivos.push(`${afaJuntarNomes(cheias)} já ${cheias.length > 1 ? 'têm' : 'tem'} 3 tarefas nesse dia (o máximo) — tira uma nos Horários para dar lugar à AFA`);
+  if (!postos.length) return motivos.length ? `${motivos.join('; ')}. A tarefa AFA não mudou.` : '';
   const updated = await dbUpdate('escalaSemanas', semana.id, { dados: novoDados, ultimaEdicaoPor: currentUserName(), ultimaEdicaoEm: new Date().toISOString() }, { base: semana });
   if (!updated) return `Não foi possível atualizar o horário (${lastDbError || 'sem ligação'}). Atribui a tarefa AFA nos Horários.`;
   STATE.escalaSemanas = (STATE.escalaSemanas || []).map(sm => sm.id === updated.id ? updated : sm);
   const partes = [];
   partes.push(`Horário atualizado: tarefa AFA ✨ para ${afaJuntarNomes(postos)}.`);
-  if (semTurno.length) partes.push(`${afaJuntarNomes(semTurno)} sem turno nessas horas — não ficou com a tarefa.`);
+  if (motivos.length) partes.push(`Ficou de fora: ${motivos.join('; ')}.`);
   if (desconhecidos.length) partes.push(`"${desconhecidos.join('", "')}" não corresponde a ninguém da equipa.`);
   return partes.join(' ');
 }
@@ -47292,7 +47373,7 @@ function buildHorariosPage(container, goTo) {
         if (ausenciaForm) {
           statusInfo = { icon: 'x', cor: '#b91c1c', bg: '#fef2f2', texto: `Ausente (${ESCALA_TIPOS_DIA.find(t => t.key === ausenciaForm.tipo)?.label || 'ausência'}) — não é possível reivindicar.` };
         } else if (proprioForm) {
-          statusInfo = { icon: 'alert', cor: '#9a3412', bg: '#fff7ed', texto: `Já trabalhas ${proprioForm.entrada}–${proprioForm.saida} nesse dia.` };
+          statusInfo = { icon: 'alert', cor: '#9a3412', bg: '#fff7ed', texto: `Já trabalhas ${proprioForm.entrada}–${proprioForm.saida} nesse dia — podes reivindicar até às ${proprioForm.entrada} ou a partir das ${proprioForm.saida} (fica seguido do teu turno).` };
         } else {
           statusInfo = { icon: 'check', cor: '#15803d', bg: '#f0fdf4', texto: 'Sem turno nesse dia — bloco todo disponível.' };
         }
@@ -47339,7 +47420,8 @@ function buildHorariosPage(container, goTo) {
         return h('div', { style: 'margin-top:8px;padding:10px;background:#fffbeb;border-radius:8px;' }, [
           statusEl,
           reivindicarError ? h('p', { class: 'form-error', style: 'margin:0 0 6px;' }, reivindicarError) : null,
-          h('p', { class: 'field-helper-text', style: 'margin:0 0 6px;' }, 'Escolhe o intervalo que queres fazer — pode ser só uma parte do bloco, nunca sobrepor o teu horário base.'),
+          h('p', { class: 'field-helper-text', style: 'margin:0 0 6px;' }, 'Escolhe o intervalo que queres fazer — pode ser só uma parte do bloco, nunca sobrepor o teu horário base. O teu turno passa a contar com estas horas (entrada/saída e total do dia).'),
+          (bloco.pausaInicio && bloco.pausaFim) ? h('p', { class: 'field-helper-text', style: 'margin:0 0 6px;' }, `Pausa do bloco ${bloco.pausaInicio}–${bloco.pausaFim}: só é descontada se trabalhares antes E depois dela.`) : null,
           h('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;' }, [iniInput, h('span', {}, '–'), fimInput, guardarBtn, cancelarBtn]),
         ]);
       })() : null;
@@ -47500,10 +47582,19 @@ function buildHorariosPage(container, goTo) {
         // .escala-pessoal-horas), a quebra é garantida em qualquer
         // largura de ecrã — nunca depende de o texto caber ou não numa
         // única linha.
-        const horaPrincipal = tipoEfetivo === 'normal'
-          ? `${dia.entrada} – ${dia.saida}`
-          : (ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—');
+        // 2026-10-14 (Hugo: "atualiza o turno da pessoa para saber quando tem de entrar"): com Horas Extra
+        // reivindicadas, a hora principal passa a ser o turno EFETIVO (ex: 09:00 – 21:00 em vez de 13:00 – 21:00),
+        // e o turno base fica por baixo como referência. Num dia sem turno, a HE reivindicada é o horário do dia.
+        const turnoEfetivoDia = (!ausencia && !escalaDiaHoraExtraSemTurno(dia))
+          ? escalaTurnoComReivindicacoes(tipoEfetivo === 'normal' ? dia : null, semana.id, d.key, activeUser.id) : null;
+        const alargadoHE = !!(turnoEfetivoDia && turnoEfetivoDia.alargadoPorHE);
+        const horaPrincipal = alargadoHE
+          ? `${turnoEfetivoDia.entrada} – ${turnoEfetivoDia.saida}`
+          : tipoEfetivo === 'normal'
+            ? `${dia.entrada} – ${dia.saida}`
+            : (ESCALA_TIPOS_DIA.find(t => t.key === tipoEfetivo)?.label || '—');
         const detalhesFrag = [];
+        if (alargadoHE) detalhesFrag.push(turnoEfetivoDia.entradaBase ? `Turno ${turnoEfetivoDia.entradaBase}-${turnoEfetivoDia.saidaBase}` : 'Só Hora Extra');
         // CORRIGIDO 2026-08-27 — mesma correção da Vista em Tabela: num
         // dia "Horas Extra (sem turno normal)" a linha "+Xh HE" por
         // baixo do horário dava a entender que se somava ao horário
@@ -47511,9 +47602,11 @@ function buildHorariosPage(container, goTo) {
         // presença. Nestes dias mostra só "(Hora Extra)" a seguir ao
         // próprio horário, nunca um "+" a somar horas.
         const ehSoHoraExtraSemana = tipoEfetivo === 'normal' && escalaDiaHoraExtraSemTurno(dia);
-        if (tipoEfetivo === 'normal') {
-          if (dia.pausaInicio && dia.pausaFim) detalhesFrag.push(`Pausa ${dia.pausaInicio}-${dia.pausaFim}`);
-          if (ehSoHoraExtraSemana) detalhesFrag.push(escalaRotuloHoraExtraSemTurno(dia));
+        if (tipoEfetivo === 'normal' || alargadoHE) {
+          const diaPausa = alargadoHE ? turnoEfetivoDia : dia;
+          if (diaPausa.pausaInicio && diaPausa.pausaFim) detalhesFrag.push(`Pausa ${diaPausa.pausaInicio}-${diaPausa.pausaFim}`);
+          if (tipoEfetivo !== 'normal') { /* dia sem turno: só a HE reivindicada, abaixo */ }
+          else if (ehSoHoraExtraSemana) detalhesFrag.push(escalaRotuloHoraExtraSemTurno(dia));
           else if (escalaHeHorasEfetivo(dia)) detalhesFrag.push(`+${escalaFormatarHoras(escalaHeHorasEfetivo(dia))} HE`);
         } else if (tipoEfetivo === 'banco' && escalaBancoHorasEfetivo(dia)) {
           // "Banco de Horas (Dia Completo)" mostra também as horas
@@ -58457,7 +58550,9 @@ function pontoTurnoPlaneado(utilizadorId, dataISO) {
     if (!semana) return null;
     const diaInfo = ESCALA_DIAS.find(d => escalaDataDoDia(semana.semanaInicio, d.key) === dataISO);
     const vaga = diaInfo && escalaVagaDoColaboradorNoDia(semana, diaInfo.key, utilizadorId);
-    const dia = vaga && vaga.dia;
+    // 2026-10-14: inclui as Horas Extra reivindicadas (quem reivindica 09:00–13:00 antes do turno das 13:00 tem o
+    // turno planeado 09:00–21:00 para o ponto — atraso, saída esquecida, etc.).
+    const dia = diaInfo ? escalaTurnoComReivindicacoes(vaga && vaga.dia, semana.id, diaInfo.key, utilizadorId) : null;
     return (dia && dia.tipo === 'normal' && dia.entrada && dia.saida) ? dia : null;
   } catch (e) { return null; }
 }
@@ -66566,9 +66661,11 @@ function escalaMeuDiaHoje() {
   if (semana.estado !== 'publicado' && !escalaMostrarRascunhosEquipa(semana) && !isMasterUser()) return null;
   const diaKey = escalaDiaKeyDeData(agora);
   const meuCodigoHoje = escalaCodigoDaPessoaNoDia(semana.dados, diaKey, activeUser.id, hojeISO);
-  if (!meuCodigoHoje) return null;
-  const linha = (semana.dados || {})[meuCodigoHoje];
-  const dia = linha && linha.dias ? linha.dias[diaKey] : null;
+  const linha = meuCodigoHoje ? (semana.dados || {})[meuCodigoHoje] : null;
+  const diaBase = linha && linha.dias ? linha.dias[diaKey] : null;
+  // 2026-10-14: o relógio "Turno de hoje" mostra o turno EFETIVO — com Horas Extra reivindicadas começa/acaba
+  // quando a pessoa tem mesmo de estar cá (ver escalaTurnoComReivindicacoes), e aparece também num dia só de HE.
+  const dia = escalaTurnoComReivindicacoes(diaBase, semana.id, diaKey, activeUser.id);
   if (!dia || dia.tipo !== 'normal' || !dia.entrada || !dia.saida) return null;
   return { dia, tarefas: escalaTarefasDoDia(dia) };
 }
@@ -68107,7 +68204,7 @@ function buildLinhaTemporalDiaWidget(opcoes) {
   };
   atualizar();
   const card = h('div', { class: 'turno-relogio-card' }, [
-    h('div', { class: 'turno-relogio-titulo' }, [Icon('clock', { size: 14, strokeWidth: 2.2 }), ` Turno de hoje · ${dia.entrada} – ${dia.saida}`]),
+    h('div', { class: 'turno-relogio-titulo' }, [Icon('clock', { size: 14, strokeWidth: 2.2 }), ` Turno de hoje · ${dia.entrada} – ${dia.saida}`, dia.alargadoPorHE ? h('span', { class: 'turno-relogio-he', title: `Inclui Horas Extra reivindicadas: ${(dia.reivindicacoes || []).map(r => `${r.intervaloInicio}-${r.intervaloFim}`).join(', ')}${dia.entradaBase ? ` · turno base ${dia.entradaBase}-${dia.saidaBase}` : ''}` }, '+HE') : null]),
     svg,
   ]);
   card.dataset.assinatura = JSON.stringify([dia.pausaInicio || '', dia.pausaFim || '', tarefas.map(t => [t.tipo, t.outro || '', t.inicio, t.fim])]);
