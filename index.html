@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-13 18:20" />
+<meta name="siga-versao" content="2026-10-14 11:00" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>SigaFarmácia · Farmácia Juncal</title>
 
@@ -5396,6 +5396,35 @@
   .dash-grid-inferior{align-items:start;}
   .dash-grid-inferior > .card{height:auto !important;}
   .trocas-cartao{padding:14px 18px !important;}
+  /* Ficha de Cliente da AFA — histórico de marcações e observações (2026-10-14) */
+  .afa-hist-lista{display:flex;flex-direction:column;gap:6px;max-height:320px;overflow-y:auto;}
+  .afa-hist-linha{display:grid;grid-template-columns:150px 112px minmax(0,1fr);gap:10px;align-items:start;padding:8px 10px;
+    border:1px solid var(--pharm-100);border-radius:10px;background:#fff;font-size:13px;}
+  .afa-hist-data{font-weight:700;color:var(--pharm-800);font-variant-numeric:tabular-nums;}
+  .afa-hist-estado{justify-self:start;font-size:11.5px;font-weight:800;border-radius:999px;padding:2px 9px;background:var(--pharm-50);color:var(--pharm-600);}
+  .afa-hist-concluida{background:#ecfdf5;color:#047857;} .afa-hist-faltou,.afa-hist-cancelada,.afa-hist-cancelado{background:#fef2f2;color:#b91c1c;}
+  .afa-hist-espera{background:#fffbeb;color:#b45309;}
+  .afa-hist-obs{color:var(--pharm-800);white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.45;}
+  @media (max-width:640px){ .afa-hist-linha{grid-template-columns:1fr auto;} .afa-hist-obs{grid-column:1 / -1;} }
+  /* Página inicial — Aviso à Equipa/Objetivos | SASU/Posologia em DUAS COLUNAS que acabam à mesma altura
+     (2026-10-14, ver buildHomepage): o 1.º cartão de cada coluna (.home-elastico) estica para ocupar a sobra, os
+     outros ficam com a altura do conteúdo — nunca fica espaço vazio por baixo de um cartão. */
+  .home-colunas{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;margin-bottom:22px;align-items:stretch;}
+  .home-coluna{display:flex;flex-direction:column;gap:16px;min-width:0;}
+  .home-coluna > *{margin:0 !important;box-sizing:border-box;min-width:0;}
+  .home-coluna > .card{height:auto;}
+  .home-coluna .metas-card .metas-list-scroll{max-height:360px;}
+  @media (min-width:900px){
+    .home-colunas{grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);}
+    .home-coluna > .home-elastico{flex:1 1 auto;}
+  }
+  @media (min-width:1400px) and (hover:hover) and (pointer:fine){ .home-colunas{gap:20px;} .home-coluna{gap:20px;} }
+  @media (max-width:899px){
+    .home-colunas{display:flex;flex-direction:column;}
+    .home-coluna{display:contents;}
+    .home-ordem-1{order:1;} .home-ordem-2{order:2;} .home-ordem-3{order:3;} .home-ordem-4{order:4;}
+    .home-colunas > *, .home-colunas .home-coluna > *{width:100%;max-width:100%;}
+  }
   /* ===== Topo da página inicial (2026-09-26): relógio do turno | Em Curso + Tarefas da Equipa | Produtos a escoar ===== */
   .home-top-grelha{display:grid !important;grid-template-columns:minmax(300px,1.05fr) minmax(240px,0.85fr) minmax(280px,1.1fr);gap:16px;align-items:stretch;margin-bottom:22px;}
   .home-top-grelha > *{margin:0 !important;min-width:0;}
@@ -6111,11 +6140,16 @@ body:has(.bottom-action-bar):not(:has(.horarios-mobile)) .toast-stack{bottom:cal
    5. CLIQUES E REDESENHOS — estado que tem de sobreviver a redesenhos vive em STATE; módulos com muito estado local em
       PAGINAS_NUNCA_RECONSTROI_EM_FUNDO; nada de redesenhar a meio de um clique (render() já espera — ver cliqueAMeio).
    6. SERVIDOR LOCAL (migração para PocketBase) — tabela ou coluna nova também tem de entrar no pacote do servidor
-      (coleções geradas a partir da estrutura do Supabase: voltar a gerar com a estrutura atualizada).
+      (coleções geradas a partir da estrutura do Supabase: voltar a gerar com a estrutura atualizada, incluindo as
+      regras de acesso em siga/regras.js). Função SQL nova (rpc_…) tem de ter a mesma função em siga/funcoes.js.
+      A app escolhe sozinha onde guarda os dados: aberta a partir do servidor da farmácia usa-o (sb = cliente
+      compatível, ver criarClienteServidorLocal); no GitHub Pages continua o Supabase.
    7. VALIDAR — node --check ao JS; testar no Safari do Mac quando mexer em CSS (comporta-se diferente do Chrome).
    8. ECRÃS ESTREITOS — linha com texto + botão nunca espreme o texto numa coluna: flex-wrap:wrap, texto com
       flex:1 1 <base> e min-width:0, botão flex:0 0 auto (desce para baixo do texto no telemóvel). Ver .fin-alerta-bar.
       Testar a 390px de largura.
+   9. PÁGINA INICIAL — sem espaços vazios: a zona Aviso à Equipa/Objetivos | SASU/Posologia são duas colunas que
+      acabam à mesma altura (.home-colunas, o 1.º cartão de cada coluna estica). Bloco novo entra numa das colunas.
 ===================================================================================================================== */
 /* =================================================================
    HELPER DOM
@@ -10317,7 +10351,9 @@ async function buscarClienteFichaOuNifJuncal(valor) {
   const locais = (STATE.clientesHabituais || []).filter(c => c.farmaciaId === 'juncal' && (String(c.nif || '').trim() === v || String(c.numCc || '').trim() === v)).map(mapHabitualParaCandidato);
   const porFicha = new Map();
   remotos.forEach(c => porFicha.set(c.numeroFicha || `r${porFicha.size}`, c));
-  locais.forEach(c => porFicha.set(c.numeroFicha || `l${porFicha.size}`, c));
+  // Ficha provisória local não se sobrepõe à mesma ficha já importada (ver FICHA_PROVISORIA_AUTORIA).
+  const provisorias = new Set((STATE.clientesHabituais || []).filter(c => c.criadoPor === FICHA_PROVISORIA_AUTORIA).map(c => c.id));
+  locais.forEach(c => { if (c.numeroFicha && porFicha.has(c.numeroFicha) && provisorias.has(c.id)) return; porFicha.set(c.numeroFicha || `l${porFicha.size}`, c); });
   const lista = [...porFicha.values()];
   if (!lista.length) return null;
   if (lista.length === 1) return Object.assign({ viaNif: true }, lista[0]);
@@ -10336,11 +10372,13 @@ async function buscarClienteFichaOuNifJuncal(valor) {
 // desambiguação (abrirModalDesambiguacaoUtente) e deixar o operador
 // escolher qual o membro da família pretendido.
 async function buscarClienteFichaJuncal(numero) {
-  const candidatosHabituais = (STATE.clientesHabituais || []).filter(c => c.farmaciaId === 'juncal' && fichaValoresIguais(c.numeroFicha, numero));
-  if (candidatosHabituais.length > 1) return { duplicados: candidatosHabituais.map(mapHabitualParaCandidato) };
-  const habitualUnico = candidatosHabituais.length === 1 ? mapHabitualParaCandidato(candidatosHabituais[0]) : null;
+  const todosHabituais = (STATE.clientesHabituais || []).filter(c => c.farmaciaId === 'juncal' && fichaValoresIguais(c.numeroFicha, numero));
   // Consulta sempre a referência, mesmo com uma correção local, para saber se a ficha tem familiares (1 registo).
   const doJuncal = await dbBuscarClienteJuncalPorNumero(numero);
+  // Ficha provisória (criada antes de a ficha chegar na importação): com a importada já disponível, vale a importada.
+  const candidatosHabituais = doJuncal ? todosHabituais.filter(c => c.criadoPor !== FICHA_PROVISORIA_AUTORIA) : todosHabituais;
+  if (candidatosHabituais.length > 1) return { duplicados: candidatosHabituais.map(mapHabitualParaCandidato) };
+  const habitualUnico = candidatosHabituais.length === 1 ? mapHabitualParaCandidato(candidatosHabituais[0]) : null;
   const familia = candidatosFamiliaClienteJuncal(numero, doJuncal, habitualUnico);
   if (familia) return { duplicados: familia };
   if (habitualUnico) return habitualUnico;
@@ -10393,6 +10431,31 @@ async function buscarClienteFichaJuncalPorNif(nif) {
 //    (numero_ficha deixou de ser, sozinho, a chave de unicidade) e que
 //    duas gravações em simultâneo para o mesmo cliente novo nunca criam
 //    duplicados (a corrida resolve-se a nível de base de dados).
+// Ficha nova no 4DigitalCare que ainda não chegou ao SigaFarmácia (2026-10-14, Hugo: "se a pessoa já fez ficha no
+// 4Digital mas ainda não está no Siga, dá para guardar esses dados como se tivesse sido feita uma importação?"):
+// ao gravar um registo com um Nº de Ficha que a pesquisa não encontrou, Nome/Contacto (e o NIF, se foi pesquisado
+// sem resultado) ficam guardados como ficha local da Juncal (clientes_habituais) — a partir daí a pesquisa por Nº de
+// Ficha ou NIF encontra-a em toda a app, como se viesse da importação. Antes de criar volta a confirmar no servidor
+// que a ficha não existe mesmo (nunca duplica uma ficha importada). Nunca interrompe a gravação do registo.
+// Marca destas fichas provisórias: quando a ficha chegar na importação seguinte do 4DigitalCare, passa a valer a
+// importada (dados oficiais e atualizados) — ver buscarClienteFichaJuncal.
+const FICHA_PROVISORIA_AUTORIA = 'SigaFarmácia — ficha nova (antes da importação)';
+async function guardarFichaClienteSeNova(numeroFicha, nome, contacto, nif) {
+  const numero = String(numeroFicha || '').trim().replace(/\D/g, '');
+  const nomeLimpo = String(nome || '').trim();
+  if (!numero || numero.length > 6 || !nomeLimpo) return null;
+  try {
+    // Já existe (local ou importada)? Sem resposta segura do servidor, não se cria nada (nunca duplica).
+    if ((STATE.clientesHabituais || []).some(c => c.farmaciaId === 'juncal' && fichaValoresIguais(c.numeroFicha, numero))) return null;
+    const { data, error } = await comTimeoutSupabase(sb.from('clientes_juncal').select('numero').eq('numero', Number(numero)).limit(1), 10000);
+    if (error || !Array.isArray(data) || data.length) return null;
+    const payload = { farmaciaId: 'juncal', numeroFicha: numero, nome: nomeLimpo, contacto: normalizarTelefone(contacto || ''), criadoPor: FICHA_PROVISORIA_AUTORIA };
+    if (nif && valorPareceNif(String(nif))) payload.nif = String(nif).trim();
+    const gravado = await dbUpsertClienteHabitual(payload);
+    if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
+    return gravado;
+  } catch (e) { console.warn('[Fichas] não foi possível guardar a ficha nova:', formatarErroSeguro(e)); return null; }
+}
 async function dbUpsertClienteHabitual(payload) {
   if (!sb) return null;
   const farmaciaId = String(payload.farmaciaId || '').trim();
@@ -10468,7 +10531,8 @@ function buildNumFichaCategoriaField(f, draft, rerender, onCarregado) {
       // NIF sem ficha: não se deixa o NIF a fazer de Nº de Ficha (ficaria gravado como ficha errada).
       if (valorPareceNif(atual)) {
         draft[f.name] = ''; control.value = ''; ultimoConsultado = '';
-        mostrarAvisoNif(`Nenhuma ficha com o NIF ${atual}. Preenche os dados à mão.`);
+        draft._nifSemFicha = atual; // guardado com a ficha nova quando se gravar (ver guardarFichaClienteSeNova)
+        mostrarAvisoNif(`Nenhuma ficha com o NIF ${atual}. Escreve o Nº de Ficha novo do 4DigitalCare e preenche os dados à mão — a ficha fica guardada no SigaFarmácia.`);
         if (fichaFoiCarregadaNestaSessao) { onCarregado(null); limparCamposCliente(); fichaFoiCarregadaNestaSessao = false; rerender(); }
         return;
       }
@@ -11535,6 +11599,370 @@ function mapa48hConflito(novaDataInicio, excludeId) {
 // a equipa sabe ao certo quando o aparelho foi mesmo entregue ao utente.
 
 /* =================================================================
+   SERVIDOR LOCAL DA FARMÁCIA (PocketBase) — cliente compatível (2026-10-13, migração Fase 3)
+   Quando a app é aberta a partir do servidor da farmácia (sigafarmacia.pt, IP do servidor…), `sb` passa a ser
+   este cliente em vez do Supabase. Tem a mesma forma que o supabase-js na parte que a app usa —
+   from().select/insert/update/upsert/delete + filtros, rpc(), channel() (alterações, sinais e presença) —
+   para que todo o resto da app funcione sem alterações.
+   Diferença importante: o servidor só responde a quem tem sessão iniciada (deixa de haver acesso anónimo).
+   A sessão (token) obtém-se no login; se expirar, o cliente volta a entrar sozinho com o username/PIN que a
+   app tem em memória (credenciais()). Nos postos fixos de Estafeta/Boa Nova a sessão fica guardada no aparelho.
+================================================================= */
+function criarClienteServidorLocal(base) {
+  const BASE = String(base || '').replace(/\/+$/, '');
+  const CHAVE_POSTO = 'sigafarmacia_sessao_posto_v1';
+  const S = { token: null, farmacia: 'juncal', utilizadorId: null, obtidoEm: 0, guardarNoAparelho: false, credenciais: () => null, aEntrar: null };
+  try {
+    const g = JSON.parse(localStorage.getItem(CHAVE_POSTO) || 'null');
+    if (g && g.token) Object.assign(S, { token: g.token, farmacia: g.farmacia || 'juncal', utilizadorId: g.utilizadorId || null, obtidoEm: g.obtidoEm || 0, guardarNoAparelho: true });
+  } catch (e) { /* sem localStorage */ }
+  const ouvintesSessao = [];
+
+  function gravarPosto() {
+    try {
+      if (S.guardarNoAparelho && S.token) localStorage.setItem(CHAVE_POSTO, JSON.stringify({ token: S.token, farmacia: S.farmacia, utilizadorId: S.utilizadorId, obtidoEm: S.obtidoEm }));
+      else localStorage.removeItem(CHAVE_POSTO);
+    } catch (e) { /* ignora */ }
+  }
+  function definirSessao(token, farmacias, utilizadorId) {
+    const mudouPessoa = String(utilizadorId || '') !== String(S.utilizadorId || '');
+    S.token = token || null;
+    if (Array.isArray(farmacias) && farmacias.length) S.farmacia = String(farmacias[0]);
+    if (utilizadorId !== undefined) S.utilizadorId = utilizadorId;
+    S.obtidoEm = Date.now();
+    gravarPosto();
+    ouvintesSessao.forEach((fn) => { try { fn(mudouPessoa); } catch (e) { /* ignora */ } });
+  }
+
+  async function pedidoBruto(caminho, corpo, metodo) {
+    const cab = { 'Content-Type': 'application/json', 'X-Siga-Farmacia': S.farmacia };
+    if (S.token) cab.Authorization = S.token;
+    const resp = await fetch(BASE + caminho, { method: metodo || 'POST', headers: cab, body: corpo === undefined ? undefined : JSON.stringify(corpo), cache: 'no-store' });
+    let json = null;
+    try { json = await resp.json(); } catch (e) { json = null; }
+    return { status: resp.status, json };
+  }
+
+  async function entrar(username, pin) {
+    const { json } = await pedidoBruto('/api/siga/entrar', { username, pin });
+    if (json && json.ok && json.token) definirSessao(json.token, json.farmacias, json.utilizador ? json.utilizador.id : null);
+    return json || { ok: false, erro: 'Resposta inválida do servidor.' };
+  }
+  // Volta a entrar com as credenciais que a app tem em memória (sessão expirada / app recarregada).
+  async function reentrar() {
+    const c = S.credenciais && S.credenciais();
+    if (!c || !c.username || !c.pin) return false;
+    if (!S.aEntrar) S.aEntrar = entrar(c.username, c.pin).finally(() => { S.aEntrar = null; });
+    const r = await S.aEntrar;
+    return !!(r && r.ok);
+  }
+  async function renovarSeAntiga() {
+    if (!S.token || Date.now() - S.obtidoEm < 24 * 3600 * 1000) return;
+    S.obtidoEm = Date.now(); // evita pedidos repetidos em paralelo
+    try {
+      const { json } = await pedidoBruto('/api/siga/renovar', {});
+      if (json && json.ok && json.token) definirSessao(json.token, null, S.utilizadorId);
+    } catch (e) { /* tenta outra vez mais tarde */ }
+  }
+
+  const SEM_SESSAO = { message: 'Sessão necessária — inicia sessão para ver e gravar dados.', code: 'SEM_SESSAO', details: null, hint: null };
+  // Pedido autenticado; com sessão expirada volta a entrar uma vez e repete.
+  async function pedido(caminho, corpo) {
+    if (!S.token && !(await reentrar())) return { status: 401, json: { data: null, error: SEM_SESSAO } };
+    renovarSeAntiga();
+    let r = await pedidoBruto(caminho, corpo);
+    if (r.status === 401 || r.status === 403) {
+      S.token = null;
+      if (await reentrar()) r = await pedidoBruto(caminho, corpo);
+      else { gravarPosto(); return { status: 401, json: { data: null, error: SEM_SESSAO } }; }
+    }
+    return r;
+  }
+
+  // ---------- consultas: from(tabela)… ----------
+  class Consulta {
+    constructor(tabela) { this.p = { tabela, acao: 'select', filtros: [], ordem: [] }; this.modo = null; }
+    select(colunas) { if (this.p.acao === 'select') this.p.colunas = colunas === undefined ? '*' : colunas; else { this.p.devolver = true; this.p.colunas = colunas === undefined ? '*' : colunas; } return this; }
+    insert(valores) { this.p.acao = 'insert'; this.p.valores = valores; return this; }
+    update(valores) { this.p.acao = 'update'; this.p.valores = valores; return this; }
+    upsert(valores, opcoes) { this.p.acao = 'upsert'; this.p.valores = valores; if (opcoes && opcoes.onConflict) this.p.onConflict = opcoes.onConflict; return this; }
+    delete() { this.p.acao = 'delete'; return this; }
+    filtro(col, op, val, negar) { this.p.filtros.push(negar ? { col, op, val, negar: true } : { col, op, val }); return this; }
+    eq(c, v) { return this.filtro(c, 'eq', v); }
+    neq(c, v) { return this.filtro(c, 'neq', v); }
+    gt(c, v) { return this.filtro(c, 'gt', v); }
+    gte(c, v) { return this.filtro(c, 'gte', v); }
+    lt(c, v) { return this.filtro(c, 'lt', v); }
+    lte(c, v) { return this.filtro(c, 'lte', v); }
+    like(c, v) { return this.filtro(c, 'like', v); }
+    ilike(c, v) { return this.filtro(c, 'ilike', v); }
+    is(c, v) { return this.filtro(c, 'is', v === null ? 'null' : String(v)); }
+    in(c, v) { return this.filtro(c, 'in', Array.isArray(v) ? v : v); }
+    contains(c, v) { return this.filtro(c, 'contains', v); }
+    not(c, op, v) { return this.filtro(c, op, op === 'is' && v === null ? 'null' : v, true); }
+    filter(c, op, v) { return this.filtro(c, op, v); }
+    match(obj) { Object.keys(obj || {}).forEach((k) => this.eq(k, obj[k])); return this; }
+    or(texto) { this.p.filtros.push({ ou: String(texto) }); return this; }
+    order(col, opcoes) { this.p.ordem.push({ col, asc: !(opcoes && opcoes.ascending === false), nullsFirst: opcoes && opcoes.nullsFirst !== undefined ? !!opcoes.nullsFirst : undefined }); return this; }
+    limit(n) { this.p.limite = n; return this; }
+    range(de, ate) { this.p.inicio = de; this.p.limite = ate - de + 1; return this; }
+    single() { this.modo = 'single'; return this; }
+    maybeSingle() { this.modo = 'maybe'; return this; }
+    abortSignal() { return this; }
+    async executar() {
+      let r;
+      try { r = await pedido('/api/siga/dados', this.p); } catch (e) {
+        return { data: null, error: { message: `TypeError: ${e && e.message ? e.message : 'Failed to fetch'}`, code: '', details: null, hint: null }, status: 0 };
+      }
+      const j = r.json || { data: null, error: { message: `Resposta inválida do servidor (HTTP ${r.status}).`, code: String(r.status) } };
+      if (j.error) return { data: null, error: j.error, status: r.status };
+      let data = j.data;
+      if (this.modo && Array.isArray(data)) {
+        if (data.length === 1) data = data[0];
+        else if (data.length === 0 && this.modo === 'maybe') data = null;
+        else return { data: null, error: { message: 'JSON object requested, multiple (or no) rows returned', code: 'PGRST116', details: `The result contains ${data.length} rows`, hint: null }, status: 406 };
+      }
+      return { data, error: null, status: r.status };
+    }
+    then(ok, falha) { return this.executar().then(ok, falha); }
+    catch(falha) { return this.executar().catch(falha); }
+    finally(fn) { return this.executar().finally(fn); }
+  }
+
+  async function rpc(nome, params) {
+    try {
+      if (nome === 'rpc_login') {
+        const r = await entrar(String((params && params.p_username) || ''), String((params && params.p_pin) || ''));
+        return { data: r.ok ? { ok: true, utilizador: r.utilizador } : { ok: false, erro: r.erro, bloqueado: r.bloqueado }, error: null };
+      }
+      const r = await pedido('/api/siga/rpc/' + encodeURIComponent(nome), params || {});
+      const j = r.json || { data: null, error: { message: `Resposta inválida do servidor (HTTP ${r.status}).` } };
+      if (j.data && typeof j.data === 'object' && j.data.__token) {
+        definirSessao(j.data.__token, null, S.utilizadorId);
+        delete j.data.__token;
+      }
+      return { data: j.error ? null : j.data, error: j.error || null };
+    } catch (e) {
+      return { data: null, error: { message: `TypeError: ${e && e.message ? e.message : 'Failed to fetch'}`, code: '' } };
+    }
+  }
+
+  // ---------- tempo real ----------
+  const RT = { fonte: null, clienteId: null, canais: new Set(), topicosOuvidos: new Set(), agendado: null, pessoa: null, ultimoSub: '' };
+  const topico = (tipo, nome) => `siga/${S.farmacia}/${tipo}/${String(nome).replace(/[^A-Za-z0-9_-]/g, '_')}`;
+  const TOPICO_PING = () => topico('sinal', 'siga-ping');
+
+  function topicosDeTodos() {
+    const t = new Set([TOPICO_PING()]);
+    RT.canais.forEach((c) => c.topicos().forEach((x) => t.add(x)));
+    return [...t];
+  }
+  function estadoCanais(estado) { RT.canais.forEach((c) => c.mudarEstado(estado)); }
+
+  function ligar() {
+    if (RT.fonte || !S.token || typeof EventSource === 'undefined') return;
+    RT.pessoa = S.utilizadorId;
+    const fonte = new EventSource(BASE + '/api/realtime');
+    RT.fonte = fonte;
+    fonte.addEventListener('PB_CONNECT', (ev) => {
+      try { RT.clienteId = JSON.parse(ev.data).clientId; } catch (e) { RT.clienteId = null; }
+      RT.ultimoSub = '';
+      agendarSubscricao(0);
+    });
+    fonte.onerror = () => {
+      RT.clienteId = null;
+      estadoCanais('CHANNEL_ERROR');
+      // O EventSource volta a ligar sozinho; se o servidor o fechou de vez, abre-se outro.
+      if (fonte.readyState === 2) { RT.fonte = null; setTimeout(ligar, 3000); }
+    };
+  }
+  function desligar() {
+    if (RT.fonte) { try { RT.fonte.close(); } catch (e) { /* ignora */ } }
+    RT.fonte = null; RT.clienteId = null; RT.ultimoSub = '';
+    RT.topicosOuvidos.clear();
+    estadoCanais('CLOSED');
+  }
+  function ouvirTopico(t) {
+    if (!RT.fonte || RT.topicosOuvidos.has(t)) return;
+    RT.topicosOuvidos.add(t);
+    RT.fonte.addEventListener(t, (ev) => {
+      let msg = null;
+      try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      RT.canais.forEach((c) => c.receber(t, msg));
+    });
+  }
+  function agendarSubscricao(ms) {
+    if (RT.agendado) clearTimeout(RT.agendado);
+    RT.agendado = setTimeout(subscrever, ms === undefined ? 60 : ms);
+  }
+  async function subscrever() {
+    RT.agendado = null;
+    if (!S.token) return;
+    if (!RT.fonte) { ligar(); return; }
+    if (!RT.clienteId) return;
+    const lista = topicosDeTodos();
+    lista.forEach(ouvirTopico);
+    const assinatura = lista.slice().sort().join('|');
+    if (assinatura === RT.ultimoSub) { estadoCanais('SUBSCRIBED'); return; }
+    try {
+      let r = await pedidoBruto('/api/realtime', { clientId: RT.clienteId, subscriptions: lista });
+      if (r.status === 401 || r.status === 403) { if (await reentrar()) { desligar(); ligar(); } return; }
+      if (r.status >= 400) { estadoCanais('CHANNEL_ERROR'); return; }
+      RT.ultimoSub = assinatura;
+      estadoCanais('SUBSCRIBED');
+    } catch (e) { estadoCanais('CHANNEL_ERROR'); }
+  }
+  ouvintesSessao.push((mudouPessoa) => {
+    if (!S.token) return;
+    if (mudouPessoa || (RT.pessoa !== null && String(RT.pessoa) !== String(S.utilizadorId))) { desligar(); ligar(); }
+    else if (!RT.fonte) ligar();
+    else agendarSubscricao(0);
+  });
+
+  class Canal {
+    constructor(nome, opcoes) {
+      this.nome = nome;
+      this.ouvintes = [];
+      this.estado = 'CLOSED';
+      this.aoMudarEstado = null;
+      const pres = opcoes && opcoes.config && opcoes.config.presence;
+      this.chavePresenca = pres && pres.key ? String(pres.key) : `anon-${Math.random().toString(36).slice(2)}`;
+      this.minhaPresenca = null;
+      this.estadoPresenca = {};
+      this.receberProprios = !!(opcoes && opcoes.config && opcoes.config.broadcast && opcoes.config.broadcast.self);
+    }
+    on(tipo, filtro, fn) { this.ouvintes.push({ tipo, filtro: filtro || {}, fn }); return this; }
+    topicos() {
+      const t = new Set();
+      this.ouvintes.forEach((o) => {
+        if (o.tipo === 'postgres_changes' && o.filtro.table) t.add(topico('tab', o.filtro.table));
+        if (o.tipo === 'broadcast') t.add(topico('sinal', this.nome));
+        if (o.tipo === 'presence') t.add(topico('presenca', this.nome));
+      });
+      if (this.minhaPresenca) t.add(topico('presenca', this.nome));
+      return [...t];
+    }
+    subscribe(fn) {
+      this.aoMudarEstado = typeof fn === 'function' ? fn : null;
+      RT.canais.add(this);
+      if (S.token && !RT.fonte) ligar();
+      agendarSubscricao();
+      return this;
+    }
+    mudarEstado(estado) {
+      const antes = this.estado;
+      this.estado = estado;
+      if (estado === 'SUBSCRIBED' && antes !== 'SUBSCRIBED') {
+        if (this.topicos().some((t) => t.indexOf('/presenca/') > 0)) this.lerPresenca();
+        if (this.minhaPresenca) this.enviarPresenca(this.minhaPresenca);
+      }
+      if (antes !== estado && this.aoMudarEstado) { try { this.aoMudarEstado(estado); } catch (e) { /* ignora */ } }
+    }
+    receber(t, msg) {
+      if (this.removido) return; // canal já retirado pela app (ex.: presença reiniciada)
+      if (t === topico('presenca', this.nome) && msg && msg.tipo === 'sync') {
+        this.estadoPresenca = msg.estado || {};
+        this.ouvintes.filter((o) => o.tipo === 'presence').forEach((o) => { if (!o.filtro.event || o.filtro.event === 'sync') { try { o.fn(); } catch (e) { console.error('[Tempo real] presença:', e); } } });
+        return;
+      }
+      if (t === topico('sinal', this.nome) && msg && msg.type === 'broadcast') {
+        this.ouvintes.filter((o) => o.tipo === 'broadcast' && (!o.filtro.event || o.filtro.event === msg.event))
+          .forEach((o) => { try { o.fn({ type: 'broadcast', event: msg.event, payload: msg.payload }); } catch (e) { console.error('[Tempo real] sinal:', e); } });
+        return;
+      }
+      if (msg && msg.eventType && msg.table) {
+        this.ouvintes.filter((o) => o.tipo === 'postgres_changes' && o.filtro.table === msg.table && t === topico('tab', msg.table)).forEach((o) => {
+          const ev = o.filtro.event;
+          if (ev && ev !== '*' && ev !== msg.eventType) return;
+          if (o.filtro.filter) {
+            const m = /^([A-Za-z0-9_]+)=eq\.(.*)$/.exec(o.filtro.filter);
+            const linha = msg.eventType === 'DELETE' ? msg.old : msg.new;
+            if (m && (!linha || String(linha[m[1]]) !== m[2])) { if (msg.eventType !== 'DELETE') return; }
+          }
+          try { o.fn(msg); } catch (e) { console.error('[Tempo real] alteração:', e); }
+        });
+      }
+    }
+    async lerPresenca() {
+      try {
+        if (!S.token) return;
+        const resp = await fetch(`${BASE}/api/siga/presenca?canal=${encodeURIComponent(this.nome)}`, { headers: { Authorization: S.token, 'X-Siga-Farmacia': S.farmacia }, cache: 'no-store' });
+        const j = await resp.json();
+        if (j && j.ok) this.receber(topico('presenca', this.nome), { tipo: 'sync', estado: j.estado || {} });
+      } catch (e) { /* o próximo "sync" corrige */ }
+    }
+    async enviarPresenca(meta) {
+      if (!RT.clienteId) return 'error';
+      try {
+        const r = await pedido('/api/siga/presenca', { clienteId: RT.clienteId, canal: this.nome, chave: this.chavePresenca, meta });
+        if (r.json && r.json.ok && r.json.estado) this.receber(topico('presenca', this.nome), { tipo: 'sync', estado: r.json.estado });
+        return r.json && r.json.ok ? 'ok' : 'error';
+      } catch (e) { return 'error'; }
+    }
+    async track(meta) {
+      this.minhaPresenca = meta || {};
+      agendarSubscricao();
+      return this.enviarPresenca(this.minhaPresenca);
+    }
+    async untrack() {
+      this.minhaPresenca = null;
+      return this.enviarPresenca(null);
+    }
+    presenceState() { return this.estadoPresenca || {}; }
+    async send(m) {
+      if (!m || m.type !== 'broadcast') return 'error';
+      try {
+        const r = await pedido('/api/siga/sinal', { clienteId: RT.clienteId || '', canal: this.nome, evento: m.event, payload: m.payload });
+        return r.json && r.json.ok ? 'ok' : 'error';
+      } catch (e) { return 'error'; }
+    }
+    async unsubscribe() { return cliente.removeChannel(this); }
+  }
+
+  const cliente = {
+    servidorLocal: true,
+    from: (tabela) => new Consulta(tabela),
+    rpc,
+    channel: (nome, opcoes) => new Canal(nome, opcoes),
+    async removeChannel(canal) {
+      if (!canal) return 'ok';
+      if (canal.minhaPresenca) { canal.minhaPresenca = null; canal.enviarPresenca(null); }
+      RT.canais.delete(canal);
+      canal.mudarEstado('CLOSED');
+      canal.removido = true;
+      agendarSubscricao();
+      return 'ok';
+    },
+    // Ligação com a app
+    definirCredenciais(fn) { S.credenciais = typeof fn === 'function' ? fn : () => null; },
+    temSessao: () => !!S.token,
+    podeLer: () => !!S.token || !!(S.credenciais && S.credenciais()),
+    guardarSessaoNoAparelho(sim) { S.guardarNoAparelho = !!sim; gravarPosto(); },
+    terminarSessao() { S.token = null; S.utilizadorId = null; S.guardarNoAparelho = false; gravarPosto(); desligar(); },
+    farmacia: () => S.farmacia,
+  };
+  return cliente;
+}
+// Endereço do servidor local: a própria origem, SÓ quando a app é aberta a partir do servidor da farmácia
+// (sigafarmacia.pt / sigafarmacia.com, ou o endereço do PC na rede local). Em qualquer outro sítio (GitHub Pages,
+// ficheiro no computador) continua o Supabase, como até aqui. Para testes: ?servidor=https://… (fica memorizado
+// neste aparelho; ?servidor=supabase volta ao Supabase).
+function enderecoServidorLocal() {
+  try {
+    const pedido = new URLSearchParams(location.search).get('servidor');
+    if (pedido === 'supabase') localStorage.removeItem('sigafarmacia_servidor');
+    else if (pedido && /^https?:\/\//i.test(pedido)) localStorage.setItem('sigafarmacia_servidor', pedido.replace(/\/+$/, ''));
+    const memorizado = localStorage.getItem('sigafarmacia_servidor');
+    if (memorizado) return memorizado;
+  } catch (e) { /* sem localStorage */ }
+  if (!/^https?:$/.test(location.protocol)) return null;
+  const host = location.hostname.toLowerCase();
+  const ehServidorDaFarmacia = /(^|\.)sigafarmacia\.(pt|com)$/.test(host) || host === 'localhost'
+    || /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host);
+  return ehServidorDaFarmacia ? location.origin : null;
+}
+
+/* =================================================================
    SUPABASE — LIGAÇÃO E CAMADA DE ACESSO A DADOS
 ================================================================= */
 const SUPABASE_URL = 'https://frnjfbdfmpnbjzoxixjb.supabase.co';
@@ -11543,9 +11971,16 @@ const SUPABASE_ANON_KEY = 'sb_publishable_TrxGR-T__ev77jCXQgScOQ_lBp-C5uK';
 // por completo o módulo de sessão/autenticação do cliente — evita que o Supabase tente
 // aceder a localStorage/IndexedDB internamente, o que pode gerar erros de serialização
 // (DataCloneError) em ambientes de pré-visualização com armazenamento restrito.
-const sb = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+const SIGA_SERVIDOR_LOCAL = enderecoServidorLocal(); // null = Supabase (como até aqui)
+const sb = SIGA_SERVIDOR_LOCAL ? criarClienteServidorLocal(SIGA_SERVIDOR_LOCAL) : (window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-}) : null;
+}) : null);
+// Servidor local: se a sessão expirar, o cliente volta a entrar sozinho com quem está na app neste momento.
+if (sb && sb.servidorLocal) {
+  sb.definirCredenciais(() => {
+    try { return activeUser && activeUserPin ? { username: activeUser.username, pin: activeUserPin } : null; } catch (e) { return null; }
+  });
+}
 let lastDbError = '';
 // Leitura de recurso: continua a existir "DataCloneError: The object can
 // not be cloned" nalguns ambientes de pré-visualização mesmo com a sessão
@@ -12452,6 +12887,57 @@ const FINANCEIRO_CARGA = { em: 0, utilizadorId: null, ok: false, erro: '' };
 function financeiroLimparMemoria() {
   STATE.financeiro = []; STATE.objetivosMensais = [];
   FINANCEIRO_CARGA.em = 0; FINANCEIRO_CARGA.utilizadorId = null; FINANCEIRO_CARGA.ok = false; FINANCEIRO_CARGA.erro = '';
+}
+// ---- Aviso «Financeiro atualizado» à equipa do Quadro (2026-10-14, Hugo: "quando é atualizado o campo financeiro,
+// colaboradores do quadro deveriam obter essa informação, talvez em jeito de notificação no topo") ----
+// Quem regista um dia (Hugo/Paulo) manda um sinal curto pelo canal de sinais (nunca leva valores — cada um lê os
+// dados pela função segura, com as suas permissões). Quem pode ver o Financeiro e está com a app aberta relê e
+// recebe o aviso no topo; quem estava fora recebe-o da próxima vez que os dados do Financeiro forem lidos (login,
+// regresso à app). Cada dia novo só é anunciado uma vez por pessoa (marca em localStorage, sem valores).
+const FIN_AVISO_VISTO_PREFIXO = 'sigafarmacia_fin_aviso_visto_';
+function financeiroSinalizarEquipa(dataISO) {
+  try {
+    if (canalSinaisTabelas) Promise.resolve(canalSinaisTabelas.send({ type: 'broadcast', event: 'financeiro', payload: { d: dataISO } })).catch(() => {});
+  } catch (e) { /* nunca parte a gravação por causa do aviso */ }
+}
+function receberSinalFinanceiro() {
+  if (!activeUser || !podeVerFinanceiro()) return;
+  // Pequena espera (o colega pode estar a gravar Com e Sem Trocas seguidos) e relê pela função segura.
+  setTimeout(async () => {
+    const ok = await carregarDadosFinanceirosSeAutorizado();
+    if (ok) renderOuAdiarSeOcupado();
+  }, 2500);
+}
+// Último dia com faturação registada (com ou sem trocas).
+function financeiroUltimoDiaRegistado() {
+  let ultimo = null;
+  (STATE.financeiro || []).forEach(r => {
+    const temValor = [r.faturacao, r.faturacaoComTrocas].some(v => v !== null && v !== undefined && v !== '');
+    if (temValor && r.data && (!ultimo || r.data > ultimo)) ultimo = r.data;
+  });
+  return ultimo;
+}
+function financeiroAvisarNovidade() {
+  if (!activeUser || !podeVerFinanceiro()) return;
+  const ultimo = financeiroUltimoDiaRegistado();
+  if (!ultimo) return;
+  const chave = FIN_AVISO_VISTO_PREFIXO + activeUser.id;
+  let visto = null;
+  try { visto = localStorage.getItem(chave); } catch (e) { return; }
+  try { localStorage.setItem(chave, ultimo); } catch (e) { /* ignora */ }
+  // Primeira vez neste aparelho: só fica a marca (não se anuncia o histórico todo).
+  if (!visto || ultimo <= visto) return;
+  // Quem registou não precisa de ser avisado do que acabou de gravar.
+  const reg = (STATE.financeiro || []).find(r => r.data === ultimo);
+  if (reg && reg.registadoPor && String(reg.registadoPor).trim() === String(currentUserName() || '').trim()) return;
+  const fat = financeiroValorDoDia(ultimo, 'faturacao');
+  const at = financeiroValorDoDia(ultimo, 'atendimentos');
+  const euros = fat === null ? '' : ` — ${Math.round(fat).toLocaleString('pt-PT')} €`;
+  const atend = at === null ? '' : ` · ${at} atendimentos`;
+  showToast(`📊 Financeiro atualizado: ${formatDate(ultimo).slice(0, 5)}${euros}${atend}`, 'info', {
+    duracao: 12000,
+    onClick: () => navegarParaPagina('financeiro'),
+  });
 }
 function financeiroCarregadoParaUtilizadorAtual() {
   return !!activeUser && FINANCEIRO_CARGA.ok && String(FINANCEIRO_CARGA.utilizadorId) === String(activeUser.id);
@@ -16557,7 +17043,7 @@ function buildOrtopediaPage(container, goTo) {
     if (!numeroDigitado || !nomeAtual) { rerender(); return; }
     try {
       if (!clienteFichaCarregada) {
-        const gravado = await dbUpsertClienteHabitual({ farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, contacto: draft.contacto || '' });
+        const gravado = await dbUpsertClienteHabitual(Object.assign({ farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, contacto: draft.contacto || '' }, draft._nifSemFicha ? { nif: draft._nifSemFicha } : {}));
         if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
       } else {
         const alterou = nomeAtual !== String(clienteFichaCarregada.nome || '').trim()
@@ -16856,7 +17342,7 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
     // por haver aqui o mesmo bug.
     try {
       if (!clienteFichaCarregada) {
-        const gravado = await dbUpsertClienteHabitual({ farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, contacto: draft.contacto || '' });
+        const gravado = await dbUpsertClienteHabitual(Object.assign({ farmaciaId: 'juncal', numeroFicha: numeroDigitado, nome: nomeAtual, contacto: draft.contacto || '' }, draft._nifSemFicha ? { nif: draft._nifSemFicha } : {}));
         if (gravado) STATE.clientesHabituais = [gravado, ...(STATE.clientesHabituais || []).filter(c => c.id !== gravado.id)];
       } else {
         const alterou = nomeAtual !== String(clienteFichaCarregada.nome || '').trim()
@@ -21288,15 +21774,23 @@ function buildHomepage(container, goTo) {
   // 2026-09-17 — ver nota acima; o Bloco de Notas da equipa que estava
   // aqui foi eliminado, nunca chegou a ser usado) + cartão informativo
   // SASU Espinho (compacto, com horário dinâmico do dia).
-  wrap.appendChild(h('div', { class: 'dash-grid dash-grid-superior home-largura-calendario' }, [
-    buildMensagemDiaBanner(() => buildHomepage(container, goTo)),
-    buildSasuEspinhoCard(),
-  ]));
-  // Linha INFERIOR: Objetivos Ativos e Calculadora de Posologia Infantil
-  // lado a lado, com a mesma altura (alinhamento por grid stretch).
-  wrap.appendChild(h('div', { class: 'dash-grid dash-grid-inferior home-largura-calendario' }, [
-    buildMetasAtivasCard(() => buildHomepage(container, goTo), () => goTo('objetivos')),
-    buildPosologiaInfantilCard(),
+  // 2026-10-14 (Hugo: "torna o aviso à equipa um card que ajusta a sua altura de forma a que não fique espaço vazio
+  // debaixo do card objetivos… quero a página inicial mais organizada"): em vez de duas linhas independentes (que
+  // deixavam um buraco por baixo do cartão mais baixo de cada linha), passam a ser DUAS COLUNAS — à esquerda Aviso à
+  // Equipa + Objetivos Ativos, à direita SASU + Posologia Infantil. As duas colunas acabam sempre à mesma altura:
+  // o primeiro cartão de cada coluna (.home-elastico — Aviso à Equipa / SASU) estica para ocupar a sobra; os outros
+  // ficam com a altura do seu conteúdo. No telemóvel fica uma coluna só, pela ordem de sempre (Aviso, SASU,
+  // Objetivos, Posologia), sem nada esticado. REGRA para blocos novos nesta zona: entram numa destas colunas (ver
+  // .home-colunas), nunca numa linha à parte.
+  const avisoEquipa = buildMensagemDiaBanner(() => buildHomepage(container, goTo));
+  const sasuCard = buildSasuEspinhoCard();
+  const metasCard = buildMetasAtivasCard(() => buildHomepage(container, goTo), () => goTo('objetivos'));
+  const posologiaCard = buildPosologiaInfantilCard();
+  [[avisoEquipa, 'home-elastico home-ordem-1'], [sasuCard, 'home-elastico home-ordem-2'], [metasCard, 'home-ordem-3'], [posologiaCard, 'home-ordem-4']]
+    .forEach(([el, cls]) => { if (el) cls.split(' ').forEach(c => el.classList.add(c)); });
+  wrap.appendChild(h('div', { class: 'home-colunas home-largura-calendario' }, [
+    h('div', { class: 'home-coluna' }, [avisoEquipa, metasCard].filter(Boolean)),
+    h('div', { class: 'home-coluna' }, [sasuCard, posologiaCard].filter(Boolean)),
   ]));
 
   // Módulo retrátil no fundo da página, por baixo de tudo — Calculadora de
@@ -22998,6 +23492,7 @@ async function financeiroGuardarDia(dataISO, campos) {
     marcarConexao(true);
     const registo = rowToRecord(Array.isArray(data) ? data[0] : data);
     STATE.financeiro = [registo, ...STATE.financeiro.filter(r => r.data !== dataISO)];
+    financeiroSinalizarEquipa(dataISO);
     return registo;
   } catch (e) { if (erroDeRede(e)) marcarConexao(false); lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error('[Supabase] erro de rede ao guardar faturação do dia:', formatarErroSeguro(e)); return null; }
 }
@@ -23942,6 +24437,7 @@ async function financeiroGuardarDiaCompleto(dataISO, v) {
     marcarConexao(true);
     const registo = rowToRecord(Array.isArray(data) ? data[0] : data);
     STATE.financeiro = [registo, ...STATE.financeiro.filter(r => r.data !== dataISO)];
+    financeiroSinalizarEquipa(dataISO);
     return registo;
   } catch (e) { if (erroDeRede(e)) marcarConexao(false); lastDbError = e && e.message ? e.message : 'Falha de rede.'; return null; }
 }
@@ -28277,7 +28773,10 @@ function abrirEscolhaServicoRotativo(titulo, itens) {
   const opcoes = itens.map(it => {
     const btn = h('button', { class: 'cal-escolha-item', type: 'button' }, [
       Icon(it.icon, { size: 16, strokeWidth: 2.2 }),
-      h('span', {}, [h('strong', { style: 'display:block;' }, it.titulo), it.subtitulo]),
+      // 2026-10-14: o subtítulo pode ser uma lista de elementos que já estão no cartão (ex.: o nome no "Em Curso
+      // Agora") — aqui usa-se só o texto (antes rebentava com 2+ tarefas e o clique não levava a lado nenhum).
+      h('span', {}, [h('strong', { style: 'display:block;' }, it.titulo),
+        [].concat(it.subtitulo || []).map(x => (x && typeof x === 'object' ? x.textContent : String(x || ''))).filter(Boolean).join(' · ')]),
     ]);
     btn.addEventListener('click', () => { close(); it.onClick(); });
     return btn;
@@ -29311,6 +29810,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     if (created) {
       const horaAntiga = showForm.hora;
       if (!showForm.editar) afaTratarListaEsperaAposMarcar(created);
+      if (tipo === 'AFA') { const pf = PONTES_FICHA_MARCACAO.get(formDraft); guardarFichaClienteSeNova(formDraft.nFicha, formDraft.nomeCliente, formDraft.contacto, pf && pf._nifSemFicha); }
       marcacoes = showForm.vagaId ? marcacoes.map(x => x.id === created.id ? created : x) : [...marcacoes, created];
       // Mesma proteção de guardarEdicaoHoraVaga (Editar Hora avulso, agora
       // só usado em vagas livres): mudar a hora de uma marcação que estava
@@ -29542,6 +30042,21 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     const fichaInput = h('input', { class: 'input', placeholder: 'Nº Ficha' });
     fichaInput.value = formDraft.nFicha || '';
     fichaInput.addEventListener('input', () => { formDraft.nFicha = fichaInput.value; });
+    // AFA (2026-10-14): o Nº Ficha passa a pesquisar a ficha do 4DigitalCare pelo Nº de Ficha OU pelo NIF e preenche
+    // Nome e Contacto — o mesmo campo das Fichas de Clientes da AFA e dos Pedidos.
+    let campoFichaAfa = null;
+    if (tipo === 'AFA') {
+      let ponte = PONTES_FICHA_MARCACAO.get(formDraft);
+      if (!ponte) {
+        ponte = {
+          get nFicha() { return formDraft.nFicha || ''; }, set nFicha(v) { formDraft.nFicha = v; },
+          get nome() { return formDraft.nomeCliente || ''; }, set nome(v) { formDraft.nomeCliente = v; },
+          get contacto() { return formDraft.contacto || ''; }, set contacto(v) { formDraft.contacto = normalizarTelefone(v || ''); },
+        };
+        PONTES_FICHA_MARCACAO.set(formDraft, ponte);
+      }
+      campoFichaAfa = buildNumFichaCategoriaField({ name: 'nFicha', label: 'Nº Ficha', size: 'sm' }, ponte, render, () => {});
+    }
     const contactoInput = h('input', { class: 'input', placeholder: 'Contacto (9 dígitos)', inputmode: 'numeric', pattern: '[0-9]{9}', maxlength: '11' });
     contactoInput.value = formatarTelefonePT(formDraft.contacto || '');
     contactoInput.addEventListener('input', () => {
@@ -29584,7 +30099,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     }
 
     campos.push(h('div', { class: 'field span2' }, [h('label', {}, showForm.encaixe && !showForm.editar ? 'Nome do Cliente' : 'Nome do Cliente *'), nomeInput, attachAvisoNomeUtente(nomeInput)]));
-    campos.push(h('div', { class: 'field field-xs' }, [h('label', {}, 'Nº Ficha'), fichaInput]));
+    campos.push(campoFichaAfa || h('div', { class: 'field field-xs' }, [h('label', {}, 'Nº Ficha'), fichaInput]));
     campos.push(h('div', { class: 'field field-sm' }, [h('label', {}, showForm.encaixe && !showForm.editar ? 'Contacto' : 'Contacto *'), contactoInput]));
     if (estadoSelect) {
       campos.push(h('div', { class: 'field field-sm' }, [h('label', {}, 'Estado *'), estadoSelect]));
@@ -29600,6 +30115,18 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
 
     const saveBtn = h('button', { class: 'btn btn-primary', onclick: saving ? null : () => requireAuth(submitForm), disabled: saving ? 'disabled' : undefined }, saving ? 'A guardar…' : (showForm.editar ? 'Guardar Alterações' : 'Confirmar Marcação'));
     const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: cancelForm }, 'Cancelar');
+    // AFA: da marcação para a Ficha de Cliente da AFA (abre a existente ou cria uma nova já preenchida).
+    let fichaAfaBtn = null;
+    if (tipo === 'AFA' && (String(formDraft.nomeCliente || '').trim() || String(formDraft.contacto || '').trim() || String(formDraft.nFicha || '').trim())) {
+      const fichasProntas = STATE.tabelasLazyCarregadas.has('afaFichas');
+      if (!fichasProntas) garantirTabelasCarregadas(['afaFichas']);
+      const dadosPessoa = { numFicha: formDraft.nFicha, nome: formDraft.nomeCliente, contacto: formDraft.contacto };
+      const existe = fichasProntas ? afaFichaDaPessoa(dadosPessoa) : null;
+      fichaAfaBtn = h('button', { type: 'button', class: 'btn btn-secondary', style: 'margin-left:auto;',
+        title: existe ? 'Abre a Ficha de Cliente da AFA desta pessoa' : 'Cria a Ficha de Cliente da AFA com estes dados' },
+        [Icon('users', { size: 14, strokeWidth: 2.2 }), fichasProntas ? (existe ? ' Abrir ficha AFA' : ' Criar ficha AFA') : ' Ficha AFA']);
+      fichaAfaBtn.addEventListener('click', () => requireAuth(() => { close(); abrirFichaAfaDe(dadosPessoa); }));
+    }
     // BUG CORRIGIDO 2026-09-10 (Hugo: "ao adicionar no formulário não diz
     // para que hora se está a marcar"): a hora só era editável (visível)
     // num Encaixe — numa vaga normal da grelha, o formulário não dizia em
@@ -29664,7 +30191,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     children.push(...blocoEspera);
     children.push(h('div', { class: 'form-grid' }, campos));
     if (formError) children.push(h('p', { class: 'form-error' }, formError));
-    children.push(h('div', { class: 'form-actions' }, [saveBtn, cancelBtn]));
+    children.push(h('div', { class: 'form-actions', style: 'flex-wrap:wrap;' }, [saveBtn, cancelBtn, fichaAfaBtn].filter(Boolean)));
     if (showForm && showForm.editar && showForm.base) { const autoria = buildLinhaAutoria(showForm.base); if (autoria) children.push(autoria); }
     return h('div', { class: 'card card-pad' }, children);
   }
@@ -30131,11 +30658,109 @@ function afaFichaResumoTexto(r) {
   const partes = [r.idade ? `${r.idade} anos` : null, r.numFicha ? `Nº Ficha ${r.numFicha}` : null].filter(Boolean);
   return partes.join(' · ') || '—';
 }
+// Ligação Marcação AFA → Ficha de Cliente AFA (2026-10-14, Hugo: "a AFA é feita pelos próprios colaboradores do
+// quadro… podemos usar o nº de ficha e/ou NIF para preencher os dados e da marcação ir para a ficha de cliente AFA").
+// { numFicha, nome, contacto } — consumido uma única vez por buildAfaFichasPage: abre a ficha AFA dessa pessoa ou,
+// se ainda não existir, uma Nova Ficha já preenchida com esses dados.
+let AFA_FICHA_PEDIDO = null;
+const PONTES_FICHA_MARCACAO = new WeakMap(); // rascunho da marcação -> objeto com nome/contacto/nFicha (ver buildBookingForm)
+// Ficha AFA de uma pessoa: pelo Nº de Ficha (o mais seguro); sem ele, pelo contacto; por fim, pelo nome exato.
+function afaFichaDaPessoa(dados) {
+  const lista = (STATE.afaFichas || []).filter(r => !r.eliminado);
+  const ficha = String((dados && dados.numFicha) || '').trim();
+  if (ficha) { const r = lista.find(x => String(x.numFicha || '').trim() === ficha); if (r) return r; }
+  const tel = normalizarTelefone((dados && dados.contacto) || '');
+  if (tel && tel.length >= 9) { const r = lista.find(x => normalizarTelefone(x.contacto || '') === tel); if (r) return r; }
+  const nome = normalizarTexto(String((dados && dados.nome) || '').trim());
+  if (nome) { const r = lista.find(x => normalizarTexto(String(x.nome || '').trim()) === nome); if (r) return r; }
+  return null;
+}
+// Histórico da pessoa na AFA (2026-10-14, Hugo: "na ficha ter um registo das marcações efectuadas pela pessoa e
+// quaisquer observações que tenham sido deixadas"): marcações em dias da AFA (pelo Nº de Ficha, contacto ou nome) e
+// passagens pela Lista de Espera, com as observações de cada uma. Só leitura — lido do servidor ao abrir a ficha.
+const AFA_ESTADO_ROTULO = { agendada: 'Pendente', concluida: 'Concluída', faltou: 'Faltou', cancelada: 'Cancelou', cancelado: 'Cancelou' };
+async function afaHistoricoDaPessoa(dados) {
+  const diasAfa = new Map((STATE.eventos || []).filter(e => e.tipoEvento === 'AFA' && !e.eliminado).map(e => [String(e.id), e.dataEvento || e.dataInicio || '']));
+  const limpar = (v) => String(v || '').trim().replace(/["(),]/g, '');
+  const ficha = limpar(dados.numFicha), tel = normalizarTelefone(dados.contacto || ''), nome = limpar(dados.nome);
+  const filtros = [];
+  if (ficha) filtros.push(`n_ficha.eq."${ficha}"`);
+  if (tel && tel.length >= 9) filtros.push(`contacto.eq."${tel}"`);
+  if (nome) filtros.push(`nome_cliente.ilike."${nome}"`);
+  let marcacoes = [];
+  if (sb && filtros.length && diasAfa.size) {
+    const { data, error } = await comTimeoutSupabase(sb.from('eventos_marcacoes')
+      .select('id, evento_id, hora, nome_cliente, n_ficha, contacto, observacoes, estado, tipo_linha, criado_por')
+      .in('evento_id', [...diasAfa.keys()].map(Number)).eq('eliminado', false).or(filtros.join(',')).limit(300), 12000);
+    if (error) throw new Error(error.message);
+    marcacoes = (data || []).map(rowToRecord).filter(m => m.tipoLinha !== 'bloqueado' && String(m.nomeCliente || '').trim())
+      .map(m => Object.assign(m, { data: diasAfa.get(String(m.eventoId)) || '' }))
+      .sort((a, b) => (b.data + (b.hora || '')).localeCompare(a.data + (a.hora || '')));
+  }
+  const pessoa = { numFicha: ficha, nome: dados.nome, contacto: tel };
+  const espera = (STATE.afaListaEspera || []).filter(e => {
+    if (ficha && String(e.numFicha || '').trim() === ficha) return true;
+    if (tel && normalizarTelefone(e.contacto || '') === tel) return true;
+    return !!pessoa.nome && normalizarTexto(String(e.nome || '').trim()) === normalizarTexto(String(pessoa.nome).trim());
+  });
+  return { marcacoes, espera };
+}
+function buildAfaHistoricoCard(draft, cache, aoCarregar) {
+  const chave = [draft.numFicha, normalizarTelefone(draft.contacto || ''), normalizarTexto(String(draft.nome || '').trim())].join('|');
+  const card = h('div', { class: 'card card-pad', style: 'margin-bottom:14px;' });
+  card.appendChild(h('h3', { class: 'dash-card-title', style: 'margin-bottom:10px;' }, iconeTexto('calendar', 'Marcações na AFA e observações', { titulo: true })));
+  const corpo = h('div', {});
+  card.appendChild(corpo);
+  if (!chave.replace(/\|/g, '')) { corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0;' }, 'Preenche o Nome, o Contacto ou o Nº de Ficha para ver o histórico desta pessoa.')); return card; }
+  const r = cache.get(chave);
+  if (!r) {
+    corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0;' }, 'A carregar o histórico…'));
+    if (!STATE.tabelasLazyCarregadas.has('afaListaEspera')) garantirTabelasCarregadas(['afaListaEspera']);
+    afaHistoricoDaPessoa(draft)
+      .then(res => { cache.set(chave, res); aoCarregar(); })
+      .catch(e => { cache.set(chave, { erro: (e && e.message) || 'Sem ligação ao servidor.' }); aoCarregar(); });
+    return card;
+  }
+  if (r.erro) { corpo.appendChild(h('p', { class: 'form-error', style: 'margin:0;' }, `Não foi possível ler o histórico. ${r.erro}`)); return card; }
+  if (!r.marcacoes.length && !r.espera.length) { corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0;' }, 'Ainda sem marcações na AFA.')); return card; }
+  const linhas = r.marcacoes.map(m => h('div', { class: 'afa-hist-linha' }, [
+    h('span', { class: 'afa-hist-data' }, `${m.data ? formatDate(m.data) : '—'}${m.hora ? ' · ' + m.hora : ''}`),
+    h('span', { class: 'afa-hist-estado afa-hist-' + (m.estado || 'agendada') }, AFA_ESTADO_ROTULO[m.estado] || 'Pendente'),
+    h('span', { class: 'afa-hist-obs' }, String(m.observacoes || '').trim() || h('span', { class: 'cell-muted' }, 'Sem observações')),
+  ]));
+  r.espera.forEach(e => linhas.push(h('div', { class: 'afa-hist-linha' }, [
+    h('span', { class: 'afa-hist-data' }, e.createdAt ? formatDate(String(e.createdAt).slice(0, 10)) : '—'),
+    h('span', { class: 'afa-hist-estado afa-hist-espera' }, 'Lista de Espera'),
+    h('span', { class: 'afa-hist-obs' }, [String(e.disponibilidade || '').trim() ? `Disponibilidade: ${String(e.disponibilidade).trim()}. ` : '', String(e.observacoes || '').trim()].join('').trim() || h('span', { class: 'cell-muted' }, 'Sem observações')),
+  ])));
+  const total = r.marcacoes.length;
+  const feitas = r.marcacoes.filter(m => m.estado === 'concluida').length;
+  corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, `${total} marcaç${total === 1 ? 'ão' : 'ões'}${feitas ? ` · ${feitas} concluída${feitas === 1 ? '' : 's'}` : ''}`));
+  corpo.appendChild(h('div', { class: 'afa-hist-lista' }, linhas));
+  return card;
+}
+function abrirFichaAfaDe(dados) {
+  AFA_FICHA_PEDIDO = { numFicha: String(dados.numFicha || '').trim(), nome: String(dados.nome || '').trim(), contacto: normalizarTelefone(dados.contacto || '') };
+  if (STATE.page === 'afa-fichas') STATE.page = 'agenda-afa'; // força uma entrada nova na página (aplica o pedido)
+  navegarParaPagina('afa-fichas');
+}
 function buildAfaFichasPage(container, goTo) {
   let searchQuery = '';
   let showForm = false; // false | { editingId, draft }
   let formError = '';
   let saving = false;
+  const historicoCache = new Map(); // histórico de marcações por pessoa (ver buildAfaHistoricoCard)
+  if (AFA_FICHA_PEDIDO) {
+    const pedido = AFA_FICHA_PEDIDO;
+    AFA_FICHA_PEDIDO = null;
+    const existente = afaFichaDaPessoa(pedido);
+    if (existente) showForm = { editingId: existente.id, draft: Object.assign({}, existente) };
+    else {
+      const novo = afaFichaEmptyDraft();
+      novo.nome = pedido.nome; novo.contacto = pedido.contacto; novo.numFicha = pedido.numFicha;
+      showForm = { editingId: null, draft: novo };
+    }
+  }
 
   function records() {
     const lista = STATE.afaFichas || [];
@@ -30171,6 +30796,7 @@ function buildAfaFichasPage(container, goTo) {
     STATE.afaFichas = showForm.editingId
       ? STATE.afaFichas.map(x => x.id === resultado.id ? resultado : x)
       : [resultado, ...STATE.afaFichas];
+    if (!draft._fichaClienteCarregada) guardarFichaClienteSeNova(draft.numFicha, draft.nome, draft.contacto, draft._nifSemFicha);
     showForm = false;
     showToast('Ficha guardada.', 'success');
     rerender();
@@ -30195,6 +30821,7 @@ function buildAfaFichasPage(container, goTo) {
     const wrap = h('div', { class: 'animate-in' });
     wrap.appendChild(withCustomBackButton(buildPageHeader('users', showForm.editingId ? 'Editar Ficha' : 'Nova Ficha', 'Avaliação de pele — SMART MIRROR.', undefined), cancelForm));
     wrap.appendChild(buildFormSecao(null, afaFichaCamposIdentificacao(), draft));
+    wrap.appendChild(buildAfaHistoricoCard(draft, historicoCache, () => { if (showForm && showForm.draft === draft) rerender(); }));
     AFA_FICHA_SECOES.forEach(secao => { const el = buildFormSecao(secao, afaFichaCamposDaSecao(secao), draft); if (el) wrap.appendChild(el); });
     if (formError) wrap.appendChild(h('p', { class: 'form-error' }, formError));
     const saveBtn = h('button', { class: 'btn btn-primary', onclick: saving ? null : () => requireAuth(submit), disabled: saving ? 'disabled' : undefined }, saving ? 'A guardar…' : 'Guardar Ficha');
@@ -57872,12 +58499,17 @@ function pontoTornarCirculoBotao(circulo, rotulo) {
    cartão "Picar Ponto", carregar no círculo abre a câmara AQUI, lê o QR code e pica logo, com a sessão que já
    existe. Leitura: BarcodeDetector (Android/Chrome) ou, onde não existe (iPhone), a biblioteca jsQR (MIT), só
    descarregada da primeira vez que é precisa. A câmara do telemóvel continua a funcionar como antes. */
+// Endereços de onde um QR do ponto é aceite: o desta app e, depois da mudança para o servidor da farmácia
+// (2026-10-14), também o antigo do GitHub — as folhas já afixadas continuam a funcionar até serem trocadas.
+function pontoQrOrigemAceite(origem) {
+  return origem === window.location.origin || origem === 'https://sigajuncal.github.io' || /^https:\/\/([a-z0-9-]+\.)?sigafarmacia\.(pt|com)$/.test(origem);
+}
 function pontoQrCodigoDoTexto(texto) {
   const t = String(texto || '').trim();
   try {
     const u = new URL(t);
     const c = u.searchParams.get('ponto');
-    if (c && u.origin === window.location.origin) return String(c).slice(0, 80);
+    if (c && pontoQrOrigemAceite(u.origin)) return String(c).slice(0, 80);
     return null; // QR de outro site — nunca se segue
   } catch (e) { return null; }
 }
@@ -58316,7 +58948,7 @@ let APP_ARRANQUE_CONCLUIDO = false;
     window.launchQueue.setConsumer((params) => {
       if (!params || !params.targetURL) return;
       let codigo = null;
-      try { const u = new URL(params.targetURL); if (u.origin === window.location.origin) codigo = u.searchParams.get('ponto'); } catch (e) { codigo = null; }
+      try { const u = new URL(params.targetURL); if (pontoQrOrigemAceite(u.origin)) codigo = u.searchParams.get('ponto'); } catch (e) { codigo = null; }
       if (!codigo) return;
       codigo = String(codigo).slice(0, 80);
       if (PONTO_QR_CAPTURADO && PONTO_QR_CAPTURADO.codigo === codigo && Date.now() - PONTO_QR_CAPTURADO.em < 15000) return; // já tratado no arranque
@@ -63536,7 +64168,7 @@ function render() {
 // dependeram desta proteção para aparecer — só as de outra pessoa, a
 // decorrer em paralelo, é que ficam à espera de uma troca de separador/dia
 // para aparecer, exatamente como todos os outros módulos protegidos.
-const PAGINAS_NUNCA_RECONSTROI_EM_FUNDO = new Set(['horarios', 'vacinacao', 'lembretes']);
+const PAGINAS_NUNCA_RECONSTROI_EM_FUNDO = new Set(['horarios', 'vacinacao', 'lembretes', 'afa-fichas']); // afa-fichas (2026-10-14): a ficha aberta (e o histórico) não se perde com atualizações de fundo
 // Impressão digital do conteúdo de uma página acabada de construir: textos, classes, títulos e estilos (só HTML).
 // Nos desenhos SVG contam só as classes e os textos — o resto (posições, arcos) depende da hora e é redesenhado
 // pelo próprio widget. Elementos marcados com data-volatil (contadores ao segundo, "Atualizado há...") ficam de
@@ -64148,12 +64780,15 @@ function pedirSessaoAOutraJanela(esperaMs) {
 }
 const SESSAO_PERSISTENTE_KEY = 'sigajuncal_sessao_persistente';
 function guardarSessaoPersistente(user) {
-  if (!user || (user.perfilNivel !== 'Estafeta' && user.perfilNivel !== 'Farmácia Boa Nova')) return;
+  const sessaoDePosto = !!user && (user.perfilNivel === 'Estafeta' || user.perfilNivel === 'Farmácia Boa Nova');
+  if (sb && sb.guardarSessaoNoAparelho) sb.guardarSessaoNoAparelho(sessaoDePosto); // servidor local: a sessão do posto fica no aparelho
+  if (!sessaoDePosto) return;
   try {
     window.localStorage.setItem(SESSAO_PERSISTENTE_KEY, JSON.stringify({ id: user.id, username: user.username }));
   } catch (e) { /* localStorage indisponível — sessão só fica válida até recarregar */ }
 }
 function limparSessaoPersistente() {
+  if (sb && sb.guardarSessaoNoAparelho) sb.guardarSessaoNoAparelho(false);
   try { window.localStorage.removeItem(SESSAO_PERSISTENTE_KEY); } catch (e) { /* ignora */ }
 }
 // Tenta restaurar a sessão persistente logo no arranque da app, depois dos
@@ -64710,7 +65345,7 @@ async function carregarDadosFinanceirosSeAutorizado() {
     FINANCEIRO_CARGA.utilizadorId = utilizadorId;
     FINANCEIRO_CARGA.ok = !finRes.error && !objRes.error;
     FINANCEIRO_CARGA.erro = FINANCEIRO_CARGA.ok ? '' : 'O servidor não devolveu os dados do Financeiro.';
-    if (FINANCEIRO_CARGA.ok) FINANCEIRO_CARGA.em = Date.now();
+    if (FINANCEIRO_CARGA.ok) { FINANCEIRO_CARGA.em = Date.now(); setTimeout(financeiroAvisarNovidade, 1200); }
     return FINANCEIRO_CARGA.ok;
   } catch (e) {
     if (!mesmaPessoa) { STATE.financeiro = []; STATE.objetivosMensais = []; }
@@ -65136,6 +65771,7 @@ function ligarCanalSinaisTabelas() {
   try {
     canalSinaisTabelas = sb.channel('sinais-tabelas', { config: { broadcast: { self: false, ack: false } } })
       .on('broadcast', { event: 'mudou' }, receberSinalTabela)
+      .on('broadcast', { event: 'financeiro' }, receberSinalFinanceiro)
       .subscribe((estado) => { canalSinaisTabelasPronto = estado === 'SUBSCRIBED'; });
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible' && haSinaisPendentes()) setTimeout(() => lerSinaisPendentes(), 2500);
@@ -68444,9 +69080,12 @@ async function startApp() {
   // é sempre removido e a app chega sempre a mostrar o ecrã principal —
   // mesmo perante uma falha completamente imprevista durante o arranque.
   try {
-    await loadAllData();
-    STATE.ultimaAtualizacaoEm = new Date().toISOString();
-    await autoCancelOldOrders();
+    // Servidor local: sem sessão não há acesso aos dados — o login (concluirLogin) é que os carrega.
+    if (!(sb && sb.servidorLocal) || sb.podeLer()) {
+      await loadAllData();
+      STATE.ultimaAtualizacaoEm = new Date().toISOString();
+      await autoCancelOldOrders();
+    }
   } catch (e) {
     console.error('[Arranque] erro inesperado durante a inicialização:', formatarErroSeguro(e));
   }
@@ -68457,7 +69096,7 @@ async function startApp() {
   chatBaselineArranqueISO = new Date().toISOString();
   // Limpeza automática do Lixo (>6 meses) — corre em segundo plano, nunca
   // bloqueia o arranque nem o primeiro ecrã.
-  purgarLixoAntigo();
+  if (!(sb && sb.servidorLocal) || sb.podeLer()) purgarLixoAntigo(); // servidor local: só com sessão
   // Sessão persistente (só Estafeta / Farmácia Boa Nova) — se houver uma
   // guardada e ainda válida, a app arranca já autenticada, sem pedir PIN.
   if (sessaoMovelRetomada) confirmarSessaoMovelRestaurada();
