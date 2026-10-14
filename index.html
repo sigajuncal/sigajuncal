@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-14 13:15" />
+<meta name="siga-versao" content="2026-10-14 13:30" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>SigaFarmácia · Farmácia Juncal</title>
 
@@ -29780,6 +29780,33 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     formDraft = { hora: '', nomeCliente: '', nFicha: '', contacto: '', observacoes: '', aviso: false };
     formError = ''; showForm = { grupo, hora: '', encaixe: true }; render();
   }
+  // Reaproveitar Vaga nos Eventos (2026-10-14, Hugo: "não dá para reaproveitar vaga cancelada?"): igual às Agendas —
+  // abre logo Nova Marcação na mesma hora e grupo da marcação cancelada/faltou, só falta o novo utente. A marcação
+  // antiga fica intacta no histórico (linha riscada por baixo); a nova é sempre um registo novo.
+  function eventoCanceladaOuFaltou(m) { return !!m && (m.estado === 'cancelada' || m.estado === 'faltou' || m.estado === 'cancelado'); }
+  function eventoHoraAindaNaoChegou(horaStr) {
+    const hoje = todayISO();
+    if (dateISO !== hoje) return dateISO > hoje;
+    const agora = new Date();
+    return normalizarHora(horaStr) > `${pad2(agora.getHours())}:${pad2(agora.getMinutes())}`;
+  }
+  function eventoVagaJaReaproveitada(m) {
+    return marcacoesDoGrupo(m.grupoVaga || 'principal').some(x => x.id !== m.id && normalizarHora(x.hora) === normalizarHora(m.hora) && x.tipoLinha !== 'bloqueado' && !vagaVazia(x) && !eventoCanceladaOuFaltou(x));
+  }
+  function abrirReaproveitarVaga(m) {
+    if (eventoVagaJaReaproveitada(m)) { showToast(`A vaga das ${m.hora} já foi reaproveitada por um colega.`, 'info'); render(); return; }
+    afaEsperaPickerAberto = false; afaEsperaOrigemId = null;
+    formDraft = { nomeCliente: '', nFicha: '', contacto: '', observacoes: '', aviso: false };
+    formError = ''; showForm = { grupo: m.grupoVaga || 'principal', hora: m.hora, encaixe: false, reaproveitar: m.id }; render();
+  }
+  function buildReaproveitarVagaEventoBtn(m) {
+    const btn = h('button', { class: 'btn-fab-sm tone-green', title: 'Reaproveitar Vaga — marcar outro utente neste horário', 'aria-label': 'Reaproveitar Vaga' }, Icon('rotatecw', { size: 12, strokeWidth: 2.2 }));
+    btn.addEventListener('click', (e) => { e.stopPropagation(); requireAuth(() => abrirReaproveitarVaga(m)); });
+    return btn;
+  }
+  function podeReaproveitarVagaEvento(m) {
+    return eventoCanceladaOuFaltou(m) && (!isPast || isMasterUser()) && eventoHoraAindaNaoChegou(m.hora) && !eventoVagaJaReaproveitada(m);
+  }
   // Edição de uma marcação existente do Evento: reabre o formulário com os
   // campos pré-preenchidos (utente, telefone, notas — e hora, se encaixe).
   function abrirEditarMarcacao(m, slotsPadrao) {
@@ -29853,7 +29880,13 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     // pára aqui — antes, a 2.ª gravação escrevia por cima da 1.ª sem aviso.
     // Vaga da grelha ainda sem linha própria: se entretanto um colega criou
     // uma linha a essa hora, usa-se essa (se livre) em vez de duplicar.
-    if (!showForm.vagaId && !showForm.encaixe && !showForm.editar) {
+    if (showForm.reaproveitar) {
+      // Reaproveitar: a linha cancelada fica como está; se um colega já marcou alguém nesta hora, pára.
+      const outra = marcacoesDoGrupo(showForm.grupo).find(m => m.id !== showForm.reaproveitar && normalizarHora(m.hora) === normalizarHora(hora) && m.tipoLinha !== 'bloqueado' && !vagaVazia(m) && !eventoCanceladaOuFaltou(m));
+      if (outra) { formError = `ATENÇÃO: um colega acabou de marcar ${outra.nomeCliente || 'outra pessoa'} às ${hora}. Cancela e escolhe outra vaga.`; render(); return; }
+      const livre = marcacoesDoGrupo(showForm.grupo).find(m => normalizarHora(m.hora) === normalizarHora(hora) && m.tipoLinha !== 'bloqueado' && vagaVazia(m));
+      if (livre) showForm.vagaId = livre.id;
+    } else if (!showForm.vagaId && !showForm.encaixe && !showForm.editar) {
       const existente = marcacoesDoGrupo(showForm.grupo).find(m => normalizarHora(m.hora) === normalizarHora(hora));
       if (existente) {
         if (existente.tipoLinha === 'bloqueado' || !vagaVazia(existente)) {
@@ -29924,7 +29957,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       // Encaixe novo: se no mesmo instante um colega criou outro à MESMA
       // hora neste grupo, fica o que foi gravado primeiro (id mais baixo).
       await releMarcacoesDoServidor();
-      const anterior = marcacoes.find(m => m.id !== created.id && Number(m.id) < Number(created.id) && m.hora === created.hora && (m.grupoVaga || 'principal') === (created.grupoVaga || 'principal'));
+      const anterior = marcacoes.find(m => m.id !== created.id && Number(m.id) < Number(created.id) && m.hora === created.hora && (m.grupoVaga || 'principal') === (created.grupoVaga || 'principal') && !eventoCanceladaOuFaltou(m)); // a cancelada que se reaproveita não conta
       if (anterior && await dbDeleteMarcacao(created.id)) {
         marcacoes = marcacoes.filter(m => m.id !== created.id);
         formError = `ATENÇÃO: um colega acabou de criar uma vaga/marcação às ${created.hora} neste grupo — esta não ficou gravada. Escolhe outra hora.`;
@@ -29936,7 +29969,8 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       const horaAntiga = showForm.hora;
       if (!showForm.editar) afaTratarListaEsperaAposMarcar(created);
       if (tipo === 'AFA') { const pf = PONTES_FICHA_MARCACAO.get(formDraft); guardarFichaClienteSeNova(formDraft.nFicha, formDraft.nomeCliente, formDraft.contacto, pf && pf._nifSemFicha); }
-      marcacoes = showForm.vagaId ? marcacoes.map(x => x.id === created.id ? created : x) : [...marcacoes, created];
+      // Sem duplicar: a releitura do servidor feita logo acima (encaixe/reaproveitar) já pode trazer a marcação nova.
+      marcacoes = showForm.vagaId ? marcacoes.map(x => x.id === created.id ? created : x) : [...marcacoes.filter(x => x.id !== created.id), created];
       // Mesma proteção de guardarEdicaoHoraVaga (Editar Hora avulso, agora
       // só usado em vagas livres): mudar a hora de uma marcação que estava
       // numa posição fixa da grelha automática deixava essa posição órfã
@@ -30341,15 +30375,16 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
     const doGrupo = apenasComCliente
       ? marcacoesDoGrupo(grupo).filter(m => m.tipoLinha !== 'bloqueado' && !vagaVazia(m))
       : marcacoesDoGrupo(grupo);
-    const prioridadeLinha = (m) => (m.tipoLinha !== 'bloqueado' && !vagaVazia(m)) ? 2 : (m.tipoLinha === 'bloqueado' ? 1 : 0);
+    // Marcação ativa > cancelada/faltou (vaga reaproveitada: a nova fica no lugar da hora, a antiga logo a seguir).
+    const prioridadeLinha = (m) => (m.tipoLinha !== 'bloqueado' && !vagaVazia(m)) ? (eventoCanceladaOuFaltou(m) ? 2 : 3) : (m.tipoLinha === 'bloqueado' ? 1 : 0);
     const ocupacao = {};
     const duplicadasComCliente = [];
     doGrupo.forEach(m => {
       const atual = ocupacao[m.hora];
       if (!atual || prioridadeLinha(m) > prioridadeLinha(atual)) {
-        if (atual && prioridadeLinha(atual) === 2) duplicadasComCliente.push(atual);
+        if (atual && prioridadeLinha(atual) >= 2) duplicadasComCliente.push(atual);
         ocupacao[m.hora] = m;
-      } else if (prioridadeLinha(m) === 2) {
+      } else if (prioridadeLinha(m) >= 2) {
         duplicadasComCliente.push(m);
       }
     });
@@ -30443,6 +30478,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
         // Avisar fica sempre na mesma posição em todas as linhas; olho e Reaproveitar entram à esquerda dele.
         const acoes = [];
         if (m.observacoes && m.observacoes.trim()) acoes.push(obsEyeButton(m.observacoes));
+        if (podeReaproveitarVagaEvento(m)) acoes.push(buildReaproveitarVagaEventoBtn(m));
         acoes.push(avisoToggleBtn(m));
         if (!isPast || isMasterUser()) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
         node = h('div', { class: 'agenda-slot-row agenda-slot-ocupado' + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : ''), 'data-marcacao-id': String(m.id) }, [
@@ -30490,6 +30526,7 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       // Avisar fica sempre na mesma posição em todas as linhas; olho e Reaproveitar entram à esquerda dele.
       const acoes = [];
       if (m.observacoes && m.observacoes.trim()) acoes.push(obsEyeButton(m.observacoes));
+      if (podeReaproveitarVagaEvento(m)) acoes.push(buildReaproveitarVagaEventoBtn(m));
       acoes.push(avisoToggleBtn(m));
       if (!isPast || isMasterUser()) acoes.push(buildCheckboxMarcacao(m.id, selecionadas, toggleSelecaoMarcacao));
       const node = h('div', { class: 'agenda-slot-row' + classeEncaixe + estadoClasseVaga(m) + (isPast ? ' agenda-vaga-passada' : '') + (selecionadas.has(m.id) ? ' linha-selecionada' : '') }, [
