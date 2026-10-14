@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-14 12:30" />
+<meta name="siga-versao" content="2026-10-14 13:00" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>SigaFarmácia · Farmácia Juncal</title>
 
@@ -1588,6 +1588,14 @@
   .form-actions{display:flex;align-items:center;gap:10px;margin-top:20px;flex-wrap:wrap;}
   .form-grid.form-grid-alinhada > .field{align-self:start !important;}
   .form-grid.form-grid-alinhada > .field > label{box-sizing:border-box;}
+  .evento-chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px;}
+  .evento-chip{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;background:var(--pharm-50);border:1px solid var(--pharm-100);color:var(--pharm-800);font-size:13px;font-weight:600;line-height:1.2;}
+  .evento-chip strong{font-weight:800;}
+  .evento-chip-resp{background:#fdf4ff;border-color:#f0abfc;color:#701a75;}
+  .evento-chip-aviso{background:#fff7ed;border-color:#fdba74;color:#9a3412;}
+  .evento-chip-nota{font-size:11px;font-weight:700;padding:1px 7px;border-radius:999px;background:#fae8ff;color:#86198f;}
+  .evento-chip-nota.aviso{background:#ffedd5;color:#9a3412;}
+  .evento-notas{margin:-4px 0 14px;font-size:13px;color:var(--pharm-700);white-space:pre-wrap;}
   .form-acoes-grupo{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
   .form-acoes-registo{margin-left:auto;}
   .form-acoes-registo .form-delete-btn{margin-left:0;}
@@ -11414,14 +11422,18 @@ const tarefasSchema = [
 // Administrador/Master (ver isMasterUser() em buildMapaTarefasPage).
 const MAPA_TAREFAS_CATEGORIAS = [
   'Receituário', 'Fornecedores', 'Stocks', 'Campanhas / Divulgação',
-  'Organização', 'Parcerias / Serviços', 'Gestão', 'Intranet', 'SigaJuncal',
+  'Organização', 'Parcerias / Serviços', 'Gestão', 'Intranet', 'SigaFarmácia',
 ];
+// A app chama-se SigaFarmácia (2026-10-14, Hugo: "sigajuncal como tarefa, deveria ser sigafarmacia"): a categoria
+// antiga "SigaJuncal" passa a "SigaFarmácia" — na memória de todos logo ao carregar e, de vez, na base de dados
+// quando alguém da Direção abre a app (ver mapaTarefasMigrarCategoriaAntiga).
+const MAPA_TAREFAS_CATEGORIAS_ANTIGAS = { 'SigaJuncal': 'SigaFarmácia' };
 // Uma cor de badge por categoria — só para identificação visual rápida na
 // grelha única (ver buildTabelaUnificada em buildMapaTarefasPage).
 const MAPA_TAREFAS_CATEGORIA_TONE = {
   'Receituário': 'blue', 'Fornecedores': 'purple', 'Stocks': 'orange',
   'Campanhas / Divulgação': 'pink', 'Organização': 'teal', 'Parcerias / Serviços': 'green',
-  'Gestão': 'red', 'Intranet': 'indigo', 'SigaJuncal': 'amber',
+  'Gestão': 'red', 'Intranet': 'indigo', 'SigaFarmácia': 'amber',
 };
 const mapaTarefasSchema = [
   { name: 'categoria', label: 'Categoria', type: 'select', options: MAPA_TAREFAS_CATEGORIAS, size: 'sm' },
@@ -30523,12 +30535,31 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
 
     const infoLinhas = [];
     if (currentEvento.tipoEvento === 'Rastreio') infoLinhas.push(`Tipo: ${currentEvento.subtipoRastreio || '—'}`);
-    if (currentEvento.tipoEvento === 'AFA') { const r = afaResponsavelDoDia(currentEvento); if (r.nome) infoLinhas.push(`Responsável pelo Dia: ${r.nome}${r.doHorario ? ' (✨ Horários)' : ''}`); }
+    // AFA (2026-10-14, Hugo: "melhora pf"): resumo do dia numa só linha de etiquetas — horário, Responsável (e se já
+    // está nos Horários) e quantas marcações há — em vez de uma caixa grande só com o nome.
+    if (currentEvento.tipoEvento === 'AFA') {
+      const r = afaResponsavelDoDia(currentEvento);
+      const ocupadas = marcacoes.filter(m => m.tipoLinha !== 'bloqueado' && !vagaVazia(m)).length;
+      const totalVagas = eventoGerarSlots(currentEvento.horaInicial, currentEvento.horaFinal, currentEvento.intervaloMin).length;
+      const livres = Math.max(totalVagas - marcacoes.filter(m => m.tipoLinha !== 'bloqueado' && !vagaVazia(m) && (m.grupoVaga || 'principal') === 'principal').length, 0);
+      const chips = [
+        h('span', { class: 'evento-chip' }, [Icon('clock', { size: 14 }), h('span', {}, `${currentEvento.horaInicial || '—'} – ${currentEvento.horaFinal || '—'}`)]),
+        r.nome
+          ? h('span', { class: 'evento-chip evento-chip-resp', title: r.doHorario ? 'Tarefa AFA atribuída nos Horários deste dia' : 'Ainda sem tarefa AFA nos Horários deste dia' }, [
+              h('span', {}, '✨'), h('span', {}, ['Responsável: ', h('strong', {}, r.nome)]),
+              h('span', { class: 'evento-chip-nota' + (r.doHorario ? '' : ' aviso') }, r.doHorario ? 'nos Horários' : 'fora dos Horários'),
+            ])
+          : h('span', { class: 'evento-chip evento-chip-aviso' }, [h('span', {}, '✨'), h('span', {}, 'Sem Responsável — escolhe em Editar Evento')]),
+        h('span', { class: 'evento-chip' }, [Icon('users', { size: 14 }), h('span', {}, `${ocupadas} marcaç${ocupadas === 1 ? 'ão' : 'ões'} · ${livres} vaga${livres === 1 ? '' : 's'} livre${livres === 1 ? '' : 's'}`)]),
+      ];
+      bodyEl.appendChild(h('div', { class: 'evento-chips' }, chips));
+      if (currentEvento.notas) bodyEl.appendChild(h('p', { class: 'evento-notas' }, currentEvento.notas));
+    }
     if (currentEvento.tipoEvento === 'Conselheira') {
       infoLinhas.push(`Marca: ${currentEvento.marcaConselheira || '—'}`);
       if (currentEvento.campanha) infoLinhas.push(`Campanha: ${currentEvento.campanha}`);
     }
-    if (currentEvento.notas) infoLinhas.push(currentEvento.notas);
+    if (currentEvento.notas && currentEvento.tipoEvento !== 'AFA') infoLinhas.push(currentEvento.notas);
     // BUG CORRIGIDO 2026-09-08 (Hugo: "aquele espaço branco ali em cima é
     // para quê?", visível em AFA): este cartão só faz sentido quando há
     // mesmo alguma linha para mostrar (Tipo de Rastreio/Marca da
@@ -34235,7 +34266,7 @@ async function gerarBackupCompleto() {
     tabelas.pontoRegistos = resPonto && Array.isArray(resPonto.registos) ? sanitizarSupabase(resPonto.registos) : { erro: 'Não foi possível ler as picagens (sessão?)' };
   } catch (e) { tabelas.pontoRegistos = { erro: String(e && e.message ? e.message : e) }; }
   return {
-    aplicacao: 'SigaJuncal',
+    aplicacao: 'SigaFarmácia',
     geradoEm: new Date().toISOString(),
     tabelas,
   };
@@ -37485,7 +37516,13 @@ function escalaTarefasDoDia(dia) {
 function escalaTextoEhVacinacao(texto) {
   return /vacin/.test(normalizarTexto(texto || ''));
 }
+// O mesmo para a AFA (2026-10-14): "Outro — AFA" / "Análise Facial" escritos à mão antes de existir a tarefa AFA ✨.
+function escalaTextoEhAfa(texto) {
+  const n = normalizarTexto(texto || '');
+  return /\bafa\b/.test(n) || /analise\s+facial/.test(n);
+}
 function escalaNormalizarTarefaVacinacao(t) {
+  if (t && t.tipo === 'outro' && !escalaTextoEhVacinacao(t.outro) && escalaTextoEhAfa(t.outro)) return Object.assign({}, t, { tipo: 'afa', outro: '' });
   if (!t || t.tipo !== 'outro' || !escalaTextoEhVacinacao(t.outro)) return t;
   const detalhe = String(t.outro || '').trim();
   // "Vacinação"/"Vacinas"/"Vacinação Gripe e COVID" — fica só o detalhe que acrescente algo.
@@ -38057,7 +38094,7 @@ function descarregarICSSemanaPessoal(semana) {
       ].join('\r\n'));
   });
   if (!eventos.length) { showToast(temPosicao ? 'Sem turnos de trabalho nesta semana para exportar (só Folgas/Férias/ausências).' : 'Não estás atribuído(a) a nenhuma posição nesta semana.', 'info'); return; }
-  const conteudo = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//SigaJuncal//Horario//PT', 'CALSCALE:GREGORIAN', ...eventos, 'END:VCALENDAR'].join('\r\n');
+  const conteudo = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//SigaFarmácia//Horario//PT', 'CALSCALE:GREGORIAN', ...eventos, 'END:VCALENDAR'].join('\r\n');
   const blob = new Blob([conteudo], { type: 'text/calendar;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -38970,6 +39007,35 @@ function afaUtilizadoresDoTexto(texto) {
   partes.forEach(p => { const u = achar(p); if (u) { if (!utilizadores.some(x => x.id === u.id)) utilizadores.push(u); } else desconhecidos.push(p); });
   return { utilizadores, desconhecidos };
 }
+// Dias AFA já abertos antes desta ligação existir (2026-10-14, Hugo: "verifica os dias que já estão criados e coloca
+// de forma adequada como se tivessem sido criados hoje"): de hoje em diante, cada dia AFA com Responsável escrito e
+// sem tarefa AFA no horário passa pelo mesmo caminho de quem o guardasse agora. Corre 1x por sessão, só para quem pode
+// gerir a AFA ou os horários; não repete nada que já esteja certo (as semanas passadas nunca se reescrevem).
+let afaMigracaoDiasEstado = 'por-fazer';
+function afaAgendarMigracaoDias() {
+  if (afaMigracaoDiasEstado !== 'por-fazer' || !activeUser) return;
+  if (!(isMasterUser() || souResponsavelAFA())) return;
+  if (!Array.isArray(STATE.eventos) || !(STATE.escalaSemanas || []).length || !(STATE.usuarios || []).length) return;
+  afaMigracaoDiasEstado = 'agendada';
+  setTimeout(async () => {
+    afaMigracaoDiasEstado = 'a-correr';
+    const hoje = todayISO();
+    const dias = (STATE.eventos || []).filter(e => e.tipoEvento === 'AFA' && !e.eliminado && e.dataEvento >= hoje && String(e.responsavelDia || '').trim())
+      .sort((a, b) => String(a.dataEvento).localeCompare(String(b.dataEvento)));
+    const feitos = [], avisos = [];
+    for (const ev of dias) {
+      if (afaNomesDoHorario(ev.dataEvento).length) continue; // o horário já tem a tarefa: manda o horário
+      try {
+        const msg = await afaSincronizarHorarioComAgenda(ev);
+        if (/^Horário atualizado/.test(msg)) feitos.push(formatDate(ev.dataEvento));
+        else if (msg && !/ainda não existe/.test(msg)) avisos.push(`${formatDate(ev.dataEvento)}: ${msg}`);
+      } catch (e) { console.warn('[AFA] dia', ev.dataEvento, e); }
+    }
+    afaMigracaoDiasEstado = 'feita';
+    if (feitos.length) showToast(`✨ Tarefa AFA colocada no horário (Responsável da Agenda): ${feitos.join(', ')}.`, 'success', { duracao: 8000 });
+    if (avisos.length) showToast(`AFA — por acertar nos Horários: ${avisos.join(' · ')}`, 'info', { duracao: 12000 });
+  }, 6000);
+}
 // Agenda → Horário: ao guardar o dia AFA com um Responsável, a tarefa AFA ✨ passa para essa(s) pessoa(s) no horário
 // desse dia (nas horas da AFA, dentro do turno de cada uma) e sai de quem a tinha. Só dias de hoje em diante; nunca
 // mexe em mais nada do horário. Devolve uma frase para o aviso (ou '' quando não houve nada a fazer).
@@ -39033,7 +39099,7 @@ async function escalaMigrarTarefasOutroVacinacao() {
   escalaMigracaoVacinacaoFeita = true;
   escalaMigracaoVacinacaoTentativas += 1;
   const hojeSeg = escalaSegundaFeiraDaSemanaDeISO(todayISO());
-  const converter = (t) => (t && t.tipo === 'outro' && escalaTextoEhVacinacao(t.outro)) ? escalaNormalizarTarefaVacinacao(t) : t;
+  const converter = (t) => (t && t.tipo === 'outro' && (escalaTextoEhVacinacao(t.outro) || escalaTextoEhAfa(t.outro))) ? escalaNormalizarTarefaVacinacao(t) : t;
   let convertidas = 0;
   for (const semana of (STATE.escalaSemanas || []).filter(sm => !sm.eliminado && sm.semanaInicio >= hojeSeg && sm.dados)) {
     const dados = JSON.parse(JSON.stringify(semana.dados));
@@ -39046,9 +39112,9 @@ async function escalaMigrarTarefasOutroVacinacao() {
         if (Array.isArray(dia.tarefas)) {
           dia.tarefas = dia.tarefas.map(t => { const n = converter(t); if (n !== t) { mudou = true; convertidas += 1; } return n; });
         }
-        if (dia.tarefaTipo === 'outro' && escalaTextoEhVacinacao(dia.tarefaOutro)) {
+        if (dia.tarefaTipo === 'outro' && (escalaTextoEhVacinacao(dia.tarefaOutro) || escalaTextoEhAfa(dia.tarefaOutro))) {
           const n = escalaNormalizarTarefaVacinacao({ tipo: 'outro', outro: dia.tarefaOutro });
-          dia.tarefaTipo = 'vacinacao'; dia.tarefaOutro = n.outro; mudou = true;
+          dia.tarefaTipo = n.tipo; dia.tarefaOutro = n.outro; mudou = true;
           if (!Array.isArray(dia.tarefas)) convertidas += 1;
         }
       });
@@ -39058,7 +39124,7 @@ async function escalaMigrarTarefasOutroVacinacao() {
     if (updated) STATE.escalaSemanas = STATE.escalaSemanas.map(sm => sm.id === semana.id ? updated : sm);
     else { escalaMigracaoVacinacaoFeita = false; return; } // tenta de novo numa próxima abertura
   }
-  if (convertidas) showToast(`${convertidas} tarefa${convertidas > 1 ? 's' : ''} "Outro — Vacinação" convertida${convertidas > 1 ? 's' : ''} na nova tarefa Vacinação 💉.`, 'success');
+  if (convertidas) showToast(`${convertidas} tarefa${convertidas > 1 ? 's' : ''} "Outro" (Vacinação/AFA) convertida${convertidas > 1 ? 's' : ''} nas tarefas próprias 💉 ✨.`, 'success');
 }
 function colaboradoresElegiveisParaTipoTarefa(tipo) {
   return TIPOS_TAREFA_SEM_SOBREPOSICAO.includes(tipo) ? colaboradoresElegiveisTarefaEspecial() : colaboradoresElegiveisTarefaGeral();
@@ -64290,6 +64356,7 @@ function render() {
   if (cliqueAMeio() && jaFezPrimeiraRenderizacao) { RENDER_ADIADO_POR_CLIQUE = true; setTimeout(libertarRenderAdiado, 3100); return; }
   RENDER_ADIADO_POR_CLIQUE = false;
   try { agendarPreCargaVacinacao(); } catch (_) {}
+  try { afaAgendarMigracaoDias(); } catch (_) {}
   try { atualizarAssinatura(); } catch (_) {}
   try { aplicarNomesAgendasPersonalizados(); } catch (e) { /* nunca impede o resto da app de desenhar */ }
   // Limpeza forçada do tooltip flutuante da sidebar — SEMPRE, em toda e
@@ -65812,8 +65879,20 @@ async function cacheLazyGuardar(k, registos, lidoDeRaizEm) {
     db.transaction('tabelas', 'readwrite').objectStore('tabelas').put({ versao: STATE_CACHE_VERSION, lidoDeRaizEm, registos: copia }, k);
   } catch (e) { /* sem espaço ou outro motivo — fica sem cópia, como antes */ }
 }
+let mapaTarefasMigracaoFeita = false;
+function mapaTarefasMigrarCategoriaAntiga() {
+  const antigos = (STATE.mapaTarefas || []).filter(r => MAPA_TAREFAS_CATEGORIAS_ANTIGAS[r.categoria]);
+  if (!antigos.length) return;
+  // Grava primeiro (dbUpdate compara com o que está em memória no instante da chamada) e só depois corrige a memória.
+  if (!mapaTarefasMigracaoFeita && isMasterUser()) {
+    mapaTarefasMigracaoFeita = true;
+    antigos.forEach(r => { dbUpdate('mapaTarefas', r.id, { categoria: MAPA_TAREFAS_CATEGORIAS_ANTIGAS[r.categoria] }, { sistema: true }).then(u => { if (u) STATE.mapaTarefas = STATE.mapaTarefas.map(x => x.id === u.id ? u : x); }); });
+  }
+  antigos.forEach(r => { r.categoria = MAPA_TAREFAS_CATEGORIAS_ANTIGAS[r.categoria]; });
+}
 function posCargaTabelaLazy(k) {
   if (k === 'ortopedia') ortopediaMigrarFornecedorAntigo();
+  if (k === 'mapaTarefas') mapaTarefasMigrarCategoriaAntiga();
   if (PEDIDO_LIST_KEYS.includes(k)) autoCancelOldOrdersDaTabela(k);
 }
 // Pré-carga da Vacinação em segundo plano, uns segundos depois de entrar (é o módulo mais usado na campanha) — com a
@@ -68284,7 +68363,7 @@ async function registarBiometriaNesteDispositivo(user) {
     const credential = await navigator.credentials.create({
       publicKey: {
         challenge,
-        rp: { name: 'SigaJuncal', id: location.hostname },
+        rp: { name: 'SigaFarmácia', id: location.hostname },
         user: { id: userIdBytes, name: user.username, displayName: user.nomeCompleto || user.username },
         pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
         authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred' },
