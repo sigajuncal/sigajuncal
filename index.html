@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-15 13:55" />
+<meta name="siga-versao" content="2026-10-15 14:55" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>SigaFarmácia · Farmácia Juncal</title>
 
@@ -6007,8 +6007,22 @@ body.protecao-ecra-ativa .toast-stack,body.protecao-ecra-ativa .versao-nova-barr
 .topbar-avatar{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:50%;background:var(--pharm-700);color:#fff;font-size:13px;font-weight:700;letter-spacing:.02em;flex-shrink:0;}
 .topbar-user.inativo .topbar-avatar{background:var(--n-200);color:var(--n-600,#475569);}
 .topbar-user.inativo{border-color:var(--n-200);background:#fff;padding-right:14px;font-weight:600;}
-.topbar-cadeado{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;flex-shrink:0;border-radius:50%;border:1px solid var(--n-200);background:#fff;color:#15803d;cursor:pointer;transition:background .15s,color .15s,border-color .15s;}
-.topbar-cadeado:hover{background:#fef2f2;border-color:#fecaca;color:#b91c1c;}
+.topbar-user-grupo{display:inline-flex;align-items:center;min-width:0;border-radius:999px;}
+.topbar-user-grupo.com-sessao{border:1px solid var(--n-200);background:#fff;padding-left:5px;gap:2px;}
+.topbar-user-grupo.com-sessao .topbar-user{padding-left:3px;}
+/* Interruptor de cadeado: à esquerda bloqueado (azul da farmácia), à direita desbloqueado (verde). */
+.topbar-cadeado{display:inline-flex;align-items:center;justify-content:center;padding:0 2px;height:36px;flex-shrink:0;border:none;background:transparent;cursor:pointer;}
+.topbar-interruptor{position:relative;display:inline-block;width:52px;height:28px;flex-shrink:0;border-radius:999px;background:#dbe7f0;border:1px solid #bcd3e3;transition:background .24s ease,border-color .24s ease;}
+.topbar-interruptor-botao{position:absolute;top:2px;left:2px;width:22px;height:22px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(15,23,42,.28);display:flex;align-items:center;justify-content:center;color:var(--pharm-700);transition:transform .24s cubic-bezier(.4,.1,.2,1),color .24s;}
+.topbar-interruptor-botao>span{display:flex;}
+.topbar-interruptor .ic-aberto{display:none;}
+.topbar-interruptor.aberto{background:#22c55e;border-color:#16a34a;}
+.topbar-interruptor.aberto .topbar-interruptor-botao{transform:translateX(24px);color:#15803d;}
+.topbar-interruptor.aberto .ic-aberto{display:flex;}
+.topbar-interruptor.aberto .ic-fechado{display:none;}
+.topbar-cadeado:hover .topbar-interruptor.aberto{background:#16a34a;}
+.topbar-user.inativo:hover .topbar-interruptor:not(.aberto){background:#c9dceb;}
+.topbar-user.inativo{gap:10px;padding-left:6px;}
 .topbar-user-texto{display:flex;flex-direction:column;align-items:flex-start;line-height:1.2;min-width:0;max-width:340px;}
 .topbar-user-nome{font-size:14px;font-weight:700;color:var(--n-900);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .topbar-user-perfil{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--n-500);max-width:100%;white-space:nowrap;}
@@ -64132,11 +64146,30 @@ function buildGavetaBotaoCompacto(classe) {
     n > 0 ? h('span', { class: 'nav-badge' }, n > 99 ? '99+' : String(n)) : null,
   ].filter(Boolean));
 }
+// Interruptor de cadeado (2026-10-15, Hugo: "gosto daquele género de deslizar com bloqueado e desbloqueado"):
+// à esquerda = bloqueado (cadeado fechado, azul); à direita = desbloqueado (cadeado aberto, verde). Ao clicar, o
+// botão desliza primeiro para o outro lado e só depois inicia/termina a sessão — vê-se o cadeado a abrir/fechar.
+function buildInterruptorCadeado(aberto) {
+  return h('span', { class: 'topbar-interruptor' + (aberto ? ' aberto' : ''), 'aria-hidden': 'true' }, [
+    h('span', { class: 'topbar-interruptor-botao' }, [
+      h('span', { class: 'ic-fechado' }, Icon('lockClosed', { size: 13, strokeWidth: 2.4 })),
+      h('span', { class: 'ic-aberto' }, Icon('lockOpen', { size: 13, strokeWidth: 2.4 })),
+    ]),
+  ]);
+}
+const INTERRUPTOR_CADEADO_MS = 240;
 function buildTopbarUtilizador() {
   if (!activeUser) {
-    return h('button', { type: 'button', class: 'topbar-user inativo', onclick: () => { pedirPermissaoNotificacoes(); requireAuth(() => { if (STATE.page === 'home') render(); }); } }, [
-      h('span', { class: 'topbar-avatar' }, Icon('lockClosed', { size: 16 })), h('span', { class: 'topbar-user-nome' }, 'Iniciar sessão'),
-    ]);
+    const interruptor = buildInterruptorCadeado(false);
+    return h('button', { type: 'button', class: 'topbar-user inativo', title: 'Desliza o cadeado — iniciar sessão', onclick: () => {
+      pedirPermissaoNotificacoes();
+      interruptor.classList.add('aberto');
+      setTimeout(() => {
+        requireAuth(() => { if (STATE.page === 'home') render(); });
+        // Login cancelado: o cadeado volta a fechar (continua sem sessão).
+        setTimeout(() => { if (!activeUser && interruptor.isConnected) interruptor.classList.remove('aberto'); }, 400);
+      }, INTERRUPTOR_CADEADO_MS);
+    } }, [interruptor, h('span', { class: 'topbar-user-nome' }, 'Iniciar sessão')]);
   }
   const nomeCompleto = activeUser.nomeCompleto || activeUser.username;
   const nome = nomeCurtoDesambiguado(nomeCompleto) || nomeCompleto;
@@ -64183,8 +64216,18 @@ function buildTopbarDesktopDireita() {
   // Cadeado (2026-10-15, Hugo: "manter a coerência — login feito, cadeado aberto; clicando no cadeado fecha a sessão"):
   // sem sessão o cartão mostra o cadeado fechado («Iniciar sessão»); com sessão aparece, à esquerda do nome, o cadeado
   // ABERTO — um clique fecha-o (termina a sessão), sem ter de abrir o menu.
-  const cadeadoAberto = activeUser ? h('button', { type: 'button', class: 'topbar-cadeado', title: 'Sessão iniciada — clica para fechar o cadeado (terminar sessão)', 'aria-label': 'Terminar sessão', onclick: (e) => { e.stopPropagation(); manualLogout(); } }, Icon('lockOpen', { size: 17, strokeWidth: 2.2 })) : null;
-  return [buildAtivarNotificacoesBtn(), buildModoTesteButton(), buildGavetaBotaoCompacto('topbar-gaveta'), cadeadoAberto, h('div', { class: 'topbar-user-slot' }, buildTopbarUtilizador())].filter(Boolean);
+  // 2026-10-15 (Hugo: "integrado, como está sem sessão ativa… e com cor"): o cadeado vive DENTRO do mesmo cartão do
+  // utilizador (mesmo contorno e o mesmo círculo à esquerda do «Iniciar sessão»), com cor própria em cada estado.
+  const cadeadoAberto = activeUser ? (() => {
+    const interruptor = buildInterruptorCadeado(true);
+    return h('button', { type: 'button', class: 'topbar-cadeado', title: 'Sessão iniciada — desliza o cadeado para o fechar (terminar sessão)', 'aria-label': 'Terminar sessão', onclick: (e) => {
+      e.stopPropagation();
+      interruptor.classList.remove('aberto');
+      setTimeout(() => manualLogout(), INTERRUPTOR_CADEADO_MS);
+    } }, interruptor);
+  })() : null;
+  const cartao = h('div', { class: 'topbar-user-grupo' + (activeUser ? ' com-sessao' : '') }, [cadeadoAberto, buildTopbarUtilizador()].filter(Boolean));
+  return [buildAtivarNotificacoesBtn(), buildModoTesteButton(), buildGavetaBotaoCompacto('topbar-gaveta'), h('div', { class: 'topbar-user-slot' }, cartao)].filter(Boolean);
 }
 // Redesenha a barra de topo sem tocar na caixa de pesquisa quando ela não muda (nunca se perde o que está escrito).
 function preencherTopbarDesktop(bar) {
