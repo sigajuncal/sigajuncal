@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-15 15:50" />
+<meta name="siga-versao" content="2026-10-15 16:45" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>SigaFarmácia · Farmácia Juncal</title>
 
@@ -6032,6 +6032,14 @@ body.protecao-ecra-ativa .toast-stack,body.protecao-ecra-ativa .versao-nova-barr
 .cad-cartao.cad-aberto:not(.a-deslizar) .cad-fechar:hover .cad-botao{transform:scale(1.07);}
 .topbar-user.inativo.cad-cartao:hover{background:#d0dde8;}
 .cad-cartao .topbar-user-nome{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.cad-cartao.sem-transicao,.cad-cartao.sem-transicao *{transition:none !important;}
+/* Login do computador por baixo do cadeado (2026-10-15): sem escurecer o ecrã, painel compacto junto ao cartão. */
+.login-sessao-overlay.login-ancorado{background:transparent;backdrop-filter:none;-webkit-backdrop-filter:none;align-items:flex-start;justify-content:flex-start;}
+.login-ancorado .login-panel{position:fixed;width:300px;max-width:300px;padding:18px 18px 16px;border-radius:16px;border:1px solid var(--n-200);box-shadow:0 18px 40px rgba(15,23,42,.22);animation:login-ancorado-entra .16s ease-out;}
+.login-ancorado .login-logo{display:none;}
+.login-ancorado .login-sub{margin:0 0 10px;font-size:12.5px;}
+.login-ancorado .login-panel .btn{padding:9px 12px;}
+@keyframes login-ancorado-entra{from{opacity:0;transform:translateY(-6px);}to{opacity:1;transform:none;}}
 .topbar-user-texto{display:flex;flex-direction:column;align-items:flex-start;line-height:1.2;min-width:0;max-width:340px;}
 .topbar-user-nome{font-size:14px;font-weight:700;color:var(--n-900);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .topbar-user-perfil{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--n-500);max-width:100%;white-space:nowrap;}
@@ -64162,6 +64170,8 @@ function buildGavetaBotaoCompacto(classe) {
 // Ao clicar no botão, ele desliza até à outra ponta do cartão (o texto desvanece e a cor muda) e só então a sessão
 // abre/fecha. Clicar no nome continua a abrir o menu do utilizador.
 const INTERRUPTOR_CADEADO_MS = 300;
+let CADEADO_ANIMAR_ENTRADA = false; // o próximo cartão com sessão desenhado entra com o cadeado a deslizar para o verde
+let LOGIN_ANCORA = null;           // login do computador aberto por baixo deste elemento (em vez de ao centro)
 function botaoCadeado(aberto) {
   return h('span', { class: 'cad-botao', 'aria-hidden': 'true' }, [
     h('span', { class: 'cad-ic cad-ic-fechado' }, Icon('lockClosed', { size: 15, strokeWidth: 2.4 })),
@@ -64182,18 +64192,14 @@ function deslizarCadeado(cartao, botao, paraAberto, depois) {
 function buildTopbarUtilizador() {
   if (!activeUser) {
     const botao = botaoCadeado(false);
-    const cartao = h('button', { type: 'button', class: 'topbar-user inativo cad-cartao cad-fechado', title: 'Desliza o cadeado — iniciar sessão', onclick: () => {
-      if (cartao.classList.contains('a-deslizar')) return;
+    // 2026-10-15 (Hugo: "quando clico, fica verde mas não devia — só quando entra… o login pode ficar em baixo do
+    // cadeado, com o cursor logo no utilizador"): o clique abre de imediato o login por baixo do cartão; o cadeado
+    // continua fechado e só desliza para o verde quando a sessão abre mesmo (ver CADEADO_ANIMAR_ENTRADA).
+    const cartao = h('button', { type: 'button', class: 'topbar-user inativo cad-cartao cad-fechado', title: 'Iniciar sessão', onclick: () => {
       pedirPermissaoNotificacoes();
-      deslizarCadeado(cartao, botao, true, () => {
-        requireAuth(() => { if (STATE.page === 'home') render(); });
-        // Login cancelado: o cadeado volta a fechar (continua sem sessão).
-        setTimeout(() => {
-          if (activeUser || !cartao.isConnected) return;
-          botao.style.transform = '';
-          cartao.classList.remove('cad-aberto', 'a-deslizar'); cartao.classList.add('cad-fechado');
-        }, 500);
-      });
+      LOGIN_ANCORA = cartao;
+      CADEADO_ANIMAR_ENTRADA = true;
+      requireAuth(() => { if (STATE.page === 'home') render(); });
     } }, [botao, h('span', { class: 'topbar-user-nome cad-texto' }, 'Iniciar sessão')]);
     return cartao;
   }
@@ -64251,10 +64257,33 @@ function buildTopbarDesktopDireita() {
       deslizarCadeado(cartao, botao, false, () => manualLogout());
     } }, botao);
     cartao = h('div', { class: 'topbar-user-grupo cad-cartao cad-aberto' }, [buildTopbarUtilizador(), fechar]);
+    if (CADEADO_ANIMAR_ENTRADA) {
+      // Acabou de entrar: começa fechado (botão à esquerda, cinzento) e desliza para o verde.
+      CADEADO_ANIMAR_ENTRADA = false;
+      cartao.classList.remove('cad-aberto'); cartao.classList.add('cad-fechado', 'a-deslizar', 'sem-transicao');
+      requestAnimationFrame(() => {
+        if (!cartao.isConnected) { cartao.classList.remove('cad-fechado', 'a-deslizar', 'sem-transicao'); cartao.classList.add('cad-aberto'); return; }
+        const r = cartao.getBoundingClientRect(), rb = botao.getBoundingClientRect();
+        botao.style.transform = `translateX(${Math.round(r.left + 4 - rb.left)}px)`;
+        requestAnimationFrame(() => {
+          cartao.classList.remove('sem-transicao');
+          requestAnimationFrame(() => {
+            botao.style.transform = '';
+            cartao.classList.remove('cad-fechado'); cartao.classList.add('cad-aberto');
+            setTimeout(() => cartao.classList.remove('a-deslizar'), INTERRUPTOR_CADEADO_MS);
+          });
+        });
+      });
+    }
   } else {
     cartao = buildTopbarUtilizador();
   }
-  return [buildAtivarNotificacoesBtn(), buildModoTesteButton(), buildGavetaBotaoCompacto('topbar-gaveta'), h('div', { class: 'topbar-user-slot' }, cartao)].filter(Boolean);
+  return [buildAtivarNotificacoesBtn(), buildModoTesteButton(), buildGavetaBotaoCompacto('topbar-gaveta'), h('div', { class: 'topbar-user-slot', 'data-assinatura': assinaturaCartaoUtilizador() }, cartao)].filter(Boolean);
+}
+// O cartão do utilizador só se redesenha quando muda mesmo (outra pessoa, função, nível) — os refrescamentos da barra
+// de topo (Gaveta, notificações…) deixam-no como está, sem saltos nem animações cortadas a meio.
+function assinaturaCartaoUtilizador() {
+  return activeUser ? [activeUser.id, activeUser.nomeCompleto, activeUser.categoriaProfissional, activeUser.perfilNivel].join('|') : 'sem-sessao';
 }
 // Redesenha a barra de topo sem tocar na caixa de pesquisa quando ela não muda (nunca se perde o que está escrito).
 function preencherTopbarDesktop(bar) {
@@ -64263,7 +64292,16 @@ function preencherTopbarDesktop(bar) {
   const querPesquisa = podeUsarAcoesGerais();
   const temPesquisa = !!(esq && PG_TOPO && esq.contains(PG_TOPO.wrap));
   if (esq && dir && querPesquisa === temPesquisa) {
-    clear(dir); buildTopbarDesktopDireita().forEach(el => dir.appendChild(el));
+    const slotAntigo = dir.querySelector(':scope > .topbar-user-slot');
+    const novos = buildTopbarDesktopDireita();
+    const iSlot = novos.findIndex(el => el.classList && el.classList.contains('topbar-user-slot'));
+    if (slotAntigo && iSlot === novos.length - 1 && slotAntigo.getAttribute('data-assinatura') === assinaturaCartaoUtilizador()) {
+      // Mantém o cartão no sítio (nunca o tira do ecrã — uma animação a decorrer continua) e troca só o resto.
+      [...dir.childNodes].forEach(n => { if (n !== slotAntigo) n.remove(); });
+      novos.slice(0, iSlot).forEach(el => dir.insertBefore(el, slotAntigo));
+    } else {
+      clear(dir); novos.forEach(el => dir.appendChild(el));
+    }
   } else {
     clear(bar); buildTopbarDesktopConteudo().forEach(el => bar.appendChild(el));
   }
@@ -68822,7 +68860,11 @@ function showUserLoginScreen(onSuccess, opts) {
   // entretanto. Fora deste caso (login normal, ainda sem sessão nenhuma
   // aberta) o comportamento mantém-se: repaint completo no fim, como sempre.
   const preservarEcra = !!(opts && opts.preservarEcra);
-  const overlay = h('div', { class: 'modal-overlay login-sessao-overlay' + (opts && opts.protegido ? ' login-protegido' : '') }); // classe extra: ver AVISO DE VERSÃO NOVA; login-protegido: posto de atendimento, o ecrã de trás fica desfocado
+  // Computador, aberto pelo cadeado da barra de topo: painel por baixo do cartão (não ao centro). Nunca no posto
+  // protegido (proteção de ecrã) nem em ecrãs estreitos.
+  const ancora = (!(opts && opts.protegido) && LOGIN_ANCORA && LOGIN_ANCORA.isConnected && window.innerWidth >= 900) ? LOGIN_ANCORA : null;
+  LOGIN_ANCORA = null;
+  const overlay = h('div', { class: 'modal-overlay login-sessao-overlay' + (opts && opts.protegido ? ' login-protegido' : '') + (ancora ? ' login-ancorado' : '') }); // classe extra: ver AVISO DE VERSÃO NOVA; login-protegido: posto de atendimento, o ecrã de trás fica desfocado
   // Fechar/Cancelar = Modo Sem Sessão Iniciada: a app fica navegável em modo
   // de consulta geral (Página Inicial), sem acesso a dados/ações privadas —
   // o dispositivo mantém-se registado para notificações e badge.
@@ -68830,6 +68872,7 @@ function showUserLoginScreen(onSuccess, opts) {
     document.removeEventListener('keydown', onKeydown);
     overlay.remove();
     if (!activeUser) {
+      CADEADO_ANIMAR_ENTRADA = false; // login cancelado: o cadeado fica fechado, sem animação pendente
       refreshSidebarBadges();
       // preservarEcra:true — a pessoa só estava a fechar o pedido de
       // reautenticação (ex: Escape/clique fora), não o formulário em si;
@@ -69032,8 +69075,14 @@ function showUserLoginScreen(onSuccess, opts) {
   );
   if (removerBioBtn) panelKids.push(removerBioBtn);
   const panel = h('div', { class: 'login-panel modal-panel-compact' }, panelKids);
+  if (ancora) {
+    const ra = ancora.getBoundingClientRect();
+    panel.style.top = `${Math.round(ra.bottom + 8)}px`;
+    panel.style.right = `${Math.max(8, Math.round(window.innerWidth - ra.right))}px`;
+  }
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
+  if (!(biometriaPermitidaNesteAparelho() && webauthnSuportado() && getCredencialBiometrica())) { try { userInput.focus(); } catch (e) { /* ignora */ } }
   // Em mobile/tablet com biometria já registada neste dispositivo, dispara
   // logo o prompt nativo (Face ID/Touch ID/impressão digital) ao abrir o
   // modal — sem precisar de tocar em nenhum botão. O Username+PIN ficam
