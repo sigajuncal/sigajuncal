@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-15 16:45" />
+<meta name="siga-versao" content="2026-10-15 23:20" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>SigaFarmácia · Farmácia Juncal</title>
 
@@ -38511,19 +38511,81 @@ async function notificarDirecaoPedidoEspecial(pedido, acaoTexto) {
 function usuariosNotificaveisPublicacaoHorario() {
   return (STATE.usuarios || []).filter(u => !usuarioOculto(u) && u.ativo !== false && u.incluirHorarios && usuarioVisivelParaAtual(u));
 }
-async function notificarColaboradoresPublicacaoSemana(semana, foiRepublicacao) {
-  if (!activeUser) return;
-  const destinatarios = usuariosNotificaveisPublicacaoHorario().filter(u => String(u.id) !== String(activeUser.id));
-  if (!destinatarios.length) return;
+// 2026-10-15 (Hugo: "quero que indique o que mudou na notificação e que sejam notificadas as pessoas cujo horário
+// foi alterado em relação à última publicação"): ao publicar guarda-se uma cópia do horário publicado
+// (escala_semanas.dados_publicados — reabrir não lhe mexe). Ao republicar, compara-se pessoa a pessoa, dia a dia,
+// essa cópia com o horário novo: só é avisado quem teve alterações, e o aviso diz exatamente o quê. Semanas
+// publicadas antes desta versão (sem cópia guardada) mantêm o aviso genérico a todos, por não haver termo de
+// comparação. Sem a coluna no Supabase a auto-limpeza retira-a em silêncio e fica tudo como antes.
+function escalaDescreverDiaPessoa(dados, semanaInicio, diaKey, utilizadorId) {
+  const vazio = { turno: 'sem turno', tarefas: '' };
+  if (!dados || typeof dados !== 'object') return vazio;
+  const dataISO = escalaDataDoDia(semanaInicio, diaKey);
+  const codigo = escalaCodigoDaPessoaNoDia(dados, diaKey, utilizadorId, dataISO);
+  const dia = codigo && dados[codigo] && dados[codigo].dias && dados[codigo].dias[diaKey];
+  if (!dia) return vazio;
+  const tipo = dia.tipo || 'normal';
+  if (tipo !== 'normal') {
+    const info = ESCALA_TIPOS_DIA.find(t => t.key === tipo);
+    return { turno: info ? info.label : tipo, tarefas: '' };
+  }
+  if (!dia.entrada || !dia.saida) return vazio;
+  let turno = `${dia.entrada}–${dia.saida}`;
+  if (dia.pausaInicio && dia.pausaFim) turno += ` (pausa ${dia.pausaInicio}–${dia.pausaFim})`;
+  const tarefas = (Array.isArray(dia.tarefas) ? dia.tarefas : []).filter(t => t && t.tipo)
+    .map(t => {
+      const info = ESCALA_TAREFAS_ESPECIAIS.find(x => x.key === t.tipo) || { label: t.tipo };
+      return escalaTarefaLabel(t, info) + (t.inicio && t.fim ? ` ${t.inicio}–${t.fim}` : '');
+    })
+    .sort().join('; ');
+  return { turno, tarefas };
+}
+// Linhas "• Quarta, 21/10: 09:00–18:00 → 14:00–22:00" com o que mudou para uma pessoa (vazio = nada mudou).
+function escalaAlteracoesHorarioPessoa(dadosAntes, dadosDepois, semanaInicio, utilizadorId) {
+  const linhas = [];
+  ESCALA_DIAS.forEach(d => {
+    const a = escalaDescreverDiaPessoa(dadosAntes, semanaInicio, d.key, utilizadorId);
+    const b = escalaDescreverDiaPessoa(dadosDepois, semanaInicio, d.key, utilizadorId);
+    if (a.turno === b.turno && a.tarefas === b.tarefas) return;
+    const dataISO = escalaDataDoDia(semanaInicio, d.key) || '';
+    const rotulo = `${d.label}, ${dataISO.slice(8, 10)}/${dataISO.slice(5, 7)}`;
+    const partes = [];
+    if (a.turno !== b.turno) partes.push(`${a.turno} → ${b.turno}`);
+    if (a.tarefas !== b.tarefas) partes.push(`tarefas: ${a.tarefas || 'nenhuma'} → ${b.tarefas || 'nenhuma'}`);
+    linhas.push(`• ${rotulo}: ${partes.join('; ')}`);
+  });
+  return linhas;
+}
+async function notificarColaboradoresPublicacaoSemana(semana, foiRepublicacao, dadosAnteriores) {
+  if (!activeUser) return null;
   const publicador = activeUser.nomeCompleto || activeUser.username;
   const intervalo = escalaIntervaloSemanaTexto(semana.semanaInicio);
-  const mensagem = foiRepublicacao
-    ? `${publicador} republicou o horário da semana de ${intervalo} — pode haver alterações.`
-    : `${publicador} publicou o horário oficial da semana de ${intervalo}.`;
+  const comparar = foiRepublicacao && dadosAnteriores && typeof dadosAnteriores === 'object';
+  // Mensagem própria de cada destinatário (só quem tem alterações, quando há termo de comparação).
+  const mensagemDe = new Map();
+  usuariosNotificaveisPublicacaoHorario().filter(u => String(u.id) !== String(activeUser.id)).forEach(u => {
+    if (comparar) {
+      const linhas = escalaAlteracoesHorarioPessoa(dadosAnteriores, semana.dados, semana.semanaInicio, u.id);
+      if (linhas.length) mensagemDe.set(String(u.id), `${publicador} republicou o horário da semana de ${intervalo}. O teu horário mudou:\n${linhas.join('\n')}`);
+    } else {
+      mensagemDe.set(String(u.id), foiRepublicacao
+        ? `${publicador} republicou o horário da semana de ${intervalo} — pode haver alterações.`
+        : `${publicador} publicou o horário oficial da semana de ${intervalo}.`);
+    }
+  });
+  const destinatarios = usuariosNotificaveisPublicacaoHorario().filter(u => mensagemDe.has(String(u.id)));
+  if (!destinatarios.length) return { avisados: 0, comparado: comparar };
   const existentes = (STATE.gavetaRecados || []).filter(r => r.referenciaTabela === 'escala_semanas' && String(r.referenciaId) === String(semana.id));
+  // BUG CORRIGIDO 2026-10-15 (Hugo: "notificação do Paulo, clico, vou para a conversa dele mas não há nada de
+  // novo"): ao republicar, o recado existente era atualizado mas mantinha o created_at ORIGINAL (às vezes de há
+  // semanas) — ficava enterrado lá atrás no histórico da conversa e, por ter mais de 3 dias, não ganhava a linha
+  // "Por ler" (ver primeiroNaoLidoDaThread): a conversa abria no fim, onde não havia nada de novo. Agora cada
+  // republicação traz o recado para o fim da conversa (created_at = agora), com o texto do que mudou.
+  const agoraISO = new Date().toISOString();
   const resultados = await Promise.all(destinatarios.map(async u => {
+    const mensagem = mensagemDe.get(String(u.id));
     const existente = existentes.find(r => String(r.destinatarioId) === String(u.id));
-    if (existente) return dbAtualizarRecado(existente.id, { mensagem, tratado: false, tratadoEm: null, notifVistaRecebida: false });
+    if (existente) return dbAtualizarRecado(existente.id, { mensagem, tratado: false, tratadoEm: null, notifVistaRecebida: false, createdAt: agoraISO });
     return dbInsertRecado({ remetenteId: activeUser.id, destinatarioId: u.id, mensagem, tratado: false, tipo: 'mensagem', referenciaTabela: 'escala_semanas', referenciaId: semana.id });
   }));
   const validos = resultados.filter(Boolean);
@@ -38531,6 +38593,7 @@ async function notificarColaboradoresPublicacaoSemana(semana, foiRepublicacao) {
     const idsAtualizados = new Set(validos.map(r => r.id));
     STATE.gavetaRecados = [...validos, ...(STATE.gavetaRecados || []).filter(r => !idsAtualizados.has(r.id))];
   }
+  return { avisados: validos.length, comparado: comparar };
 }
 // ---- Horas Extra Disponíveis (pedido explícito 2026-08-10) ----
 // O Diretor Técnico/Administrador disponibiliza um bloco de horas (com
@@ -44841,14 +44904,24 @@ function buildHorariosPage(container, goTo) {
     // publicadoEm, nunca é apagado por reabrirSemana, por isso sobrevive a
     // ciclos Publicar→Reabrir→Editar→Publicar de novo.
     const foiRepublicacao = !!semana.primeiraPublicacaoEm;
+    // Cópia do que estava publicado ANTES (para comparar) e cópia do que fica publicado AGORA (para a próxima vez).
+    const dadosAnteriores = semana.dadosPublicados || null;
+    let dadosPublicados = null;
+    try { dadosPublicados = JSON.parse(JSON.stringify(semana.dados || {})); } catch (e) { dadosPublicados = null; }
     const updated = await dbUpdate('escalaSemanas', semana.id, {
       estado: 'publicado', publicadoEm: new Date().toISOString(), publicadoPor: currentUserName(),
       primeiraPublicacaoEm: semana.primeiraPublicacaoEm || new Date().toISOString(),
+      dadosPublicados,
     });
     if (updated) {
       STATE.escalaSemanas = STATE.escalaSemanas.map(s => s.id === semana.id ? updated : s);
       showToast('Horário oficial publicado.', 'success');
-      notificarColaboradoresPublicacaoSemana(updated, foiRepublicacao);
+      notificarColaboradoresPublicacaoSemana(updated, foiRepublicacao, dadosAnteriores).then(res => {
+        if (!res || !res.comparado) return;
+        showToast(res.avisados
+          ? `${res.avisados === 1 ? '1 colega avisado' : `${res.avisados} colegas avisados`} das alterações ao seu horário.`
+          : 'Nenhum horário mudou em relação à última publicação — ninguém foi avisado.', 'info');
+      }).catch(e => console.error('[Horários] aviso de publicação:', formatarErroSeguro(e)));
     }
     else escalaShowErro('Não foi possível publicar o horário');
     rerender();
