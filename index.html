@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-16 22:15" />
+<meta name="siga-versao" content="2026-10-16 22:50" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -66,9 +66,26 @@
 <link rel="apple-touch-startup-image" href="./splash/splash-2048x2732.png" media="(device-width: 1024px) and (device-height: 1366px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)">
 
 
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+/* 2026-10-16 (servidor da farmácia): a biblioteca do Supabase (~110 KB, bloqueava o arranque) só é descarregada quando a
+   app NÃO está no servidor da farmácia — mesmas regras de enderecoServidorLocal(). */
+(function () {
+  var local = false;
+  try {
+    var q = new URLSearchParams(location.search).get('servidor');
+    if (q && /^https?:\/\//i.test(q)) local = true;
+    else if (q !== 'supabase' && localStorage.getItem('sigafarmacia_servidor')) local = true;
+  } catch (e) { /* sem localStorage */ }
+  var host = location.hostname.toLowerCase();
+  if (/^https?:$/.test(location.protocol) && (/(^|\.)sigafarmacia\.(pt|com)$/.test(host) || host === 'localhost'
+      || /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host))) local = true;
+  if (!local) document.write('<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"><\/script>');
+})();
+</script>
+<!-- PDF e Excel (~1,8 MB juntos): "defer" — descarregam em paralelo e já não atrasam a abertura da app; só são usados
+     quando alguém exporta (as funções verificam window.html2pdf / window.XLSX). -->
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   :root{
     color-scheme:light; /* toda a app é sempre clara — nunca deixar o Safari/WebKit aplicar o tema nativo escuro do sistema aos controlos de formulário (autofill, datalist, select, date/time picker), que é a causa mais comum do texto branco-sobre-branco */
@@ -12426,6 +12443,11 @@ if (sb && sb.servidorLocal) {
     try { return activeUser && activeUserPin ? { username: activeUser.username, pin: activeUserPin } : null; } catch (e) { return null; }
   });
 }
+// 2026-10-16 (Hugo: "havia poupanças que se faziam para poupar egress que agora não têm sentido"): no servidor da
+// farmácia não há limite de tráfego. Os intervalos que só existiam para poupar Egress do Supabase usam
+// intervaloSegundoServidor(valorSupabase, valorServidor) — no Supabase (se algum dia se voltar) fica tudo como estava.
+function servidorLocalAtivo() { return !!(sb && sb.servidorLocal); }
+function intervaloSegundoServidor(msSupabase, msServidor) { return servidorLocalAtivo() ? msServidor : msSupabase; }
 let lastDbError = '';
 // Leitura de recurso: continua a existir "DataCloneError: The object can
 // not be cloned" nalguns ambientes de pré-visualização mesmo com a sessão
@@ -13390,7 +13412,7 @@ function financeiroCarregadoParaUtilizadorAtual() {
 async function carregarDadosFinanceirosComIntervalo(forcar) {
   // No regresso à app, o Financeiro (lista completa pela função segura) só volta a ser pedido de 10 em 10 minutos —
   // mas só se o que está em memória for desta pessoa e tiver sido lido com sucesso.
-  if (!forcar && EGRESS_ARRANQUE_COMPLETO_FEITO && financeiroCarregadoParaUtilizadorAtual() && Date.now() - FINANCEIRO_CARGA.em < 10 * 60 * 1000) return true;
+  if (!forcar && EGRESS_ARRANQUE_COMPLETO_FEITO && financeiroCarregadoParaUtilizadorAtual() && Date.now() - FINANCEIRO_CARGA.em < intervaloSegundoServidor(10 * 60 * 1000, 30 * 1000)) return true;
   return carregarDadosFinanceirosSeAutorizado();
 }
 async function dbFetchGavetaRecados() {
@@ -14527,7 +14549,7 @@ function dbFetchMarcacaoCounts(eventoIds) {
   if (!ids.length) return Promise.resolve({});
   const chave = ids.join(',');
   const guardado = CONTAGENS_MARCACOES_CACHE.get(chave);
-  if (guardado && Date.now() - guardado.em < 60000) return guardado.promessa;
+  if (guardado && Date.now() - guardado.em < intervaloSegundoServidor(60000, 10000)) return guardado.promessa;
   const promessa = dbFetchMarcacaoCountsDoServidor(ids);
   const entrada = { em: Date.now(), promessa, valor: guardado ? guardado.valor : undefined };
   CONTAGENS_MARCACOES_CACHE.set(chave, entrada);
@@ -21924,7 +21946,7 @@ function homeMeusPedidosAbertos() {
     return out;
   }
   const chave = String(activeUser.id);
-  const fresco = HOME_MEUS_PEDIDOS_CACHE.chave === chave && Date.now() - HOME_MEUS_PEDIDOS_CACHE.em < 5 * 60 * 1000;
+  const fresco = HOME_MEUS_PEDIDOS_CACHE.chave === chave && Date.now() - HOME_MEUS_PEDIDOS_CACHE.em < intervaloSegundoServidor(5 * 60 * 1000, 30 * 1000);
   if (!fresco && !HOME_MEUS_PEDIDOS_CACHE.aCarregar && sb) {
     HOME_MEUS_PEDIDOS_CACHE.aCarregar = true;
     const nome = String(activeUser.nomeCompleto || activeUser.username || '').trim().replace(/[%_,()]/g, ' ');
@@ -66195,7 +66217,7 @@ async function loadAllData() {
         // Egress (2026-09-30): tabela com dados mas SEM coluna updated_at não dá para pedir "só o que mudou" — antes
         // vinha inteira em cada regresso à app. O Realtime já a mantém atualizada; a leitura completa passa a ser só
         // uma rede de segurança, no máximo de 15 em 15 minutos (o SQL sigajuncal_egress_updated_at.sql resolve de vez).
-        if (!watermark && Array.isArray(STATE[k]) && STATE[k].length && Date.now() - (LEITURA_COMPLETA_SEM_MARCA_EM[k] || 0) < 15 * 60000) {
+        if (!watermark && Array.isArray(STATE[k]) && STATE[k].length && Date.now() - (LEITURA_COMPLETA_SEM_MARCA_EM[k] || 0) < intervaloSegundoServidor(15 * 60000, 60000)) {
           return { k, modo: 'delta', dados: [] };
         }
         if (!watermark) { if (Array.isArray(STATE[k]) && STATE[k].length) { LEITURA_COMPLETA_SEM_MARCA_EM[k] = Date.now(); if (!TABELAS_SEM_UPDATED_AT_AVISADAS.has(k)) { TABELAS_SEM_UPDATED_AT_AVISADAS.add(k); console.info(`[Egress] "${TABLES[k]}" não tem updated_at — correr sigajuncal_egress_updated_at.sql`); } } return { k, modo: 'completo', dados: await dbFetchAll(k) }; }
@@ -67000,6 +67022,7 @@ function receberSinalTabela(msg) {
     agendarLeituraSinais(gestorNoPc ? 1500 : 8000);
     return;
   }
+  if (servidorLocalAtivo()) { agendarLeituraSinais(150); return; } // servidor da farmácia: todas as semanas já, em qualquer página
   const local = (STATE[p.t] || []).find(r => String(r.id) === String(p.id));
   const semana = p.s || (local && local.semanaInicio) || null;
   const hojeSeg = escalaSegundaFeiraDaSemanaDeISO(todayISO());
@@ -70828,7 +70851,7 @@ function setupInactivityWatcher() {
    foco do teclado.
 ----------------------------------------------------------------------- */
 let ultimoRefreshSilenciosoEm = 0;
-const REFRESH_SILENCIOSO_MIN_INTERVALO_MS = 60000; // CORRIGIDO 2026-08-28 (Egress): era 15000 — agora que o Realtime aplica cada mudança diretamente (ver aplicarPayloadRealtimeAoState), este refresco completo passou de mecanismo principal a rede de segurança; nunca repete a menos de 60s de distância
+const REFRESH_SILENCIOSO_MIN_INTERVALO_MS = intervaloSegundoServidor(60000, 15000); // servidor da farmácia: 15 s // CORRIGIDO 2026-08-28 (Egress): era 15000 — agora que o Realtime aplica cada mudança diretamente (ver aplicarPayloadRealtimeAoState), este refresco completo passou de mecanismo principal a rede de segurança; nunca repete a menos de 60s de distância
 // Standby (SEM sessão ativa): já não existe temporizador de inatividade
 // nenhum aqui — ver comentário completo junto a setupSilentDataRefreshWatcher()
 // mais abaixo (removido 2026-09-03, poupança de Egress).
