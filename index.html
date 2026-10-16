@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-16 13:30" />
+<meta name="siga-versao" content="2026-10-16 14:00" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>SigaFarmácia · Farmácia Juncal</title>
 
@@ -6296,6 +6296,9 @@ p.cell-muted{color:var(--pharm-500,#64748b);font-size:13px;}
 .novidades-icone{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:9px;background:var(--pharm-50,#f0f9ff);color:var(--pharm-700,#0f766e);flex-shrink:0;}
 .novidades-item strong{display:block;font-size:14px;color:#1e293b;}
 .novidades-item p{margin:2px 0 0;font-size:13px;line-height:1.5;color:#475569;}
+/* Gestão de Orçamentos — bloco livre («Outra Farmácia» / «Outro Fornecedor») com título próprio e bem separado. */
+.orc-nome-livre{display:flex;flex-direction:column;gap:6px;}
+.orc-nome-livre-rotulo{font-size:14px;font-weight:700;color:var(--pharm-800,#0f3a4f);}
 /* Telemóvel (perfil Master/Administrador com a app completa) */
 @media (max-width:600px){
   /* Cartões de navegação (Gestão, Stocks, Equipa, Definições…): em lista compacta (ícone + nome + seta), em vez de
@@ -7214,7 +7217,14 @@ function resolveFornecedorOrcamentoState(listKey, draft, fornecedorManual) {
   }
   const max = orcamentoMaxSlots(listKey);
   const aprovadoIdx = parseInt(draft.orcamentoAprovado, 10);
-  if (aprovadoIdx >= 1 && aprovadoIdx <= max) return { fornecedorBloqueado: true, orcamentosBloqueados: false };
+  // 2026-10-16 (Hugo: "se a farmácia aprovada for Serpa Pinto porque é que aparece outra farmácia"): com um orçamento
+  // aprovado, a Farmácia do topo é SEMPRE a desse orçamento (antes só era copiada no clique de Aprovar — e ficava
+  // vazia, com a mensagem errada "há mais do que uma farmácia marcada", quando o bloco aprovado não tinha nome).
+  if (aprovadoIdx >= 1 && aprovadoIdx <= max) {
+    const nomeAprovado = String(draft[`orcamento${aprovadoIdx}Fornecedor`] || (ORCAMENTO_LINHA_LABELS[listKey] || [])[aprovadoIdx - 1] || '').trim();
+    if (nomeAprovado) draft.fornecedor = nomeAprovado;
+    return { fornecedorBloqueado: true, orcamentosBloqueados: false };
+  }
   if (fornecedorManual) return { fornecedorBloqueado: false, orcamentosBloqueados: true };
   const pedidoCount = orcamentosAtivos(draft, listKey); // «Não produz» nunca passa a ser o fornecedor do pedido
   if (pedidoCount === 1) {
@@ -7259,7 +7269,9 @@ function buildFornecedorTopField(fieldDef, draft, bloqueado, onManualChange, aDe
       ? 'A farmácia/fornecedor só deve ser selecionada após a confirmação do orçamento (alterando o Estado para "Pedido").'
       : (draft[fieldDef.name]
         ? 'Preenchido automaticamente pela Gestão de Orçamentos.'
-        : 'Bloqueado — há mais do que uma farmácia marcada nos Orçamentos.')));
+        : (parseInt(draft.orcamentoAprovado, 10) >= 1
+          ? 'O orçamento aprovado não tem o nome da farmácia — escreve-o no bloco aprovado, na Gestão de Orçamentos.'
+          : 'Bloqueado — há mais do que uma farmácia marcada nos Orçamentos.'))));
   }
   return h('div', { class: 'field' + (fieldDef.col === 2 ? ' span2' : '') }, kids);
 }
@@ -7293,8 +7305,12 @@ function buildOrcamentosPanel(listKey, draft, rerender, bloqueado) {
       const inp = h('input', { class: 'input', list: listId, placeholder: i === 4 ? 'Nome da Farmácia/Fornecedor' : 'Escrever ou escolher...', disabled: bloqueado ? 'disabled' : undefined });
       inp.value = draft[fCampo] || '';
       repararDatalistAoEditar(inp, listId);
-      inp.addEventListener('input', () => { draft[fCampo] = inp.value; });
-      fornInput = h('div', { class: 'orcamento-nome-combo' }, [inp, dl]);
+      inp.addEventListener('input', () => { draft[fCampo] = inp.value; if (aprovado) draft.fornecedor = inp.value; });
+      inp.addEventListener('change', () => { if (aprovado) rerender(); });
+      // Bloco livre com o seu próprio título (2026-10-16): sem ele, o campo de nome vazio parecia fazer parte do
+      // bloco da farmácia de cima (Serpa Pinto) e aprovava-se "Outra Farmácia" sem nome, sem dar por isso.
+      fornInput = h('div', { class: 'orcamento-nome-combo orc-nome-livre' }, [h('span', { class: 'orc-nome-livre-rotulo' }, orcamentoLinhaLabel(listKey, i)), inp, dl]);
+      fornInput.__inputNome = inp;
     } else {
       const inp = h('input', { class: 'input', placeholder: i === 4 ? 'Nome da Farmácia/Fornecedor' : 'Laboratório / Fornecedor', disabled: bloqueado ? 'disabled' : undefined });
       inp.value = draft[fCampo] || '';
@@ -7329,6 +7345,7 @@ function buildOrcamentosPanel(listKey, draft, rerender, bloqueado) {
       class: 'btn btn-secondary' + (aprovado ? ' orcamento-aprovado-btn' : ''), type: 'button',
       disabled: bloqueado ? 'disabled' : undefined,
       onclick: bloqueado ? null : () => {
+        if (!aprovado && semNomeLivre()) { pedirNomePrimeiro(); return; }
         draft.orcamentoAprovado = aprovado ? '' : String(i);
         if (!aprovado) {
           // O orçamento aprovado passa a ser o que aparece na linha principal
@@ -7356,8 +7373,14 @@ function buildOrcamentosPanel(listKey, draft, rerender, bloqueado) {
     // fica registado (conta como resposta) e guarda só uma observação opcional.
     const naoProduzCampo = orcamentoNaoProduzField(i);
     const situacao = draft[naoProduzCampo] ? 'naoProduz' : (draft[pedidoCampo] ? 'pedido' : 'naoPedido');
+    const semNomeLivre = () => !nomeFixo && !String(draft[fCampo] || '').trim();
+    function pedirNomePrimeiro() {
+      showToast(`Escreve primeiro o nome da farmácia/fornecedor no bloco «${orcamentoLinhaLabel(listKey, i)}».`, 'error');
+      try { fornInput.__inputNome && fornInput.__inputNome.focus(); } catch (e) { /* ignora */ }
+    }
     function escolherSituacao(nova) {
       if (bloqueado || nova === situacao) return;
+      if (nova !== 'naoPedido' && semNomeLivre()) { pedirNomePrimeiro(); return; }
       draft[pedidoCampo] = nova !== 'naoPedido';
       draft[naoProduzCampo] = nova === 'naoProduz';
       if (nova !== 'pedido' && aprovado) draft.orcamentoAprovado = '';
@@ -7391,8 +7414,13 @@ function buildOrcamentosPanel(listKey, draft, rerender, bloqueado) {
       ]);
     }
 
+    // Registos antigos pedidos/aprovados num bloco livre sem nome: aviso bem visível (2026-10-16).
+    const avisoSemNome = (situacao === 'pedido' && semNomeLivre()) ? h('p', { class: 'form-error', style: 'margin:10px 0 0;' }, aprovado
+      ? 'Este orçamento está aprovado mas não tem o nome da farmácia. Escreve-o acima — ou, se a farmácia certa é uma das de cima, marca-a lá e aprova-a, e põe este bloco em «Não pedido».'
+      : 'Falta o nome desta farmácia/fornecedor.') : null;
     return h('div', { class: 'orcamento-linha orc-sit-' + situacao + (aprovado ? ' orcamento-linha-aprovada' : '') }, [
       h('div', { class: 'orc-cabecalho' }, [h('div', { class: 'orc-nome' }, fornInput), seletor]),
+      avisoSemNome,
       corpo,
     ].filter(Boolean));
   });
