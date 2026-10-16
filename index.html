@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-15 23:20" />
+<meta name="siga-versao" content="2026-10-16 09:15" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>SigaFarmácia · Farmácia Juncal</title>
 
@@ -38327,7 +38327,7 @@ function descarregarICSSemanaPessoal(semana) {
       }
       const partesDescricao = [];
       if (dia.pausaInicio && dia.pausaFim) partesDescricao.push(`Pausa: ${dia.pausaInicio}-${dia.pausaFim}`);
-      if (dia.alargadoPorHE) partesDescricao.push(`Horas Extra: ${dia.reivindicacoes.map(r => `${r.intervaloInicio}-${r.intervaloFim}`).join(', ')}${dia.entradaBase ? ` (turno base ${dia.entradaBase}-${dia.saidaBase})` : ''}`);
+      if (dia.alargadoPorHE) partesDescricao.push(`Horas Extra: ${(dia.intervalosHE || []).map(iv => `${iv.inicio}-${iv.fim}`).join(', ')}${dia.entradaBase ? ` (turno base ${dia.entradaBase}-${dia.saidaBase})` : ''}`);
       escalaTarefasDoDia(dia).forEach(t => {
         const texto = escalaTarefaTextoItem(t);
         if (texto) partesDescricao.push(`${texto}${(t.inicio && t.fim) ? ` ${t.inicio}-${t.fim}` : ''}`);
@@ -38730,10 +38730,20 @@ function escalaReivindicacoesDoColaboradorNoDia(semanaId, diaKey, colaboradorId)
 function escalaTurnoComReivindicacoes(dia, semanaId, diaKey, utilizadorId) {
   const temBase = !!(dia && dia.tipo === 'normal' && dia.entrada && dia.saida);
   const reivs = (semanaId && utilizadorId) ? escalaReivindicacoesDoColaboradorNoDia(semanaId, diaKey, utilizadorId) : [];
-  if (!reivs.length) return temBase ? Object.assign({}, dia, { reivindicacoes: [], alargadoPorHE: false, entradaBase: dia.entrada, saidaBase: dia.saida }) : null;
+  // 2026-10-16 (Hugo: "turno não atualizou… as novas duas horas extra" — HE 14:00–16:00 lançada pela Direção na
+  // própria célula, antes do turno 16:00–21:00): só as HE REIVINDICADAS alargavam o turno; as HE MANUAIS da célula
+  // (dia.heIntervalos, Horas Extra ou Horas Banco) ficavam de fora — a Home dizia 16:00 e a lista "+2h HE" sem horas.
+  // Entram agora da mesma forma. Num dia "Horas Extra (sem turno normal)" a célula já É a HE (nada a acrescentar).
+  const manuais = (temBase && !escalaDiaHoraExtraSemTurno(dia) && Array.isArray(dia.heIntervalos))
+    ? dia.heIntervalos.filter(iv => iv && iv.inicio && iv.fim).map(iv => ({ inicio: iv.inicio, fim: iv.fim, banco: !!iv.banco })) : [];
+  const intervalosHE = manuais.map(iv => ({ inicio: iv.inicio, fim: iv.fim, origem: 'manual', banco: iv.banco }))
+    .concat(reivs.map(r => ({ inicio: r.intervaloInicio, fim: r.intervaloFim, origem: 'reivindicada' })))
+    .sort((a, b) => escalaMinutosAbsolutos(a.inicio, false) - escalaMinutosAbsolutos(b.inicio, false));
+  const semAlargar = () => (temBase ? Object.assign({}, dia, { reivindicacoes: reivs, intervalosHE, alargadoPorHE: false, entradaBase: dia.entrada, saidaBase: dia.saida }) : null);
+  if (!reivs.length && !manuais.length) return semAlargar();
   const segs = [];
   if (temBase) segs.push([escalaMinutosAbsolutos(dia.entrada, false), escalaMinutosAbsolutos(dia.saida, true)]);
-  reivs.forEach(r => segs.push([escalaMinutosAbsolutos(r.intervaloInicio, false), escalaMinutosAbsolutos(r.intervaloFim, true)]));
+  intervalosHE.forEach(iv => segs.push([escalaMinutosAbsolutos(iv.inicio, false), escalaMinutosAbsolutos(iv.fim, true)]));
   segs.sort((a, b) => a[0] - b[0]);
   const juntos = [];
   segs.forEach(s => {
@@ -38745,10 +38755,12 @@ function escalaTurnoComReivindicacoes(dia, semanaId, diaKey, utilizadorId) {
   const entrada = paraHora(juntos[0][0]), saida = paraHora(juntos[juntos.length - 1][1]);
   let pausaInicio = temBase ? (dia.pausaInicio || '') : '', pausaFim = temBase ? (dia.pausaFim || '') : '';
   if (juntos.length === 2 && !(pausaInicio && pausaFim)) { pausaInicio = paraHora(juntos[0][1]); pausaFim = paraHora(juntos[1][0]); }
+  // HE manual DENTRO do próprio turno (não muda nem a entrada nem a saída) não é alargamento nenhum.
+  if (!reivs.length && temBase && entrada === dia.entrada && saida === dia.saida) return semAlargar();
   const base = temBase ? dia : { tipo: 'normal' };
   return Object.assign({}, base, {
     tipo: 'normal', entrada, saida, pausaInicio, pausaFim,
-    reivindicacoes: reivs, alargadoPorHE: true,
+    reivindicacoes: reivs, intervalosHE, alargadoPorHE: true,
     entradaBase: temBase ? dia.entrada : '', saidaBase: temBase ? dia.saida : '',
   });
 }
@@ -47755,6 +47767,10 @@ function buildHorariosPage(container, goTo) {
           if (diaPausa.pausaInicio && diaPausa.pausaFim) detalhesFrag.push(`Pausa ${diaPausa.pausaInicio}-${diaPausa.pausaFim}`);
           if (tipoEfetivo !== 'normal') { /* dia sem turno: só a HE reivindicada, abaixo */ }
           else if (ehSoHoraExtraSemana) detalhesFrag.push(escalaRotuloHoraExtraSemTurno(dia));
+          // HE manual com horas definidas: mostra as horas (como as reivindicadas), não só o total.
+          else if (turnoEfetivoDia && (turnoEfetivoDia.intervalosHE || []).some(iv => iv.origem === 'manual')) {
+            detalhesFrag.push(turnoEfetivoDia.intervalosHE.filter(iv => iv.origem === 'manual').map(iv => `+${iv.banco ? 'Banco de Horas' : 'HE'} ${iv.inicio}-${iv.fim}`).join(', '));
+          }
           else if (escalaHeHorasEfetivo(dia)) detalhesFrag.push(`+${escalaFormatarHoras(escalaHeHorasEfetivo(dia))} HE`);
         } else if (tipoEfetivo === 'banco' && escalaBancoHorasEfetivo(dia)) {
           // "Banco de Horas (Dia Completo)" mostra também as horas
@@ -59741,6 +59757,103 @@ function pontoConfirmarSaidaAntecipada(jornada, seguir) {
     : `O teu turno de hoje só acaba às ${turno.saida}${pausaTxt}. As pausas e o almoço não se picam — a Saída fecha o dia e não dá para voltar a picar a Entrada. Vais mesmo sair agora (ex: saída antecipada)?`;
   confirmDialog(msg, seguir, { confirmLabel: 'Sim, picar a saída' });
 }
+// ---- Entrada esquecida lida à saída (2026-10-16, Hugo: "pessoas que se esquecem de picar a entrada e depois ao picar
+// para sair o programa confunde com a entrada — consegues arranjar método infalível?") ----
+// O servidor decide sozinho Entrada/Saída pelo que já existe (sem entrada aberta → Entrada). Quem se esqueceu da
+// entrada e lê o QR code ao ir embora ficava com uma ENTRADA à hora da saída. Agora, sempre que não há entrada picada
+// e a leitura não faz sentido como entrada (o turno já vai a meio/acabou, ou a pessoa já tinha pedido à Direção para
+// registar a entrada de hoje), a app PERGUNTA antes de registar — "Estou a chegar" / "Estou a sair" — e nunca grava
+// uma entrada às cegas. Quem está a sair indica a que horas entrou; a Direção recebe um único pedido com as duas
+// horas (entrada declarada + hora real da leitura à saída) e regista-as na Validação de Horários.
+function pontoChaveSaidaDoDia(uid, dataISO) { return `${uid}:${dataISO}:saida`; }
+function pontoSaidaJaComunicada(uid, dataISO) {
+  const chave = pontoChaveSaidaDoDia(uid, dataISO);
+  return (STATE.gavetaRecados || []).some(r => String(r.remetenteId) === String(uid) && r.referenciaTabela === 'ponto_saida' && String(r.referenciaId) === chave);
+}
+function pontoEntradaImprovavel(jornada, turno) {
+  if (!activeUser || !jornada || jornada.entrada || jornada.saida) return null;
+  const data = jornada.data || todayISO();
+  if (pontoEntradaJaPedidaNaGaveta(activeUser.id, data, `${activeUser.id}:${data}:entrada`)) return { motivo: 'ja_pediu', data };
+  if (!turno) return null; // sem turno hoje (troca, dia extra…) não há termo de comparação — segue como entrada
+  const ini = pontoMomentoDoDia(data, turno.entrada, false), fim = pontoMomentoDoDia(data, turno.saida, true);
+  const agora = Date.now();
+  if (!(fim > ini) || agora < ini) return null;
+  // A meio do turno ou depois, a mais de 3 h da entrada prevista, ou a menos de 1 h do fim → pode bem ser a saída.
+  if (agora - ini >= (fim - ini) / 2 || agora - ini >= 3 * 3600000 || agora >= fim - 3600000) return { motivo: 'tarde', data };
+  return null;
+}
+function pontoPerguntarChegadaOuSaida(sit, turno, aoChegar) {
+  const overlay = h('div', { class: 'modal-overlay' });
+  const fechar = () => overlay.remove();
+  const agora = new Date();
+  const horaAgora = `${pad2(agora.getHours())}:${pad2(agora.getMinutes())}`;
+  const nome = activeUser.nomeCompleto || activeUser.username;
+  const erroEl = h('p', { class: 'form-error', style: 'display:none;margin:6px 0 0;' });
+  const mostrarErro = (t) => { erroEl.textContent = t; erroEl.style.display = ''; };
+  const painel = h('div', { class: 'modal-panel confirm-panel' });
+  const avisarDirecao = async (texto, botao) => {
+    if (pontoSaidaJaComunicada(activeUser.id, sit.data)) {
+      fechar();
+      pontoQrMostrarResultado({ estado: 'info', tipo: 'saida', titulo: 'Saída já comunicada', texto: 'Já tinhas avisado a Direção da tua saída de hoje — não é preciso fazer mais nada.' });
+      return;
+    }
+    if (botao) botao.disabled = true;
+    const ok = await pontoPedirRegistoDirecao(texto, { referenciaTabela: 'ponto_saida', referenciaId: pontoChaveSaidaDoDia(activeUser.id, sit.data) });
+    if (!ok) { if (botao) botao.disabled = false; mostrarErro('Não foi possível avisar a Direção — a saída NÃO ficou registada. Tenta de novo.'); return; }
+    pontoLembreteMarcarPedido(`${activeUser.id}:${sit.data}:entrada`);
+    fechar();
+    pontoQrMostrarResultado({ estado: 'pendente', tipo: 'saida', titulo: 'Saída comunicada', hora: horaAgora, texto: 'Como a entrada não estava picada, a Direção regista a tua entrada e esta saída. Não precisas de fazer mais nada. Até amanhã! 👋' });
+    render();
+  };
+  // Passo 2 — está a sair: a que horas entrou? (se já o disse à Direção, não volta a perguntar).
+  const passoSaida = () => {
+    clear(painel);
+    if (sit.motivo === 'ja_pediu') {
+      const btn = h('button', { class: 'btn btn-primary', type: 'button' }, `Confirmar saída às ${horaAgora}`);
+      btn.addEventListener('click', () => avisarDirecao(`${nome} picou a saída de ${formatDate(sit.data)} às ${horaAgora} (QR code lido sem a entrada registada — já tinha pedido para registares a entrada). Podes registar também esta saída na Validação de Horários?`, btn));
+      painel.append(
+        h('p', { class: 'confirm-message', style: 'font-weight:700;' }, 'Saída de hoje'),
+        h('p', { class: 'ponto-declarar-nota', style: 'margin:0 0 12px;' }, 'Já tinhas pedido à Direção para registar a tua entrada de hoje. Esta leitura fica como a tua saída.'),
+        h('div', { class: 'form-actions', style: 'flex-direction:column;align-items:stretch;gap:10px;' }, [btn, erroEl, h('button', { class: 'btn btn-secondary', type: 'button', onClick: fechar }, 'Cancelar')]),
+      );
+      return;
+    }
+    const inp = h('input', { class: 'input', type: 'time', value: turno ? turno.entrada : '', 'aria-label': 'Hora a que entraste hoje', style: 'max-width:140px;' });
+    const btn = h('button', { class: 'btn btn-primary', type: 'button' }, `Confirmar saída às ${horaAgora}`);
+    btn.addEventListener('click', () => {
+      const hora = inp.value;
+      if (!/^\d{2}:\d{2}$/.test(hora)) { mostrarErro('Indica a hora a que entraste.'); return; }
+      const minEnt = escalaMinutosAbsolutos(hora, false);
+      if (minEnt >= agora.getHours() * 60 + agora.getMinutes()) { mostrarErro('A entrada tem de ser antes de agora.'); return; }
+      if (turno && minEnt < escalaMinutosAbsolutos(turno.entrada, false) - 120) { mostrarErro(`Essa hora é muito antes do teu turno (${turno.entrada}). Confirma a hora.`); return; }
+      const refTurno = turno ? (hora === turno.entrada ? ', à hora do turno' : ` (o turno começava às ${turno.entrada})`) : '';
+      avisarDirecao(`${nome} esqueceu-se de picar a entrada de ${formatDate(sit.data)} e leu o QR code à saída, às ${horaAgora}. Diz que entrou às ${hora}${refTurno}. Podes registar a entrada e a saída na Validação de Horários?`, btn);
+    });
+    painel.append(
+      h('p', { class: 'confirm-message', style: 'font-weight:700;' }, 'A que horas entraste hoje?'),
+      h('p', { class: 'ponto-declarar-nota', style: 'margin:0 0 10px;' }, `A saída fica às ${horaAgora}. A Direção regista as duas horas na Validação de Horários.`),
+      h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;' }, [h('span', { style: 'font-size:14px;' }, 'Entrei às'), inp]),
+      h('div', { class: 'form-actions', style: 'flex-direction:column;align-items:stretch;gap:10px;' }, [btn, erroEl, h('button', { class: 'btn btn-secondary', type: 'button', onClick: passoInicial }, 'Voltar')]),
+    );
+  };
+  // Passo 1 — a pergunta. Sem opção por omissão: só fecha com uma escolha (ou Cancelar, que não regista nada).
+  const passoInicial = () => {
+    clear(painel);
+    const turnoTxt = turno ? `O teu turno de hoje: ${turno.entrada} – ${turno.saida}. ` : '';
+    painel.append(
+      h('p', { class: 'confirm-message', style: 'font-weight:700;font-size:16px;' }, 'Estás a chegar ou a sair?'),
+      h('p', { class: 'ponto-declarar-nota', style: 'margin:0 0 12px;' }, `${turnoTxt}Ainda não tens a entrada de hoje picada.`),
+      h('div', { class: 'ponto-escolha-pausa' }, [
+        h('button', { class: 'btn btn-primary', type: 'button', onClick: () => { fechar(); aoChegar(); } }, `➡️ Estou a chegar agora (${horaAgora})`),
+        h('button', { class: 'btn btn-primary', type: 'button', style: 'background:#b91c1c;border-color:#b91c1c;', onClick: passoSaida }, '🏠 Estou a sair — esqueci-me da entrada'),
+        h('button', { class: 'btn btn-secondary', type: 'button', style: 'border:none;background:transparent;', onClick: fechar }, 'Cancelar (não regista nada)'),
+      ]),
+    );
+  };
+  passoInicial();
+  overlay.appendChild(painel);
+  document.body.appendChild(overlay);
+}
 let PONTO_QR_A_PROCESSAR = false;
 async function pontoQrProcessar(codigo) {
   if (PONTO_QR_A_PROCESSAR || !activeUser) return; // duas leituras quase em simultâneo no mesmo aparelho → só uma
@@ -59809,6 +59922,11 @@ async function pontoQrProcessar(codigo) {
     if (codigo !== 'livre' && comp && !comp.dentro && comp.atraso > 10 && comp.atraso <= 240) { pontoQrPerguntarHoraCerta(tipoPrevisto, prevista, (hora) => enviar(hora, false)); return; }
     enviar('', false);
   };
+  // Entrada esquecida (2026-10-16): sem entrada picada e a leitura não faz sentido como entrada → pergunta sempre.
+  if (tipoPrevisto === 'entrada') {
+    const improvavel = pontoEntradaImprovavel(jornada, turno);
+    if (improvavel) { pontoPerguntarChegadaOuSaida(improvavel, turno, seguir); return; }
+  }
   // Pausas (2026-10-08): em pausa → a leitura é o regresso; com pausa no horário ainda por fazer → pergunta.
   if (tipoPrevisto === 'saida' && jornada.pausaAberta) { enviar('', false); return; }
   if (tipoPrevisto === 'saida' && pontoPausasAtivas() && pausaPlaneada && !(jornada.pausas || []).length) {
@@ -68433,7 +68551,7 @@ function buildLinhaTemporalDiaWidget(opcoes) {
   };
   atualizar();
   const card = h('div', { class: 'turno-relogio-card' }, [
-    h('div', { class: 'turno-relogio-titulo' }, [Icon('clock', { size: 14, strokeWidth: 2.2 }), ` Turno de hoje · ${dia.entrada} – ${dia.saida}`, dia.alargadoPorHE ? h('span', { class: 'turno-relogio-he', title: `Inclui Horas Extra reivindicadas: ${(dia.reivindicacoes || []).map(r => `${r.intervaloInicio}-${r.intervaloFim}`).join(', ')}${dia.entradaBase ? ` · turno base ${dia.entradaBase}-${dia.saidaBase}` : ''}` }, '+HE') : null]),
+    h('div', { class: 'turno-relogio-titulo' }, [Icon('clock', { size: 14, strokeWidth: 2.2 }), ` Turno de hoje · ${dia.entrada} – ${dia.saida}`, dia.alargadoPorHE ? h('span', { class: 'turno-relogio-he', title: `Inclui Horas Extra: ${(dia.intervalosHE || []).map(iv => `${iv.inicio}-${iv.fim}`).join(', ')}${dia.entradaBase ? ` · turno base ${dia.entradaBase}-${dia.saidaBase}` : ''}` }, '+HE') : null]),
     svg,
   ]);
   card.dataset.assinatura = JSON.stringify([dia.pausaInicio || '', dia.pausaFim || '', tarefas.map(t => [t.tipo, t.outro || '', t.inicio, t.fim])]);
