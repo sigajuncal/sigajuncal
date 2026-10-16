@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-16 14:00" />
+<meta name="siga-versao" content="2026-10-16 14:30" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>SigaFarmácia · Farmácia Juncal</title>
 
@@ -6299,6 +6299,25 @@ p.cell-muted{color:var(--pharm-500,#64748b);font-size:13px;}
 /* Gestão de Orçamentos — bloco livre («Outra Farmácia» / «Outro Fornecedor») com título próprio e bem separado. */
 .orc-nome-livre{display:flex;flex-direction:column;gap:6px;}
 .orc-nome-livre-rotulo{font-size:14px;font-weight:700;color:var(--pharm-800,#0f3a4f);}
+/* Barra «Alterações por guardar» (2026-10-16) — no lugar da barra flutuante de botões, que se esconde entretanto. */
+.gf-barra{position:fixed;left:50%;bottom:20px;transform:translate(-50%,140%);z-index:61;display:flex;align-items:center;gap:14px;
+  background:#fff;border:1px solid var(--pharm-200,#cbd5e1);border-radius:18px;padding:10px 12px 10px 18px;box-shadow:0 10px 30px rgba(0,0,0,.18);
+  opacity:0;pointer-events:none;transition:transform .2s ease,opacity .2s ease;max-width:calc(100vw - 24px);box-sizing:border-box;}
+.gf-barra.visivel{transform:translate(-50%,0);opacity:1;pointer-events:auto;}
+@media (min-width:1024px){.gf-barra{left:calc(50% + 130px);}}
+.gf-texto{display:inline-flex;align-items:center;gap:8px;font-size:13.5px;font-weight:700;color:var(--pharm-800,#0f3a4f);white-space:nowrap;}
+.gf-ponto{width:8px;height:8px;border-radius:50%;background:#f59e0b;box-shadow:0 0 0 3px rgba(245,158,11,.2);}
+.gf-botoes{display:flex;gap:8px;}
+.gf-botoes .btn{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;}
+body.gf-ativo .bottom-action-bar{display:none !important;}
+@media (prefers-reduced-motion:reduce){.gf-barra{transition:none;}}
+@media (max-width:767px){
+  body.tem-barra-inferior .gf-barra{bottom:calc(80px + env(safe-area-inset-bottom));}
+  .gf-barra{left:12px;right:12px;transform:translateY(140%);width:auto;max-width:none;flex-wrap:wrap;justify-content:space-between;padding:10px 12px;gap:8px 10px;}
+  .gf-barra.visivel{transform:translateY(0);}
+  .gf-botoes{flex:1 1 auto;justify-content:flex-end;}
+  .gf-botoes .btn{flex:1 1 auto;justify-content:center;}
+}
 /* Telemóvel (perfil Master/Administrador com a app completa) */
 @media (max-width:600px){
   /* Cartões de navegação (Gestão, Stocks, Equipa, Definições…): em lista compacta (ícone + nome + seta), em vez de
@@ -70025,6 +70044,95 @@ function reporContextosDeSessao() {
 }
 let adiamentoExpiracaoDesde = 0;
 let utilizadorSessaoExpiradaId = null; // quem estava com sessão quando esta expirou por inatividade
+/* =================================================================
+   GUARDAR SEMPRE À MÃO (2026-10-16, Hugo: "quando se proceder a uma alteração deveria surgir botão em baixo, junto
+   dos outros, para confirmar e facilitar alterações, especialmente em telemóvel").
+   Em qualquer formulário de registo da app (Novo / Editar registo — .form-registo-ativo), assim que se altera alguma
+   coisa (no formulário ou nos painéis ligados a ele, ex.: Gestão de Orçamentos), aparece em baixo — no mesmo sítio da
+   barra de botões flutuante (+ / editar / eliminar), que se esconde entretanto — uma barra «Alterações por guardar»
+   com «Cancelar» e «Guardar alterações». Os botões desta barra carregam nos botões do próprio formulário: a gravação,
+   as validações e os avisos são exatamente os de sempre. A barra some quando os botões do formulário já estão à vista
+   no ecrã (para não haver dois iguais) e quando o formulário fecha (gravado ou cancelado).
+================================================================= */
+const GUARDAR_FLUTUANTE = { sujo: false, barra: null, form: null };
+function gfFormAtivo() {
+  const f = document.querySelector('.page-container .form-registo-ativo');
+  return f && f.isConnected ? f : null;
+}
+function gfBotoesDoForm(form) {
+  const acoes = form && [...form.querySelectorAll('.form-actions')].pop();
+  if (!acoes) return {};
+  const btns = [...acoes.querySelectorAll('button')];
+  return {
+    acoes,
+    guardar: btns.find(b => b.classList.contains('btn-primary')) || null,
+    cancelar: btns.find(b => /cancelar|fechar/i.test(b.textContent || '')) || null,
+  };
+}
+function gfAlteracaoConta(alvo) {
+  if (!alvo || !alvo.closest || !alvo.closest('.page-container') || alvo.closest('.modal-overlay')) return false;
+  if (alvo.matches && alvo.matches('input, select, textarea')) {
+    const tipo = String(alvo.type || '').toLowerCase();
+    if (tipo === 'search' || /pesquis|procur|filtr/i.test(alvo.placeholder || '') || /pesquis|search|filtro/i.test(String(alvo.className || ''))) return false;
+  }
+  return true;
+}
+function gfMarcarSujo(alvo) {
+  if (!gfFormAtivo() || !gfAlteracaoConta(alvo)) return;
+  GUARDAR_FLUTUANTE.sujo = true;
+  GUARDAR_FLUTUANTE.form = gfFormAtivo();
+  gfAtualizar();
+}
+function gfGarantirBarra() {
+  if (GUARDAR_FLUTUANTE.barra && GUARDAR_FLUTUANTE.barra.isConnected) return GUARDAR_FLUTUANTE.barra;
+  const cancelar = h('button', { type: 'button', class: 'btn btn-secondary gf-cancelar' }, 'Cancelar');
+  const guardar = h('button', { type: 'button', class: 'btn btn-primary gf-guardar' }, [Icon('check', { size: 15, strokeWidth: 2.6 }), h('span', { class: 'gf-guardar-texto' }, 'Guardar alterações')]);
+  cancelar.addEventListener('click', () => { const b = gfBotoesDoForm(gfFormAtivo()); if (b.cancelar) b.cancelar.click(); });
+  guardar.addEventListener('click', () => { const b = gfBotoesDoForm(gfFormAtivo()); if (b.guardar && !b.guardar.disabled) b.guardar.click(); });
+  const barra = h('div', { class: 'gf-barra', role: 'region', 'aria-label': 'Alterações por guardar' }, [
+    h('span', { class: 'gf-texto' }, [h('span', { class: 'gf-ponto' }), 'Alterações por guardar']),
+    h('div', { class: 'gf-botoes' }, [cancelar, guardar]),
+  ]);
+  document.body.appendChild(barra);
+  GUARDAR_FLUTUANTE.barra = barra;
+  return barra;
+}
+function gfEsconder() {
+  document.body.classList.remove('gf-ativo');
+  if (GUARDAR_FLUTUANTE.barra) GUARDAR_FLUTUANTE.barra.classList.remove('visivel');
+}
+function gfAtualizar() {
+  try {
+    const form = gfFormAtivo();
+    if (!form) { GUARDAR_FLUTUANTE.sujo = false; GUARDAR_FLUTUANTE.form = null; gfEsconder(); return; }
+    if (!GUARDAR_FLUTUANTE.sujo || document.querySelector('.modal-overlay')) { gfEsconder(); return; }
+    const b = gfBotoesDoForm(form);
+    if (!b.guardar) { gfEsconder(); return; }
+    // Os botões do próprio formulário estão à vista? Então não é preciso a barra.
+    const r = b.acoes.getBoundingClientRect();
+    const fundoUtil = window.innerHeight - (document.body.classList.contains('tem-barra-inferior') ? 72 : 0);
+    if (r.height && r.top >= 60 && r.bottom <= fundoUtil) { gfEsconder(); return; }
+    const barra = gfGarantirBarra();
+    const btn = barra.querySelector('.gf-guardar');
+    const texto = String(b.guardar.textContent || '').trim() || 'Guardar alterações';
+    const t = barra.querySelector('.gf-guardar-texto');
+    if (t.textContent !== texto) t.textContent = texto;
+    btn.disabled = !!b.guardar.disabled;
+    barra.querySelector('.gf-cancelar').style.display = b.cancelar ? '' : 'none';
+    barra.classList.add('visivel');
+    document.body.classList.add('gf-ativo');
+  } catch (e) { /* nunca interfere com a app */ }
+}
+document.addEventListener('input', (e) => gfMarcarSujo(e.target), true);
+document.addEventListener('change', (e) => gfMarcarSujo(e.target), true);
+// Escolhas por botão ligadas ao formulário (ex.: Não pedido / Pedido / Não produz, Aprovar nos Orçamentos).
+document.addEventListener('click', (e) => {
+  const b = e.target && e.target.closest && e.target.closest('.orc-seg-btn, .orcamento-linha button, .form-registo-ativo .seg-btn, .form-registo-ativo [role="radio"]');
+  if (b) setTimeout(() => gfMarcarSujo(b.isConnected ? b : (gfFormAtivo() || b)), 0);
+}, true);
+window.addEventListener('scroll', () => { if (GUARDAR_FLUTUANTE.sujo) gfAtualizar(); }, { passive: true, capture: true });
+window.addEventListener('resize', () => { if (GUARDAR_FLUTUANTE.sujo) gfAtualizar(); });
+setInterval(gfAtualizar, 500);
 /* =================================================================
    COLABORAÇÃO AO VIVO (2026-10-16, Hugo: "quero ver os cursores remotos (em desktop/portátil), com o nome do
    utilizador ao lado e a cor dele (a das férias), inclusive no preenchimento de dados até à conclusão; os campos
