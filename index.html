@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-16 18:00" />
+<meta name="siga-versao" content="2026-10-16 22:00" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -70239,12 +70239,44 @@ function vivoIdentidadeModal(m) {
   return txt.slice(0, 140);
 }
 const VIVO_PAGINAS_PESSOAIS = new Set(['bloco-notas-pessoal', 'chat', 'gaveta']); // cada um vê só o seu — sem cursores
+// 2026-10-16 (Hugo: "não estou na mesma janela que a Ana mas ela vê o meu cursor porque estamos no mesmo módulo —
+// deve ser por página independente"): o "ecrã" já não é só o módulo (STATE.page). Junta também o que muda a vista dentro
+// dele: separador ativo (O Meu Horário / Escala da Equipa…), vista (Timeline/Tabela, Semana/Mês), semana/data escolhida e
+// filtros da página. Só conta o que está fora de formulários de registo (o que se escreve num registo não muda o ecrã).
+const VIVO_SELETOR_VISTA = '.tab-btn.active, .nav-tab.active, .ger-seg button.ativo, [role="tab"][aria-selected="true"], [aria-pressed="true"]';
+const VIVO_SELETOR_FILTROS = 'input[type="date"], input[type="week"], input[type="month"], select';
+const VIVO_FORA_DE_REGISTO = '[data-vivo-registo], .form-registo-ativo, .cel-editor, form';
+let vivoVistaCache = { em: 0, raiz: null, valor: '' };
+function vivoAssinaturaVista(raiz) {
+  if (!raiz) return '';
+  const agora = Date.now();
+  if (vivoVistaCache.raiz === raiz && agora - vivoVistaCache.em < 250) return vivoVistaCache.valor;
+  const partes = [];
+  try {
+    raiz.querySelectorAll(VIVO_SELETOR_VISTA).forEach((el) => {
+      if (el.closest(VIVO_FORA_DE_REGISTO)) return;
+      const t = (el.textContent || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+      if (t) partes.push(t);
+    });
+    raiz.querySelectorAll(VIVO_SELETOR_FILTROS).forEach((el) => {
+      if (el.closest(VIVO_FORA_DE_REGISTO) || el.closest('[data-vivo-zona]')) return;
+      if (el.value) partes.push(el.value);
+    });
+  } catch (e) { /* ignora */ }
+  let hsh = 5381;
+  const txt = partes.join('|');
+  for (let i = 0; i < txt.length; i++) hsh = ((hsh * 33) ^ txt.charCodeAt(i)) >>> 0;
+  vivoVistaCache = { em: agora, raiz, valor: partes.length ? hsh.toString(36) : '' };
+  return vivoVistaCache.valor;
+}
 function vivoContextoEcra() {
   if (!activeUser || document.querySelector('.login-sessao-overlay')) return null;
   if (VIVO_PAGINAS_PESSOAIS.has(STATE.page)) return null;
   const m = vivoModalDoTopo();
   if (m && m.querySelector('.gaveta-body-flex')) return null; // Gaveta de Recados: conversas privadas
-  return `${STATE.page || ''}${m ? '|' + vivoIdentidadeModal(m) : ''}`;
+  const pagina = document.querySelector('.page-container') || document.querySelector('.main');
+  const vista = vivoAssinaturaVista(pagina);
+  return `${STATE.page || ''}${vista ? '#' + vista : ''}${m ? '|' + vivoIdentidadeModal(m) : ''}`;
 }
 function vivoRaizEcra() {
   const m = vivoModalDoTopo();
