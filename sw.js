@@ -24,17 +24,35 @@ self.addEventListener('activate', (event) => {
    oferecerem "Instalar aplicação" (ícone sem o símbolo do browser).
    Só trata a ABERTURA de páginas e vai SEMPRE à rede: não guarda cópias,
    por isso cada abertura traz sempre a versão mais recente do index.
-   Sem ligação, mostra uma mensagem simples em vez do erro do browser. */
+   2026-10-17 (Hugo: "quando o servidor está em baixo, a app pode avisar… para ligar o PC do Gabinete 1"):
+   - a Cloudflare responde mas o PC da farmácia não (502/503/504/52x/530) → aviso «servidor em baixo»;
+   - na rede local (endereço do PC), sem resposta nenhuma → também é o servidor em baixo;
+   - sem resposta nenhuma pela internet → «sem ligação à internet», como antes.
+   As duas páginas tentam de novo sozinhas a cada 10 s e abrem a app assim que o servidor responder. */
+function sigaPagina(titulo, texto) {
+  return new Response(
+    '<!doctype html><html lang="pt"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<title>SigaFarmácia</title><body style="font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f0f7fb;color:#033363;text-align:center;padding:24px;box-sizing:border-box">' +
+    '<div style="max-width:440px"><h1 style="font-size:20px;margin:0 0 10px">' + titulo + '</h1><p style="margin:0 0 18px;color:#0880AA;line-height:1.45">' + texto + '</p>' +
+    '<button onclick="location.reload()" style="font-size:16px;padding:10px 22px;border:0;border-radius:10px;background:#033363;color:#fff">Tentar de novo</button>' +
+    '<p style="margin:16px 0 0;font-size:13px;color:#5b8aa6">A app volta a tentar sozinha de 10 em 10 segundos.</p></div>' +
+    '<script>setInterval(function(){fetch("/api/siga/estado",{cache:"no-store"}).then(function(r){if(r.ok)location.reload();}).catch(function(){});},10000);<\/script>' +
+    '</body></html>',
+    { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } }
+  );
+}
+const SIGA_SERVIDOR_EM_BAIXO = () => sigaPagina('O servidor da farmácia não está a responder',
+  'Verifica se o <b>PC do Gabinete 1</b> está ligado e com internet. Se estiver, reinicia-o. Assim que voltar, a app abre sozinha.');
 self.addEventListener('fetch', (event) => {
   if (event.request.mode !== 'navigate') return;
+  const host = new URL(event.request.url).hostname;
+  const ehServidorDaFarmacia = /(^|\.)sigafarmacia\.(pt|com)$/.test(host);
+  const naRedeLocal = host === 'localhost' || /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host);
   event.respondWith(
-    fetch(event.request).catch(() => new Response(
-      '<!doctype html><html lang="pt"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
-      '<title>SigaFarmácia</title><body style="font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f0f7fb;color:#033363;text-align:center;padding:24px">' +
-      '<div><h1 style="font-size:20px;margin:0 0 8px">Sem ligação à internet</h1><p style="margin:0 0 18px;color:#0880AA">Verifica o Wi-Fi ou os dados móveis e tenta de novo.</p>' +
-      '<button onclick="location.reload()" style="font-size:16px;padding:10px 22px;border:0;border-radius:10px;background:#033363;color:#fff">Tentar de novo</button></div></body></html>',
-      { headers: { 'Content-Type': 'text/html; charset=utf-8' } }
-    ))
+    fetch(event.request).then((r) => {
+      if (ehServidorDaFarmacia && [502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 530].indexOf(r.status) >= 0) return SIGA_SERVIDOR_EM_BAIXO();
+      return r;
+    }).catch(() => (naRedeLocal ? SIGA_SERVIDOR_EM_BAIXO() : sigaPagina('Sem ligação à internet', 'Verifica o Wi-Fi ou os dados móveis e tenta de novo.')))
   );
 });
 
