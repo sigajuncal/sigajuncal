@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-17 10:00" />
+<meta name="siga-versao" content="2026-10-17 11:00" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -12553,6 +12553,23 @@ function criarClienteServidorLocal(base) {
     guardarSessaoNoAparelho(sim) { S.guardarNoAparelho = !!sim; gravarPosto(); },
     terminarSessao() { S.token = null; S.utilizadorId = null; S.guardarNoAparelho = false; gravarPosto(); desligar(); },
     farmacia: () => S.farmacia,
+    // Dados que não podem estar no index.html público (2026-10-17) — ver pb_hooks/siga/privado.js.
+    privado: {
+      async acesso(palavra) {
+        try {
+          const r = await fetch(BASE + '/api/siga/acesso', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ palavra }), cache: 'no-store' });
+          const j = await r.json().catch(() => null);
+          return { ok: r.ok && !!(j && j.ok), estado: r.status, erro: j && j.erro };
+        } catch (e) { return { ok: false, estado: 0, erro: 'Sem ligação ao servidor da farmácia. Tenta outra vez.' }; }
+      },
+      async frases() {
+        try {
+          const r = await pedidoComSessao('/api/siga/frases', { method: 'GET' });
+          const j = await r.json().catch(() => null);
+          return r.ok && j && j.ok ? j.frases : null;
+        } catch (e) { return null; }
+      },
+    },
     // Ficheiros (2026-10-17): receitas dos Manipulados e outros documentos carregados — ver pb_hooks/siga/ficheiros.js.
     ficheiros: {
       async recursos() {
@@ -19181,676 +19198,26 @@ const FRASES_HORARIO_CONTEXTO = {
 // (comparado de forma insensível a acentos/maiúsculas — ver
 // FRASES_COLABORADORES_INDICE — para nunca falhar por uma pequena
 // diferença de escrita).
-const FRASES_COLABORADORES = {
-  'Paulo Freitas': {
-    manha: [
-      'A visão estratégica de hoje é o que mantém a Farmácia Juncal à frente no Grupo Cruz & Reis. 🚴',
-      'Café tomado e rumo traçado — a equipa segue sempre com confiança a tua liderança. 📊',
-      'Mais uma manhã de rigor farmacêutico e gestão financeira sólida. É por isto que somos a melhor farmácia do grupo. 🏥',
-      'Entre reuniões e decisões, não esqueças de reservar um momento para a bicicleta e para a família. 🚴',
-      'A direção técnica começa cedo — e a equipa sabe que pode sempre contar com o teu rigor. 🏥',
-      'Mais um dia para dar norte à equipa e manter as contas em ordem. 📊',
-      'A tua visão de conjunto é o que mantém tudo alinhado, da farmácia às finanças. 🧭',
-      'Uma manhã tranquila é sempre um bom sinal de boa gestão. Vamos a isso! ☕',
-      'O rigor que trazes à direção técnica sente-se em cada detalhe da farmácia. 🏥',
-      'Cada decisão bem preparada hoje poupa dores de cabeça a toda a equipa amanhã. 📊',
-      'A equipa segue com confiança quando sabe que a direção está em boas mãos. 🤝',
-      'Mais um dia de rigor e visão — a marca de quem lidera pelo exemplo. 🚀',
-    ],
-    tarde: [
-      'A tarde pede olhar de gestão — o teu rigor financeiro é o que sustenta o crescimento da Juncal. 📊',
-      'Cada decisão estratégica de hoje reforça por que a Juncal lidera o Grupo Cruz & Reis. 🏥',
-      'Entre números e pessoas, o teu equilíbrio é o que faz a diferença na direção técnica. 🤝',
-      'Uma tarde de rigor e visão — a equipa segue confiante o rumo que traças. 🚴',
-      'A gestão financeira bem-feita hoje é o crescimento sólido de amanhã. 📊',
-      'O acompanhamento próximo que dás à equipa faz toda a diferença nos resultados. 🤝',
-      'Mais uma tarde a manter a farmácia no rumo certo, com o rigor de sempre. 🧭',
-      'A tua experiência é uma bússola segura em cada decisão do dia a dia. 🏥',
-      'A tarde avança e o compromisso com a excelência mantém-se intacto. 🚀',
-      'Cada número bem analisado hoje sustenta uma farmácia mais forte amanhã. 📊',
-      'A direção técnica é sentida em cada canto da farmácia — obrigado pelo rigor. 🏥',
-      'Entre gestão e equipa, o equilíbrio que trazes não passa despercebido. 🤝',
-    ],
-    noite: [
-      'Mais um dia de liderança bem investido. Hora de trocar a farmácia pela bicicleta! 🚴',
-      'A Juncal fecha mais forte graças ao rigor que trazes todos os dias. 🌙',
-      'Obrigado pela visão estratégica de hoje — descansa junto da família, mereces. 🌙',
-      'Direção técnica cumprida com o rigor do costume. Boas pedaladas! 🚴🌙',
-      'Mais um dia de gestão sólida a fechar. A equipa agradece o rigor de sempre. 🌙',
-      'A farmácia fecha em boas contas — mérito de uma direção atenta a tudo. 📊🌙',
-      'Hora de desligar da gestão e ligar à família. Bom descanso! 🌙',
-      'O rigor de hoje é a tranquilidade de amanhã. Obrigado pela dedicação! 🌙',
-      'Mais um dia bem liderado — a Juncal sente isso todos os dias. 🌙',
-      'A bicicleta espera — depois de um dia assim, é bem merecida. 🚴🌙',
-      'Direção técnica em boas mãos, como sempre. Descansa bem! 🌙',
-      'Obrigado por manteres o rumo certo, mesmo nos dias mais atarefados. 🌙',
-    ],
-  },
-  'Hugo Cunha': {
-    manha: [
-      'Mais um dia para cuidar da farmácia que tanto gostas, com o rigor de sempre. 💊',
-      'Café e alguma leitura antes do dia arrancar? A equipa vai gostar do que trazes hoje. 📚',
-      'A tua paixão pela farmácia é o que puxa a equipa para a melhoria contínua. Vamos a isto! 🚀',
-      'Uma manhã para corresponder — como sempre — às expectativas de quem confia em nós. 🏥',
-      'Cada detalhe pensado com cuidado é o que distingue a Juncal no grupo. 🏥',
-      'Manhã de energia renovada para mais um dia a melhorar o que já é bom. 🚀',
-      'A dedicação que pões na farmácia sente-se em cada canto dela. 💊',
-      'Café tomado, ideias frescas prontas para mais um dia de progresso. ☕',
-      'Mais um dia a cuidar de quem cuida da farmácia — a equipa também precisa de atenção. 🤝',
-      'A vontade de melhorar sempre é o que nos mantém à frente no grupo. 🚀',
-      'Uma manhã tranquila para pensar em grande e agir com rigor. 📚',
-      'Cada pequena melhoria de hoje soma-se à excelência de amanhã. 🏥',
-    ],
-    tarde: [
-      'A tarde avança e o teu compromisso com a excelência da equipa mantém-se intacto. 🚀',
-      'Entre farmácia e um bom livro, o equilíbrio que trazes contagia toda a Juncal. 📚',
-      'Cada melhoria que trazes à equipa aproxima-nos ainda mais da excelência. 🤝',
-      'A Juncal é a melhor farmácia do grupo — e o teu cuidado com os detalhes tem muito que ver com isso. 🏥',
-      'Mais uma tarde a manter a fasquia alta para toda a equipa. 🚀',
-      'A paixão que trazes ao trabalho é sentida por quem passa pela farmácia. 💊',
-      'Uma tarde produtiva é sempre sinal de boa gestão e boa equipa. 🤝',
-      'Cada expectativa correspondida hoje reforça a confiança de quem trabalha contigo. 🏥',
-      'A tarde é longa, mas a tua dedicação à equipa também. Vamos em frente! 🚀',
-      'O cuidado com os detalhes é o que separa o bom do excelente — e tu sabes disso. 📚',
-      'Entre gestão e melhoria contínua, a Juncal sai sempre a ganhar. 🏥',
-      'A tua atenção à equipa faz toda a diferença no dia a dia de todos. 🤝',
-    ],
-    noite: [
-      'Mais um dia a corresponder às expectativas com a dedicação do costume. 🌙',
-      'Hora de fechar a app, abrir um livro e descansar. Obrigado pelo teu empenho de hoje! 📚🌙',
-      'A paixão que pões na farmácia sente-se em cada detalhe do dia. 🌙',
-      'Mais um passo na melhoria contínua da equipa — bom trabalho! 🌙',
-      'A farmácia fecha mais forte graças ao cuidado que lhe dedicas todos os dias. 🌙',
-      'Obrigado por mais um dia de dedicação à equipa e à farmácia. 🌙',
-      'Um bom livro à espera, um dia de trabalho bem passado atrás. Descansa! 📚🌙',
-      'A melhoria contínua não para — mas hoje também merece uma pausa. Descansa bem! 🌙',
-      'Mais um dia em que a farmácia ficou melhor graças a ti. 🌙',
-      'O rigor de hoje é o alicerce da excelência de amanhã. Descansa bem! 🌙',
-      'Obrigado pela paixão que trazes a este projeto todos os dias. 🌙',
-      'A app pode esperar — a leitura de hoje à noite é bem merecida. 📚🌙',
-    ],
-  },
-  'Joana Mendonça': {
-    manha: [
-      'Com a tua experiência, a conferência de receitas e o stock ficam sempre em boas mãos. 📋',
-      'Manhã animada como sempre — a energia que trazes contagia toda a equipa. ☀️',
-      'Anos de casa, sempre a mesma dedicação — a Juncal tem muita sorte em te ter. 🏥',
-      'Café tomado e rigor a postos para mais um dia de gestão de stocks impecável. ☕',
-      'A tua boa disposição é o pequeno-almoço da equipa todas as manhãs. ☀️',
-      'Mais um dia em que a experiência fala mais alto do que qualquer manual. 📋',
-      'Manhã de rigor e sorrisos — combinação que só tu sabes fazer tão bem. 😊',
-      'Cada receita conferida com o teu olhar experiente é uma garantia a mais. 📋',
-      'A energia que trazes logo de manhã dá o mote ao resto do dia da equipa. ☀️',
-      'Um novo dia, a mesma dedicação de sempre à farmácia. 🏥',
-      'O stock não tem segredos para ti — e isso vale muito para toda a equipa. 📦',
-      'Manhã de trabalho com a leveza de quem já viu (quase) tudo. 😊',
-    ],
-    tarde: [
-      'A tua jovialidade e experiência juntas fazem toda a diferença no funcionamento da farmácia. 😊',
-      'Cada receita bem conferida é mérito teu — obrigado pelo rigor de sempre. 📋',
-      'Entre farmácia e família, o equilíbrio que trazes é inspirador para toda a equipa. 🤝',
-      'A experiência acumulada ao longo de tantos anos continua a fazer a Juncal brilhar. 🏥',
-      'A tarde passa mais leve com a tua boa disposição por perto. 😊',
-      'Cada stock em ordem é reflexo direto do teu cuidado diário. 📦',
-      'A tua energia não abranda a meio do dia — e a equipa nota isso. ☀️',
-      'Anos de experiência traduzem-se em segurança para toda a equipa. 📋',
-      'Uma tarde tranquila é sinal de que o stock está mesmo bem tratado. 📦',
-      'A dedicação de sempre, tarde após tarde, ano após ano. 🏥',
-      'Cada gesto teu carrega a experiência de quem conhece a farmácia por dentro. 🤝',
-      'A boa energia continua firme até ao fim da tarde. ☀️',
-    ],
-    noite: [
-      'Mais um dia de stocks e receitas em ordem, com a dedicação de sempre. 🌙',
-      'A energia que trazes todos os dias faz da Juncal um lugar melhor. Descansa bem! 🌙',
-      'Obrigado por mais um dia de rigor e boa disposição. Até amanhã! 🌙',
-      'A família espera-te — obrigado por tudo o que deste hoje à equipa. 🌙',
-      'Mais um dia de experiência bem aplicada. Descansa, mereces! 🌙',
-      'O stock fica em ordem, a equipa fica tranquila — obrigado! 🌙',
-      'A boa disposição de hoje ficou na equipa. Até amanhã! 🌙',
-      'Anos de casa, mais um dia bem passado. Bom descanso! 🌙',
-      'Obrigado pelo rigor e pela energia que trazes sempre. 🌙',
-      'Mais um dia em que a experiência fez toda a diferença. Descansa bem! 🌙',
-      'A farmácia fecha em ordem, mérito também teu. Até amanhã! 🌙',
-      'Depois de um dia assim, a família merece toda a tua atenção. 🌙',
-    ],
-  },
-  'Lúcia Rodrigues': {
-    manha: [
-      'Com o teu rigor, as faturas e as campanhas ficam sempre impecáveis. 📊',
-      'Manhã de organização a postos — a equipa sabe que contigo nada escapa. 📋',
-      'Nova campanha a preparar? A tua dinâmica é sempre uma mais-valia para a Juncal. 🎯',
-      'Café tomado e rigor de sempre para mais um dia de conferência de faturas. ☕',
-      'Manhã de números certos e nenhuma surpresa desagradável. 📊',
-      'A tua organização é o primeiro passo para um dia sem sobressaltos. 📋',
-      'Mais um dia a manter tudo em ordem nos bastidores da farmácia. 📦',
-      'Café tomado, faturas a postos — o dia começa bem organizado. ☕',
-      'A dinâmica que trazes às campanhas dá sempre um toque especial à farmácia. 🎯',
-      'Manhã produtiva à vista, com o rigor que já é tua marca. 📊',
-      'Cada fatura conferida logo de manhã poupa tempo a toda a equipa. 📋',
-      'Uma nova campanha, o mesmo entusiasmo de sempre. 🎯',
-    ],
-    tarde: [
-      'A tua organização é o que mantém tudo em ordem nos bastidores da Juncal. 📊',
-      'Cada campanha bem gerida reforça por que somos a melhor farmácia do grupo. 🎯',
-      'O rigor que trazes à conferência de faturas poupa dores de cabeça a toda a equipa. 📋',
-      'Dinamismo e organização — a tua marca em cada tarde na Juncal. Vamos em frente! 🚀',
-      'A tarde avança com tudo em ordem — mérito do teu rigor de sempre. 📊',
-      'Cada detalhe da campanha bem tratado faz toda a diferença na imagem da farmácia. 🎯',
-      'A tua dedicação aos números é sentida por toda a equipa. 📋',
-      'Mais uma tarde produtiva, sem nada fora do lugar. 📦',
-      'O rigor que trazes às faturas é uma garantia silenciosa mas essencial. 📊',
-      'A dinâmica das campanhas ganha outra força contigo à frente. 🎯',
-      'Tarde de organização impecável, como sempre. 📋',
-      'Cada tarefa bem gerida hoje poupa correrias amanhã. 🚀',
-    ],
-    noite: [
-      'Mais um dia de faturas em dia e campanhas a correr bem. 🌙',
-      'O teu rigor de hoje poupa tempo à equipa amanhã — obrigado! Descansa bem! 🌙',
-      'Organização impecável, como sempre. Até amanhã! 🌙',
-      'A dinâmica que trazes às campanhas faz toda a diferença. 🌙',
-      'Mais um dia de números certos e nada por resolver. Bom descanso! 🌙',
-      'Obrigado pelo rigor que trazes a cada fatura conferida. 🌙',
-      'A farmácia fecha em ordem — mérito também teu. Até amanhã! 🌙',
-      'Mais uma campanha a caminhar bem, graças à tua dedicação. 🌙',
-      'O dia termina com tudo organizado. Descansa, mereces! 🌙',
-      'Obrigado por manteres o rigor mesmo nos dias mais corridos. 🌙',
-      'Mais um dia de trabalho bem feito nos bastidores. Até amanhã! 🌙',
-      'A dinâmica de hoje ficou registada — até amanhã! 🌙',
-    ],
-  },
-  'André Seixas': {
-    manha: [
-      'Mais um dia de cotações a fechar e PIMs a acompanhar com o rigor do costume. 📦',
-      'Café tomado e já a pensar na próxima viagem? Primeiro, vamos cuidar bem dos nossos utentes! ✈️',
-      'A tua atenção às cotações para empresas é uma mais-valia enorme para a Juncal. 📊',
-      'Manhã de organização — a preparação individualizada de medicação conta contigo. 💊',
-      'Manhã de negócios a fechar e utentes a acompanhar — dia cheio à vista. 📊',
-      'Café tomado, agenda revista — pronto para mais um dia produtivo. ☕',
-      'A PIM começa bem quando alguém acompanha cada detalhe com atenção. 💊',
-      'Mais uma manhã a construir confiança com as empresas parceiras. 🤝',
-      'Entre cotações e medicação, o dia promete ser bem preenchido. 📦',
-      'Manhã de rigor para quem gosta de deixar tudo bem tratado. 📋',
-      'Café tomado, cabeça já a organizar as prioridades do dia. ☕',
-      'Mais um dia a equilibrar números e cuidado com as pessoas. 🤝',
-    ],
-    tarde: [
-      'Cada cotação bem fechada reforça a confiança das empresas na Farmácia Juncal. 📊',
-      'O acompanhamento que dás à PIM faz toda a diferença na vida de quem depende dela. 💊',
-      'Entre trabalho e os planos para a próxima escapadela, o equilíbrio é tudo. ✈️',
-      'A tua dedicação às empresas parceiras mantém a Juncal como referência do grupo. 🏥',
-      'A tarde avança com cotações a fechar e PIMs a caminhar bem. 📦',
-      'Cada detalhe da medicação individualizada tratado com o cuidado que merece. 💊',
-      'As empresas parceiras sabem que podem contar contigo — e isso vale muito. 🤝',
-      'Uma tarde produtiva, com o equilíbrio certo entre números e cuidado. 📊',
-      'A tua organização faz da PIM um serviço de confiança para quem precisa. 💊',
-      'Mais uma tarde a fortalecer relações com as empresas da região. 🏥',
-      'Entre reuniões e acompanhamentos, o rigor mantém-se sempre. 📋',
-      'A tarde é produtiva quando cada cotação sai bem tratada. 📊',
-    ],
-    noite: [
-      'Mais um dia de cotações e PIM bem tratados. 🌙',
-      'Depois de um bom dia de trabalho, um bom jantar é sempre merecido. 🍽️🌙',
-      'Obrigado pelo rigor de hoje — descansa e sonha já com a próxima viagem. 🌙✈️',
-      'O acompanhamento que dás aos utentes da PIM não passa despercebido. 🌙',
-      'Mais um dia de negócios bem fechados. Bom descanso! 🌙',
-      'A PIM de hoje ficou em boas mãos, como sempre. Até amanhã! 🌙',
-      'Obrigado pela dedicação às empresas parceiras — sente-se todos os dias. 🌙',
-      'Depois de um dia cheio, um bom jantar sabe sempre melhor. 🍽️🌙',
-      'Mais um dia produtivo a fechar. Descansa bem! 🌙',
-      'A próxima viagem fica cada vez mais perto — força! ✈️🌙',
-      'Obrigado pelo cuidado de hoje com quem depende da medicação individualizada. 🌙',
-      'Mais um dia bem passado, entre trabalho e boas ideias para o futuro. 🌙',
-    ],
-  },
-  'Inês Ferreira': {
-    manha: [
-      'Mais um dia de balcão e validades sempre em dia com o teu rigor. ✅',
-      'As redes sociais da Juncal acordam contigo — a tua criatividade é um mimo para a equipa. 📱',
-      'Manhã de atendimento a postos — os utentes sabem que ficam em boas mãos contigo. 🏥',
-      'Café tomado e ideias frescas para as redes sociais? Vamos brilhar hoje! ☕📸',
-      'Manhã de balcão animado — a tua energia dá sempre um toque especial ao dia. 😊',
-      'As validades não escapam ao teu olhar atento. Mais um dia de rigor! ✅',
-      'Ideias novas para as redes sociais? A equipa está sempre curiosa. 📱',
-      'Café tomado, sorriso pronto para receber os nossos utentes. ☕',
-      'Manhã de criatividade e atenção ao detalhe, como só tu sabes. 📸',
-      'Mais um dia a cuidar do balcão com o carinho que os utentes merecem. 🤝',
-      'A tua criatividade começa a trabalhar antes mesmo do primeiro café. 📱',
-      'Manhã organizada, validades controladas — tudo a postos! ✅',
-    ],
-    tarde: [
-      'Cada validade controlada é uma preocupação a menos para toda a equipa. ✅',
-      'A criatividade que pões nas redes sociais mostra a Juncal como ela merece ser vista. 📱',
-      'O teu atendimento ao balcão é sempre um cartão de visita da nossa farmácia. 🤝',
-      'Mais uma tarde a cuidar dos detalhes que fazem a diferença. Vamos a isto! 🚀',
-      'A tarde passa mais leve com a tua boa disposição no balcão. 😊',
-      'Cada publicação bem pensada aproxima a Juncal de mais utentes. 📱',
-      'O cuidado com as validades poupa surpresas desagradáveis à equipa. ✅',
-      'Uma tarde de atendimento atento, como a equipa já espera de ti. 🤝',
-      'A criatividade não para, mesmo a meio da tarde. Continua assim! 📸',
-      'Cada utente bem atendido leva um pouco do teu cuidado com ele. 🤝',
-      'Tarde produtiva entre balcão e redes sociais — tudo em dia. 🚀',
-      'O teu olhar atento faz toda a diferença nos detalhes que ninguém vê. ✅',
-    ],
-    noite: [
-      'Mais um dia de balcão e redes sociais bem tratados. 🌙',
-      'O teu rigor com as validades mantém a farmácia sempre em ordem. Obrigado! 🌙',
-      'A criatividade de hoje faz a Juncal brilhar online também. 📱🌙',
-      'Trabalho bem feito, como sempre. Descansa bem! 🌙',
-      'Mais um dia de atendimento cuidado. Até amanhã! 🌙',
-      'As redes sociais ganharam vida hoje graças a ti. Bom descanso! 🌙',
-      'Obrigado pelo cuidado de hoje com cada detalhe do balcão. 🌙',
-      'Mais um dia sem validades esquecidas — mérito teu. 🌙',
-      'A criatividade de hoje não passou despercebida. Descansa! 📸🌙',
-      'Obrigado por mais um dia de atendimento atento aos utentes. 🌙',
-      'O balcão fica em ordem, a equipa fica tranquila. Até amanhã! 🌙',
-      'Mais um dia bem passado, entre rigor e boas ideias. 🌙',
-    ],
-  },
-  'Joana Coelho': {
-    manha: [
-      'A experiência de técnica de farmácia junta-se agora ao olhar de farmacêutica — combinação e tanto. 💊',
-      'Manhã fresca como uma ida à praia — vamos com essa energia para o balcão! 🏖️',
-      'Cada dia como farmacêutica é mais um passo firme numa carreira que promete muito. 🎓',
-      'Café tomado e vontade de aprender e ensinar em partes iguais. ☕',
-      'Manhã de energia jovem e experiência acumulada — o melhor dos dois mundos. 🎓',
-      'Mais um dia a crescer como farmacêutica, com a base sólida de técnica que já tens. 💊',
-      'Café tomado, cabeça fresca — pronta para mais um dia de aprendizagem. ☕',
-      'A vontade de fazer bem sente-se em cada gesto teu ao balcão. 🏥',
-      'Manhã animada, com aquela energia positiva que só tu trazes. 🏖️',
-      'Cada conselho que dás já tem a segurança de quem conhece a farmácia por dentro. 💊',
-      'Um novo dia, mais uma oportunidade de mostrar do que és capaz. 🎓',
-      'Manhã de dedicação total — a equipa sabe que pode contar contigo. 🤝',
-    ],
-    tarde: [
-      'A tua dupla experiência — técnica e agora farmacêutica — é uma mais-valia enorme para a equipa. 💊',
-      'Entre um bom atendimento e a vontade de cozinhar algo bom mais logo, a tarde passa a voar. 🍳',
-      'Cada conselho que dás já traz a maturidade de quem conhece a farmácia por dentro. 🏥',
-      'A energia que trazes ao balcão faz toda a diferença nos nossos utentes. 🤝',
-      'A tarde avança e a tua dedicação continua igual, desde a primeira hora. 💊',
-      'Cada atendimento é mais uma oportunidade de crescer como farmacêutica. 🎓',
-      'A tua boa disposição não abranda, mesmo a meio da tarde. 🏖️',
-      'Uma tarde produtiva, com o cuidado de sempre pelos nossos utentes. 🤝',
-      'A experiência prévia como técnica dá-te uma segurança que se nota. 💊',
-      'Cada dia que passa reforça a excelente profissional que estás a tornar-te. 🎓',
-      'Tarde de trabalho dedicado, com o sorriso que já é tua marca. 😊',
-      'O balcão fica em boas mãos contigo, sempre. 🏥',
-    ],
-    noite: [
-      'Mais um dia de crescimento como farmacêutica bem passado. 🌙',
-      'Depois de um bom dia de trabalho, nada como uma boa refeição para fechar em beleza. 🍽️🌙',
-      'A praia pode esperar mais um bocadinho — hoje trabalhaste muito bem. Descansa! 🏖️🌙',
-      'Cada dia que passa reforça a excelente farmacêutica que estás a tornar-te. Até amanhã! 🌙',
-      'Mais um dia de aprendizagem e dedicação. Bom descanso! 🌙',
-      'Obrigado pelo cuidado que pões em cada atendimento. 🌙',
-      'A farmácia fecha com mais um dia de crescimento no currículo. 🎓🌙',
-      'Depois de tanto balcão, um bom prato caseiro sabe sempre melhor. 🍳🌙',
-      'Mais um dia bem passado, entre trabalho e boa disposição. 🌙',
-      'Obrigado por mais um dia a dar o teu melhor. Descansa bem! 🌙',
-      'A praia fica para o fim de semana — hoje o mérito é todo teu. 🏖️🌙',
-      'Mais um passo dado, tanto na carreira como na confiança. Até amanhã! 🌙',
-    ],
-  },
-  'João Rego': {
-    manha: [
-      'A experiência e a calma que trazes ao dia a dia fazem toda a diferença. 💊',
-      'Manhã com pouco sono, provavelmente — mas a equipa sabe que pode sempre contar contigo. 👶',
-      'Reservas em dia e o fim do dia sempre bem apoiado — obrigado pela dedicação. 📋',
-      'Café bem forte hoje? Entre farmácia e bebé, mereces! ☕',
-      'Manhã de experiência tranquila, a marca de quem já viu muita coisa. 💊',
-      'Café tomado, calma a postos — mais um dia bem gerido à vista. ☕',
-      'A tua serenidade é sempre um porto seguro para a equipa mais nova. 🤝',
-      'Reservas organizadas logo de manhã poupam correrias ao resto do dia. 📋',
-      'Manhã tranquila, com a experiência de sempre a guiar o dia. 🏥',
-      'Entre bebé e farmácia, a dedicação mantém-se intacta. 👶',
-      'Mais uma manhã em que a calma e o rigor andam de mãos dadas. 💊',
-      'Café tomado — hora de mais um dia sereno e bem organizado. ☕',
-    ],
-    tarde: [
-      'O teu apoio no fim do dia mantém a equipa tranquila até ao fecho. 🌆',
-      'Cada reserva bem gerida é sinónimo de confiança dos nossos utentes. 📋',
-      'A experiência que trazes ao balcão é sempre um porto seguro para a equipa. 🏥',
-      'Entre trabalho e a família nova, o equilíbrio que mantens é admirável. 👨‍👩‍👦',
-      'A tarde avança com a calma de sempre a guiar o trabalho. 💊',
-      'Cada reserva organizada é uma preocupação a menos para a equipa. 📋',
-      'A tua experiência é sentida em cada decisão bem ponderada. 🏥',
-      'Uma tarde tranquila, com o apoio de sempre a quem precisa. 🤝',
-      'O equilíbrio entre farmácia e família nova é um exemplo para todos. 👶',
-      'A tarde passa mais serena com a tua experiência por perto. 💊',
-      'Cada reserva bem tratada reforça a confiança de quem nos escolhe. 📋',
-      'A tua calma é contagiante, mesmo nas tardes mais atarefadas. 🏥',
-    ],
-    noite: [
-      'Mais um dia de apoio sólido ao fecho da farmácia. 🌙',
-      'Hora de ir para casa e aproveitar cada minuto com a família. 👶🌙',
-      'Obrigado pela experiência e calma que trouxeste hoje à equipa. Até amanhã! 🌙',
-      'Um bom jantar e uma boa noite de sono — se o bebé deixar! 🍽️🌙',
-      'Mais um dia bem apoiado até ao fecho. Descansa bem! 🌙',
-      'A experiência de hoje foi, como sempre, um porto seguro para a equipa. 🌙',
-      'Obrigado pela calma que trazes, mesmo nos dias mais corridos. 🌙',
-      'A família nova espera-te — aproveita cada momento. 👶🌙',
-      'Mais um dia de reservas bem geridas. Até amanhã! 🌙',
-      'A farmácia fecha tranquila, mérito também teu. Bom descanso! 🌙',
-      'Obrigado por mais um dia de dedicação, entre farmácia e família. 🌙',
-      'Descansa o que conseguires — a equipa agradece o teu apoio de hoje. 🌙',
-    ],
-  },
-  'Magda Antunes': {
-    manha: [
-      'Com a tua experiência de direção técnica, o aconselhamento aos utentes fica sempre em boas mãos. 💊',
-      'Manhã de mimos ao gatinho antes de sair? A equipa espera-te com o mesmo carinho. 🐱',
-      'Cada conselho que dás traz a segurança de quem já geriu uma farmácia inteira. 🏥',
-      'Café tomado e rigor a postos para mais um dia dedicado aos nossos utentes. ☕',
-      'Manhã de experiência e cuidado, sempre com o utente em primeiro lugar. 💊',
-      'O gatinho já teve os mimos de manhã — agora é hora de cuidar da equipa. 🐱',
-      'Café tomado, cabeça pronta para mais um dia de bons conselhos. ☕',
-      'A tua experiência de gestão sente-se em cada decisão do dia a dia. 🏥',
-      'Manhã tranquila para quem já viu (quase) tudo numa farmácia. 💊',
-      'Cada utente que passa contigo sai sempre mais tranquilo. 🤝',
-      'Mais uma manhã em que a experiência fala mais alto do que qualquer manual. 🏥',
-      'Café tomado, rigor a postos — mais um dia de cuidado genuíno. ☕',
-    ],
-    tarde: [
-      'O teu aconselhamento ao utente é um dos pilares da confiança que depositam na Juncal. 🤝',
-      'Entre farmácia e família, a dedicação que trazes é exemplar. 👨‍👩‍👧',
-      'A experiência que trazes de outras direções técnicas enriquece toda a equipa. 🏥',
-      'Cada utente que sai bem aconselhado tem um pouco do teu cuidado. 💊',
-      'A tarde avança com a mesma dedicação de sempre aos nossos utentes. 🤝',
-      'A tua experiência é uma referência silenciosa para toda a equipa. 🏥',
-      'Cada conselho bem dado reforça a confiança que a Juncal representa. 💊',
-      'Uma tarde tranquila, com o rigor de quem já viu tudo numa farmácia. 🏥',
-      'O equilíbrio entre trabalho e família é sempre um exemplo a seguir. 👨‍👩‍👧',
-      'A tarde passa mais leve a pensar no gatinho à espera em casa. 🐱',
-      'Cada utente bem aconselhado sai da farmácia mais tranquilo — mérito teu. 🤝',
-      'A tua experiência faz toda a diferença nos casos mais delicados. 💊',
-    ],
-    noite: [
-      'Mais um dia de aconselhamento cuidado aos nossos utentes. 🌙',
-      'Hora de ir para casa mimar o gatinho — bem merecido. 🐱🌙',
-      'Obrigado pela experiência e dedicação que trouxeste hoje. Até amanhã! 🌙',
-      'A família e o gatinho esperam-te — bom descanso! 🌙',
-      'Mais um dia de cuidado genuíno pelos nossos utentes. Descansa bem! 🌙',
-      'A experiência de hoje foi, mais uma vez, uma referência para a equipa. 🌙',
-      'Obrigado por mais um dia de aconselhamento atento e cuidado. 🌙',
-      'O gatinho está à espera de mimos — vai com calma. 🐱🌙',
-      'Mais um dia bem passado, entre farmácia e família. Até amanhã! 🌙',
-      'A tua dedicação de hoje não passou despercebida. Bom descanso! 🌙',
-      'Obrigado pela experiência que partilhas com toda a equipa. 🌙',
-      'Depois de um dia assim, o sofá e o gatinho sabem sempre bem. 🐱🌙',
-    ],
-  },
-  'Sofia André': {
-    manha: [
-      'Que bom ter-te hoje connosco na Falcão — mas já sabes qual é a melhor farmácia do grupo. 😉🏥',
-      'Manhã a espalhar a boa energia da Juncal por onde passas. ☀️',
-      'Onde quer que estejas hoje, o espírito Juncal vai sempre contigo. 🤝',
-      'Café tomado e pronta para representar a Juncal como só tu sabes. ☕',
-      'Manhã de trabalho, esteja onde estiver hoje o teu posto. ☀️',
-      'A boa energia começa cedo, seja qual for a farmácia do dia. 😊',
-      'Café tomado — pronta para brilhar, aqui ou na Falcão. ☕',
-      'Manhã de boa disposição, marca registada tua onde quer que vás. ☀️',
-      'Onde estiveres hoje, a equipa sabe que dás sempre o teu melhor. 🤝',
-      'Mais uma manhã a levar o espírito Juncal contigo. 🏥',
-      'Café tomado, sorriso pronto — mais um dia de boa energia. 😊',
-      'Seja qual for o posto de hoje, a dedicação é sempre a mesma. 💪',
-    ],
-    tarde: [
-      'A Falcão até é simpática, mas convenhamos — a Juncal continua a ser outra coisa. 😄🏥',
-      'A boa disposição que levas contigo faz sempre falta por cá. 😊',
-      'Onde quer que estejas ao serviço, representas sempre bem o Grupo Cruz & Reis. 🤝',
-      'A tarde passa mais depressa a pensar no regresso à melhor farmácia do grupo. 😉',
-      'A tua energia positiva não muda, seja qual for a farmácia do dia. ☀️',
-      'Tarde de trabalho dedicado, como sempre, esteja onde estiver. 💪',
-      'A boa disposição continua firme até ao fim da tarde. 😊',
-      'Mais uma tarde a mostrar que o espírito Juncal viaja contigo. 🤝',
-      'O Grupo Cruz & Reis sai sempre a ganhar com a tua boa energia. 🏥',
-      'A tarde é longa, mas a tua disposição mantém-se sempre alta. ☀️',
-      'Onde quer que estejas, o sorriso é sempre a tua marca registada. 😊',
-      'Mais uma tarde bem passada, seja qual for o posto do dia. 💪',
-    ],
-    noite: [
-      'Mais um dia bem passado — na Falcão hoje, mas o coração sabe onde é a casa. 😉🌙',
-      'Obrigado pela boa energia que espalhas, esteja onde estiveres. 🌙',
-      'Até amanhã — e já sabes, a Juncal está sempre à tua espera. 🏥🌙',
-      'Descansa bem, representante oficial da melhor farmácia do grupo! 😄🌙',
-      'Mais um dia de boa disposição a fechar. Até amanhã! 🌙',
-      'Obrigado por levares sempre o espírito Juncal contigo. 🌙',
-      'A energia de hoje ficou registada, esteja onde estiveres. Bom descanso! 🌙',
-      'Mais um dia bem representado o Grupo Cruz & Reis. Descansa! 🌙',
-      'O sorriso de hoje fez a diferença — obrigado! 🌙',
-      'Até amanhã — a Juncal continua à espera do teu regresso. 🏥🌙',
-      'Mais um dia de dedicação, seja qual for o posto. Descansa bem! 🌙',
-      'Descansa bem — amanhã há mais boa energia para espalhar. ☀️🌙',
-    ],
-  },
-  'Vanessa Sousa': {
-    manha: [
-      'Lineares em ordem e a copa a postos — a equipa agradece o teu cuidado. 🛒',
-      'Manhã de merchandising e criatividade para as redes sociais. Vamos brilhar hoje! 📱',
-      'Cada linear bem organizado é um sorriso a mais dos nossos utentes. ✨',
-      'Café tomado e já de olho nas próximas compras da copa. ☕',
-      'Manhã de organização visual — a imagem da farmácia começa aqui. 🛒',
-      'Ideias novas para as redes sociais logo de manhã? A equipa adora! 📱',
-      'Café tomado, lista da copa revista — tudo a postos para o dia. ☕',
-      'Manhã de detalhes que fazem toda a diferença na farmácia. ✨',
-      'Cada linear arrumado é mais um ponto a favor da nossa imagem. 🛒',
-      'Manhã criativa à vista, com ideias frescas para partilhar. 📱',
-      'A copa não fica sem nada, mérito da tua organização. ☕',
-      'Mais uma manhã a cuidar dos detalhes que ninguém mais repara. ✨',
-    ],
-    tarde: [
-      'A tua organização nos lineares faz toda a diferença na imagem da farmácia. 🛒',
-      'As redes sociais da Juncal ganham vida com a tua dinâmica. 📱',
-      'Entre merchandising e gestão da copa, nada te escapa. ✨',
-      'O cuidado que pões nos pequenos detalhes é o que nos distingue no grupo. 🏥',
-      'A tarde avança com os lineares sempre impecáveis. 🛒',
-      'Cada publicação bem pensada aproxima a Juncal de mais gente. 📱',
-      'A tua atenção ao detalhe faz toda a diferença na loja. ✨',
-      'Uma tarde produtiva, entre organização e criatividade. 🛒',
-      'A copa está sempre em ordem — pequenos gestos, grande diferença. ☕',
-      'Mais uma tarde a cuidar da imagem que a Juncal mostra ao mundo. 📱',
-      'Cada linear organizado poupa tempo a toda a equipa. 🛒',
-      'A tua criatividade não para, mesmo a meio da tarde. ✨',
-    ],
-    noite: [
-      'Mais um dia de lineares impecáveis e redes sociais em alta. 🌙',
-      'Obrigado pelo cuidado com os detalhes que fazem a Juncal brilhar. 🌙',
-      'A copa está em ordem graças a ti — bom descanso! 🌙',
-      'A tua criatividade de hoje não passou despercebida. 📱🌙',
-      'Mais um dia de organização impecável a fechar. Até amanhã! 🌙',
-      'Obrigado por mais um dia a cuidar da imagem da farmácia. 🌙',
-      'Os lineares ficam prontos para amanhã, mérito teu. Descansa! 🛒🌙',
-      'As redes sociais ganharam vida hoje graças a ti. Bom descanso! 🌙',
-      'Mais um dia bem tratado, nos pequenos e nos grandes detalhes. 🌙',
-      'Obrigado pela dedicação de hoje à copa e aos lineares. 🌙',
-      'A farmácia fica mais bonita graças ao teu trabalho de hoje. ✨🌙',
-      'Mais um dia produtivo a fechar. Até amanhã! 🌙',
-    ],
-  },
-  'Ana Moreira': {
-    manha: [
-      'Entre a farmácia e os estudos de Gestão, a tua dedicação é exemplar. 🎓',
-      'Manhã de faturas a conferir com o rigor de sempre. 📊',
-      'Cada aula de Gestão de Unidades de Saúde soma-se ao que já trazes para a Juncal. 📚',
-      'Café tomado e já a sonhar com a próxima viagem? Primeiro, vamos ao trabalho! ✈️',
-      'Manhã de dedicação dupla — farmácia de manhã, estudos sempre na cabeça. 🎓',
-      'Café tomado, faturas a postos — mais um dia bem organizado. ☕',
-      'A tua energia entre trabalho e estudo é inspiradora para a equipa. 📚',
-      'Manhã produtiva à vista, com o rigor que já é tua marca. 📊',
-      'Cada dia como técnica soma experiência valiosa para o teu futuro. 🎓',
-      'Café tomado, cabeça organizada — mais um dia a equilibrar tudo. ☕',
-      'Manhã de faturas certas e planos de viagem na cabeça. ✈️',
-      'Mais uma manhã a mostrar que dá para equilibrar farmácia e faculdade. 🎓',
-    ],
-    tarde: [
-      'A conferência de faturas fica sempre em boas mãos contigo. 📊',
-      'Equilibrar farmácia e faculdade não é fácil — e tu fazes-lo tão bem. 🎓',
-      'A tua dedicação como técnica de farmácia é sentida por toda a equipa. 💊',
-      'Entre trabalho e estudo, ainda arranjas tempo para sonhar com a próxima viagem. ✈️',
-      'A tarde avança com as faturas sempre em dia. 📊',
-      'Cada aula que fazes soma valor ao que já trazes para a farmácia. 📚',
-      'A tua dedicação não abranda, mesmo com a faculdade a puxar por ti. 🎓',
-      'Uma tarde produtiva, entre números e cuidado com os utentes. 💊',
-      'O equilíbrio que trazes entre trabalho e estudo é admirável. 🎓',
-      'A tarde é longa, mas a tua energia mantém-se sempre alta. 📊',
-      'Cada fatura bem conferida poupa tempo a toda a equipa. 📋',
-      'A próxima viagem fica cada vez mais perto — continua assim! ✈️',
-    ],
-    noite: [
-      'Mais um dia de faturas em dia e dedicação total. 🌙',
-      'Hora de estudar um pouco ou de descansar — o que precisares. Até amanhã! 📚🌙',
-      'Obrigado pelo teu empenho de hoje, entre a farmácia e a faculdade. 🌙',
-      'A próxima viagem fica cada vez mais perto. Descansa bem! ✈️🌙',
-      'Mais um dia de dedicação dupla a fechar. Bom descanso! 🌙',
-      'As faturas ficam em ordem, mérito também teu. Até amanhã! 🌙',
-      'Obrigado por equilibrares tão bem trabalho e estudo. 🌙',
-      'A faculdade pode esperar mais um bocadinho — hoje trabalhaste bem. 📚🌙',
-      'Mais um dia bem passado, entre números e aprendizagem. 🌙',
-      'Obrigado pela dedicação de hoje à farmácia e aos estudos. 🌙',
-      'Descansa — amanhã há mais faturas e mais aulas à espera. 🌙',
-      'Mais um passo dado, tanto na carreira como no curso. Até amanhã! 🌙',
-    ],
-  },
-  'Mariana Marques': {
-    manha: [
-      'Falta cada vez menos para acabares Ciências Farmacêuticas — e já se nota. 🎓',
-      'Manhã de balcão a postos, com o cuidado de sempre pelos nossos utentes. 🏥',
-      'Cada dia de trabalho aqui é também mais um passo firme na tua carreira. 💊',
-      'Café tomado e dedicação total para o atendimento ao balcão. ☕',
-      'Manhã de estudo e trabalho a caminharem lado a lado. 🎓',
-      'Café tomado, sorriso pronto — mais um dia de bom atendimento. ☕',
-      'A tua dedicação ao balcão é notada por toda a equipa. 🤝',
-      'Manhã de energia jovem e vontade de fazer bem. 💊',
-      'Cada atendimento de hoje é também uma lição para o futuro. 🎓',
-      'Manhã produtiva à vista, com o cuidado de sempre. 🏥',
-      'Café tomado, cabeça pronta para mais um dia de aprendizagem prática. ☕',
-      'Mais uma manhã a somar experiência para a carreira que aí vem. 🎓',
-    ],
-    tarde: [
-      'A tua dedicação ao balcão é sentida por cada utente que atendes. 🤝',
-      'A reta final do curso aproxima-se — e a experiência que ganhas aqui vale ouro. 🎓',
-      'Cada atendimento de hoje prepara-te ainda melhor para o futuro. 💊',
-      'O teu empenho no balcão não passa despercebido. 🏥',
-      'A tarde avança com o mesmo cuidado de sempre pelos nossos utentes. 🤝',
-      'Cada dia de trabalho é mais uma página na tua formação. 🎓',
-      'A tua energia não abranda, mesmo a meio da tarde. 💊',
-      'Uma tarde produtiva, com dedicação total ao atendimento. 🤝',
-      'O curso está cada vez mais perto — e a prática de hoje ajuda muito. 🎓',
-      'A tarde é longa, mas o teu empenho mantém-se sempre igual. 🏥',
-      'Cada utente bem atendido é também um passo na tua formação. 💊',
-      'A dedicação de hoje soma-se à experiência que levas contigo. 🎓',
-    ],
-    noite: [
-      'Mais um dia de dedicação total ao balcão. 🌙',
-      'A reta final do curso está cada vez mais perto — força! 🎓🌙',
-      'Obrigado pelo cuidado que pões em cada atendimento. Descansa bem! 🌙',
-      'Mais um passo dado, tanto na farmácia como no curso. 🌙',
-      'Mais um dia de trabalho e aprendizagem bem combinados. 🌙',
-      'A farmácia fecha com mais um dia de experiência no currículo. 🎓🌙',
-      'Obrigado pela dedicação de hoje ao balcão. Até amanhã! 🌙',
-      'O curso pode esperar mais um bocadinho — hoje trabalhaste bem. 📚🌙',
-      'Mais um dia bem passado, entre estudo e trabalho. Bom descanso! 🌙',
-      'Obrigado por mais um dia de empenho total. Descansa! 🌙',
-      'A reta final aproxima-se — cada dia conta. Até amanhã! 🎓🌙',
-      'Mais um dia bem passado a caminho da farmacêutica que vais ser. 🌙',
-    ],
-  },
-  'Carina Gonçalves': {
-    manha: [
-      'Telefones, emails e receção — tudo em boas mãos contigo desde logo cedo. ☎️',
-      'Manhã de backoffice a postos, com a eficiência que já é tua marca. 📋',
-      'Cada chamada bem atendida é um utente mais tranquilo. 🤝',
-      'Café tomado e caixa de emails a postos para mais um dia produtivo. ☕',
-      'Manhã de organização — os telefones não têm segredos para ti. ☎️',
-      'Café tomado, receção a postos, mais um dia bem gerido à vista. ☕',
-      'A tua eficiência começa logo pela manhã e mantém-se o dia todo. 📋',
-      'Manhã tranquila, com tudo em ordem no backoffice. 🏥',
-      'Cada email respondido cedo poupa tempo a toda a equipa. ☎️',
-      'Manhã produtiva à vista, com o rigor de sempre. 📋',
-      'Café tomado, cabeça organizada — mais um dia bem estruturado. ☕',
-      'Mais uma manhã em que tudo funciona graças ao teu trabalho discreto. 🤝',
-    ],
-    tarde: [
-      'A tua eficiência no backoffice mantém tudo a funcionar sem sobressaltos. 📋',
-      'Cada telefonema atendido com simpatia reforça a confiança na Juncal. ☎️',
-      'A receção fica sempre em ordem contigo por perto. 🤝',
-      'O teu trabalho na retaguarda é sentido por toda a equipa. 🏥',
-      'A tarde avança com tudo em ordem no backoffice. 📋',
-      'Cada chamada atendida com cuidado faz a diferença para quem liga. ☎️',
-      'A tua organização é sentida mesmo sem aparecer. 🤝',
-      'Uma tarde produtiva, com a eficiência de sempre. 📋',
-      'O backoffice funciona bem graças à tua dedicação diária. 🏥',
-      'A tarde é longa, mas a tua eficiência mantém-se sempre igual. ☎️',
-      'Cada email tratado a tempo poupa correrias a toda a equipa. 📋',
-      'A receção nunca fica desamparada contigo por perto. 🤝',
-    ],
-    noite: [
-      'Mais um dia de backoffice impecável. 🌙',
-      'Telefones, emails e receção — tudo tratado com o rigor do costume. 🌙',
-      'Obrigado pela eficiência de hoje, sentida por toda a equipa. Descansa bem! 🌙',
-      'Mais um dia bem organizado graças a ti. 🌙',
-      'Mais um dia de backoffice em ordem a fechar. Até amanhã! 🌙',
-      'A receção fecha tranquila, mérito também teu. Bom descanso! 🌙',
-      'Obrigado por mais um dia de trabalho discreto mas essencial. 🌙',
-      'Os emails ficam todos tratados, como sempre. Descansa! 🌙',
-      'Mais um dia bem passado nos bastidores da farmácia. 🌙',
-      'Obrigado pela organização de hoje — fez toda a diferença. 🌙',
-      'A farmácia fecha em ordem, mérito também teu. Até amanhã! 🌙',
-      'Mais um dia de eficiência silenciosa mas muito valiosa. 🌙',
-    ],
-  },
-  'Adriano Lima': {
-    manha: [
-      'Com esse teu jeito caloroso, os telefones e emails começam bem cedo. ☎️😄',
-      'Manhã de backoffice a postos, com a boa energia que só tu trazes. 🎶',
-      'Cada chamada atendida com esse calor especial faz o dia de qualquer utente. 🤝',
-      'Café tomado e boa disposição a postos para mais um dia produtivo. ☕',
-      'Manhã animada, com aquele calor especial que só tu trazes. 🎶',
-      'Café tomado, sorriso pronto — mais um dia de boa energia. ☕',
-      'A tua boa disposição contagia toda a equipa logo pela manhã. 😄',
-      'Manhã de backoffice organizado, com o calor de sempre. ☎️',
-      'Cada email respondido com boa disposição faz toda a diferença. 📋',
-      'Manhã produtiva à vista, com aquela energia que só tu trazes. 🤝',
-      'Café tomado, cabeça pronta — mais um dia animado a caminho. ☕',
-      'Mais uma manhã em que a boa energia começa logo aos telefones. 🎶',
-    ],
-    tarde: [
-      'A tua eficiência no backoffice, com aquele toque caloroso, faz toda a diferença. 📋',
-      'Cada email respondido e cada chamada atendida levam sempre um sorriso. ☎️',
-      'A receção ganha outra energia contigo por perto. 😄',
-      'O teu trabalho na retaguarda mantém tudo a funcionar sem falhas. 🏥',
-      'A tarde avança com a boa energia de sempre no backoffice. 📋',
-      'Cada telefonema atendido com esse calor especial fica na memória de quem liga. ☎️',
-      'A tua boa disposição não abranda, mesmo a meio da tarde. 😄',
-      'Uma tarde produtiva, com eficiência e boa energia em partes iguais. 🎶',
-      'O backoffice funciona bem, e com estilo, graças a ti. 🏥',
-      'A tarde é longa, mas a tua energia mantém-se sempre alta. 📋',
-      'Cada email tratado a tempo, sempre com aquele toque especial. ☎️',
-      'A receção nunca perde a boa disposição contigo por perto. 😄',
-    ],
-    noite: [
-      'Mais um dia de backoffice tratado com eficiência e boa disposição. 🌙',
-      'Telefones, emails e receção — tudo em ordem graças a ti. 🌙',
-      'Obrigado pela energia positiva que trouxeste hoje à equipa. Descansa bem! 🌙',
-      'Mais um dia bem organizado, com aquele calor que só tu trazes. 🌙',
-      'Mais um dia de backoffice animado a fechar. Até amanhã! 🌙',
-      'A receção fecha com o mesmo calor de sempre. Bom descanso! 🌙',
-      'Obrigado por mais um dia de boa energia e trabalho bem feito. 🌙',
-      'Os emails ficam tratados, sempre com aquele toque especial. Descansa! 🌙',
-      'Mais um dia bem passado, entre eficiência e boa disposição. 🌙',
-      'Obrigado pela energia de hoje — fez toda a diferença na equipa. 🌙',
-      'A farmácia fecha em ordem, com o calor de sempre. Até amanhã! 🌙',
-      'Mais um dia de trabalho bem feito, com estilo. Até amanhã! 🌙',
-    ],
-  },
-};
+// As frases personalizadas por colaborador SAÍRAM deste ficheiro a 17/10/2026 (tinham detalhes pessoais e este ficheiro
+// é público): vivem no servidor (pb_hooks/siga/privado_dados.js) e cada pessoa só recebe as suas, depois de iniciar
+// sessão (GET /api/siga/frases — ver carregarFrasesPessoais). Até chegarem, usa-se o banco genérico por categoria.
+const FRASES_COLABORADORES = {};
 // Índice normalizado (sem acentos/maiúsculas) de FRASES_COLABORADORES —
 // mesmo padrão de normalizarTexto usado nas Listas Únicas de Rotação A/B,
 // para o lookup por nomeCompleto nunca falhar por uma pequena diferença
 // de escrita/acentuação entre esta lista e usuarios_app.
-const FRASES_COLABORADORES_INDICE = Object.keys(FRASES_COLABORADORES).reduce((acc, nome) => {
-  acc[normalizarTexto(nome)] = FRASES_COLABORADORES[nome];
-  return acc;
-}, {});
+const FRASES_COLABORADORES_INDICE = {};
+const FRASES_PESSOAIS_PEDIDAS = new Set();
+async function carregarFrasesPessoais() {
+  if (!activeUser || !sb || !sb.privado || !servidorTem('frases')) return;
+  const chave = String(activeUser.id);
+  if (FRASES_PESSOAIS_PEDIDAS.has(chave)) return;
+  FRASES_PESSOAIS_PEDIDAS.add(chave);
+  const f = await sb.privado.frases();
+  if (!f || !activeUser || String(activeUser.id) !== chave) return;
+  if (!['manha', 'tarde', 'noite'].every(p => Array.isArray(f[p]) && f[p].length)) return;
+  FRASES_COLABORADORES_INDICE[normalizarTexto(String(activeUser.nomeCompleto || '').trim())] = f;
+}
 // Devolve o banco de frases personalizadas do colaborador (por período),
 // ou null se não estiver na lista nomeada acima — nesse caso
 // mensagemMotivadoraJuncal cai sempre no banco genérico por categoria
@@ -24106,161 +23473,14 @@ function buildValidadesPage(container, goTo) {
    outro (ver financeiroGuardarDia / rpc_financeiro_guardar_dia).
 ================================================================= */
 const FINANCEIRO_DATA_CORTE = '2026-08-15'; // data de lançamento deste modelo — usada só para não sinalizar dias anteriores ao lançamento como "em falta" (ver financeiroDiasEmFaltaRecentes)
-const HISTORICO_CAIXA_DIARIO = {
-  // 2024
-  '2024-01-01':2629.71, '2024-01-02':7719.77, '2024-01-03':10194.24, '2024-01-04':8846.75, '2024-01-05':9079.40, '2024-01-06':7443.52, '2024-01-07':5948.18, '2024-01-08':8666.09,
-  '2024-01-09':9263.85, '2024-01-10':8791.11, '2024-01-11':7565.02, '2024-01-12':8569.88, '2024-01-13':6946.10, '2024-01-14':4826.88, '2024-01-15':9644.01, '2024-01-16':8222.30,
-  '2024-01-17':6516.91, '2024-01-18':6994.92, '2024-01-19':7789.48, '2024-01-20':7062.97, '2024-01-21':5762.38, '2024-01-22':7990.99, '2024-01-23':9334.55, '2024-01-24':6275.88,
-  '2024-01-25':8221.71, '2024-01-26':10073.89, '2024-01-27':7035.10, '2024-01-28':4703.22, '2024-01-29':9245.09, '2024-01-30':6086.70, '2024-01-31':6327.00, '2024-02-01':7040.19,
-  '2024-02-02':8434.51, '2024-02-03':9487.77, '2024-02-04':5958.61, '2024-02-05':6031.03, '2024-02-06':8494.53, '2024-02-07':6545.58, '2024-02-08':8511.26, '2024-02-09':6913.92,
-  '2024-02-10':7185.23, '2024-02-11':4115.82, '2024-02-12':8489.71, '2024-02-13':6241.71, '2024-02-14':8781.85, '2024-02-15':7944.06, '2024-02-16':6692.36, '2024-02-17':7589.59,
-  '2024-02-18':6084.25, '2024-02-19':8359.82, '2024-02-20':6313.75, '2024-02-21':6808.81, '2024-02-22':8196.68, '2024-02-23':6582.15, '2024-02-24':7973.18, '2024-02-25':4516.77,
-  '2024-02-26':8087.13, '2024-02-27':6160.46, '2024-02-28':9247.20, '2024-02-29':7414.25, '2024-03-01':8405.57, '2024-03-02':6162.02, '2024-03-03':6161.93, '2024-03-04':8483.28,
-  '2024-03-05':10628.39, '2024-03-06':8703.15, '2024-03-07':8515.89, '2024-03-08':8028.88, '2024-03-09':6228.76, '2024-03-10':6821.02, '2024-03-11':17080.86, '2024-03-12':8495.09,
-  '2024-03-13':8938.60, '2024-03-14':7249.50, '2024-03-15':7318.67, '2024-03-16':7824.89, '2024-03-17':5924.83, '2024-03-18':6900.73, '2024-03-19':6831.97, '2024-03-20':6276.56,
-  '2024-03-21':5573.46, '2024-03-22':6690.25, '2024-03-23':8154.79, '2024-03-24':6650.84, '2024-03-25':8835.94, '2024-03-26':8013.94, '2024-03-27':5677.38, '2024-03-28':8411.70,
-  '2024-03-29':8270.07, '2024-03-30':6294.66, '2024-03-31':4277.18, '2024-04-01':6684.67, '2024-04-02':8082.18, '2024-04-03':8146.82, '2024-04-04':8490.20, '2024-04-05':7800.87,
-  '2024-04-06':8903.88, '2024-04-07':5163.22, '2024-04-08':12152.83, '2024-04-09':10449.99, '2024-04-10':7045.78, '2024-04-11':7018.40, '2024-04-12':6842.02, '2024-04-13':9032.64,
-  '2024-04-14':6214.14, '2024-04-15':9085.15, '2024-04-16':11667.28, '2024-04-17':10092.23, '2024-04-18':6725.27, '2024-04-19':7676.59, '2024-04-20':7342.29, '2024-04-21':6075.10,
-  '2024-04-22':7420.92, '2024-04-23':6984.31, '2024-04-24':6593.81, '2024-04-25':6946.99, '2024-04-26':7625.18, '2024-04-27':6879.62, '2024-04-28':5236.34, '2024-04-29':8035.24,
-  '2024-04-30':8942.78, '2024-05-01':8165.99, '2024-05-02':9929.96, '2024-05-03':9019.02, '2024-05-04':8016.08, '2024-05-05':6263.11, '2024-05-06':9827.05, '2024-05-07':9129.46,
-  '2024-05-08':6794.12, '2024-05-09':8908.11, '2024-05-10':10143.32, '2024-05-11':7333.55, '2024-05-12':6592.73, '2024-05-13':8417.71, '2024-05-14':10013.18, '2024-05-15':6657.26,
-  '2024-05-16':9765.34, '2024-05-17':8654.53, '2024-05-18':7087.31, '2024-05-19':4659.27, '2024-05-20':9033.16, '2024-05-21':9738.56, '2024-05-22':8967.85, '2024-05-23':7407.14,
-  '2024-05-24':8110.86, '2024-05-25':7409.78, '2024-05-26':5521.17, '2024-05-27':9145.59, '2024-05-28':9226.89, '2024-05-29':8115.96, '2024-05-30':6746.91, '2024-05-31':7668.67,
-  '2024-06-01':6865.16, '2024-06-02':6101.81, '2024-06-03':9759.62, '2024-06-04':10652.52, '2024-06-05':10876.98, '2024-06-06':7870.37, '2024-06-07':5802.71, '2024-06-08':9519.66,
-  '2024-06-09':5861.54, '2024-06-10':9515.14, '2024-06-11':8059.26, '2024-06-12':8731.63, '2024-06-13':10321.30, '2024-06-14':7242.35, '2024-06-15':8397.21, '2024-06-16':5045.45,
-  '2024-06-17':6276.11, '2024-06-18':7424.12, '2024-06-19':7484.15, '2024-06-20':8568.06, '2024-06-21':8269.26, '2024-06-22':8735.24, '2024-06-23':5401.80, '2024-06-24':5987.95,
-  '2024-06-25':6575.73, '2024-06-26':6147.12, '2024-06-27':7979.98, '2024-06-28':8946.24, '2024-06-29':9638.87, '2024-06-30':8492.45, '2024-07-01':7480.74, '2024-07-02':9662.22,
-  '2024-07-03':8183.15, '2024-07-04':7392.75, '2024-07-05':8462.15, '2024-07-06':8518.48, '2024-07-07':7424.05, '2024-07-08':9033.62, '2024-07-09':8379.64, '2024-07-10':10091.75,
-  '2024-07-11':8308.89, '2024-07-12':9083.52, '2024-07-13':7082.04, '2024-07-14':5916.12, '2024-07-15':10903.76, '2024-07-16':13704.77, '2024-07-17':7151.63, '2024-07-18':7832.94,
-  '2024-07-19':6871.09, '2024-07-20':7908.07, '2024-07-21':5636.61, '2024-07-22':9100.40, '2024-07-23':8224.64, '2024-07-24':5100.63, '2024-07-25':7510.80, '2024-07-26':7543.83,
-  '2024-07-27':8739.87, '2024-07-28':6458.96, '2024-07-29':7617.61, '2024-07-30':9175.01, '2024-07-31':11440.15, '2024-08-01':8697.74, '2024-08-02':9028.30, '2024-08-03':8608.25,
-  '2024-08-04':5775.84, '2024-08-05':7860.95, '2024-08-06':6474.66, '2024-08-07':7549.94, '2024-08-08':9240.46, '2024-08-09':10490.49, '2024-08-10':7596.97, '2024-08-11':4999.13,
-  '2024-08-12':8581.55, '2024-08-13':6586.20, '2024-08-14':7919.42, '2024-08-15':6996.13, '2024-08-16':10270.89, '2024-08-17':7413.04, '2024-08-18':6862.05, '2024-08-19':8742.19,
-  '2024-08-20':6828.41, '2024-08-21':6850.31, '2024-08-22':6626.24, '2024-08-23':6365.98, '2024-08-24':6512.52, '2024-08-25':4600.26, '2024-08-26':9204.79, '2024-08-27':7789.91,
-  '2024-08-28':8605.62, '2024-08-29':7549.61, '2024-08-30':8463.18, '2024-08-31':8094.53, '2024-09-01':6430.16, '2024-09-02':9026.79, '2024-09-03':8756.17, '2024-09-04':9291.83,
-  '2024-09-05':11720.86, '2024-09-06':8571.03, '2024-09-07':9347.44, '2024-09-08':5952.99, '2024-09-09':10512.53, '2024-09-10':9112.08, '2024-09-11':9244.24, '2024-09-12':8508.14,
-  '2024-09-13':8057.66, '2024-09-14':7185.83, '2024-09-15':4158.29, '2024-09-16':8970.66, '2024-09-17':9823.56, '2024-09-18':9362.91, '2024-09-19':10667.50, '2024-09-20':8170.68,
-  '2024-09-21':6431.99, '2024-09-22':6561.31, '2024-09-23':9256.10, '2024-09-24':8546.06, '2024-09-25':6982.99, '2024-09-26':7805.05, '2024-09-27':8446.37, '2024-09-28':6244.81,
-  '2024-09-29':6053.23, '2024-09-30':10899.78, '2024-10-01':9991.62, '2024-10-02':9588.42, '2024-10-03':9755.93, '2024-10-04':10333.04, '2024-10-05':10687.88, '2024-10-06':7866.95,
-  '2024-10-07':9683.75, '2024-10-08':7890.64, '2024-10-09':10135.92, '2024-10-10':11515.65, '2024-10-11':8345.05, '2024-10-12':8312.54, '2024-10-13':6670.86, '2024-10-14':9459.09,
-  '2024-10-15':9613.76, '2024-10-16':8965.92, '2024-10-17':8668.06, '2024-10-18':11768.16, '2024-10-19':8642.30, '2024-10-20':6571.05, '2024-10-21':9028.86, '2024-10-22':8338.92,
-  '2024-10-23':8028.80, '2024-10-24':7090.27, '2024-10-25':7666.13, '2024-10-26':7726.62, '2024-10-27':6092.95, '2024-10-28':9289.28, '2024-10-29':7298.32, '2024-10-30':8998.77,
-  '2024-10-31':10044.15, '2024-11-01':8434.19, '2024-11-02':7578.75, '2024-11-03':6919.81, '2024-11-04':8740.30, '2024-11-05':9788.96, '2024-11-06':10130.21, '2024-11-07':9513.66,
-  '2024-11-08':11846.32, '2024-11-09':9697.87, '2024-11-10':7734.87, '2024-11-11':10836.97, '2024-11-12':10685.64, '2024-11-13':8082.18, '2024-11-14':11830.29, '2024-11-15':7946.77,
-  '2024-11-16':8274.41, '2024-11-17':7622.91, '2024-11-18':8677.94, '2024-11-19':9858.08, '2024-11-20':10198.02, '2024-11-21':8660.50, '2024-11-22':8366.08, '2024-11-23':7865.86,
-  '2024-11-24':6142.62, '2024-11-25':10228.46, '2024-11-26':9657.39, '2024-11-27':8318.67, '2024-11-28':10565.27, '2024-11-29':11138.96, '2024-11-30':8336.95, '2024-12-01':9133.21,
-  '2024-12-02':9958.39, '2024-12-03':10432.31, '2024-12-04':9312.16, '2024-12-05':10871.01, '2024-12-06':11222.71, '2024-12-07':9793.75, '2024-12-08':7838.67, '2024-12-09':18429.48,
-  '2024-12-10':11098.06, '2024-12-11':11244.46, '2024-12-12':10914.65, '2024-12-13':11047.25, '2024-12-14':9130.73, '2024-12-15':8127.23, '2024-12-16':11385.31, '2024-12-17':11605.19,
-  '2024-12-18':8524.04, '2024-12-19':19589.98, '2024-12-20':9844.49, '2024-12-21':8677.47, '2024-12-22':7407.42, '2024-12-23':14688.86, '2024-12-24':9777.20, '2024-12-26':10623.35,
-  '2024-12-27':9328.75, '2024-12-28':10111.05, '2024-12-29':6345.20, '2024-12-30':11427.63, '2024-12-31':7676.02,
-  // 2025
-  '2025-01-01':3890.70, '2025-01-02':9965.76, '2025-01-03':10797.89, '2025-01-04':10519.95, '2025-01-05':6640.55, '2025-01-06':9608.36, '2025-01-07':10562.96, '2025-01-08':8485.85,
-  '2025-01-09':10974.18, '2025-01-10':11697.96, '2025-01-11':10084.94, '2025-01-12':8302.25, '2025-01-13':11623.04, '2025-01-14':11872.98, '2025-01-15':7774.72, '2025-01-16':9626.08,
-  '2025-01-17':10608.68, '2025-01-18':7390.21, '2025-01-19':5569.24, '2025-01-20':10824.50, '2025-01-21':11131.36, '2025-01-22':7264.08, '2025-01-23':11489.82, '2025-01-24':10641.15,
-  '2025-01-25':7256.53, '2025-01-26':5861.14, '2025-01-27':8681.01, '2025-01-28':9122.94, '2025-01-29':8581.43, '2025-01-30':9942.08, '2025-01-31':9648.66, '2025-02-01':9250.92,
-  '2025-02-02':7875.87, '2025-02-03':10560.45, '2025-02-04':9166.42, '2025-02-05':10042.63, '2025-02-06':10345.39, '2025-02-07':9981.38, '2025-02-08':10560.65, '2025-02-09':7185.80,
-  '2025-02-10':11379.99, '2025-02-11':9478.50, '2025-02-12':9550.53, '2025-02-13':9871.77, '2025-02-14':9830.71, '2025-02-15':8641.09, '2025-02-16':8001.14, '2025-02-17':8869.18,
-  '2025-02-18':10253.53, '2025-02-19':11355.65, '2025-02-20':10665.09, '2025-02-21':9559.28, '2025-02-22':7676.71, '2025-02-23':5745.31, '2025-02-24':7498.79, '2025-02-25':9856.58,
-  '2025-02-26':9540.17, '2025-02-27':10221.16, '2025-02-28':8364.31, '2025-03-01':9658.75, '2025-03-02':6844.12, '2025-03-03':10039.73, '2025-03-04':10716.91, '2025-03-05':10010.33,
-  '2025-03-06':11249.09, '2025-03-07':9879.43, '2025-03-08':7822.30, '2025-03-09':8111.06, '2025-03-10':10106.05, '2025-03-11':12959.73, '2025-03-12':11689.15, '2025-03-13':11617.69,
-  '2025-03-14':9674.76, '2025-03-15':9511.47, '2025-03-16':6974.39, '2025-03-17':9643.59, '2025-03-18':9795.57, '2025-03-19':10938.70, '2025-03-20':9554.03, '2025-03-21':8496.03,
-  '2025-03-22':9006.59, '2025-03-23':6340.06, '2025-03-24':10155.59, '2025-03-25':12731.10, '2025-03-26':9269.23, '2025-03-27':8727.42, '2025-03-28':9419.78, '2025-03-29':9213.91,
-  '2025-03-30':8050.74, '2025-03-31':8932.70, '2025-04-01':11206.34, '2025-04-02':10406.28, '2025-04-03':11767.24, '2025-04-04':9068.43, '2025-04-05':10307.82, '2025-04-06':7483.31,
-  '2025-04-07':10743.07, '2025-04-08':13011.47, '2025-04-09':14585.10, '2025-04-10':11347.47, '2025-04-11':12356.61, '2025-04-12':9465.39, '2025-04-13':6333.93, '2025-04-14':8775.73,
-  '2025-04-15':9857.29, '2025-04-16':10451.13, '2025-04-17':9182.37, '2025-04-18':9334.21, '2025-04-19':8983.61, '2025-04-20':4582.85, '2025-04-21':11948.70, '2025-04-22':8519.09,
-  '2025-04-23':10335.82, '2025-04-24':9589.46, '2025-04-25':9671.74, '2025-04-26':9809.40, '2025-04-27':8289.13, '2025-04-28':2917.26, '2025-04-29':13793.00, '2025-04-30':11483.44,
-  '2025-05-01':9863.31, '2025-05-02':10495.48, '2025-05-03':8431.18, '2025-05-04':5961.11, '2025-05-05':10893.82, '2025-05-06':15064.91, '2025-05-07':11053.64, '2025-05-08':11779.75,
-  '2025-05-09':10740.27, '2025-05-10':8999.29, '2025-05-11':7088.37, '2025-05-12':12109.04, '2025-05-13':12080.83, '2025-05-14':9217.64, '2025-05-15':12226.31, '2025-05-16':10966.40,
-  '2025-05-17':8623.20, '2025-05-18':7871.11, '2025-05-19':13377.67, '2025-05-20':10490.83, '2025-05-21':11499.29, '2025-05-22':10224.24, '2025-05-23':11264.15, '2025-05-24':7391.77,
-  '2025-05-25':5921.75, '2025-05-26':10985.37, '2025-05-27':9298.29, '2025-05-28':11271.92, '2025-05-29':10761.49, '2025-05-30':11414.19, '2025-05-31':10510.38, '2025-06-01':9924.74,
-  '2025-06-02':10906.16, '2025-06-03':10036.63, '2025-06-04':9900.69, '2025-06-05':10246.28, '2025-06-06':10719.86, '2025-06-07':13345.14, '2025-06-08':6948.53, '2025-06-09':9986.26,
-  '2025-06-10':9508.12, '2025-06-11':11811.35, '2025-06-12':10292.34, '2025-06-13':10331.26, '2025-06-14':9653.90, '2025-06-15':6492.36, '2025-06-16':10121.86, '2025-06-17':9596.66,
-  '2025-06-18':9529.10, '2025-06-19':10397.33, '2025-06-20':9881.21, '2025-06-21':7848.68, '2025-06-22':5737.03, '2025-06-23':8313.47, '2025-06-24':9446.98, '2025-06-25':10995.52,
-  '2025-06-26':8866.64, '2025-06-27':9695.10, '2025-06-28':8958.75, '2025-06-29':7075.98, '2025-06-30':9581.07, '2025-07-01':12304.56, '2025-07-02':11651.31, '2025-07-03':11424.08,
-  '2025-07-04':10001.38, '2025-07-05':9350.63, '2025-07-06':8008.59, '2025-07-07':12216.81, '2025-07-08':11460.86, '2025-07-09':12625.94, '2025-07-10':16148.70, '2025-07-11':10598.56,
-  '2025-07-12':10461.44, '2025-07-13':8731.24, '2025-07-14':11413.65, '2025-07-15':12983.54, '2025-07-16':9564.26, '2025-07-17':13238.83, '2025-07-18':10864.42, '2025-07-19':9409.23,
-  '2025-07-20':7483.68, '2025-07-21':9656.72, '2025-07-22':9748.27, '2025-07-23':9585.68, '2025-07-24':11922.12, '2025-07-25':12151.48, '2025-07-26':8406.66, '2025-07-27':8447.99,
-  '2025-07-28':11097.68, '2025-07-29':10522.57, '2025-07-30':8371.94, '2025-07-31':11769.18, '2025-08-01':11272.70, '2025-08-02':8052.95, '2025-08-03':7158.86, '2025-08-04':10623.95,
-  '2025-08-05':14195.57, '2025-08-06':11509.80, '2025-08-07':11314.69, '2025-08-08':11383.66, '2025-08-09':11111.48, '2025-08-10':6895.58, '2025-08-11':14241.50, '2025-08-12':15158.79,
-  '2025-08-13':9732.04, '2025-08-14':11871.93, '2025-08-15':9878.74, '2025-08-16':8788.98, '2025-08-17':6707.23, '2025-08-18':10452.07, '2025-08-19':10234.54, '2025-08-20':8731.31,
-  '2025-08-21':8806.47, '2025-08-22':8647.63, '2025-08-23':9888.97, '2025-08-24':6383.05, '2025-08-25':20863.63, '2025-08-26':9188.78, '2025-08-27':10254.18, '2025-08-28':10932.10,
-  '2025-08-29':11336.65, '2025-08-30':8412.95, '2025-08-31':7474.99, '2025-09-01':12173.27, '2025-09-02':11522.84, '2025-09-03':10626.07, '2025-09-04':11266.09, '2025-09-05':12870.56,
-  '2025-09-06':8744.21, '2025-09-07':7131.50, '2025-09-08':13672.93, '2025-09-09':11516.32, '2025-09-10':11995.64, '2025-09-11':13665.63, '2025-09-12':10431.02, '2025-09-13':10728.66,
-  '2025-09-14':7995.45, '2025-09-15':12317.56, '2025-09-16':11913.64, '2025-09-17':10256.41, '2025-09-18':11398.20, '2025-09-19':11121.98, '2025-09-20':10548.33, '2025-09-21':7997.65,
-  '2025-09-22':11339.80, '2025-09-23':12146.61, '2025-09-24':14757.74, '2025-09-25':11209.02, '2025-09-26':11914.03, '2025-09-27':11450.21, '2025-09-28':8129.76, '2025-09-29':12566.47,
-  '2025-09-30':12254.40, '2025-10-01':10088.71, '2025-10-02':10248.98, '2025-10-03':13223.97, '2025-10-04':10979.66, '2025-10-05':11155.93, '2025-10-06':10468.12, '2025-10-07':10012.19,
-  '2025-10-08':15400.29, '2025-10-09':14666.69, '2025-10-10':14577.77, '2025-10-11':11142.50, '2025-10-12':7995.72, '2025-10-13':12616.35, '2025-10-14':9675.74, '2025-10-15':12227.18,
-  '2025-10-16':10191.07, '2025-10-17':12073.21, '2025-10-18':11003.66, '2025-10-19':8319.16, '2025-10-20':19377.14, '2025-10-21':8985.00, '2025-10-22':10219.18, '2025-10-23':11012.64,
-  '2025-10-24':9891.32, '2025-10-25':11776.81, '2025-10-26':7501.71, '2025-10-27':11796.37, '2025-10-28':11546.92, '2025-10-29':13104.49, '2025-10-30':10880.16, '2025-10-31':10646.36,
-  '2025-11-01':12204.19, '2025-11-02':9377.49, '2025-11-03':13307.49, '2025-11-04':10858.13, '2025-11-05':11402.42, '2025-11-06':14159.19, '2025-11-07':13699.38, '2025-11-08':14222.09,
-  '2025-11-09':11809.76, '2025-11-10':15070.17, '2025-11-11':12685.98, '2025-11-12':13633.29, '2025-11-13':10113.84, '2025-11-14':12353.81, '2025-11-15':11176.85, '2025-11-16':8492.04,
-  '2025-11-17':12885.61, '2025-11-18':12330.41, '2025-11-19':13746.36, '2025-11-20':13036.71, '2025-11-21':13280.56, '2025-11-22':10858.32, '2025-11-23':9348.01, '2025-11-24':12394.59,
-  '2025-11-25':12974.50, '2025-11-26':13135.97, '2025-11-27':13700.75, '2025-11-28':12181.67, '2025-11-29':11182.49, '2025-11-30':9413.93, '2025-12-01':11111.20, '2025-12-02':10806.98,
-  '2025-12-03':10934.66, '2025-12-04':13821.71, '2025-12-05':11565.60, '2025-12-06':16201.18, '2025-12-07':9411.34, '2025-12-08':11891.87, '2025-12-09':14963.74, '2025-12-10':14049.20,
-  '2025-12-11':13471.58, '2025-12-12':13008.61, '2025-12-13':13108.09, '2025-12-14':9669.39, '2025-12-15':22245.96, '2025-12-16':18725.00, '2025-12-17':13123.44, '2025-12-18':10233.12,
-  '2025-12-19':13547.70, '2025-12-20':11826.97, '2025-12-21':8920.22, '2025-12-22':12315.64, '2025-12-23':24020.62, '2025-12-24':9440.96, '2025-12-26':11951.65, '2025-12-27':12507.60,
-  '2025-12-28':9513.59, '2025-12-29':9298.51, '2025-12-30':20444.06, '2025-12-31':10972.81,
-  // 2026
-  '2026-01-01':3525.26, '2026-01-02':12764.27, '2026-01-03':11232.27, '2026-01-04':9519.12, '2026-01-05':12484.13, '2026-01-06':11857.39, '2026-01-07':11237.76, '2026-01-08':14420.58,
-  '2026-01-09':13020.13, '2026-01-10':11115.02, '2026-01-11':9706.36, '2026-01-12':13493.69, '2026-01-13':14150.10, '2026-01-14':13298.66, '2026-01-15':16002.14, '2026-01-16':14552.25,
-  '2026-01-17':12538.43, '2026-01-18':9879.68, '2026-01-19':11425.82, '2026-01-20':13979.83, '2026-01-21':15386.91, '2026-01-22':11012.65, '2026-01-23':11769.34, '2026-01-24':14523.47,
-  '2026-01-25':9966.74, '2026-01-26':12674.25, '2026-01-27':13547.98, '2026-01-28':12648.31, '2026-01-29':11643.11, '2026-01-30':12443.63, '2026-01-31':10428.18, '2026-02-01':11351.43,
-  '2026-02-02':10888.05, '2026-02-03':13548.01, '2026-02-04':13908.51, '2026-02-05':14464.89, '2026-02-06':16092.66, '2026-02-07':13058.08, '2026-02-08':11211.21, '2026-02-09':12804.01,
-  '2026-02-10':14661.11, '2026-02-11':12692.05, '2026-02-12':12712.54, '2026-02-13':14516.17, '2026-02-14':11997.84, '2026-02-15':8012.24, '2026-02-16':12625.64, '2026-02-17':10893.34,
-  '2026-02-18':10434.33, '2026-02-19':12967.67, '2026-02-20':11917.64, '2026-02-21':11341.05, '2026-02-22':8411.00, '2026-02-23':11878.19, '2026-02-24':12435.00, '2026-02-25':12513.48,
-  '2026-02-26':14719.70, '2026-02-27':13577.07, '2026-02-28':12004.46, '2026-03-01':11572.81, '2026-03-02':13923.73, '2026-03-03':13608.77, '2026-03-04':12542.20, '2026-03-05':15214.01,
-  '2026-03-06':18720.79, '2026-03-07':11054.73, '2026-03-08':13193.14, '2026-03-09':13857.44, '2026-03-10':13694.97, '2026-03-11':15164.19, '2026-03-12':14012.73, '2026-03-13':11105.06,
-  '2026-03-14':12687.62, '2026-03-15':8525.16, '2026-03-16':14003.00, '2026-03-17':11288.22, '2026-03-18':11772.11, '2026-03-19':13406.31, '2026-03-20':11590.46, '2026-03-21':13604.67,
-  '2026-03-22':12518.38, '2026-03-23':13406.55, '2026-03-24':13984.46, '2026-03-25':14878.31, '2026-03-26':11206.17, '2026-03-27':11571.42, '2026-03-28':10644.40, '2026-03-29':9266.78,
-  '2026-03-30':12251.11, '2026-03-31':14464.06, '2026-04-01':15025.56, '2026-04-02':11255.77, '2026-04-03':9277.16, '2026-04-04':11361.44, '2026-04-05':7726.03, '2026-04-06':16172.07,
-  '2026-04-07':13685.45, '2026-04-08':17057.28, '2026-04-09':13871.07, '2026-04-10':13818.69, '2026-04-11':12562.80, '2026-04-12':9207.92, '2026-04-13':15067.08, '2026-04-14':14379.13,
-  '2026-04-15':15050.01, '2026-04-16':14508.01, '2026-04-17':19054.18, '2026-04-18':11876.45, '2026-04-19':9623.35, '2026-04-20':12869.87, '2026-04-21':14469.34, '2026-04-22':10903.01,
-  '2026-04-23':11019.81, '2026-04-24':11406.32, '2026-04-25':12897.33, '2026-04-26':10515.66, '2026-04-27':11900.71, '2026-04-28':15960.03, '2026-04-29':12769.89, '2026-04-30':19850.24,
-  '2026-05-01':12117.43, '2026-05-02':12632.70, '2026-05-03':10469.55, '2026-05-04':15061.30, '2026-05-05':14096.00, '2026-05-06':14781.84, '2026-05-07':14576.93, '2026-05-08':14321.31,
-  '2026-05-09':13010.15, '2026-05-10':12119.27, '2026-05-11':13245.65, '2026-05-12':15800.02, '2026-05-13':13672.88, '2026-05-14':17064.46, '2026-05-15':14819.16, '2026-05-16':12465.17,
-  '2026-05-17':13289.84, '2026-05-18':14281.97, '2026-05-19':12223.19, '2026-05-20':16308.51, '2026-05-21':13105.84, '2026-05-22':12174.93, '2026-05-23':10780.39, '2026-05-24':11939.60,
-  '2026-05-25':14483.54, '2026-05-26':14099.45, '2026-05-27':12446.90, '2026-05-28':18193.90, '2026-05-29':14192.05, '2026-05-30':13772.93, '2026-05-31':13149.60, '2026-06-01':12296.30,
-  '2026-06-02':15232.44, '2026-06-03':11736.73, '2026-06-04':11949.58, '2026-06-05':14385.43, '2026-06-06':13700.91, '2026-06-07':10068.89, '2026-06-08':16311.69, '2026-06-09':17831.50,
-  '2026-06-10':12449.88, '2026-06-11':15546.71, '2026-06-12':7178.22, '2026-06-13':14543.25, '2026-06-14':11361.27, '2026-06-15':14654.30, '2026-06-16':14191.52, '2026-06-17':11356.06,
-  '2026-06-18':13102.44, '2026-06-19':13927.95, '2026-06-20':11714.56, '2026-06-21':10326.33, '2026-06-22':16032.69, '2026-06-23':11068.20, '2026-06-24':14614.27, '2026-06-25':13532.13,
-  '2026-06-26':12154.78, '2026-06-27':10279.83, '2026-06-28':11835.12, '2026-06-29':21598.69, '2026-06-30':12546.35,
-  // Julho 2026: recalculado em 2026-08-01 a partir do ledger diário por operador
-  // Resumo_Caixa24-26.pdf (Valor Caixa + Entidades + Crédito por dia, excluindo as
-  // linhas "Trocas" de cada dia) e depois escalado pelo rácio
-  // 454390.23 / 489156.07 para bater exatamente com a Faturação Real Líquida
-  // oficial do 4Digital para o mês (454 390,23 €, já sem trocas/transferências
-  // internas entre farmácias do grupo, confirmado pelo utilizador) — mantém a
-  // curva/distribuição diária real, só a escala é ajustada.
-  '2026-07-01':14070.97, '2026-07-02':15066.25, '2026-07-03':14260.78,
-  '2026-07-04':12381.79, '2026-07-05':14291.26, '2026-07-06':13621.20, '2026-07-07':15435.74, '2026-07-08':16496.46, '2026-07-09':18508.86, '2026-07-10':17908.01, '2026-07-11':14019.24,
-  '2026-07-12':14196.85, '2026-07-13':18407.43, '2026-07-14':19686.68, '2026-07-15':17740.23, '2026-07-16':12253.80, '2026-07-17':12027.52, '2026-07-18':11717.49, '2026-07-19':11406.61,
-  '2026-07-20':16299.22, '2026-07-21':12115.37, '2026-07-22':12646.51, '2026-07-23':14706.13, '2026-07-24':13702.71, '2026-07-25':14713.70, '2026-07-26':10157.87, '2026-07-27':13587.27,
-  '2026-07-28':16401.19, '2026-07-29':15746.09, '2026-07-30':14293.06, '2026-07-31':16523.94, '2026-08-01':320.88,
-};
+// HISTORICO_CAIXA_DIARIO (caixa diária da Juncal desde 2024) foi APAGADO a 17/10/2026: estava neste ficheiro, que é
+// público, e já não era lido por nenhuma função. Os dados financeiros vivem só no servidor (faturacao_diaria).
 // (quando ninguém definiu um Objetivo manual em objetivos_mensais) —
 // os totais "reais" mensais deixaram de vir daqui: passam a ser
 // calculados a partir do histórico diário acima + registos manuais
 // (ver financeiroTotalMes), que é exato para 2024, 2025 e 2026.
-const HISTORICO_FATURACAO_MENSAL = [
-  { ano: 2025, mes: 3, mesNome: 'Março', previsao: 260000 },
-  { ano: 2025, mes: 4, mesNome: 'Abril', previsao: 255000 },
-  { ano: 2025, mes: 5, mesNome: 'Maio', previsao: 275000 },
-  { ano: 2025, mes: 6, mesNome: 'Junho', previsao: 270000 },
-  { ano: 2025, mes: 7, mesNome: 'Julho', previsao: 285000 },
-  { ano: 2025, mes: 8, mesNome: 'Agosto', previsao: 260000 },
-  { ano: 2025, mes: 9, mesNome: 'Setembro', previsao: 270000 },
-  { ano: 2025, mes: 10, mesNome: 'Outubro', previsao: 290000 },
-  { ano: 2025, mes: 11, mesNome: 'Novembro', previsao: 300000 },
-  { ano: 2025, mes: 12, mesNome: 'Dezembro', previsao: 300000 },
-  { ano: 2026, mes: 1, mesNome: 'Janeiro', previsao: 360000 },
-  { ano: 2026, mes: 2, mesNome: 'Fevereiro', previsao: 290000 },
-  { ano: 2026, mes: 3, mesNome: 'Março', previsao: 340000 },
-  { ano: 2026, mes: 4, mesNome: 'Abril', previsao: 340000 },
-  { ano: 2026, mes: 5, mesNome: 'Maio', previsao: 360000 },
-  { ano: 2026, mes: 6, mesNome: 'Junho', previsao: 330000 },
-  { ano: 2026, mes: 7, mesNome: 'Julho', previsao: 375000 },
-];
+// HISTORICO_FATURACAO_MENSAL (previsões mensais da Juncal) saiu deste ficheiro público a 17/10/2026: os valores
+// passaram para objetivos_mensais no servidor (pb_hooks/siga/privado.js), lidos só por quem pode ver o Financeiro.
 const MESES_PT_NOMES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
 
 function financeiroFormatarEuro(v, casas) {
@@ -24751,13 +23971,11 @@ function financeiroProjecaoAnual(ano, campo) {
 }
 // Meta/Previsão do mês: usa primeiro um objetivo gravado em objetivos_mensais
 // (editável para qualquer mês — presente, passado ou futuro — via
-// abrirModalDefinirMeta), senão cai para a Previsão do histórico importado
-// dos CSV; devolve null se não houver nenhuma das duas.
+// abrirModalDefinirMeta); devolve null se não houver. (As previsões antigas importadas dos CSV passaram a ser
+// linhas de objetivos_mensais no servidor a 17/10/2026 — ver pb_hooks/siga/privado.js.)
 function financeiroMetaDoMes(ano, mes) {
   const r = (STATE.objetivosMensais || []).find(x => x.ano === ano && x.mes === mes);
-  if (r && r.meta) return parseFloat(r.meta);
-  const hist = HISTORICO_FATURACAO_MENSAL.find(h => h.ano === ano && h.mes === mes);
-  return (hist && hist.previsao) ? hist.previsao : null;
+  return (r && r.meta) ? parseFloat(r.meta) : null;
 }
 // UPSERT via RPC segura (rpc_objetivos_definir_meta) — mesmo padrão de
 // financeiroGuardarDia: a tabela objetivos_mensais também deixa de aceitar
@@ -25604,7 +24822,7 @@ function abrirModalRegistoEmTabela(onGuardado) {
 // podeEditarFinanceiro) — percorre os dias anteriores a partir de ontem,
 // à procura de dias sem NENHUM valor de Faturação conhecido
 // (financeiroFaturacaoDoDia === null), quer venha de um registo manual
-// no Supabase, quer do histórico incorporado (HISTORICO_CAIXA_DIARIO).
+// no Supabase, quer de outro registo já gravado.
 // Um dia com dado do histórico NÃO é "em falta" — só fica em falta a
 // partir do primeiro dia sem qualquer valor (tipicamente logo a seguir
 // ao fim do histórico incorporado). Pára assim que encontra um dia já
@@ -34786,7 +34004,17 @@ async function carregarRecursosServidor() {
   const antes = [...SIGA_RECURSOS].sort().join(',');
   (await sb.ficheiros.recursos()).forEach(r => SIGA_RECURSOS.add(String(r)));
   if ([...SIGA_RECURSOS].sort().join(',') !== antes && activeUser) renderOuAdiarSeOcupado();
+  frasesPessoaisSeFaltarem();
 }
+// Frases personalizadas: pedidas ao servidor uma vez por sessão; ao chegarem, a frase do cabeçalho é atualizada.
+async function frasesPessoaisSeFaltarem() {
+  if (!activeUser || FRASES_PESSOAIS_PEDIDAS.has(String(activeUser.id))) return;
+  await carregarFrasesPessoais();
+  if (activeUser && FRASES_COLABORADORES_INDICE[normalizarTexto(String(activeUser.nomeCompleto || '').trim())]) {
+    document.querySelectorAll('.mensagem-motivadora-dashboard').forEach(el => { el.textContent = mensagemMotivadoraJuncal(activeUser); });
+  }
+}
+setInterval(frasesPessoaisSeFaltarem, 15 * 1000);
 setTimeout(carregarRecursosServidor, 300);
 setInterval(carregarRecursosServidor, 10 * 60 * 1000); // o servidor pode ser atualizado com a app aberta
 /* =================================================================
@@ -66620,7 +65848,21 @@ function buildClock() {
 /* =================================================================
    PROTEÇÃO DE ACESSO (palavra-passe geral)
 ================================================================= */
-const APP_PASSWORD = 'Juncal2026';
+// A palavra-passe de acesso deixou de estar escrita aqui (17/10/2026): o servidor da farmácia é que a verifica
+// (POST /api/siga/acesso — pb_hooks/siga/privado.js). Só enquanto o servidor não tiver essa função (404) se compara
+// com este resumo SHA-256 (transição — apagar depois de o servidor estar atualizado).
+const APP_PASSWORD_SHA256_TRANSICAO = '6db66967be04ad8d48d5453bcdbc6907b781b94afdead46edd1bfee7de5f3c2b';
+async function verificarPalavraPasseAcesso(palavra) {
+  if (sb && sb.privado) {
+    const r = await sb.privado.acesso(palavra);
+    if (r.estado !== 404) return r;
+  }
+  try {
+    const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(palavra));
+    const hex = Array.from(new Uint8Array(bytes)).map(b => b.toString(16).padStart(2, '0')).join('');
+    return { ok: hex === APP_PASSWORD_SHA256_TRANSICAO };
+  } catch (e) { return { ok: false, erro: 'Não foi possível verificar a palavra-passe neste navegador.' }; }
+}
 const AUTH_STORAGE_KEY = 'sigajuncal_auth_ok';
 
 function readStoredAuth() {
@@ -71857,13 +71099,22 @@ function showLoginGate() {
   const input = h('input', { class: 'login-input', type: 'password', placeholder: 'Palavra-passe de acesso', autocomplete: 'current-password', name: 'sigajuncal-master-password' });
   const errorMsg = h('p', { class: 'login-error' }, '');
 
-  function tryLogin() {
-    if (input.value === APP_PASSWORD) {
+  let aVerificar = false;
+  async function tryLogin() {
+    if (aVerificar) return;
+    const palavra = input.value;
+    if (!palavra) { input.focus(); return; }
+    aVerificar = true;
+    errorMsg.textContent = 'A verificar…';
+    let r;
+    try { r = await verificarPalavraPasseAcesso(palavra); } catch (e) { r = { ok: false, erro: 'Sem ligação ao servidor da farmácia. Tenta outra vez.' }; }
+    aVerificar = false;
+    if (r && r.ok) {
       writeStoredAuth();
       overlay.remove();
       startApp();
     } else {
-      errorMsg.textContent = 'Palavra-passe incorreta. Tenta novamente.';
+      errorMsg.textContent = (r && r.erro && r.erro !== 'Palavra-passe incorreta.') ? r.erro : 'Palavra-passe incorreta. Tenta novamente.';
       input.value = '';
       input.focus();
     }
@@ -71939,7 +71190,7 @@ function ativarTooltipsDeCelulasTruncadas() {
 ativarTooltipsDeCelulasTruncadas();
 
 // FLUXO DE ARRANQUE OBRIGATÓRIO — a Camada 1 mantém-se absolutamente inalterada:
-//  1) Password master da app ("Juncal2026") — guardada em localStorage e com
+//  1) Palavra-passe geral da app (verificada no servidor) — guardada em localStorage e com
 //     autocomplete ativo, para o Chrome (ou outro browser) a poder memorizar
 //     e facilitar o arranque diário. Só é pedida uma vez por computador.
 //  2) SÓ DEPOIS da camada 1 validada, a app pede logo o login individual
