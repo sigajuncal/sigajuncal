@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-18 23:30" />
+<meta name="siga-versao" content="2026-10-19 00:25" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -6500,10 +6500,11 @@ body.gf-ativo .bottom-action-bar{display:none !important;}
 .gf-barra.gf-limpa .gf-texto{color:var(--muted,#64748b);font-weight:600;}
 /* Transição do login (2026-10-18) — ver loginTransicaoSaida / sessaoEntradaAnimar. */
 .login-transicao-veu{position:fixed;inset:0;z-index:100000;pointer-events:none;opacity:1;transition:opacity .35s ease;}
+.login-transicao-veu .login-transicao-painel,.login-transicao-veu .login-transicao-painel *{animation:none !important;} /* a cópia mostra o que estava no ecrã, sem recomeçar animações (senão ficava uma caixa branca vazia) */
 .login-transicao-veu .login-transicao-painel{transition:transform .35s cubic-bezier(.4,0,.2,1),opacity .3s ease;transform-origin:center top;}
 .login-transicao-veu.a-sair{opacity:0;}
 .login-transicao-veu.a-sair .login-transicao-painel{transform:scale(.96) translateY(-6px);opacity:0;}
-@keyframes sessaoEntra{from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:none;}}
+@keyframes sessaoEntra{from{opacity:.3;transform:translateY(8px);}to{opacity:1;transform:none;}}
 @keyframes sessaoAparece{from{opacity:0;}to{opacity:1;}}
 body.sessao-a-entrar .page-container > *{animation:sessaoEntra .5s cubic-bezier(.2,.7,.2,1) both;}
 body.sessao-a-entrar .page-container > *:nth-child(2){animation-delay:.06s;}
@@ -6511,8 +6512,17 @@ body.sessao-a-entrar .page-container > *:nth-child(3){animation-delay:.12s;}
 body.sessao-a-entrar .page-container > *:nth-child(4){animation-delay:.18s;}
 body.sessao-a-entrar .page-container > *:nth-child(5){animation-delay:.24s;}
 body.sessao-a-entrar .page-container > *:nth-child(n+6){animation-delay:.3s;}
-body.sessao-a-entrar .topbar-desktop-dir,body.sessao-a-entrar .sidebar-desktop,body.sessao-a-entrar .barra-inferior-mobile,body.sessao-a-entrar .topbar-mobile{animation:sessaoAparece .45s ease both;}
-@media (prefers-reduced-motion:reduce){.login-transicao-veu{display:none;}body.sessao-a-entrar *{animation:none !important;}}
+/* As barras de navegação (de cima, de baixo e a lateral) ficam quietas — só o conteúdo da página se mexe. */
+.login-a-preparar{animation:sessaoAparece .25s ease both;}
+/* Janelas que aparecem sozinhas (lembrete de picagem, Mensagem do Dia, login): entram em fade, não de repente. */
+@keyframes janelaEntra{from{opacity:0;}to{opacity:1;}}
+@keyframes painelEntra{from{opacity:0;transform:translateY(10px) scale(.98);}to{opacity:1;transform:none;}}
+.ponto-lembrete-overlay,.msg-popup-overlay,.login-sessao-overlay:not(.login-ancorado){animation:janelaEntra .22s ease both;}
+.ponto-lembrete-overlay > *,.msg-popup-overlay > *,.login-sessao-overlay > .modal-panel{animation:painelEntra .28s cubic-bezier(.2,.7,.2,1) both;}
+/* Ecrã de arranque: sai em fade (ver startApp). */
+.boot-loading{transition:opacity .3s ease;}
+.boot-loading.a-sair{opacity:0;pointer-events:none;}
+@media (prefers-reduced-motion:reduce){.login-transicao-veu{display:none;}body.sessao-a-entrar *,.login-a-preparar,.ponto-lembrete-overlay,.ponto-lembrete-overlay > *,.msg-popup-overlay,.msg-popup-overlay > *,.login-sessao-overlay,.login-sessao-overlay > .modal-panel{animation:none !important;}.boot-loading{transition:none;}}
 /* Voltar ao topo (2026-10-17): aparece ao descer numa página comprida.
    2026-10-18 (Hugo: "deveria ter uma cor diferente"): cor própria — azul-ardósia escuro com seta branca — que não se
    confunde com os cartões brancos nem com os botões de ação da app; um pouco transparente para não tapar o que está
@@ -65658,6 +65668,10 @@ let ultimaPaginaRenderizada = null;
 let ultimoUtilizadorRenderizado = undefined; // undefined = ainda não houve nenhum render
 let jaFezPrimeiraRenderizacao = false;
 function render() {
+  // Login a preparar a sessão (2026-10-18): nada se redesenha por trás da janela "A preparar a sessão…" — antes, um
+  // redesenho a meio (tempo real, menu personalizado…) mostrava já a página da pessoa por trás, e depois a animação
+  // de entrada fazia-a desaparecer e reaparecer (o "piscar" no telemóvel). O desenho final é feito pelo próprio login.
+  if (LOGIN_A_PREPARAR) { if (Date.now() - LOGIN_A_PREPARAR > 20000) LOGIN_A_PREPARAR = 0; else return; }
   if (cliqueAMeio() && jaFezPrimeiraRenderizacao) { RENDER_ADIADO_POR_CLIQUE = true; setTimeout(libertarRenderAdiado, 3100); return; }
   RENDER_ADIADO_POR_CLIQUE = false;
   try { agendarPreCargaVacinacao(); } catch (_) {}
@@ -66454,7 +66468,7 @@ function buildLoadingScreen() {
   return h('div', { class: 'boot-loading', id: 'boot-loading' }, [
     h('img', { src: SIGA_LOGO_DATA_URI, alt: 'SigaFarmácia', class: 'boot-loading-logo' }),
     h('div', { class: 'boot-spinner' }),
-    h('p', { class: 'boot-loading-text' }, 'A carregar dados da nuvem…'),
+    h('p', { class: 'boot-loading-text' }, SIGA_SERVIDOR_LOCAL ? 'A abrir…' : 'A carregar dados da nuvem…'),
   ]);
 }
 
@@ -66560,6 +66574,7 @@ function sessaoEntradaAnimar() {
   clearTimeout(sessaoEntradaAnimar.t);
   sessaoEntradaAnimar.t = setTimeout(() => document.body.classList.remove('sessao-a-entrar'), 1100);
 }
+let LOGIN_A_PREPARAR = 0; // momento em que o login começou a preparar a sessão (0 = não está) — ver render()
 const LOGIN_ESPERA_MAX_MS = 3000; // login: tempo máximo à espera dos dados quando o aparelho já os tem em memória (ver concluirLogin)
 async function loadAllData() {
   // Rede de segurança final do arranque: mesmo que uma falha inesperada
@@ -66820,6 +66835,8 @@ function pontoLembreteSituacao() {
 }
 function verificarLembretePonto() {
   if (PONTO_LEMBRETE_ABERTO || !activeUser) return;
+  // Não aparece a meio da entrada na sessão (2026-10-18) — espera que a página acabe de entrar.
+  if (LOGIN_A_PREPARAR || document.body.classList.contains('sessao-a-entrar')) { setTimeout(verificarLembretePonto, 900); return; }
   if (PROTECAO_ECRA_ATIVA || document.querySelector('.login-sessao-overlay, .msg-popup-overlay, .ponto-qr-resultado-overlay')) return;
   const s = pontoLembreteSituacao();
   if (!s) return;
@@ -69957,7 +69974,7 @@ function showUserLoginScreen(onSuccess, opts) {
     activeUser = { id: u.id, username: u.username, nomeCompleto: u.nomeCompleto || u.username, categoriaProfissional: u.categoriaProfissional || '', perfilNivel: u.perfilNivel || 'Basico', fundoAppId: u.fundoAppId || '', prestadorKey: u.prestadorKey || '', estatutoColaborador: u.estatutoColaborador || '' };
     activeUserPin = pinUsado || null; // 2026-09-25: o PIN já não vem da lista de utilizadores (fica só em memória)
     guardarSessaoMovel(); // 2026-10-09: só telemóvel — sobrevive a recarregar a mesma janela (ver SESSAO_MOVEL_SS)
-    aplicarFundoAppDoUtilizador(activeUser);
+    LOGIN_A_PREPARAR = Date.now(); // o fundo pessoal e a página só aparecem no fim, juntos (ver loginTransicaoSaida)
     setTimeout(() => { try { carregarMenuPrefsDoServidor(); } catch (e) { /* ignora */ } }, 0); // menu personalizado (2026-10-13)
     // Herdar do modo convidado o que já tinha sido lido antes do login —
     // evita que o badge reconte mensagens já vistas no ecrã anterior.
@@ -69978,7 +69995,7 @@ function showUserLoginScreen(onSuccess, opts) {
     // (render() único, no fim) quando a vista já está 100% correta.
     clear(panel);
     const textoPreparar = h('p', { class: 'login-sub', style: 'margin:0;' }, `A preparar a sessão de ${activeUser.nomeCompleto || activeUser.username}…`);
-    panel.appendChild(h('div', { style: 'padding:24px 4px 8px;text-align:center;' }, [
+    panel.appendChild(h('div', { class: 'login-a-preparar', style: 'padding:24px 4px 8px;text-align:center;' }, [
       h('div', { class: 'boot-spinner', style: 'margin:0 auto 14px;' }),
       textoPreparar,
     ]));
@@ -70005,6 +70022,8 @@ function showUserLoginScreen(onSuccess, opts) {
     }
     // Transição de entrada (2026-10-18): a janela de login desvanece (em vez de desaparecer de repente) e o ecrã
     // de cada um entra suavemente — ver loginTransicaoSaida / body.sessao-a-entrar.
+    LOGIN_A_PREPARAR = 0;
+    aplicarFundoAppDoUtilizador(activeUser);
     loginTransicaoSaida(overlay);
     overlay.remove();
     // A janela de tolerância de edição (uiEstaOcupada) fica "quente" pelos
@@ -71588,7 +71607,9 @@ async function startApp() {
   } catch (e) {
     console.error('[Arranque] erro inesperado durante a inicialização:', formatarErroSeguro(e));
   }
-  loadingEl.remove();
+  // Sai em fade (2026-10-18) — antes desaparecia de repente e o ecrã seguinte "saltava".
+  loadingEl.classList.add('a-sair');
+  setTimeout(() => loadingEl.remove(), 320);
   // Baseline da contagem de não lidas: fixada AGORA, depois do histórico de
   // chat já carregado — só mensagens que cheguem a partir deste momento
   // contam para o badge de quem nunca abriu o Chat neste dispositivo.
