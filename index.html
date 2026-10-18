@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-18 23:10" />
+<meta name="siga-versao" content="2026-10-18 23:30" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -6498,6 +6498,21 @@ body.gf-ativo .bottom-action-bar{display:none !important;}
 .vivo-form-aviso-icone{flex:none;}
 .gf-barra.gf-limpa .gf-ponto{background:#94a3b8;box-shadow:0 0 0 3px rgba(148,163,184,.25);}
 .gf-barra.gf-limpa .gf-texto{color:var(--muted,#64748b);font-weight:600;}
+/* Transição do login (2026-10-18) — ver loginTransicaoSaida / sessaoEntradaAnimar. */
+.login-transicao-veu{position:fixed;inset:0;z-index:100000;pointer-events:none;opacity:1;transition:opacity .35s ease;}
+.login-transicao-veu .login-transicao-painel{transition:transform .35s cubic-bezier(.4,0,.2,1),opacity .3s ease;transform-origin:center top;}
+.login-transicao-veu.a-sair{opacity:0;}
+.login-transicao-veu.a-sair .login-transicao-painel{transform:scale(.96) translateY(-6px);opacity:0;}
+@keyframes sessaoEntra{from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:none;}}
+@keyframes sessaoAparece{from{opacity:0;}to{opacity:1;}}
+body.sessao-a-entrar .page-container > *{animation:sessaoEntra .5s cubic-bezier(.2,.7,.2,1) both;}
+body.sessao-a-entrar .page-container > *:nth-child(2){animation-delay:.06s;}
+body.sessao-a-entrar .page-container > *:nth-child(3){animation-delay:.12s;}
+body.sessao-a-entrar .page-container > *:nth-child(4){animation-delay:.18s;}
+body.sessao-a-entrar .page-container > *:nth-child(5){animation-delay:.24s;}
+body.sessao-a-entrar .page-container > *:nth-child(n+6){animation-delay:.3s;}
+body.sessao-a-entrar .topbar-desktop-dir,body.sessao-a-entrar .sidebar-desktop,body.sessao-a-entrar .barra-inferior-mobile,body.sessao-a-entrar .topbar-mobile{animation:sessaoAparece .45s ease both;}
+@media (prefers-reduced-motion:reduce){.login-transicao-veu{display:none;}body.sessao-a-entrar *{animation:none !important;}}
 /* Voltar ao topo (2026-10-17): aparece ao descer numa página comprida.
    2026-10-18 (Hugo: "deveria ter uma cor diferente"): cor própria — azul-ardósia escuro com seta branca — que não se
    confunde com os cartões brancos nem com os botões de ação da app; um pouco transparente para não tapar o que está
@@ -66498,6 +66513,53 @@ async function ortopediaMigrarFornecedorAntigo() {
 }
 const LEITURA_COMPLETA_SEM_MARCA_EM = {};
 const TABELAS_SEM_UPDATED_AT_AVISADAS = new Set();
+/* TRANSIÇÃO DO LOGIN (2026-10-18, Hugo: "era giro no login haver algum tipo de animação simples ... para não parecer
+   tão jarring quando aparecem logo os elementos de cada um, incluindo o fundo"):
+   1. a janela de login não desaparece de repente — fica uma cópia dela (só imagem, sem nada clicável) que desvanece
+      e encolhe ligeiramente em ~0,35 s;
+   2. ao mesmo tempo, os blocos da página de cada um entram de baixo para cima, um a seguir ao outro;
+   3. o fundo pessoal aparece em fade (ver aplicarTemaFundoApp).
+   Quem tem "reduzir movimento" ligado no aparelho não vê animações. */
+function reduzirMovimento() {
+  try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { return false; }
+}
+function loginTransicaoSaida(overlay) {
+  if (!overlay || reduzirMovimento() || !document.body.contains(overlay)) return;
+  try {
+    const cs = getComputedStyle(overlay);
+    const veu = document.createElement('div');
+    veu.className = 'login-transicao-veu';
+    veu.setAttribute('aria-hidden', 'true');
+    veu.style.backgroundColor = cs.backgroundColor;
+    if (cs.backdropFilter && cs.backdropFilter !== 'none') veu.style.backdropFilter = cs.backdropFilter;
+    if (cs.webkitBackdropFilter && cs.webkitBackdropFilter !== 'none') veu.style.webkitBackdropFilter = cs.webkitBackdropFilter;
+    const painel = overlay.querySelector('.modal-panel') || overlay.firstElementChild;
+    if (painel) {
+      const r = painel.getBoundingClientRect();
+      const pcs = getComputedStyle(painel);
+      const copia = painel.cloneNode(true);
+      copia.querySelectorAll('[id]').forEach(n => n.removeAttribute('id'));
+      copia.classList.add('login-transicao-painel');
+      Object.assign(copia.style, {
+        position: 'absolute', left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px', margin: '0',
+        maxWidth: 'none', maxHeight: 'none', boxSizing: 'border-box', background: pcs.background, backgroundColor: pcs.backgroundColor,
+        borderRadius: pcs.borderRadius, boxShadow: pcs.boxShadow, border: pcs.border, padding: pcs.padding, overflow: 'hidden',
+      });
+      veu.appendChild(copia);
+    }
+    document.body.appendChild(veu);
+    requestAnimationFrame(() => requestAnimationFrame(() => veu.classList.add('a-sair')));
+    setTimeout(() => veu.remove(), 520);
+  } catch (e) { /* sem transição — nunca impede o login */ }
+}
+function sessaoEntradaAnimar() {
+  if (reduzirMovimento()) return;
+  document.body.classList.remove('sessao-a-entrar');
+  void document.body.offsetWidth; // recomeça a animação se a classe já lá estava
+  document.body.classList.add('sessao-a-entrar');
+  clearTimeout(sessaoEntradaAnimar.t);
+  sessaoEntradaAnimar.t = setTimeout(() => document.body.classList.remove('sessao-a-entrar'), 1100);
+}
 const LOGIN_ESPERA_MAX_MS = 3000; // login: tempo máximo à espera dos dados quando o aparelho já os tem em memória (ver concluirLogin)
 async function loadAllData() {
   // Rede de segurança final do arranque: mesmo que uma falha inesperada
@@ -69451,6 +69513,7 @@ function fundoAppPreviewEstilo(tema, escala) {
 //   - as camadas da app ficam transparentes (com a cor do tema por baixo, no html — nunca há "flash" branco);
 //   - a folha de estilo só é reescrita quando o tema muda mesmo.
 let FUNDO_APP_APLICADO = null;
+let FUNDO_APP_ANIM = 'A';
 function aplicarTemaFundoApp(id) {
   const tema = fundoAppTema(id);
   const chave = `${tema.id || id}|${tema.cor}|${tema.gradiente || ''}|${tema.padraoSvg ? tema.padraoSvg.length : 0}|${tema.tamanho || ''}`;
@@ -69463,12 +69526,18 @@ function aplicarTemaFundoApp(id) {
     : tema.padraoSvg
       ? `background-image:url("${tema.padraoSvg}");background-repeat:repeat;background-size:${tema.tamanho}px ${tema.tamanho}px;`
       : '';
-  const css = [`html{background-color:${tema.cor}!important;background-image:none!important;}`];
+  // Troca de fundo suave (2026-10-18, Hugo: transição no login "para não parecer tão jarring"): a cor desliza da
+  // anterior para a nova e o desenho/gradiente aparece em fade. O nome da animação alterna (A/B) para recomeçar a
+  // cada troca. Quem tem "reduzir movimento" ligado no aparelho vê a troca direta.
+  FUNDO_APP_ANIM = FUNDO_APP_ANIM === 'A' ? 'B' : 'A';
+  const css = [`html{background-color:${tema.cor}!important;background-image:none!important;transition:background-color .6s ease;}`];
   if (imagem) {
     css.push(`body,#root,.app-shell,.main,.page-container{background-color:transparent!important;background-image:none!important;}`);
     css.push(`body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;background-color:${tema.cor};${imagem}transform:translateZ(0);will-change:transform;}`);
+    css.push(`@keyframes fundoEntra${FUNDO_APP_ANIM}{from{opacity:0}to{opacity:1}}`);
+    css.push(`@media (prefers-reduced-motion:no-preference){body::before{animation:fundoEntra${FUNDO_APP_ANIM} .7s ease both;}}`);
   } else {
-    css.push(`body,#root,.app-shell,.main,.page-container{background-color:${tema.cor}!important;background-image:none!important;}`);
+    css.push(`body,#root,.app-shell,.main,.page-container{background-color:${tema.cor}!important;background-image:none!important;transition:background-color .6s ease;}`);
   }
   estilo.textContent = css.join('\n');
   document.body.classList.toggle('fundo-com-desenhos', !!tema.padraoSvg);
@@ -69934,6 +70003,9 @@ function showUserLoginScreen(onSuccess, opts) {
         try { renderOuAdiarSeOcupado(); atualizarIndicadorDadosAtualizados(); } catch (e) { /* ignora */ }
       });
     }
+    // Transição de entrada (2026-10-18): a janela de login desvanece (em vez de desaparecer de repente) e o ecrã
+    // de cada um entra suavemente — ver loginTransicaoSaida / body.sessao-a-entrar.
+    loginTransicaoSaida(overlay);
     overlay.remove();
     // A janela de tolerância de edição (uiEstaOcupada) fica "quente" pelos
     // próprios campos de Username/PIN que a pessoa acabou de preencher no
@@ -69964,6 +70036,7 @@ function showUserLoginScreen(onSuccess, opts) {
       refreshSidebarBadges();
     } else {
       render();
+      sessaoEntradaAnimar();
     }
     atualizarIndicadorDadosAtualizados();
     atualizarIndicadoresChat();
@@ -70639,7 +70712,12 @@ function voltarTopoAtualizar(alvo) {
     VOLTAR_TOPO.botao = b;
   }
   const a = alvo || VOLTAR_TOPO.alvo || document.scrollingElement || document.documentElement;
-  const mostrar = !!activeUser && !document.querySelector('.modal-overlay') && a.scrollTop > Math.max(500, window.innerHeight * 0.8);
+  // Computador (2026-10-18, Hugo: "dava jeito no desktop quando a página tem alguma verticalidade e exige scroll"):
+  // aparece mais cedo — basta descer ~1/3 de ecrã numa página que tenha de facto mais conteúdo para baixo.
+  const computador = window.innerWidth >= 768;
+  const limite = computador ? Math.max(260, window.innerHeight * 0.35) : Math.max(500, window.innerHeight * 0.8);
+  const temVerticalidade = (a.scrollHeight - a.clientHeight) > (computador ? 320 : 0);
+  const mostrar = !!activeUser && !document.querySelector('.modal-overlay') && temVerticalidade && a.scrollTop > limite;
   if (mostrar) VOLTAR_TOPO.alvo = a;
   VOLTAR_TOPO.botao.classList.toggle('visivel', mostrar);
 }
