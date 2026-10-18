@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-18 15:00" />
+<meta name="siga-versao" content="2026-10-18 22:00" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -6409,6 +6409,7 @@ p.cell-muted{color:var(--pharm-500,#64748b);font-size:13px;}
 .ficheiro-visor-acoes{display:flex;gap:8px;flex-shrink:0;}
 .ficheiro-visor-acoes .btn{display:inline-flex;align-items:center;gap:6px;}
 .ficheiro-visor-corpo{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;background:#f1f5f9;border-radius:10px;overflow:auto;}
+.ficheiro-visor-a-abrir{display:flex;flex-direction:column;align-items:center;gap:12px;padding:40px 16px;text-align:center;}
 .ficheiro-visor-img{max-width:100%;max-height:100%;object-fit:contain;}
 .ficheiro-visor-pdf{width:100%;height:100%;border:0;border-radius:10px;background:#fff;}
 .documentos-filtros{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;}
@@ -12287,10 +12288,16 @@ function criarClienteServidorLocal(base) {
   async function pedidoBruto(caminho, corpo, metodo) {
     const cab = { 'Content-Type': 'application/json', 'X-Siga-Farmacia': S.farmacia };
     if (S.token) cab.Authorization = S.token;
-    const resp = await fetch(BASE + caminho, { method: metodo || 'POST', headers: cab, body: corpo === undefined ? undefined : JSON.stringify(corpo), cache: 'no-store' });
-    let json = null;
-    try { json = await resp.json(); } catch (e) { json = null; }
-    return { status: resp.status, json };
+    // 2026-10-18: nenhum pedido fica pendurado para sempre (um só pedido preso deixava o login em "A preparar a
+    // sessão…" indefinidamente) — ao fim de 60 s desiste, como numa falha de rede.
+    const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+    const limite = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch (e) { /* ignora */ } }, 60000) : null;
+    try {
+      const resp = await fetch(BASE + caminho, { method: metodo || 'POST', headers: cab, body: corpo === undefined ? undefined : JSON.stringify(corpo), cache: 'no-store', signal: ctrl ? ctrl.signal : undefined });
+      let json = null;
+      try { json = await resp.json(); } catch (e) { json = null; }
+      return { status: resp.status, json };
+    } finally { if (limite) clearTimeout(limite); }
   }
 
   // Pedido com sessão para o que não é JSON (ficheiros): volta a entrar sozinho se a sessão tiver expirado.
@@ -14730,12 +14737,46 @@ function handleNovaMensagemChat(msg) {
 }
 
 
+// 2026-10-18 (Hugo: "vês as vagas em comparação com as da podologia"): as vagas de um dia de evento só eram lidas ao
+// abrir o dia ("A carregar vagas…"), enquanto a Agenda da Podologia já está em memória e abre logo. Agora as últimas
+// vagas lidas de cada dia ficam em memória (EVENTO_VAGAS_MEMORIA): o dia abre de imediato com elas e confirma-as com
+// o servidor em segundo plano. No servidor da farmácia, as vagas dos dias de evento próximos (ontem → +90 dias) são
+// lidas logo a seguir ao login, de uma só vez (preCarregarVagasEventos) — o primeiro clique também é imediato.
+const EVENTO_VAGAS_MEMORIA = new Map(); // eventoId → { lista, em }
+function eventoVagasGuardar(eventoId, lista) {
+  if (eventoId === undefined || eventoId === null) return;
+  EVENTO_VAGAS_MEMORIA.set(String(eventoId), { lista: Array.isArray(lista) ? lista.slice() : [], em: Date.now() });
+}
+function eventoVagasEmMemoria(eventoId) {
+  const g = EVENTO_VAGAS_MEMORIA.get(String(eventoId));
+  return g ? g.lista.slice() : null;
+}
+let PRE_CARGA_VAGAS_EVENTOS_EM = 0;
+async function preCarregarVagasEventos() {
+  if (!sb || !sb.servidorLocal || !activeUser) return;
+  if (Date.now() - PRE_CARGA_VAGAS_EVENTOS_EM < 5 * 60000) return;
+  PRE_CARGA_VAGAS_EVENTOS_EM = Date.now();
+  const ontem = new Date(); ontem.setDate(ontem.getDate() - 1);
+  const limite = new Date(); limite.setDate(limite.getDate() + 90);
+  const de = dateToISO(ontem), ate = dateToISO(limite);
+  const ids = (STATE.eventos || []).filter(e => e && !e.eliminado && e.dataEvento >= de && e.dataEvento <= ate).map(e => e.id);
+  if (!ids.length) return;
+  try {
+    const { data, error } = await sb.from('eventos_marcacoes').select('*').eq('eliminado', false).in('evento_id', ids).order('hora', { ascending: true });
+    if (error) return;
+    const porEvento = new Map(ids.map(id => [String(id), []]));
+    (data || []).map(rowToRecord).forEach(r => { const l = porEvento.get(String(r.eventoId)); if (l) l.push(r); });
+    porEvento.forEach((lista, id) => eventoVagasGuardar(id, lista));
+  } catch (e) { PRE_CARGA_VAGAS_EVENTOS_EM = 0; }
+}
 async function dbFetchMarcacoes(eventoId) {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível.'; return []; }
   try {
     const { data, error } = await sb.from('eventos_marcacoes').select('*').eq('evento_id', eventoId).eq('eliminado', false).order('hora', { ascending: true });
     if (error) { lastDbError = error.message; console.error('[Supabase] erro ao ler marcações:', error.message); return []; }
-    return (data || []).map(rowToRecord);
+    const lista = (data || []).map(rowToRecord);
+    eventoVagasGuardar(eventoId, lista);
+    return lista;
   } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error('[Supabase] erro de rede ao ler marcações:', formatarErroSeguro(e)); return []; }
 }
 async function dbInsertMarcacao(record) {
@@ -29398,8 +29439,24 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
 
   async function carregarMarcacoes() {
     if (!currentEvento) { marcacoes = []; loadingMarc = false; return; }
+    const eventoId = currentEvento.id;
+    const emMemoria = eventoVagasEmMemoria(eventoId);
+    if (emMemoria) {
+      // Abre logo com as vagas em memória; o servidor confirma em segundo plano (ver EVENTO_VAGAS_MEMORIA).
+      marcacoes = emMemoria; loadingMarc = false; render();
+      ligarTempoRealEvento();
+      const frescas = await dbFetchMarcacoes(eventoId);
+      if (!currentEvento || String(currentEvento.id) !== String(eventoId) || !document.body.contains(overlay)) return;
+      if (!frescas.length && marcacoes.length) return; // falha de rede devolve [] — nunca esvazia a grelha por isso
+      const assinatura = (l) => l.map(m => `${m.id}|${m.updatedAt || ''}|${m.nomeCliente || ''}|${m.hora || ''}|${m.estado || ''}|${m.tipoLinha || ''}`).sort().join('§');
+      if (assinatura(frescas) === assinatura(marcacoes)) return;
+      marcacoes = frescas;
+      // Não redesenha por cima de um formulário aberto (marcação nova / editar hora) — os dados já ficam atualizados.
+      if (!showForm && !editandoHoraVagaId) render();
+      return;
+    }
     loadingMarc = true; render();
-    marcacoes = await dbFetchMarcacoes(currentEvento.id);
+    marcacoes = await dbFetchMarcacoes(eventoId);
     loadingMarc = false; render();
     ligarTempoRealEvento();
   }
@@ -30679,6 +30736,8 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
   // renderHeaderAcoes), à semelhança de "Bloquear Intervalo" na Agenda.
   const footerEl = h('div', { class: 'agenda-dia-footer' });
   function render() {
+    // A memória das vagas acompanha sempre o que este dia mostra (gravações e alterações de colegas incluídas).
+    if (currentEvento && !loadingMarc) eventoVagasGuardar(currentEvento.id, marcacoes);
     comScrollPreservado(() => renderInternoEventoDia(), overlay);
   }
   function renderInternoEventoDia() {
@@ -34259,31 +34318,85 @@ function ficheiroDataTexto(iso) {
 }
 // Abre o ficheiro numa janela da própria app (imagens e PDF) — funciona igual no computador, na app instalada e no
 // telemóvel. Os restantes tipos descarregam-se.
+// 2026-10-18 (Hugo: "como demora a abrir clica-se várias vezes e depois aparecem várias janelas"): a janela abre logo
+// no 1.º clique, com "A abrir…", e o ficheiro aparece lá dentro quando chega. Cliques repetidos no mesmo ficheiro
+// (ou noutro, enquanto um ainda está a chegar) não abrem mais janelas nem fazem novos pedidos ao servidor.
+// Os últimos ficheiros abertos ficam uns minutos em memória — voltar a abrir o mesmo é imediato.
+const FICHEIROS_EM_MEMORIA = new Map(); // id → { blob, em }
+const FICHEIROS_A_DESCARREGAR = new Set();
+let FICHEIRO_VISOR_ABERTO = null;
+function ficheiroObterComMemoria(f) {
+  const id = String(f.id);
+  const m = FICHEIROS_EM_MEMORIA.get(id);
+  if (m && Date.now() - m.em < 10 * 60000) return m.pedido;
+  const pedido = sb.ficheiros.obter(f.id).then((blob) => (blob.type ? blob : new Blob([blob], { type: f.tipo_mime || 'application/octet-stream' })));
+  FICHEIROS_EM_MEMORIA.set(id, { pedido, em: Date.now() });
+  pedido.catch(() => FICHEIROS_EM_MEMORIA.delete(id));
+  while (FICHEIROS_EM_MEMORIA.size > 6) FICHEIROS_EM_MEMORIA.delete(FICHEIROS_EM_MEMORIA.keys().next().value);
+  return pedido;
+}
 async function abrirFicheiroCarregado(f, descarregar) {
+  const id = String(f.id);
+  const baixarBlob = (blob) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = f.nome || 'ficheiro'; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  };
+  if (descarregar || (!ficheiroEhImagem(f) && !ficheiroEhPdf(f))) {
+    if (FICHEIROS_A_DESCARREGAR.has(id)) return; // já está a caminho
+    FICHEIROS_A_DESCARREGAR.add(id);
+    const aviso = setTimeout(() => showToast(`A preparar «${f.nome || 'ficheiro'}»…`, 'info'), 600);
+    try { baixarBlob(await ficheiroObterComMemoria(f)); }
+    catch (e) { showToast(`Não foi possível descarregar o ficheiro. ${e.message || ''}`, 'error'); }
+    finally { clearTimeout(aviso); FICHEIROS_A_DESCARREGAR.delete(id); }
+    return;
+  }
+  if (FICHEIRO_VISOR_ABERTO && document.body.contains(FICHEIRO_VISOR_ABERTO)) return; // já há uma janela aberta
   let url = null;
-  try {
-    const blob = await sb.ficheiros.obter(f.id);
-    url = URL.createObjectURL(blob.type ? blob : new Blob([blob], { type: f.tipo_mime || 'application/octet-stream' }));
-  } catch (e) { showToast(`Não foi possível abrir o ficheiro. ${e.message || ''}`, 'error'); return; }
-  const baixar = () => { const a = document.createElement('a'); a.href = url; a.download = f.nome || 'ficheiro'; document.body.appendChild(a); a.click(); a.remove(); };
-  if (descarregar || (!ficheiroEhImagem(f) && !ficheiroEhPdf(f))) { baixar(); setTimeout(() => URL.revokeObjectURL(url), 60000); return; }
+  let fechado = false;
   const overlay = h('div', { class: 'modal-overlay ficheiro-visor-overlay' });
-  const fechar = () => { document.removeEventListener('keydown', esc); overlay.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); };
+  FICHEIRO_VISOR_ABERTO = overlay;
+  const fechar = () => {
+    fechado = true;
+    document.removeEventListener('keydown', esc);
+    overlay.remove();
+    if (FICHEIRO_VISOR_ABERTO === overlay) FICHEIRO_VISOR_ABERTO = null;
+    if (url) { const u = url; setTimeout(() => URL.revokeObjectURL(u), 1000); }
+  };
   const esc = (e) => { if (e.key === 'Escape') fechar(); };
   document.addEventListener('keydown', esc);
   overlay.addEventListener('click', (e) => { if (e.target === overlay && cliqueComecouEm(overlay)) fechar(); });
-  const conteudo = ficheiroEhImagem(f) ? h('img', { src: url, alt: f.nome || 'Ficheiro', class: 'ficheiro-visor-img' }) : h('iframe', { src: url, class: 'ficheiro-visor-pdf', title: f.nome || 'PDF' });
+  const corpo = h('div', { class: 'ficheiro-visor-corpo' }, h('div', { class: 'ficheiro-visor-a-abrir' }, [
+    h('div', { class: 'boot-spinner' }),
+    h('p', { class: 'login-sub', style: 'margin:0;' }, 'A abrir o documento…'),
+  ]));
+  const btnBaixar = h('button', { type: 'button', class: 'btn btn-secondary', disabled: 'disabled', onclick: () => abrirFicheiroCarregado(f, true) }, [Icon('download', { size: 15 }), ' Descarregar']);
   overlay.appendChild(h('div', { class: 'modal-panel ficheiro-visor' }, [
     h('div', { class: 'ficheiro-visor-cab' }, [
       h('div', { style: 'min-width:0;' }, [h('p', { class: 'modal-tag' }, f.categoria || 'Documento'), h('p', { class: 'modal-title ficheiro-visor-nome' }, f.nome || 'Ficheiro')]),
       h('div', { class: 'ficheiro-visor-acoes' }, [
-        h('button', { type: 'button', class: 'btn btn-secondary', onclick: baixar }, [Icon('download', { size: 15 }), ' Descarregar']),
+        btnBaixar,
         h('button', { type: 'button', class: 'btn btn-secondary', onclick: fechar, 'aria-label': 'Fechar' }, Icon('x', { size: 16 })),
       ]),
     ]),
-    h('div', { class: 'ficheiro-visor-corpo' }, conteudo),
+    corpo,
   ]));
   document.body.appendChild(overlay);
+  let blob;
+  try { blob = await ficheiroObterComMemoria(f); } catch (e) {
+    if (fechado) return;
+    clear(corpo);
+    corpo.appendChild(h('div', { class: 'ficheiro-visor-a-abrir' }, [
+      h('p', { style: 'margin:0;font-weight:700;color:#b91c1c;' }, 'Não foi possível abrir o documento.'),
+      h('p', { class: 'login-sub', style: 'margin:0;' }, e && e.message ? e.message : 'Tenta outra vez daqui a pouco.'),
+    ]));
+    return;
+  }
+  if (fechado) return; // a pessoa fechou a janela antes de o ficheiro chegar
+  url = URL.createObjectURL(blob);
+  btnBaixar.removeAttribute('disabled');
+  clear(corpo);
+  corpo.appendChild(ficheiroEhImagem(f) ? h('img', { src: url, alt: f.nome || 'Ficheiro', class: 'ficheiro-visor-img' }) : h('iframe', { src: url, class: 'ficheiro-visor-pdf', title: f.nome || 'PDF' }));
 }
 function confirmarEliminarFicheiro(f, depois) {
   confirmDialog(`Eliminar «${f.nome}»? Deixa de aparecer na app (fica guardado no servidor e nas cópias de segurança).`, async () => {
@@ -66338,6 +66451,7 @@ async function ortopediaMigrarFornecedorAntigo() {
 }
 const LEITURA_COMPLETA_SEM_MARCA_EM = {};
 const TABELAS_SEM_UPDATED_AT_AVISADAS = new Set();
+const LOGIN_ESPERA_MAX_MS = 3000; // login: tempo máximo à espera dos dados quando o aparelho já os tem em memória (ver concluirLogin)
 async function loadAllData() {
   // Rede de segurança final do arranque: mesmo que uma falha inesperada
   // (ex: uma exceção nunca prevista escapar a alguma função individual)
@@ -66478,6 +66592,7 @@ async function loadAllData() {
     // as tabelas que no Supabase só carregam ao abrir o módulo (LAZY_TABLE_KEYS) carregam-se logo a seguir, em
     // segundo plano, e ficam ligadas ao tempo real: qualquer módulo abre já com os dados, sem "A carregar…".
     if (sb && sb.servidorLocal) setTimeout(() => { try { garantirTabelasCarregadas(LAZY_TABLE_KEYS.slice()); } catch (e) { /* abre ao entrar no módulo, como antes */ } }, 400);
+    if (sb && sb.servidorLocal) setTimeout(() => { try { preCarregarVagasEventos(); } catch (e) { /* lê ao abrir o dia, como antes */ } }, 900); // vagas dos dias de evento próximos (2026-10-18)
   } catch (e) {
     console.error('[Arranque] falha inesperada ao carregar dados iniciais:', formatarErroSeguro(e));
   }
@@ -69729,12 +69844,32 @@ function showUserLoginScreen(onSuccess, opts) {
     // por um spinner leve enquanto isso acontece, e a app só é montada
     // (render() único, no fim) quando a vista já está 100% correta.
     clear(panel);
+    const textoPreparar = h('p', { class: 'login-sub', style: 'margin:0;' }, `A preparar a sessão de ${activeUser.nomeCompleto || activeUser.username}…`);
     panel.appendChild(h('div', { style: 'padding:24px 4px 8px;text-align:center;' }, [
       h('div', { class: 'boot-spinner', style: 'margin:0 auto 14px;' }),
-      h('p', { class: 'login-sub', style: 'margin:0;' }, `A preparar a sessão de ${activeUser.nomeCompleto || activeUser.username}…`),
+      textoPreparar,
     ]));
-    await loadAllData();
-    STATE.ultimaAtualizacaoEm = new Date().toISOString();
+    // 2026-10-18 (Hugo: "está a demorar bastante tempo a iniciar sessão"): o login esperava SEMPRE que todos os dados
+    // chegassem do servidor. Agora, se o aparelho já tem os dados em memória (cópia local / sessão anterior), espera
+    // no máximo LOGIN_ESPERA_MAX_MS e entra logo — o resto chega em segundo plano e o ecrã atualiza-se sozinho.
+    // Sem nada em memória (1.ª vez neste aparelho) continua a esperar, porque não há nada para mostrar.
+    const inicioCarga = Date.now();
+    let cargaTerminada = false;
+    const carga = loadAllData().then(() => { cargaTerminada = true; });
+    const temDadosEmMemoria = () => Object.keys(TABLES).some(k => Array.isArray(STATE[k]) && STATE[k].length > 0);
+    const avisoLento = setTimeout(() => { textoPreparar.textContent = 'A receber os dados do servidor da farmácia…'; }, 2500);
+    await Promise.race([carga, new Promise(r => setTimeout(r, LOGIN_ESPERA_MAX_MS))]);
+    if (!cargaTerminada && !temDadosEmMemoria()) await carga;
+    clearTimeout(avisoLento);
+    if (cargaTerminada) STATE.ultimaAtualizacaoEm = new Date().toISOString();
+    else {
+      console.warn(`[Login] os dados ainda não tinham chegado ao fim de ${Date.now() - inicioCarga} ms — a entrar com os dados em memória`);
+      carga.then(() => {
+        STATE.ultimaAtualizacaoEm = new Date().toISOString();
+        console.info(`[Login] dados do servidor completos em ${Date.now() - inicioCarga} ms`);
+        try { renderOuAdiarSeOcupado(); atualizarIndicadorDadosAtualizados(); } catch (e) { /* ignora */ }
+      });
+    }
     overlay.remove();
     // A janela de tolerância de edição (uiEstaOcupada) fica "quente" pelos
     // próprios campos de Username/PIN que a pessoa acabou de preencher no
