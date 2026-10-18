@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-18 10:00" />
+<meta name="siga-versao" content="2026-10-18 10:35" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -6441,6 +6441,10 @@ body.gf-ativo .bottom-action-bar{display:none !important;}
    fundo do formulário ficam escondidos e a barra flutuante está sempre presente enquanto o formulário está aberto. */
 .form-registo-ativo .form-actions.gf-substituidas{display:none !important;}
 .input.campo-hora-invalida,input.campo-hora-invalida{border-color:#dc2626 !important;box-shadow:0 0 0 3px rgba(220,38,38,.15) !important;}
+.vivo-form-aviso{display:flex;align-items:flex-start;gap:8px;margin:0 0 14px;padding:10px 12px;border-radius:12px;font-size:13px;line-height:1.4;
+  background:#eef5fb;border:1px solid #c9dcef;color:#1f4f73;font-weight:600;}
+.vivo-form-aviso.grave{background:#fdecec;border-color:#f3b4b4;color:#9b1c1c;font-weight:700;box-shadow:0 0 0 3px rgba(220,38,38,.10);}
+.vivo-form-aviso-icone{flex:none;}
 .gf-barra.gf-limpa .gf-ponto{background:#94a3b8;box-shadow:0 0 0 3px rgba(148,163,184,.25);}
 .gf-barra.gf-limpa .gf-texto{color:var(--muted,#64748b);font-weight:600;}
 /* Voltar ao topo (2026-10-17): aparece ao descer numa página comprida. */
@@ -34349,7 +34353,7 @@ function buildAnexosRegisto(opts) {
 const DOCUMENTOS_ORIGENS = {
   manipulados: { nome: 'Manipulados', pagina: 'manipulados', icon: 'flask' },
 };
-const DOCUMENTOS_TIPOS = ['Receita', 'Relatório / prescrição médica', 'Análises clínicas', 'Consentimento informado', 'Declaração', 'Fatura / recibo', 'Documento de fornecedor', 'Contrato', 'Documento interno', 'Outro'];
+const DOCUMENTOS_TIPOS = ['Receita', 'Relatório / prescrição médica', 'Análises clínicas', 'Consentimento informado', 'Declaração', 'Fatura / recibo', 'Documento de fornecedor', 'Contrato', 'Documento interno', 'Minuta', 'Procedimento', 'Outro'];
 function abrirModalCarregarDocumentos(aoTerminar) {
   const ficheiros = [];
   let tipo = '', tipoOutro = '', utente = '', descricao = '', aEnviar = false, erro = '';
@@ -70562,6 +70566,7 @@ function vivoLigar() {
     const canal = sb.channel('colaboracao-ao-vivo', { config: { broadcast: { self: false, ack: false } } });
     canal.on('broadcast', { event: 'cursor' }, (m) => vivoReceberCursor(m && m.payload));
     canal.on('broadcast', { event: 'campo' }, (m) => vivoReceberCampo(m && m.payload));
+    canal.on('broadcast', { event: 'form' }, (m) => vivoReceberFormulario(m && m.payload));
     canal.subscribe((estado) => { VIVO.pronto = estado === 'SUBSCRIBED'; if (VIVO.pronto && VIVO.meuCampo) vivoAnunciarCampo(true); });
     VIVO.canal = canal;
     VIVO.pessoa = String(activeUser.id);
@@ -70595,7 +70600,7 @@ function vivoEnviarCursor() {
   VIVO.cursorEv = null;
   VIVO.cursorUlt = Date.now();
   let dados = null;
-  if (ev) {
+  if (ev && !vivoFormularioAberto()) { // dentro de um formulário o cursor não interessa a ninguém (2026-10-18)
     const ctx = vivoContextoEcra();
     const raiz = vivoRaizEcra();
     const alvo = document.elementFromPoint(ev.clientX, ev.clientY);
@@ -70785,9 +70790,10 @@ function vivoDesenhar() {
   const ctx = vivoContextoEcra();
   const raiz = vivoRaizEcra();
   const agora = Date.now();
+  const emFormulario = !!vivoFormularioAberto();
   VIVO.cursores.forEach((c, k) => {
     if (agora - c.em > VIVO_CURSOR_VALIDADE_MS) { if (c.el) c.el.remove(); VIVO.cursores.delete(k); return; }
-    const alvo = (ctx && c.d.ctx === ctx && raiz) ? vivoResolverCaminho(raiz, c.d.p) : null;
+    const alvo = (ctx && !emFormulario && c.d.ctx === ctx && raiz) ? vivoResolverCaminho(raiz, c.d.p) : null;
     const r = alvo ? alvo.getBoundingClientRect() : null;
     if (!r || (!r.width && !r.height)) { if (c.el) c.el.style.display = 'none'; return; }
     if (!c.el) {
@@ -70864,6 +70870,110 @@ setInterval(() => {
     if (VIVO.campos.size || document.querySelector('[data-vivo-bloqueado]')) vivoAplicarCampos();
   } catch (e) { /* nunca interfere com a app */ }
 }, 700);
+/* ---- Colegas no mesmo formulário (2026-10-18, Hugo: "quando pessoas no mesmo formulário de preenchimento, não
+   precisa de mostrar o cursor do colega; pode só surgir aviso que o colega está a preencher também uma entrada no
+   mesmo módulo; importante é haver aviso se estivermos a preencher o formulário para a mesma vaga").
+   Enquanto um formulário de registo está aberto (novo ou edição, na página ou numa janela), o posto diz aos outros,
+   de 4 em 4 s: em que módulo está e, se der para saber, QUE registo ou QUE vaga está a preencher (dia + hora).
+   Quem tiver um formulário aberto no mesmo módulo vê uma faixa no topo do seu formulário:
+     • informativa (azul) — "Ana também está a preencher um registo em Vacinação";
+     • de alerta (vermelha) — se for o MESMO registo ou a MESMA vaga: "combinem quem grava".
+   Os cursores deixam de aparecer dentro de formulários. A proteção ao gravar (servidor) continua a ser a garantia. */
+VIVO.forms = new Map(); // k -> { d, em }
+VIVO.formUlt = 0;
+VIVO.formEnviado = false;
+const VIVO_FORM_BATIMENTO_MS = 4000;
+const VIVO_FORM_VALIDADE_MS = 12000;
+function vivoFormularioAberto() {
+  const m = vivoModalDoTopo();
+  if (m) {
+    if (m.querySelector('.gaveta-body-flex')) return null;
+    const f = m.querySelector('.form-registo-ativo, [data-vivo-registo], form');
+    return f && f.querySelector('input, select, textarea') ? f : null;
+  }
+  const f = document.querySelector('.page-container .form-registo-ativo');
+  return f && f.isConnected && f.offsetParent !== null ? f : null;
+}
+function vivoNomeModulo() {
+  const t = document.querySelector('.page-container .page-title');
+  return String((t && t.textContent) || STATE.page || '').trim().slice(0, 60);
+}
+function vivoValorCampoForm(form, nomes) {
+  for (const n of nomes) {
+    const el = form.querySelector(`[data-campo="${n}"]`);
+    if (el && 'value' in el && String(el.value || '').trim()) return String(el.value).trim();
+  }
+  return '';
+}
+// O que o formulário está a preencher: o registo (edição) ou a vaga (dia + hora), quando se consegue saber.
+function vivoAlvoFormulario(form) {
+  const regEl = form.hasAttribute('data-vivo-registo') ? form : form.querySelector('[data-vivo-registo]');
+  const reg = regEl ? String(regEl.getAttribute('data-vivo-registo') || '') : '';
+  const data = vivoValorCampoForm(form, ['data', 'dataEvento', 'dataMarcacao']);
+  const hora = horaDeDigitos(vivoValorCampoForm(form, ['hora', 'horaInicio'])) || '';
+  if (data && hora) {
+    const dTxt = /^\d{4}-\d{2}-\d{2}$/.test(data) ? formatDate(data).slice(0, 5) : data;
+    return { a: `v:${STATE.page}|${data}|${hora}`, r: `a vaga de ${dTxt} às ${hora}` };
+  }
+  if (reg) return { a: `r:${reg}`, r: 'o mesmo registo' };
+  return { a: '', r: '' };
+}
+function vivoReceberFormulario(d) {
+  if (!d || !d.k || d.k === VIVO.id) return;
+  if (!d.pg) VIVO.forms.delete(d.k); else VIVO.forms.set(d.k, { d, em: Date.now() });
+  vivoAtualizarAvisoFormulario();
+}
+function vivoAnunciarFormulario() {
+  const form = vivoFormularioAberto();
+  if (!form) {
+    if (VIVO.formEnviado) { VIVO.formEnviado = false; vivoEnviar('form', { pg: null }); }
+    return;
+  }
+  const alvo = vivoAlvoFormulario(form);
+  const assinatura = `${STATE.page}|${alvo.a}`;
+  if (VIVO.formEnviado && assinatura === VIVO.formAssinatura && Date.now() - VIVO.formUlt < VIVO_FORM_BATIMENTO_MS) return;
+  VIVO.formEnviado = true; VIVO.formAssinatura = assinatura; VIVO.formUlt = Date.now();
+  vivoEnviar('form', { pg: STATE.page, mod: vivoNomeModulo(), alvo: alvo.a, rot: alvo.r });
+}
+function vivoListaNomes(lista) {
+  const nomes = [...new Set(lista.map(x => x.d.n || 'Um colega'))];
+  return nomes.length <= 1 ? nomes[0] || 'Um colega' : `${nomes.slice(0, -1).join(', ')} e ${nomes[nomes.length - 1]}`;
+}
+function vivoAtualizarAvisoFormulario() {
+  const form = vivoFormularioAberto();
+  document.querySelectorAll('.vivo-form-aviso').forEach(el => { if (!form || !form.contains(el)) el.remove(); });
+  if (!form) return;
+  const agora = Date.now();
+  VIVO.forms.forEach((v, k) => { if (agora - v.em > VIVO_FORM_VALIDADE_MS) VIVO.forms.delete(k); });
+  const meuAlvo = vivoAlvoFormulario(form);
+  const mesmoModulo = [...VIVO.forms.values()].filter(v => v.d.pg === STATE.page);
+  const mesmoAlvo = meuAlvo.a ? mesmoModulo.filter(v => v.d.alvo === meuAlvo.a) : [];
+  let aviso = form.querySelector(':scope > .vivo-form-aviso');
+  if (!mesmoModulo.length) { if (aviso) aviso.remove(); return; }
+  const grave = mesmoAlvo.length > 0;
+  const texto = grave
+    ? `${vivoListaNomes(mesmoAlvo)} ${mesmoAlvo.length > 1 ? 'estão' : 'está'} a preencher ${meuAlvo.r} neste momento. Combinem quem grava, para não ficarem registos repetidos.`
+    : `${vivoListaNomes(mesmoModulo)} também ${mesmoModulo.length > 1 ? 'estão' : 'está'} a preencher um registo em ${mesmoModulo[0].d.mod || vivoNomeModulo()}.`;
+  if (!aviso) {
+    aviso = h('div', { class: 'vivo-form-aviso', role: 'status' }, [h('span', { class: 'vivo-form-aviso-icone' }), h('span', { class: 'vivo-form-aviso-texto' })]);
+    form.insertBefore(aviso, form.firstChild);
+  }
+  aviso.classList.toggle('grave', grave);
+  aviso.querySelector('.vivo-form-aviso-icone').textContent = grave ? '⚠️' : '👥';
+  const t = aviso.querySelector('.vivo-form-aviso-texto');
+  if (t.textContent !== texto) t.textContent = texto;
+}
+setInterval(() => {
+  try {
+    if (!activeUser || !VIVO.canal) return;
+    vivoAnunciarFormulario();
+    vivoAtualizarAvisoFormulario();
+  } catch (e) { /* nunca interfere com a app */ }
+}, 1000);
+document.addEventListener('change', (e) => { // mudou o dia ou a hora: avisa logo os outros (sem esperar pelo batimento)
+  const c = e.target && e.target.getAttribute && e.target.getAttribute('data-campo');
+  if (c && /^(data|hora|dataEvento|dataMarcacao|horaInicio)$/.test(c)) { VIVO.formUlt = 0; setTimeout(() => { try { vivoAnunciarFormulario(); } catch (x) { /* ignora */ } }, 0); }
+}, true);
 /* =================================================================
    AVISO DE VERSÃO NOVA (2026-10-07, Hugo: "consigo atualizar a app sempre que atualizar o index? Imagina que alguém
    tem a app aberta, atualmente só atualiza se fechar e abrir").
