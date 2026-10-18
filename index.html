@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-18 10:35" />
+<meta name="siga-versao" content="2026-10-18 12:20" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -11570,7 +11570,10 @@ function buildCalendarioSection(goTo) {
   if (pendentesProximos.length > 0) {
     tituloKids.push(
       h('span', { class: 'cal-aviso-pendente-icon', 'aria-hidden': 'true' }, '⚠️'),
-      h('span', { class: 'cal-aviso-pendente-texto' }, `Lembrar utentes, enviar as SMS (${pendentesProximos.length})`),
+      // 2026-10-18: o aviso conta como feito seja qual for o meio (WhatsApp, telefone, SMS, balcão, cliente ligou) —
+      // todos gravam aviso=true; ao desmarcar, a marcação volta a contar aqui.
+      h('span', { class: 'cal-aviso-pendente-texto', title: pendentesProximos.slice(0, 15).map(m => `${m.nomeCliente} — ${formatDate(m.data).slice(0, 5)} ${normalizarHora(m.hora || '')}`).join('\n') + (pendentesProximos.length > 15 ? `\n… e mais ${pendentesProximos.length - 15}` : '') },
+        `Utentes por avisar nos próximos 2 dias (${pendentesProximos.length}) — WhatsApp, telefone ou SMS`),
     );
   }
   return h('div', { class: 'home-section' }, [
@@ -65113,11 +65116,24 @@ function buildAvisoClienteControlo(m, ctx) {
         item('iconeTelefone', 'O cliente ligou a confirmar', '', () => marcar('cliente_ligou')),
         item('users', 'Avisado ao balcão', '', () => marcar('balcao')),
       ];
-      if (avisado) itens.push(item('bellOff', 'Desmarcar «avisado»', '', async () => {
-        const anterior = { aviso: true, avisoMeio: m.avisoMeio || null, avisoPor: m.avisoPor || null, avisoEm: m.avisoEm || null };
-        const r = await gravarAvisoCliente(ctx, { aviso: false, avisoMeio: null, avisoPor: null, avisoEm: null });
-        if (!r) { showDbErrorToast('Não foi possível desmarcar'); return; }
-        mostrarAvisoComAnular(`${ctx.nome || 'Cliente'}: aviso desmarcado.`, async () => { await gravarAvisoCliente(ctx, anterior); });
+      // Desmarcar (2026-10-18, Hugo: "permite remover o aviso WhatsApp, mas dar indicação de que pode já ter sido
+      // enviada a mensagem, para o colaborador confirmar"): o WhatsApp abre com a mensagem escrita, mas só a pessoa sabe
+      // se carregou em enviar — por isso desmarcar pede sempre confirmação, a dizer quem o abriu e quando.
+      const porWhatsApp = m.avisoMeio === 'whatsapp';
+      if (avisado) itens.push(item('bellOff', porWhatsApp ? 'Desmarcar — a mensagem não foi enviada' : 'Desmarcar «avisado»',
+        porWhatsApp ? 'se o WhatsApp abriu mas não se carregou em enviar' : '', () => {
+        const quem = m.avisoPor ? String(m.avisoPor).split(/\s+[-·]\s+/)[0] : '';
+        const quando = m.avisoEm ? new Date(m.avisoEm).toLocaleString('pt-PT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+        const origem = [quem ? `por ${quem}` : '', quando ? `em ${quando}` : ''].filter(Boolean).join(' ');
+        const texto = porWhatsApp
+          ? `⚠️ A mensagem de WhatsApp para ${ctx.nome || 'o cliente'} pode já ter sido enviada${origem ? ` (WhatsApp aberto ${origem})` : ''}.\n\nConfirma no WhatsApp desse aparelho se a mensagem aparece como enviada. Só desmarca se tiveres a certeza de que NÃO foi enviada — desmarcar não apaga uma mensagem que já tenha seguido.`
+          : `⚠️ ${ctx.nome || 'O cliente'} está registado como avisado${origem ? ` ${origem}` : ''} (${(AVISO_MEIOS[m.avisoMeio] || {}).texto || 'Avisado'}).\n\nÉ possível que já tenha mesmo sido avisado. Tens a certeza de que queres desmarcar?`;
+        confirmDialog(texto, async () => {
+          const anterior = { aviso: true, avisoMeio: m.avisoMeio || null, avisoPor: m.avisoPor || null, avisoEm: m.avisoEm || null };
+          const r = await gravarAvisoCliente(ctx, { aviso: false, avisoMeio: null, avisoPor: null, avisoEm: null });
+          if (!r) { showDbErrorToast('Não foi possível desmarcar'); return; }
+          mostrarAvisoComAnular(`${ctx.nome || 'Cliente'}: aviso desmarcado.`, async () => { await gravarAvisoCliente(ctx, anterior); });
+        }, { confirmLabel: porWhatsApp ? 'Não foi enviada — desmarcar' : 'Sim, desmarcar', danger: true });
       }));
       const el = h('div', { class: 'estado-menu aviso-menu', role: 'menu' }, [h('div', { class: 'estado-menu-titulo' }, avisado ? avisoDescricao(m) : 'Avisar o cliente'), ...itens]);
       document.body.appendChild(el);
