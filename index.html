@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-28 17:00" />
+<meta name="siga-versao" content="2026-10-28 18:00" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -40988,6 +40988,18 @@ function escalaOrigemDesconto(saldo, diasAConsumir) {
 // Janela de flexibilidade do Dia de Aniversário: pode ser gozado entre 1
 // mês antes e 1 mês depois da data exata de nascimento (nunca só no
 // próprio dia) — usada para validar períodos do tipo 'aniversario'.
+// Dia do aniversário verdadeiro a propor no "Dia de Aniversário": o deste ano, ou o do próximo se a janela deste
+// ano (±1 mês) já passou. null sem Data de Nascimento.
+function escalaDataAniversarioSugerida(colaborador) {
+  if (!colaborador || !colaborador.dataNascimento) return null;
+  const mmdd = String(colaborador.dataNascimento).slice(5, 10);
+  if (!/^\d{2}-\d{2}$/.test(mmdd)) return null;
+  let ano = new Date().getFullYear();
+  const janela = escalaJanelaAniversario(colaborador, ano);
+  if (janela && janela.fim < todayISO()) ano += 1;
+  const dia = mmdd === '02-29' && !(ano % 4 === 0 && (ano % 100 !== 0 || ano % 400 === 0)) ? '02-28' : mmdd;
+  return `${ano}-${dia}`;
+}
 function escalaJanelaAniversario(colaborador, ano) {
   if (!colaborador || !colaborador.dataNascimento) return null;
   const partes = String(colaborador.dataNascimento).split('-').map(Number);
@@ -47221,19 +47233,57 @@ function buildHorariosPage(container, goTo) {
   // 2 listas independentes (tipo='encomenda' | 'chefe_turno'), geridas em
   // "Gerir Posições" (ver buildGerirPrioridadeTarefasComuns), lidas pelo
   // botão "⚡ Atribuir Tarefas Comuns" do Gerador — nunca corre sozinho.
-  function escalaPrioridadeTarefasLista(tipo) {
+  // 2026-10-28 (Hugo: "Joana Coelho" aparecia 2 vezes na lista das Encomendas): a mesma pessoa nunca aparece duas
+  // vezes — fica a primeira (pela ordem); as repetidas que estejam gravadas são retiradas da base de dados por
+  // limparPrioridadesRepetidas, quando a Direção abre esta secção.
+  function escalaPrioridadeTarefasListaBruta(tipo) {
     return (STATE.escalaPrioridadeTarefasComuns || [])
-      .filter(item => item.tipo === tipo)
+      .filter(item => item && item.tipo === tipo && !item.eliminado)
       .sort((a, b) => (a.ordem || 0) - (b.ordem || 0) || (a.id || 0) - (b.id || 0));
   }
+  function escalaPrioridadeTarefasLista(tipo) {
+    const vistos = new Set();
+    return escalaPrioridadeTarefasListaBruta(tipo).filter(item => {
+      const chave = item.utilizadorId ? `u${item.utilizadorId}` : `n${normalizarTexto(item.nome || '')}`;
+      if (vistos.has(chave) || vistos.has(`id${item.id}`)) return false;
+      vistos.add(chave); vistos.add(`id${item.id}`);
+      return true;
+    });
+  }
+  let limpezaPrioridadesFeita = false;
+  async function limparPrioridadesRepetidas() {
+    if (limpezaPrioridadesFeita || !souDirecaoHorariosGlobal()) return;
+    limpezaPrioridadesFeita = true;
+    const repetidos = [];
+    ['encomenda', 'chefe_turno'].forEach(tipo => {
+      const manter = new Set(escalaPrioridadeTarefasLista(tipo).map(i => String(i.id)));
+      const idsVistos = new Set();
+      escalaPrioridadeTarefasListaBruta(tipo).forEach(i => {
+        if (idsVistos.has(String(i.id))) return; // a mesma linha 2x em memória — não é um registo repetido
+        idsVistos.add(String(i.id));
+        if (!manter.has(String(i.id))) repetidos.push(i);
+      });
+    });
+    if (!repetidos.length) return;
+    const apagados = await bulkSoftDelete('escalaPrioridadeTarefasComuns', repetidos.map(i => i.id));
+    STATE.escalaPrioridadeTarefasComuns = (STATE.escalaPrioridadeTarefasComuns || []).filter(x => !apagados.has(x.id));
+    if (apagados.size) showToast(`Removi ${apagados.size} nome${apagados.size > 1 ? 's' : ''} repetido${apagados.size > 1 ? 's' : ''} das listas de prioridade.`, 'success');
+    rerender();
+  }
+  const prioridadeTarefaAAdicionar = {};
   async function adicionarPrioridadeTarefa(tipo, utilizadorId) {
+    if (prioridadeTarefaAAdicionar[tipo]) return; // duplo clique: o 2.º clique já não grava outra vez
     const utilizador = (STATE.usuarios || []).find(u => String(u.id) === String(utilizadorId));
     if (!utilizador) { escalaShowErro('Escolhe primeiro um colaborador válido no dropdown.'); return; }
     const jaNaLista = escalaPrioridadeTarefasLista(tipo).some(item => String(item.utilizadorId) === String(utilizador.id));
     if (jaNaLista) { showToast(`${utilizador.nomeCompleto || utilizador.username} já está nesta lista de prioridade.`, 'error'); return; }
     const max = escalaPrioridadeTarefasLista(tipo).reduce((m, x) => Math.max(m, x.ordem || 0), 0);
-    const created = await dbInsert('escalaPrioridadeTarefasComuns', { tipo, ordem: max + 1, nome: utilizador.nomeCompleto || utilizador.username, utilizadorId: utilizador.id });
-    if (created) { STATE.escalaPrioridadeTarefasComuns = [...(STATE.escalaPrioridadeTarefasComuns || []), created]; prioridadeTarefasDraft[tipo] = ''; }
+    prioridadeTarefaAAdicionar[tipo] = true;
+    let created = null;
+    try { created = await dbInsert('escalaPrioridadeTarefasComuns', { tipo, ordem: max + 1, nome: utilizador.nomeCompleto || utilizador.username, utilizadorId: utilizador.id }); }
+    finally { prioridadeTarefaAAdicionar[tipo] = false; }
+    // juntarNoFim: se o tempo real já trouxe esta linha, não fica duplicada no ecrã.
+    if (created) { STATE.escalaPrioridadeTarefasComuns = juntarNoFim(STATE.escalaPrioridadeTarefasComuns || [], [created]); prioridadeTarefasDraft[tipo] = ''; }
     else escalaShowErro('Não foi possível adicionar à lista de prioridade');
     rerender();
   }
@@ -49189,7 +49239,18 @@ function buildHorariosPage(container, goTo) {
     colaboradorSelect.addEventListener('change', () => { feriasDraft.utilizadorId = colaboradorSelect.value; feriasDraft.tipo = ''; feriasConflitosPendentes = null; rerender(); });
     const tipoSelect = h('select', { class: 'select' }, opcoesTipo.map(t => h('option', { value: t.key, selected: feriasDraft.tipo === t.key ? 'selected' : undefined }, t.label)));
     tipoSelect.value = feriasDraft.tipo;
-    tipoSelect.addEventListener('change', () => { feriasDraft.tipo = tipoSelect.value; feriasConflitosPendentes = null; });
+    tipoSelect.addEventListener('change', () => {
+      feriasDraft.tipo = tipoSelect.value; feriasConflitosPendentes = null;
+      // Dia de Aniversário ligado à Data de Nascimento (2026-10-28, Hugo: "faço anos a 24 de outubro e no horário
+      // aparecia a 23 — isto devia estar já ligado"): ao escolher este tipo, o dia vem logo preenchido com o
+      // aniversário verdadeiro (continua a poder mudar-se dentro da janela de ±1 mês).
+      if (feriasDraft.tipo === 'aniversario') {
+        const real = escalaDataAniversarioSugerida(alvoAtual);
+        const p0 = feriasDraft.periodos && feriasDraft.periodos[0];
+        if (real && p0 && !feriasEditandoId) { p0.dataInicio = real; p0.dataFim = real; }
+        rerender();
+      }
+    });
     const obsInput = h('input', { class: 'input', placeholder: 'Observações (opcional)' });
     obsInput.value = feriasDraft.observacoes || '';
     obsInput.addEventListener('input', () => { feriasDraft.observacoes = obsInput.value; });
@@ -52609,6 +52670,7 @@ function buildHorariosPage(container, goTo) {
     ]);
   }
   function buildGerirPrioridadeTarefasComuns() {
+    setTimeout(() => { limparPrioridadesRepetidas(); }, 0);
     // Explicação movida do parágrafo fixo por baixo do título para um
     // ícone (i) junto ao próprio título (2026-08-17, pedido explícito
     // "manter tudo clean"), depois AFINADA (mesmo dia, pedido explícito
