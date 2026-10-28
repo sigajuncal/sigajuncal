@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-19 00:25" />
+<meta name="siga-versao" content="2026-10-28 15:30" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -6452,6 +6452,13 @@ p.cell-muted{color:var(--pharm-500,#64748b);font-size:13px;}
 .ficheiro-visor-acoes{display:flex;gap:8px;flex-shrink:0;}
 .ficheiro-visor-acoes .btn{display:inline-flex;align-items:center;gap:6px;}
 .ficheiro-visor-corpo{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;background:#f1f5f9;border-radius:10px;overflow:auto;}
+.agenda-slot-row.agenda-slot-quebra{background:#fef2f2;border-color:#fecaca;cursor:pointer;}
+.agenda-slot-row.agenda-slot-quebra:hover{background:#fee2e2;}
+.agenda-slot-row.agenda-slot-quebra .agenda-slot-nome{color:#991b1b;}
+.badge-quebra{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:999px;background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;font-size:9.5px;font-weight:800;letter-spacing:.04em;vertical-align:middle;}
+.badge-quebra.badge-quebra-tabela{margin-left:0;font-size:11px;letter-spacing:0;}
+tr.linha-quebra td{background:#fef2f2;cursor:pointer;}
+tr.linha-quebra:hover td{background:#fee2e2;}
 .ficheiro-visor-a-abrir{display:flex;flex-direction:column;align-items:center;gap:12px;padding:40px 16px;text-align:center;}
 .ficheiro-visor-img{max-width:100%;max-height:100%;object-fit:contain;}
 .ficheiro-visor-pdf{width:100%;height:100%;border:0;border-radius:10px;background:#fff;}
@@ -55875,11 +55882,47 @@ function buildVacinacaoPage(container, goTo) {
     confirmDialog('Tens a certeza de que queres eliminar este registo de quebra? A quantidade volta a contar para o stock.', async () => {
       const apagados = await bulkSoftDelete('vacinacaoQuebras', [q.id]);
       STATE.vacinacaoQuebras = STATE.vacinacaoQuebras.filter(x => !apagados.has(x.id));
+      if (apagados.has(q.id) && quebraEditId === q.id) { showQuebraForm = false; quebraEditId = null; }
       rerender();
     }, { danger: true, confirmLabel: 'Eliminar' });
   }
   function quebrasDaCampanha() {
     return STATE.vacinacaoQuebras.filter(q => q.campanhaId === campanhaId).slice().sort((a, b) => (b.data || '').localeCompare(a.data || ''));
+  }
+  // QUEBRAS NA AGENDA DO DIA (2026-10-28, Hugo: "coloca as quebras COVID na agenda, à hora do seu registo, quase como
+  // se fosse marcação, para permitir editar ou eliminar; mas o registo é sempre feito por Registar Quebra"):
+  // cada quebra do dia aparece na grelha de Vagas e na Tabela Detalhada, encaixada pela hora — nunca ocupa nem
+  // bloqueia uma vaga (não é uma marcação), só fica visível no sítio certo, com Editar e Eliminar.
+  function quebrasDoDiaOrdenadas(dateISO) {
+    return STATE.vacinacaoQuebras.filter(q => q.campanhaId === campanhaId && q.data === dateISO)
+      .slice().sort((a, b) => ((a.hora ? normalizarHora(a.hora) : '23:59')).localeCompare((b.hora ? normalizarHora(b.hora) : '23:59')));
+  }
+  function quebraTextoVacinas(q) {
+    return [Number(q.qtdGripe) > 0 ? `Gripe ${q.qtdGripe}` : '', Number(q.qtdCovid) > 0 ? `COVID ${q.qtdCovid}` : ''].filter(Boolean).join(' · ') || '—';
+  }
+  function quebraBotoesAcao(q) {
+    const editar = h('button', { type: 'button', class: 'btn-fab-sm tone-blue', title: 'Editar quebra', 'aria-label': 'Editar quebra' }, Icon('pencil', { size: 12, strokeWidth: 2.3 }));
+    editar.addEventListener('click', (e) => { e.stopPropagation(); requireAuth(() => openEditQuebra(q)); });
+    const eliminar = isEnfermeiro() ? null : h('button', { type: 'button', class: 'btn-fab-sm tone-red', title: 'Eliminar quebra', 'aria-label': 'Eliminar quebra' }, Icon('trash', { size: 12, strokeWidth: 2.2 }));
+    if (eliminar) eliminar.addEventListener('click', (e) => { e.stopPropagation(); requireAuth(() => removeQuebraUnica(q)); });
+    return [editar, eliminar].filter(Boolean);
+  }
+  function linhaQuebraAgenda(q) {
+    const row = h('div', { class: 'agenda-slot-row agenda-slot-quebra', 'data-quebra-id': String(q.id), title: 'Quebra registada — clica para editar' }, [
+      h('span', { class: 'agenda-slot-hora' }, [(q.hora ? normalizarHora(q.hora) : '—'), h('span', { class: 'badge-quebra' }, 'QUEBRA')]),
+      h('div', { class: 'agenda-slot-corpo' }, [
+        h('span', { class: 'agenda-slot-nome agenda-slot-nome-linha' }, `Quebra — ${quebraTextoVacinas(q)}`),
+        h('div', { class: 'agenda-slot-detalhes' }, [
+          h('span', { class: 'agenda-slot-servico' }, q.motivo ? String(q.motivo) : 'Sem motivo indicado'),
+          h('span', { class: 'agenda-slot-detalhes-acoes' }, [
+            h('span', { class: 'agenda-slot-responsavel', title: 'Registado por' }, q.responsavel || '—'),
+            ...quebraBotoesAcao(q),
+          ]),
+        ]),
+      ]),
+    ]);
+    row.addEventListener('click', () => requireAuth(() => openEditQuebra(q)));
+    return row;
   }
 
   /* ============ LISTA DE ESPERA ============ */
@@ -56152,11 +56195,31 @@ function buildVacinacaoPage(container, goTo) {
     // explícito 2026-08-11 — antes clicar abria logo o formulário).
     return row;
   }
-  function buildMarcacoesTable(list, emptyMsg) {
-    if (!list.length) return EmptyState(emptyMsg);
+  function buildMarcacoesTable(list, emptyMsg, quebras) {
+    quebras = quebras || [];
+    if (!list.length && !quebras.length) return EmptyState(emptyMsg);
     const thead = h('thead', {}, h('tr', {}, ['', 'Data', 'Hora', 'Nome', 'Contacto', 'Vacina(s)', 'Estado', 'Avisado', 'Responsável'].map(t => h('th', {}, t))));
-    const tbody = h('tbody', {}, list.map(renderMarcacaoRow));
+    // Quebras do dia (2026-10-28) intercaladas pela hora, entre as marcações.
+    const itens = list.map(m => ({ hora: (m.hora ? normalizarHora(m.hora) : '23:59'), ordem: 0, tr: renderMarcacaoRow(m) }))
+      .concat(quebras.map(q => ({ hora: (q.hora ? normalizarHora(q.hora) : '23:59'), ordem: 1, tr: linhaQuebraTabela(q) })));
+    if (quebras.length) itens.sort((a, b) => a.hora.localeCompare(b.hora) || a.ordem - b.ordem);
+    const tbody = h('tbody', {}, itens.map(i => i.tr));
     return h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', {}, [thead, tbody])));
+  }
+  function linhaQuebraTabela(q) {
+    const tr = h('tr', { class: 'linha-quebra', 'data-quebra-id': String(q.id), title: 'Quebra registada — clica para editar' }, [
+      h('td', {}),
+      h('td', {}, formatDate(q.data)),
+      h('td', {}, (q.hora ? normalizarHora(q.hora) : '—')),
+      h('td', {}, [h('strong', {}, 'Quebra'), q.motivo ? h('span', { class: 'cell-muted' }, ` — ${q.motivo}`) : null].filter(Boolean)),
+      h('td', { class: 'cell-muted' }, '—'),
+      h('td', {}, quebraTextoVacinas(q)),
+      h('td', {}, h('span', { class: 'badge-quebra badge-quebra-tabela' }, 'Quebra')),
+      h('td', {}, h('div', { class: 'row-actions', style: 'justify-content:flex-start;' }, quebraBotoesAcao(q))),
+      h('td', {}, q.responsavel || '—'),
+    ]);
+    tr.addEventListener('click', () => requireAuth(() => openEditQuebra(q)));
+    return tr;
   }
   // Grelha de "vagas" ao abrir o dia — mesmo padrão visual/interação do
   // módulo Agenda de Serviços (buildAgendaDiaModal): cada vaga da grelha
@@ -56399,24 +56462,26 @@ function buildVacinacaoPage(container, goTo) {
     // desativados, e aviso no topo. Marcações que já existam continuam
     // visíveis e editáveis.
     const porAbrir = !vacinacaoDiaAberto(dateISO);
-    const linhas = todasHoras.map(hora => {
+    const itens = todasHoras.map(hora => {
       const m = ocupacao[hora];
-      if (m) return linhaOcupada(m, hora);
+      if (m) return { hora, ordem: 0, node: linhaOcupada(m, hora) };
       const slotInfo = slotInfoPorHora[hora];
       const node = slotInfo && slotInfo.dentroDefault ? linhaLivre(hora) : linhaIndisponivel(hora);
       if (porAbrir && node && !node.classList.contains('agenda-vaga-expirada')) {
         node.classList.add('agenda-slot-dia-fechado');
         node.querySelectorAll('button').forEach(b => { b.disabled = true; b.title = 'Abre o dia primeiro'; });
       }
-      return node;
+      return { hora, ordem: 0, node };
     });
+    // Quebras do dia (2026-10-28): entram na grelha à hora do registo, logo a seguir à vaga dessa hora.
+    quebrasDoDiaOrdenadas(dateISO).forEach(q => itens.push({ hora: (q.hora ? normalizarHora(q.hora) : '23:59'), ordem: 1, node: linhaQuebraAgenda(q) }));
+    itens.sort((a, b) => a.hora.localeCompare(b.hora) || a.ordem - b.ordem);
     // Manhã | Tarde lado a lado (em vez de uma única coluna comprida) —
     // aproveita a largura do ecrã e poupa scroll. Divisão às 14:00 (fim da
     // pausa de almoço típica da farmácia). Em ecrãs estreitos (telemóvel)
     // volta a empilhar em coluna única — ver .vagas-grelha-colunas no CSS.
-    const meio = todasHoras.findIndex(hh => hh >= '14:00');
-    const colManha = linhas.slice(0, meio === -1 ? linhas.length : meio);
-    const colTarde = meio === -1 ? [] : linhas.slice(meio);
+    const colManha = itens.filter(i => i.hora < '14:00').map(i => i.node);
+    const colTarde = itens.filter(i => i.hora >= '14:00').map(i => i.node);
     const corpo = [
       porAbrir ? h('div', { class: 'agenda-dia-por-abrir' }, [
         Icon('lockClosed', { size: 15, strokeWidth: 2.3 }),
@@ -56898,6 +56963,7 @@ function buildVacinacaoPage(container, goTo) {
     if (showQuebraForm) {
       wrap.appendChild(buildRecordFormEstreito(vacinacaoQuebraSchema, quebraDraft, {
         editing: !!quebraEditId, onSubmit: submitQuebra, onCancel: cancelQuebraForm, errorMessage: quebraFormError, saving: quebraSaving,
+        onDelete: (quebraEditId && !isEnfermeiro()) ? () => removeQuebraUnica(STATE.vacinacaoQuebras.find(x => x.id === quebraEditId) || { id: quebraEditId }) : null,
       }));
       return wrap;
     }
@@ -56910,9 +56976,8 @@ function buildVacinacaoPage(container, goTo) {
       const totalG = quebrasDoDia.reduce((s, q) => s + (Number(q.qtdGripe) || 0), 0);
       const totalC = quebrasDoDia.reduce((s, q) => s + (Number(q.qtdCovid) || 0), 0);
       wrap.appendChild(h('div', { class: 'card card-pad', style: 'margin-bottom:14px;background:#fef2f2;border-color:#fecaca;' }, [
-        h('p', { style: 'margin:0;font-size:13px;font-weight:700;' }, `🗑️ Quebra registada hoje: Gripe ${totalG} · COVID ${totalC}`),
-        ...quebrasDoDia.map(q => h('p', { class: 'field-helper-text', style: 'margin:2px 0 0;cursor:pointer;', onclick: () => openEditQuebra(q) },
-          `${q.hora || '—'} · ${q.qtdGripe ? `Gripe ${q.qtdGripe}` : ''}${q.qtdGripe && q.qtdCovid ? ' · ' : ''}${q.qtdCovid ? `COVID ${q.qtdCovid}` : ''}${q.motivo ? ` — ${q.motivo}` : ''} (${q.responsavel || '—'})`)),
+        h('p', { style: 'margin:0;font-size:13px;font-weight:700;' }, `🗑️ Quebra registada neste dia: Gripe ${totalG} · COVID ${totalC}`),
+        h('p', { class: 'field-helper-text', style: 'margin:2px 0 0;' }, `${quebrasDoDia.length === 1 ? 'A quebra aparece' : `As ${quebrasDoDia.length} quebras aparecem`} na agenda à hora do registo — aí podes editar ou eliminar.`),
       ]));
     }
     wrap.appendChild(buildPesquisaDoDiaVacinacao(dateISO));
@@ -56942,7 +57007,7 @@ function buildVacinacaoPage(container, goTo) {
     } else {
       const listDoDia = STATE.vacinacaoMarcacoes.filter(m => m.campanhaId === campanhaId && m.data === dateISO && !vacinacaoEhBloqueio(m))
         .slice().sort((a, b) => (a.hora || '').localeCompare(b.hora || ''));
-      wrap.appendChild(buildMarcacoesTable(listDoDia, 'Sem marcações neste dia.'));
+      wrap.appendChild(buildMarcacoesTable(listDoDia, 'Sem marcações neste dia.', quebrasDoDiaOrdenadas(dateISO)));
     }
     wrap.appendChild(buildBottomActionBar({
       selectedCount: marcacaoSelectedIds.size,
@@ -57457,6 +57522,7 @@ function buildVacinacaoPage(container, goTo) {
     if (showQuebraForm) {
       wrap.appendChild(buildRecordFormEstreito(vacinacaoQuebraSchema, quebraDraft, {
         editing: !!quebraEditId, onSubmit: submitQuebra, onCancel: cancelQuebraForm, errorMessage: quebraFormError, saving: quebraSaving,
+        onDelete: (quebraEditId && !isEnfermeiro()) ? () => removeQuebraUnica(STATE.vacinacaoQuebras.find(x => x.id === quebraEditId) || { id: quebraEditId }) : null,
       }));
       return wrap;
     }
