@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-28 18:00" />
+<meta name="siga-versao" content="2026-10-28 20:30" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -7257,25 +7257,29 @@ let __datalistCounter = 0;
 // "list" obriga o browser a recalcular a lista do zero.
 // Aplicado a TODOS os campos combo/autocomplete da app (ver buildField,
 // buildFornecedorTopField, e o campo de fornecedor da Gestão de Orçamentos).
-function repararDatalistAoEditar(inputEl, listId) {
+function repararDatalistAoEditar(inputEl, listId, opts) {
+  const manterValor = !!(opts && opts.manterValor);
   let valorAntesDoFoco = null;
   function resetAtributoList() {
     inputEl.removeAttribute('list');
     requestAnimationFrame(() => inputEl.setAttribute('list', listId));
   }
+  if (manterValor) {
+    inputEl.title = 'Podes corrigir só as horas ou os minutos. Para ver todas as opções, apaga o campo.';
+    inputEl.addEventListener('input', () => { if (!inputEl.value) resetAtributoList(); });
+    return;
+  }
   inputEl.addEventListener('focus', () => {
     valorAntesDoFoco = inputEl.value;
-    if (inputEl.value) inputEl.value = ''; // esvazia SÓ visualmente — a app continua a saber o valor anterior
+    if (inputEl.value) inputEl.value = '';
     resetAtributoList();
   });
   inputEl.addEventListener('blur', () => {
-    // Saiu do campo sem escrever nada de novo (nenhum evento "input"
-    // disparou entretanto) — repõe o valor visual que lá estava.
     if (!inputEl.value && valorAntesDoFoco) inputEl.value = valorAntesDoFoco;
     valorAntesDoFoco = null;
   });
   inputEl.addEventListener('input', () => {
-    valorAntesDoFoco = null; // já há edição real — deixa de haver "valor a repor" no blur
+    valorAntesDoFoco = null;
     if (!inputEl.value) resetAtributoList();
   });
 }
@@ -9942,7 +9946,12 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     attachFormEnterNavigation(camposGrid, () => requireAuth(submitForm));
     const children = [camposGrid, duracaoInfo];
     if (formError) children.push(h('p', { class: 'form-error' }, formError));
-    children.push(h('div', { class: 'form-actions' }, [saveBtn, cancelBtn]));
+    const marcacaoParaRemarcar = formDraft.editId ? (STATE.agendaMarcacoes || []).find(x => String(x.id) === String(formDraft.editId)) : null;
+    const podeRemarcar = !!marcacaoParaRemarcar && !!String(marcacaoParaRemarcar.nomeCliente || '').trim()
+      && !['cancelada', 'cancelado', 'faltou', 'concluida', 'concluída'].includes(String(marcacaoParaRemarcar.estado || '').toLowerCase());
+    const remarcarBtn = podeRemarcar ? h('button', { class: 'btn btn-secondary', type: 'button', title: 'Passar esta marcação para outro dia ou hora, com os mesmos dados' }, iconeTexto('calendar', 'Remarcar para outro dia')) : null;
+    if (remarcarBtn) remarcarBtn.addEventListener('click', () => requireAuth(() => abrirRemarcacaoAgenda(marcacaoParaRemarcar, () => { cancelForm(); if (onSaved) onSaved(); }, { mover: true })));
+    children.push(h('div', { class: 'form-actions' }, [saveBtn, cancelBtn, remarcarBtn].filter(Boolean)));
     if (formDraft.editId) { const autoria = buildLinhaAutoriaDe(STATE.agendaMarcacoes, formDraft.editId, formDraft); if (autoria) children.push(autoria); }
     return h('div', { class: 'card card-pad' }, children);
   }
@@ -11749,12 +11758,12 @@ function agendaOferecerRemarcacao(m, onSaved) {
 }
 // Horas livres para começar uma marcação de duracaoMin nesse dia (grelha do prestador). Vagas livres criadas à
 // mão (linha sem cliente) não contam como ocupadas — se a hora coincidir, essa linha é reaproveitada.
-function agendaHorasLivresParaRemarcar(prestadorKey, dateISO, duracaoMin) {
+function agendaHorasLivresParaRemarcar(prestadorKey, dateISO, duracaoMin, excluirId) {
   const grade = agendaSlotsPara(prestadorKey);
   const agora = new Date();
   const horaAgora = `${pad2(agora.getHours())}:${pad2(agora.getMinutes())}`;
   const ehVagaVazia = (x) => x.tipoLinha === 'vaga' && !String(x.nomeCliente || '').trim() && !x.estado;
-  const ocupantes = (STATE.agendaMarcacoes || []).filter(x => x.prestadorKey === prestadorKey && x.data === dateISO && !ehVagaVazia(x)
+  const ocupantes = (STATE.agendaMarcacoes || []).filter(x => x.prestadorKey === prestadorKey && x.data === dateISO && !ehVagaVazia(x) && (excluirId === undefined || excluirId === null || String(x.id) !== String(excluirId))
     && !(x.tipoLinha === 'vaga' && ['cancelada', 'cancelado', 'faltou'].includes(String(x.estado || '').toLowerCase())));
   return grade.filter(hora => {
     if (dateISO === todayISO() && hora <= horaAgora) return false;
@@ -11763,7 +11772,8 @@ function agendaHorasLivresParaRemarcar(prestadorKey, dateISO, duracaoMin) {
     return !ocupantes.some(x => agendaIntervalosSobrepoem(novo, agendaIntervaloMin(x.hora, x.duracaoMin || 15, prestadorKey)));
   });
 }
-function abrirRemarcacaoAgenda(m, onSaved) {
+function abrirRemarcacaoAgenda(m, onSaved, opts) {
+  const mover = !!(opts && opts.mover);
   const prestadorKey = m.prestadorKey;
   // Fica sempre por cima da janela do dia da agenda (que se volta a desenhar a cada alteração).
   const prestador = (PRESTADORES_AGENDA || []).find(p => p.key === prestadorKey);
@@ -11816,7 +11826,7 @@ function abrirRemarcacaoAgenda(m, onSaved) {
       corpo.appendChild(abrirBtn);
       return;
     }
-    const livres = agendaHorasLivresParaRemarcar(prestadorKey, dia, duracaoMin);
+    const livres = agendaHorasLivresParaRemarcar(prestadorKey, dia, duracaoMin, mover ? m.id : null).filter(hora => !(mover && dia === m.data && hora === normalizarHora(m.hora)));
     if (!livres.length) {
       corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0;' }, 'Sem vagas livres neste dia para esta duração — experimenta outro dia.'));
       return;
@@ -11834,8 +11844,26 @@ function abrirRemarcacaoAgenda(m, onSaved) {
     // Confirma de novo com o servidor antes de gravar.
     await refrescarLinhasDoServidor('agendaMarcacoes', q => q.eq('prestador_key', prestadorKey).eq('data', dia),
       x => x.prestadorKey === prestadorKey && x.data === dia);
-    if (!agendaHorasLivresParaRemarcar(prestadorKey, dia, duracaoMin).includes(hora)) {
+    if (!agendaHorasLivresParaRemarcar(prestadorKey, dia, duracaoMin, mover ? m.id : null).includes(hora)) {
       aGravar = false; showToast(`A vaga das ${hora} acabou de ser ocupada — escolhe outra.`, 'error'); desenhar(); return;
+    }
+    if (mover) {
+      const notaMover = `Remarcada (era a ${formatDate(m.data)} às ${normalizarHora(m.hora)}).`;
+      const obsAntes = String(m.observacoes || '').trim();
+      const vagaVaziaDestino = (STATE.agendaMarcacoes || []).find(x => String(x.id) !== String(m.id) && x.prestadorKey === prestadorKey && x.data === dia && normalizarHora(x.hora) === hora
+        && x.tipoLinha === 'vaga' && !String(x.nomeCliente || '').trim() && !x.estado);
+      if (vagaVaziaDestino) {
+        const apagou = await dbDelete('agendaMarcacoes', vagaVaziaDestino.id);
+        if (apagou) STATE.agendaMarcacoes = STATE.agendaMarcacoes.filter(x => x.id !== vagaVaziaDestino.id);
+      }
+      const atualizado = await dbUpdate('agendaMarcacoes', m.id, { data: dia, hora, observacoes: obsAntes ? `${obsAntes} · ${notaMover}` : notaMover, aviso: false, ultimaAtualizacaoPor: valorUltimaAtualizacao() });
+      aGravar = false;
+      if (!atualizado) { showDbErrorToast('Não foi possível remarcar'); return; }
+      STATE.agendaMarcacoes = STATE.agendaMarcacoes.map(x => x.id === atualizado.id ? atualizado : x);
+      fechar();
+      showToast(`Remarcação feita: ${m.nomeCliente} passou para ${formatDate(dia)} às ${hora}${prestador ? ' · ' + prestador.nome : ''}. Lembra-te de avisar o cliente.`, 'success');
+      if (onSaved) onSaved();
+      return;
     }
     const nota = `Remarcada (${m.estado === 'faltou' ? 'faltou' : 'cancelou'} a de ${formatDate(m.data)} às ${normalizarHora(m.hora)}).`;
     const obsAnterior = String(m.observacoes || '').trim();
@@ -16645,7 +16673,18 @@ function buildField(field, draft) {
     extra = h('datalist', { id: listId }, field.options.map((o, i) => h('option', { value: o }, comboLabels[i] || o)));
     control = h('input', { class: 'input', list: listId, placeholder: field.placeholder || 'Escrever ou escolher...' });
     control.value = draft[field.name] || '';
-    repararDatalistAoEditar(control, listId);
+    const campoDeHora = field.manterValorAoEditar || /^hora/i.test(String(field.name || ''));
+    repararDatalistAoEditar(control, listId, { manterValor: campoDeHora });
+    if (campoDeHora) {
+      control.setAttribute('inputmode', 'numeric');
+      control.addEventListener('blur', () => {
+        const m = /^\s*(\d{1,2})\s*[:hH.,]?\s*(\d{2})?\s*$/.exec(control.value || '');
+        if (m && Number(m[1]) < 24 && (m[2] === undefined || Number(m[2]) < 60)) {
+          const normal = `${String(Number(m[1])).padStart(2, '0')}:${m[2] || '00'}`;
+          if (normal !== control.value) { control.value = normal; draft[field.name] = normal; }
+        }
+      });
+    }
     control.addEventListener('input', () => { draft[field.name] = control.value; });
     if (field.onChange) control.addEventListener('change', () => executarOnChangeMantendoFoco(() => field.onChange()));
   } else if (field.integer) {
@@ -17009,18 +17048,33 @@ function textoHoverRegisto(r) {
   if (autoria.length) { if (linhas.length) linhas.push(''); autoria.forEach(a => linhas.push(a)); }
   return linhas.join('\n');
 }
+const HOVER_REGISTO_ATRASO_MS = 1000;
 function instalarHoverDadosRegisto(row, id, registoFixo) {
   if (!row || row.dataset.hoverDados) return;
   if (!(window.matchMedia && window.matchMedia('(hover: hover)').matches)) return;
   row.dataset.hoverDados = '1';
-  let texto = '';
+  let texto = '', temporizador = null, visivel = false, ultimo = null;
   const sobreInterativo = (t) => t && t.closest && t.closest('button, a, input, select, textarea, .vac-obs-icone, .cell-tooltip-bubble');
-  row.addEventListener('mouseenter', () => { texto = textoHoverRegisto(registoFixo || localizarRegistoDaLinha(row, id)); });
-  row.addEventListener('mousemove', (e) => {
-    if (!texto || sobreInterativo(e.target)) { if (AVISO_FLUTUANTE_ORIGEM === row) esconderTooltipFlutuante(); return; }
-    mostrarTooltipFlutuante(row, texto, { x: e.clientX, y: e.clientY + 14 });
+  const esconder = () => { visivel = false; if (AVISO_FLUTUANTE_ORIGEM === row) esconderTooltipFlutuante(); };
+  const mostrar = () => {
+    temporizador = null;
+    if (!texto || !ultimo || !row.isConnected || sobreInterativo(ultimo.alvo)) return;
+    visivel = true;
+    mostrarTooltipFlutuante(row, texto, { x: ultimo.x, y: ultimo.y + 14 });
+  };
+  const agendar = () => { if (temporizador) clearTimeout(temporizador); temporizador = setTimeout(mostrar, HOVER_REGISTO_ATRASO_MS); };
+  row.addEventListener('mouseenter', (e) => {
+    texto = textoHoverRegisto(registoFixo || localizarRegistoDaLinha(row, id));
+    ultimo = { x: e.clientX, y: e.clientY, alvo: e.target };
+    visivel = false;
+    agendar();
   });
-  row.addEventListener('mouseleave', () => { if (AVISO_FLUTUANTE_ORIGEM === row) esconderTooltipFlutuante(); });
+  row.addEventListener('mousemove', (e) => {
+    ultimo = { x: e.clientX, y: e.clientY, alvo: e.target };
+    if (!texto || sobreInterativo(e.target)) { esconder(); agendar(); return; }
+    if (visivel) mostrarTooltipFlutuante(row, texto, { x: e.clientX, y: e.clientY + 14 });
+  });
+  row.addEventListener('mouseleave', () => { if (temporizador) { clearTimeout(temporizador); temporizador = null; } esconder(); });
 }
 // Caixas da mesma linha sempre à mesma altura (2026-10-14): um campo com texto de ajuda por baixo (ex.: "Em doses, não
 // em frascos") já não sobe o rótulo e a caixa em relação aos vizinhos. Todos os campos alinham pelo topo e, em cada
