@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-28 15:30" />
+<meta name="siga-versao" content="2026-10-28 16:30" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -6459,6 +6459,11 @@ p.cell-muted{color:var(--pharm-500,#64748b);font-size:13px;}
 .badge-quebra.badge-quebra-tabela{margin-left:0;font-size:11px;letter-spacing:0;}
 tr.linha-quebra td{background:#fef2f2;cursor:pointer;}
 tr.linha-quebra:hover td{background:#fee2e2;}
+.vac-listagens-filtros{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px 14px;margin-top:12px;}
+.vac-listagens-campo{display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:700;color:var(--n-600,#475569);}
+.vac-listagens-check{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;padding-bottom:9px;cursor:pointer;}
+.vac-listagens-botoes{display:flex;flex-wrap:wrap;gap:8px;margin-left:auto;}
+@media (max-width:767px){.vac-listagens-botoes{margin-left:0;width:100%;}}
 .ficheiro-visor-a-abrir{display:flex;flex-direction:column;align-items:center;gap:12px;padding:40px 16px;text-align:center;}
 .ficheiro-visor-img{max-width:100%;max-height:100%;object-fit:contain;}
 .ficheiro-visor-pdf{width:100%;height:100%;border:0;border-radius:10px;background:#fff;}
@@ -57497,6 +57502,7 @@ function buildVacinacaoPage(container, goTo) {
       }));
       wrap.appendChild(h('div', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', {}, [thead, tbody]))));
     }
+    wrap.appendChild(buildListagensVacinacao()); // Listagens por data + comparação com o 4Digital (2026-10-28)
     if (podeGerirEncomendas) {
       wrap.appendChild(buildBottomActionBar({
         selectedCount: encomendaSelectedIds.size,
@@ -57509,6 +57515,327 @@ function buildVacinacaoPage(container, goTo) {
       wrap.appendChild(h('p', { class: 'field-helper-text', style: 'margin-top:10px;' }, 'Consulta apenas — só perfis Master ou Administrador podem registar, editar ou confirmar a receção de encomendas.'));
     }
     return wrap;
+  }
+
+
+  /* ============ LISTAGENS E COMPARAÇÃO COM O 4DIGITAL (2026-10-28) ============
+     Hugo: "permite tirar listagens da vacinação com filtro por data para comparar com o 4Digital, porque me estão a
+     dar discrepâncias". Em baixo, no separador Stock / Encomendas:
+       1. Listagem de vacinas administradas (uma linha por vacina, como no 4Digital) num intervalo de datas, com filtro
+          por vacina e as quebras — para ver, imprimir ou descarregar em Excel.
+       2. Comparar com o 4Digital: carrega-se a exportação do 4Digital (CSV ou Excel) e a app mostra o que não bate
+          certo — quem está registado duas vezes no 4Digital, quem está só num dos lados, datas diferentes e quebras.
+     Corresponde as pessoas pelo Nº de Utente; sem número, pelo nome (primeiro e último nome) e data de nascimento. */
+  let listDe = '', listAte = '', listVacina = 'todas', listIncluirQuebras = true, listAberta = false;
+  let comp4d = null; // { ficheiro, resultado }
+  let comp4dErro = '', comp4dALer = false;
+  function vacListDatasPadrao() {
+    if (!listAte) listAte = todayISO();
+    if (!listDe) { const d = new Date(); listDe = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-01`; }
+  }
+  function vacinasDaMarcacao(m) { return [m.gripe ? 'Gripe' : null, m.covid ? 'COVID' : null].filter(Boolean); }
+  // Uma linha por vacina administrada (quem levou as duas aparece duas vezes, como no 4Digital).
+  function vacListLinhas(de, ate, vacina, incluirQuebras) {
+    const linhas = [];
+    STATE.vacinacaoMarcacoes.forEach(m => {
+      if (m.campanhaId !== campanhaId || m.estado !== 'Administrada' || vacinacaoEhBloqueio(m)) return;
+      if (!m.data || m.data < de || m.data > ate) return;
+      vacinasDaMarcacao(m).forEach(v => {
+        if (vacina !== 'todas' && v.toLowerCase() !== vacina) return;
+        linhas.push({ tipo: 'vacina', data: m.data, hora: m.hora ? normalizarHora(m.hora) : '', nome: m.nome || '', numeroUtente: m.numeroUtente || '', dataNascimento: m.dataNascimento || '', vacina: v, qtd: 1, por: m.administradoPor || m.responsavel || '', m });
+      });
+    });
+    if (incluirQuebras) {
+      STATE.vacinacaoQuebras.forEach(q => {
+        if (q.campanhaId !== campanhaId || !q.data || q.data < de || q.data > ate) return;
+        [['Gripe', Number(q.qtdGripe) || 0], ['COVID', Number(q.qtdCovid) || 0]].forEach(([v, n]) => {
+          if (!n || (vacina !== 'todas' && v.toLowerCase() !== vacina)) return;
+          linhas.push({ tipo: 'quebra', data: q.data, hora: q.hora ? normalizarHora(q.hora) : '', nome: `Quebra${q.motivo ? ` — ${q.motivo}` : ''}`, numeroUtente: '', dataNascimento: '', vacina: v, qtd: n, por: q.responsavel || '' });
+        });
+      });
+    }
+    return linhas.sort((a, b) => (a.data + a.hora).localeCompare(b.data + b.hora) || a.nome.localeCompare(b.nome, 'pt'));
+  }
+  function vacListResumo(linhas) {
+    const c = (tipo, v) => linhas.filter(l => l.tipo === tipo && l.vacina === v).reduce((s, l) => s + l.qtd, 0);
+    return { gripe: c('vacina', 'Gripe'), covid: c('vacina', 'COVID'), qGripe: c('quebra', 'Gripe'), qCovid: c('quebra', 'COVID') };
+  }
+  function vacListParaExcel(linhas) {
+    return linhas.map(l => ({ 'Data': formatDate(l.data), 'Hora': l.hora, 'Utente': l.nome, 'Nº Utente': l.numeroUtente, 'Data de Nascimento': l.dataNascimento ? formatDate(l.dataNascimento) : '', 'Vacina': l.vacina, 'Quantidade': l.qtd, 'Tipo': l.tipo === 'quebra' ? 'Quebra' : 'Administrada', 'Administrado / registado por': l.por }));
+  }
+  function vacListDescarregarExcel(linhas, nome, folhas) {
+    if (!window.XLSX) { showToast('Não foi possível gerar o Excel: a biblioteca não carregou (verifica a ligação à internet).', 'error'); return; }
+    const wb = XLSX.utils.book_new();
+    (folhas || [{ nome: 'Vacinação', linhas: vacListParaExcel(linhas) }]).forEach(f => {
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(f.linhas.length ? f.linhas : [{ aviso: 'Sem registos' }]), nomeAbaValido(f.nome));
+    });
+    const arr = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    dispararDownloadBlob(new Blob([arr], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), nome);
+  }
+  function vacListImprimir(linhas, de, ate) {
+    const r = vacListResumo(linhas);
+    const doc = h('div', { class: 'doc-a4' }, [
+      h('h2', { style: 'margin:0 0 4px;font-size:16px;' }, `Vacinação — vacinas administradas de ${formatDate(de)} a ${formatDate(ate)}`),
+      h('p', { style: 'margin:0 0 10px;font-size:11px;' }, `Gripe ${r.gripe} · COVID ${r.covid} · Total ${r.gripe + r.covid}${(r.qGripe || r.qCovid) ? ` · Quebras: Gripe ${r.qGripe}, COVID ${r.qCovid}` : ''}`),
+      h('table', { style: 'width:100%;border-collapse:collapse;font-size:10px;' }, [
+        h('thead', {}, h('tr', {}, ['Data', 'Hora', 'Utente', 'Nº Utente', 'Vacina', 'Qtd', 'Por'].map(t => h('th', { style: 'text-align:left;border-bottom:1px solid #999;padding:3px 4px;' }, t)))),
+        h('tbody', {}, linhas.map(l => h('tr', {}, [formatDate(l.data), l.hora, l.nome, l.numeroUtente, l.vacina + (l.tipo === 'quebra' ? ' (quebra)' : ''), String(l.qtd), l.por].map(v => h('td', { style: 'border-bottom:1px solid #e5e5e5;padding:2px 4px;' }, v || ''))))),
+      ]),
+    ]);
+    imprimirDocumento(doc, { titulo: `vacinacao_${de}_a_${ate}` });
+  }
+  // Abre o dia da marcação na Agenda, com ela selecionada e à vista.
+  function vacAbrirMarcacaoNaAgenda(m) {
+    if (!m) return;
+    activeSubTab = 'agenda'; agendaView = 'calendario'; agendaDiaSelecionado = m.data; marcacaoSelectedIds = new Set([m.id]);
+    rerender();
+    setTimeout(() => {
+      const el = container.querySelector(`[data-marcacao-id="${String(m.id)}"]`);
+      if (el) { try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { el.scrollIntoView(); } el.classList.add('marcacao-regresso-destaque'); setTimeout(() => el.classList.remove('marcacao-regresso-destaque'), 2400); }
+      else { try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (e) { window.scrollTo(0, 0); } }
+    }, 120);
+  }
+
+  // ---- Leitura da exportação do 4Digital (CSV com ; em ISO-8859-1, ou Excel) ----
+  function vac4dLerCSV(txt, sep) {
+    const linhas = []; let linha = [], campo = '', aspas = false;
+    for (let i = 0; i < txt.length; i++) {
+      const c = txt[i];
+      if (aspas) { if (c === '"') { if (txt[i + 1] === '"') { campo += '"'; i++; } else aspas = false; } else campo += c; continue; }
+      if (c === '"') aspas = true;
+      else if (c === sep) { linha.push(campo); campo = ''; }
+      else if (c === '\n' || c === '\r') { if (c === '\r' && txt[i + 1] === '\n') i++; linha.push(campo); linhas.push(linha); linha = []; campo = ''; }
+      else campo += c;
+    }
+    if (campo !== '' || linha.length) { linha.push(campo); linhas.push(linha); }
+    return linhas;
+  }
+  function vac4dDataISO(v) {
+    const t = String(v || '').trim();
+    let m = /^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})/.exec(t);
+    if (m) return `${m[3]}-${pad2(Number(m[2]))}-${pad2(Number(m[1]))}`;
+    m = /^(\d{4})-(\d{2})-(\d{2})/.exec(t);
+    return m ? `${m[1]}-${m[2]}-${m[3]}` : '';
+  }
+  function vac4dTipoVacina(txt) {
+    const t = normalizarTexto(txt);
+    if (/covid|comirnaty|spikevax|sars|nuvaxovid/.test(t)) return 'COVID';
+    if (/gripe|influenz|vaxigrip|fluad|influvac|efluelda|flucelvax|fluenz/.test(t)) return 'Gripe';
+    return '';
+  }
+  async function vac4dLerFicheiro(file) {
+    const buf = await file.arrayBuffer();
+    let linhas;
+    if (/\.xlsx?$/i.test(file.name || '')) {
+      if (!window.XLSX) throw new Error('A biblioteca de Excel não carregou — exporta do 4Digital em CSV.');
+      const wb = XLSX.read(buf, { type: 'array' });
+      linhas = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: '' }).map(r => r.map(c => String(c == null ? '' : c)));
+    } else {
+      let txt;
+      try { txt = new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch (e) { txt = new TextDecoder('windows-1252').decode(buf); }
+      txt = txt.replace(/^﻿/, '');
+      const primeira = txt.split(/\r?\n/)[0] || '';
+      linhas = vac4dLerCSV(txt, primeira.split(';').length >= primeira.split(',').length ? ';' : ',');
+    }
+    const norm = (c) => normalizarTexto(c).replace(/\s+/g, ' ').trim();
+    const iCab = linhas.findIndex(r => r.some(c => norm(c) === 'utente') && r.some(c => norm(c).indexOf('data administra') === 0));
+    if (iCab < 0) throw new Error('Não encontrei as colunas «Utente» e «Data Administração». Confirma que é a exportação da vacinação do 4Digital.');
+    const cab = linhas[iCab].map(norm);
+    const col = (f) => cab.findIndex(f);
+    const cNome = col(c => c === 'utente');
+    const cNum = col(c => c !== 'utente' && c.indexOf('utente') >= 0 && /^n/.test(c) && c.indexOf('tipo') < 0);
+    const cData = col(c => c.indexOf('data administra') === 0);
+    const cNasc = col(c => c.indexOf('data nascimento') === 0);
+    const cTipo = col(c => c === 'tipo');
+    const cVac = col(c => c === 'vacina');
+    const cPor = col(c => /^ad(m|mi)?ist?rado por/.test(c) || c.indexOf('administrado por') >= 0);
+    const reg = [];
+    linhas.slice(iCab + 1).forEach((r, i) => {
+      const val = (k) => (k >= 0 ? String(r[k] || '').trim() : '');
+      const nome = val(cNome), data = vac4dDataISO(val(cData)), num = val(cNum).replace(/\D/g, '');
+      if (!nome && !data) return; // linha de totais / vazia
+      const vacina = vac4dTipoVacina(`${val(cTipo)} ${val(cVac)}`);
+      if (!vacina) return;
+      reg.push({ linha: iCab + i + 2, nome, numeroUtente: /^0*$/.test(num) ? '' : num, data, dataNascimento: vac4dDataISO(val(cNasc)), vacina, por: val(cPor), quebra: !nome });
+    });
+    if (!reg.length) throw new Error('O ficheiro não tem registos de vacinas de Gripe ou COVID.');
+    return reg;
+  }
+  const VAC_NOMES_IGNORAR = ['da', 'de', 'do', 'das', 'dos', 'e'];
+  function vacTokensNome(n) { return normalizarTexto(n).replace(/[^a-z ]/g, ' ').split(/\s+/).filter(t => t.length > 1 && VAC_NOMES_IGNORAR.indexOf(t) < 0); }
+  function vacNomesCompativeis(a, b) {
+    const ta = vacTokensNome(a), tb = vacTokensNome(b);
+    if (!ta.length || !tb.length || ta[0] !== tb[0]) return false;
+    if (ta[ta.length - 1] === tb[tb.length - 1]) return true;
+    const [menor, maior] = ta.length <= tb.length ? [ta, tb] : [tb, ta];
+    return menor.every(t => maior.indexOf(t) >= 0);
+  }
+  function vac4dComparar(reg4d) {
+    const vacs = reg4d.filter(r => !r.quebra);
+    const datas = reg4d.map(r => r.data).filter(Boolean).sort();
+    const de = datas[0], ate = datas[datas.length - 1];
+    const tipos = [...new Set(reg4d.map(r => r.vacina))].sort();
+    const siga = [];
+    STATE.vacinacaoMarcacoes.forEach(m => {
+      if (m.campanhaId !== campanhaId || m.estado !== 'Administrada' || vacinacaoEhBloqueio(m)) return;
+      vacinasDaMarcacao(m).forEach(v => { if (tipos.indexOf(v) >= 0) siga.push({ m, vacina: v, data: m.data, nome: m.nome || '', numeroUtente: String(m.numeroUtente || '').replace(/\D/g, ''), dataNascimento: m.dataNascimento || '', por: m.administradoPor || '' }); });
+    });
+    const usados = new Set();
+    const duplicados = [], so4d = [], datasDiferentes = [];
+    const vistos = new Map();
+    vacs.slice().sort((a, b) => (a.data || '').localeCompare(b.data || '')).forEach(e => {
+      const chave = `${e.vacina}|${e.numeroUtente || vacTokensNome(e.nome).join(' ')}`;
+      if (vistos.has(chave)) { duplicados.push({ e, primeiro: vistos.get(chave) }); return; }
+      vistos.set(chave, e);
+      const cand = siga.map((s, i) => ({ s, i })).filter(({ s, i }) => !usados.has(i) && s.vacina === e.vacina);
+      let achado = e.numeroUtente ? cand.filter(({ s }) => s.numeroUtente === e.numeroUtente) : [];
+      if (!achado.length) achado = cand.filter(({ s }) => vacNomesCompativeis(s.nome, e.nome) && (!s.dataNascimento || !e.dataNascimento || s.dataNascimento === e.dataNascimento));
+      if (!achado.length) { so4d.push(e); return; }
+      const mesmoDia = achado.find(({ s }) => s.data === e.data) || achado[0];
+      usados.add(mesmoDia.i);
+      if (mesmoDia.s.data !== e.data) datasDiferentes.push({ e, s: mesmoDia.s });
+    });
+    const soSiga = siga.filter((s, i) => !usados.has(i) && s.data >= de && s.data <= ate);
+    const porTipo = tipos.map(v => {
+      const q4 = reg4d.filter(r => r.quebra && r.vacina === v).length;
+      const qS = STATE.vacinacaoQuebras.filter(q => q.campanhaId === campanhaId && q.data >= de && q.data <= ate).reduce((s, q) => s + (Number(v === 'COVID' ? q.qtdCovid : q.qtdGripe) || 0), 0);
+      return { vacina: v, n4d: vacs.filter(r => r.vacina === v).length, nSiga: siga.filter(s => s.vacina === v && s.data >= de && s.data <= ate).length, q4d: q4, qSiga: qS };
+    });
+    return { de, ate, tipos, porTipo, duplicados, so4d, soSiga, datasDiferentes };
+  }
+  function vac4dDescarregarDiferencas(res) {
+    const lin = (vac, nome, num, d4, dS, nota) => ({ 'Vacina': vac, 'Utente': nome, 'Nº Utente': num, 'Data no 4Digital': d4 ? formatDate(d4) : '', 'Data no SIGA': dS ? formatDate(dS) : '', 'O que verificar': nota });
+    vacListDescarregarExcel(null, `comparacao_4digital_${res.de}_a_${res.ate}.xlsx`, [{ nome: 'Diferenças', linhas: [
+      ...res.duplicados.map(d => lin(d.e.vacina, d.e.nome, d.e.numeroUtente, d.e.data, '', `Registado 2 vezes no 4Digital (também a ${formatDate(d.primeiro.data)})`)),
+      ...res.so4d.map(e => lin(e.vacina, e.nome, e.numeroUtente, e.data, '', 'No 4Digital, sem administração no SIGA')),
+      ...res.soSiga.map(s => lin(s.vacina, s.nome, s.numeroUtente, '', s.data, 'Administrada no SIGA, sem registo no 4Digital')),
+      ...res.datasDiferentes.map(d => lin(d.e.vacina, d.e.nome, d.e.numeroUtente, d.e.data, d.s.data, 'Data diferente')),
+    ] }]);
+  }
+  function buildComparacao4D() {
+    const res = comp4d && comp4d.resultado;
+    if (!res) return null;
+    const total = res.duplicados.length + res.so4d.length + res.soSiga.length + res.datasDiferentes.length;
+    const quebrasDif = res.porTipo.some(t => t.q4d !== t.qSiga);
+    const resumo = h('div', { class: 'table-wrap', style: 'margin:10px 0;' }, h('table', {}, [
+      h('thead', {}, h('tr', {}, ['Vacina', '4Digital', 'SIGA', 'Diferença', 'Quebras 4Digital', 'Quebras SIGA'].map(t => h('th', {}, t)))),
+      h('tbody', {}, res.porTipo.map(t => h('tr', {}, [
+        h('td', {}, h('strong', {}, t.vacina)), h('td', {}, String(t.n4d)), h('td', {}, String(t.nSiga)),
+        h('td', { style: t.n4d !== t.nSiga ? 'color:#b91c1c;font-weight:800;' : 'color:#15803d;font-weight:700;' }, t.n4d === t.nSiga ? 'igual' : (t.n4d > t.nSiga ? `+${t.n4d - t.nSiga} no 4Digital` : `+${t.nSiga - t.n4d} no SIGA`)),
+        h('td', {}, String(t.q4d)), h('td', { style: t.q4d !== t.qSiga ? 'color:#b91c1c;font-weight:800;' : '' }, String(t.qSiga)),
+      ]))),
+    ]));
+    const seccao = (titulo, explica, linhas, cor) => !linhas.length ? null : h('div', { style: 'margin-top:14px;' }, [
+      h('p', { style: `margin:0 0 2px;font-weight:800;color:${cor};` }, `${titulo} (${linhas.length})`),
+      h('p', { class: 'field-helper-text', style: 'margin:0 0 6px;' }, explica),
+      h('div', { class: 'table-wrap' }, h('table', {}, [
+        h('thead', {}, h('tr', {}, ['Vacina', 'Utente', 'Nº Utente', 'Data 4Digital', 'Data SIGA', ''].map(t => h('th', {}, t)))),
+        h('tbody', {}, linhas.map(l => {
+          const tr = h('tr', { class: l.m ? 'selectable-row' : '', title: l.m ? 'Abrir esta marcação na agenda' : '' }, [
+            h('td', {}, l.vacina), h('td', {}, l.nome || '—'), h('td', {}, l.num || '—'),
+            h('td', {}, l.d4 ? formatDate(l.d4) : '—'), h('td', {}, l.dS ? formatDate(l.dS) : '—'),
+            h('td', { class: 'cell-muted' }, l.nota || ''),
+          ]);
+          if (l.m) tr.addEventListener('click', () => vacAbrirMarcacaoNaAgenda(l.m));
+          return tr;
+        })),
+      ])),
+    ]);
+    return h('div', { class: 'card card-pad', style: 'margin-top:12px;' }, [
+      h('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;' }, [
+        h('div', {}, [
+          h('p', { style: 'margin:0;font-weight:800;' }, `Comparação com o 4Digital — ${comp4d.ficheiro}`),
+          h('p', { class: 'field-helper-text', style: 'margin:2px 0 0;' }, `Período do ficheiro: ${formatDate(res.de)} a ${formatDate(res.ate)} · ${res.tipos.join(' e ')}`),
+        ]),
+        h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;' }, [
+          total ? h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => vac4dDescarregarDiferencas(res) }, [Icon('download', { size: 14 }), ' Diferenças em Excel']) : null,
+          h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => { comp4d = null; rerender(); } }, 'Limpar comparação'),
+        ].filter(Boolean)),
+      ]),
+      resumo,
+      (!total && !quebrasDif)
+        ? h('p', { style: 'margin:8px 0 0;font-weight:700;color:#15803d;' }, '✓ Tudo bate certo: as mesmas pessoas, nas mesmas datas, e as mesmas quebras.')
+        : (!total ? h('p', { style: 'margin:8px 0 0;font-weight:700;color:#b45309;' }, 'As pessoas batem certo; a diferença está só nas quebras — confirma no separador Quebras.') : null),
+      seccao('Registados mais de uma vez no 4Digital', 'A mesma pessoa e a mesma vacina aparecem duas vezes no 4Digital — normalmente é um registo a mais a anular lá (e no RSE).',
+        res.duplicados.map(d => ({ vacina: d.e.vacina, nome: d.e.nome, num: d.e.numeroUtente, d4: d.e.data, nota: `também registado a ${formatDate(d.primeiro.data)}` })), '#b91c1c'),
+      seccao('No 4Digital, mas não administrada no SIGA', 'Registada como dada no 4Digital, sem administração no SIGA — confirma se a pessoa foi mesmo vacinada (falta marcar «Administrada» no SIGA, ou é um registo a mais no 4Digital).',
+        res.so4d.map(e => ({ vacina: e.vacina, nome: e.nome, num: e.numeroUtente, d4: e.data })), '#b91c1c'),
+      seccao('Administrada no SIGA, mas não no 4Digital', 'Marcada como «Administrada» no SIGA sem registo no 4Digital — falta registar no 4Digital, ou o estado no SIGA está errado. Clica para abrir a marcação.',
+        res.soSiga.map(x => ({ vacina: x.vacina, nome: x.nome, num: x.numeroUtente, dS: x.data, m: x.m })), '#b45309'),
+      seccao('Datas diferentes', 'A mesma pessoa está nos dois lados, mas em dias diferentes. Clica para abrir a marcação.',
+        res.datasDiferentes.map(d => ({ vacina: d.e.vacina, nome: d.e.nome, num: d.e.numeroUtente, d4: d.e.data, dS: d.s.data, m: d.s.m })), '#475569'),
+    ].filter(Boolean));
+  }
+  function buildListagensVacinacao() {
+    vacListDatasPadrao();
+    const caixa = h('div', { class: 'card card-pad vac-listagens', style: 'margin-top:18px;' });
+    const cab = h('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;' }, [
+      h('div', {}, [
+        h('h3', { class: 'dash-card-title', style: 'margin:0;' }, 'Listagens e comparação com o 4Digital'),
+        h('p', { class: 'field-helper-text', style: 'margin:2px 0 0;' }, 'Vacinas administradas num período (uma linha por vacina, como no 4Digital), com as quebras.'),
+      ]),
+    ]);
+    caixa.appendChild(cab);
+    const inDe = h('input', { type: 'date', class: 'input', value: listDe, style: 'width:auto;' });
+    const inAte = h('input', { type: 'date', class: 'input', value: listAte, style: 'width:auto;' });
+    inDe.addEventListener('change', () => { listDe = inDe.value || listDe; listAberta = true; rerender(); });
+    inAte.addEventListener('change', () => { listAte = inAte.value || listAte; listAberta = true; rerender(); });
+    const selVac = h('select', { class: 'select', style: 'width:auto;' }, [['todas', 'Gripe e COVID'], ['gripe', 'Só Gripe'], ['covid', 'Só COVID']].map(([v, t]) => h('option', { value: v, selected: listVacina === v ? 'selected' : undefined }, t)));
+    selVac.addEventListener('change', () => { listVacina = selVac.value; listAberta = true; rerender(); });
+    const chkQ = h('input', { type: 'checkbox', checked: listIncluirQuebras ? 'checked' : undefined });
+    chkQ.addEventListener('change', () => { listIncluirQuebras = chkQ.checked; listAberta = true; rerender(); });
+    const de = listDe <= listAte ? listDe : listAte, ate = listDe <= listAte ? listAte : listDe;
+    const linhas = vacListLinhas(de, ate, listVacina, listIncluirQuebras);
+    const r = vacListResumo(linhas);
+    const inFich = h('input', { type: 'file', accept: '.csv,.txt,.xlsx,.xls', style: 'display:none;' });
+    inFich.addEventListener('change', async () => {
+      const f = inFich.files && inFich.files[0];
+      if (!f) return;
+      comp4dErro = ''; comp4dALer = true; rerender();
+      try {
+        const reg = await vac4dLerFicheiro(f);
+        const resultado = vac4dComparar(reg);
+        comp4d = { ficheiro: f.name, resultado };
+        // A listagem passa a mostrar o mesmo período e as mesmas vacinas do ficheiro, para comparar lado a lado.
+        listDe = resultado.de; listAte = resultado.ate; listVacina = resultado.tipos.length === 1 ? resultado.tipos[0].toLowerCase() : 'todas'; listAberta = true;
+      } catch (e) { comp4dErro = e && e.message ? e.message : 'Não foi possível ler o ficheiro.'; comp4d = null; }
+      comp4dALer = false; rerender();
+    });
+    caixa.appendChild(h('div', { class: 'vac-listagens-filtros' }, [
+      h('label', { class: 'vac-listagens-campo' }, [h('span', {}, 'De'), inDe]),
+      h('label', { class: 'vac-listagens-campo' }, [h('span', {}, 'Até'), inAte]),
+      h('label', { class: 'vac-listagens-campo' }, [h('span', {}, 'Vacina'), selVac]),
+      h('label', { class: 'vac-listagens-check' }, [chkQ, h('span', {}, 'Incluir quebras')]),
+      h('div', { class: 'vac-listagens-botoes' }, [
+        h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => { listAberta = !listAberta; rerender(); } }, [Icon('clipboard', { size: 14 }), listAberta ? ' Esconder lista' : ' Ver lista']),
+        h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => vacListImprimir(linhas, de, ate) }, [Icon('printer', { size: 14 }), ' Imprimir']),
+        h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => vacListDescarregarExcel(linhas, `vacinacao_${de}_a_${ate}.xlsx`) }, [Icon('download', { size: 14 }), ' Excel']),
+        h('button', { type: 'button', class: 'btn btn-primary', disabled: comp4dALer ? 'disabled' : undefined, onclick: () => inFich.click(), title: 'Carrega a exportação da vacinação do 4Digital (CSV ou Excel) para ver o que não bate certo' }, [Icon('upload', { size: 14 }), comp4dALer ? ' A comparar…' : ' Comparar com 4Digital']),
+        inFich,
+      ]),
+    ]));
+    caixa.appendChild(h('p', { style: 'margin:10px 0 0;font-size:13.5px;' }, [
+      h('strong', {}, `${r.gripe + r.covid} vacinas administradas`), ` de ${formatDate(de)} a ${formatDate(ate)} — Gripe ${r.gripe} · COVID ${r.covid}`,
+      listIncluirQuebras ? ` · Quebras: Gripe ${r.qGripe} · COVID ${r.qCovid}` : '',
+    ]));
+    if (comp4dErro) caixa.appendChild(h('p', { class: 'form-error', style: 'margin:8px 0 0;color:#b91c1c;font-weight:700;' }, comp4dErro));
+    const comp = buildComparacao4D();
+    if (comp) caixa.appendChild(comp);
+    if (listAberta) {
+      caixa.appendChild(!linhas.length ? EmptyState('Sem vacinas administradas neste período.') : h('div', { class: 'table-wrap', style: 'margin-top:10px;' }, h('table', {}, [
+        h('thead', {}, h('tr', {}, ['Data', 'Hora', 'Utente', 'Nº Utente', 'Vacina', 'Qtd', 'Administrado por'].map(t => h('th', {}, t)))),
+        h('tbody', {}, linhas.map(l => {
+          const tr = h('tr', { class: (l.tipo === 'quebra' ? 'linha-quebra' : 'selectable-row'), title: l.m ? 'Abrir esta marcação na agenda' : '' }, [
+            h('td', {}, formatDate(l.data)), h('td', {}, l.hora || '—'), h('td', {}, l.nome || '—'), h('td', {}, l.numeroUtente || '—'),
+            h('td', {}, l.tipo === 'quebra' ? [l.vacina, ' ', h('span', { class: 'badge-quebra badge-quebra-tabela' }, 'Quebra')] : l.vacina),
+            h('td', {}, String(l.qtd)), h('td', {}, l.por || '—'),
+          ]);
+          if (l.m) tr.addEventListener('click', () => vacAbrirMarcacaoNaAgenda(l.m));
+          return tr;
+        })),
+      ])));
+    }
+    return caixa;
   }
 
   /* ============ RENDER: QUEBRAS / DESPERDÍCIO (separador próprio) ============ */
