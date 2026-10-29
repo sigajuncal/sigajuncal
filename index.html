@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-29 13:00" />
+<meta name="siga-versao" content="2026-10-29 22:50" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -6631,6 +6631,15 @@ body.tem-barra-inferior .topbar-mobile > .hamburger:first-child{display:none;}
   .plano-med-tabela tbody tr{height:9mm;}
   .plano-med-nome{display:block;font-size:12.5px;font-weight:700;line-height:1.2;}
   .plano-med-detalhe{display:block;font-size:9px;color:#475569;margin-top:.6mm;}
+  .plano-med-freq{display:inline-flex;align-items:center;gap:1mm;margin-top:.5mm;padding:.1mm 1.3mm;border:1.3px solid #0f172a;border-radius:1.5mm;font-size:8.5px;font-weight:800;line-height:1.2;white-space:nowrap;color:#0f172a;background:#fef3c7;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  .plano-med-freq .plano-med-icone{display:inline-flex;flex:0 0 auto;}
+  .plano-med-dose-dia{display:block;font-size:8px;font-weight:800;margin-top:.5mm;text-transform:uppercase;letter-spacing:.02em;color:#0f172a;}
+  .plano-med-aviso-freq{font-weight:800;color:#0f172a;}
+  .plano-med-aviso-freq .plano-med-icone{display:inline-block;vertical-align:-2px;}
+  .plano-med-tabela.plano-med-compacta tbody tr{height:7.4mm;}
+  .plano-med-tabela.plano-med-compacta th,.plano-med-tabela.plano-med-compacta td{padding:.7mm .8mm !important;}
+  .plano-med-tabela.plano-med-compacta .plano-med-dose-num{font-size:15px;}
+  .plano-med-tabela.plano-med-compacta .plano-med-nome{font-size:11.5px;}
   .plano-med-dose{text-align:center;}
   .plano-med-dose-num{display:block;font-size:18px;font-weight:800;line-height:1;}
   .plano-med-dose-un{display:block;font-size:8px;color:#475569;margin-top:.6mm;}
@@ -34108,6 +34117,7 @@ const PLANO_MED_ICONES = {
   jantar: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
   deitar: '<path d="M3 7v12"/><path d="M3 15h18v4"/><path d="M21 15v-2a3 3 0 0 0-3-3h-7v5"/><circle cx="7" cy="11.5" r="2"/>',
   sos: '<path d="M12 3l9.5 16.5h-19z"/><path d="M12 9.5v4.5"/><path d="M12 17h.01"/>',
+  calendario: '<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17"/><path d="M8 3v4"/><path d="M16 3v4"/><path d="M8 14h2.5v2.5H8z"/>',
 };
 const PLANO_MED_MOMENTOS = [
   { k: 'jejum', rot: 'Em jejum', sub: 'ao acordar', hora: '07:30' },
@@ -34119,7 +34129,34 @@ const PLANO_MED_MOMENTOS = [
 ];
 const PLANO_MED_UNIDADES = ['Comprimido', 'Cápsula', 'Saqueta', 'Gotas', 'ml', 'Colher', 'Inalação', 'Aplicação', 'Supositório', 'Adesivo', 'Injeção', 'Unidade'];
 const PLANO_MED_DOSES = ['¼', '½', '¾', '1', '1 ½', '2', '2 ½', '3', '4'];
-const PLANO_MED_OBS = ['Antes da refeição', 'Com a refeição', 'Depois da refeição', 'Em jejum, 30 min antes de comer', 'Dia sim, dia não', '1 vez por semana', 'Durante 7 dias', 'Até acabar a embalagem', 'Não mastigar', 'Dissolver em água', 'Agitar antes de usar'];
+// Frequência de cada medicamento: diária (por omissão) ou só em certos dias — fica destacada na folha.
+const PLANO_MED_FREQ_TIPOS = [
+  ['diaria', 'Todos os dias'], ['alternados', 'Dia sim, dia não'], ['semanal', 'Semanal (dias da semana)'],
+  ['mensal', 'Mensal (dia do mês)'], ['outra', 'Outra (ex.: de 3 em 3 meses)'],
+];
+const PLANO_MED_DIAS_SEMANA = [[1, 'Seg', 'segunda-feira'], [2, 'Ter', 'terça-feira'], [3, 'Qua', 'quarta-feira'], [4, 'Qui', 'quinta-feira'], [5, 'Sex', 'sexta-feira'], [6, 'Sáb', 'sábado'], [7, 'Dom', 'domingo']];
+function planoMedFreq(l) {
+  const f = (l && l.freq && typeof l.freq === 'object') ? l.freq : {};
+  const tipo = PLANO_MED_FREQ_TIPOS.some(([k]) => k === f.tipo) ? f.tipo : 'diaria';
+  return { tipo, dias: Array.isArray(f.dias) ? [...new Set(f.dias.map(Number).filter(d => d >= 1 && d <= 7))].sort((a, b) => a - b) : [], diaMes: Number(f.diaMes) >= 1 && Number(f.diaMes) <= 31 ? Number(f.diaMes) : null, texto: String(f.texto || '').trim(), proxima: /^\d{4}-\d{2}-\d{2}$/.test(String(f.proxima || '')) ? f.proxima : '' };
+}
+// { longo: etiqueta junto ao nome, curto: por baixo da dose } — vazio quando é todos os dias.
+function planoMedFreqTexto(l) {
+  const f = planoMedFreq(l);
+  let longo = '', curto = '';
+  if (f.tipo === 'alternados') { longo = 'Dia sim, dia não'; curto = ''; }
+  else if (f.tipo === 'semanal') {
+    const d = f.dias.map(n => PLANO_MED_DIAS_SEMANA.find(x => x[0] === n));
+    if (d.length === 1) { const nome = d[0][2]; longo = `1× por semana · ${/^(sábado|domingo)$/.test(nome) ? 'ao' : 'à'} ${nome}`; curto = d[0][1]; }
+    else if (d.length > 1) { longo = `${d.length}× por semana · ${d.map(x => x[1]).join(', ')}`; curto = d.map(x => x[1]).join('/'); }
+    else { longo = '1× por semana'; curto = '1×/semana'; }
+  } else if (f.tipo === 'mensal') { longo = f.diaMes ? `1× por mês · no dia ${f.diaMes}` : '1× por mês'; curto = f.diaMes ? `dia ${f.diaMes}` : '1×/mês'; }
+  else if (f.tipo === 'outra') { longo = f.texto || 'Não é diário'; curto = ''; }
+  let proxima = '';
+  if (longo && f.proxima) { try { proxima = `Próxima toma: ${formatDate(f.proxima)}`; } catch (e) { proxima = `Próxima toma: ${f.proxima}`; } }
+  return { longo, curto, proxima };
+}
+const PLANO_MED_OBS = ['Antes da refeição', 'Com a refeição', 'Depois da refeição', 'Em jejum, 30 min antes de comer', 'Durante 7 dias', 'Até acabar a embalagem', 'Não mastigar', 'Dissolver em água', 'Agitar antes de usar'];
 const PLANO_MED_MAX_LINHAS = 20;
 const PLANO_MED_LINHAS_POR_TABELA = 12;
 function planoMedIcone(k, tamanho) {
@@ -34153,7 +34190,7 @@ function planoMedAjustarNome(nome) {
   for (let t = 13.5; t >= 9; t -= 0.5) if (planoMedLarguraTexto(nome, t) <= linhaPx) return { tamanho: t, linhaPropria: true, quebrar: false };
   return { tamanho: 9, linhaPropria: true, quebrar: true };
 }
-function planoMedLinhaVazia() { return { cnp: '', nome: '', unidade: 'Comprimido', doses: {}, sos: '', obs: '' }; }
+function planoMedLinhaVazia() { return { cnp: '', nome: '', unidade: 'Comprimido', doses: {}, sos: '', obs: '', freq: { tipo: 'diaria' } }; }
 function planoMedLinhaTemConteudo(l) {
   return !!(String(l.nome || '').trim() || String(l.sos || '').trim() || Object.values(l.doses || {}).some(v => String(v || '').trim()));
 }
@@ -34176,7 +34213,7 @@ function buildPlanoMedicacaoPage(container, goTo) {
       nomeUtente: registoEditar.nomeUtente || '', nifUtente: registoEditar.nifUtente || '', numeroFicha: p.numeroFicha || '',
       genero: p.genero || 'Masculino', dataNascimento: p.dataNascimento || '', alergias: p.alergias || '', notas: p.notas || '',
       inicio: p.inicio || todayISO(), horas: Object.assign(horasPadrao(), p.horas || {}),
-      linhas: (Array.isArray(p.linhas) && p.linhas.length ? p.linhas : [planoMedLinhaVazia()]).map(l => Object.assign(planoMedLinhaVazia(), l, { doses: Object.assign({}, l.doses || {}) })),
+      linhas: (Array.isArray(p.linhas) && p.linhas.length ? p.linhas : [planoMedLinhaVazia()]).map(l => Object.assign(planoMedLinhaVazia(), l, { doses: Object.assign({}, l.doses || {}), freq: planoMedFreq(l) })),
       linhasExtra: Number.isFinite(Number(p.linhasExtra)) ? Number(p.linhasExtra) : 2, esconderVazias: !!p.esconderVazias,
     };
   })() : {
@@ -34199,9 +34236,12 @@ function buildPlanoMedicacaoPage(container, goTo) {
       const doc = construirDocumentoComLinhas(dataEmissaoISO, extra);
       if (!doc.classList.contains('doc-a4-multipagina')) return doc;
     }
-    return construirDocumentoComLinhas(dataEmissaoISO, 0);
+    const semBrancas = construirDocumentoComLinhas(dataEmissaoISO, 0);
+    if (!semBrancas.classList.contains('doc-a4-multipagina')) return semBrancas;
+    const compacto = construirDocumentoComLinhas(dataEmissaoISO, 0, true);
+    return compacto.classList.contains('doc-a4-multipagina') ? semBrancas : compacto;
   }
-  function construirDocumentoComLinhas(dataEmissaoISO, linhasBranco) {
+  function construirDocumentoComLinhas(dataEmissaoISO, linhasBranco, compacto) {
     const linhas = draft.linhas.filter(planoMedLinhaTemConteudo);
     const momentos = momentosVisiveis(linhas);
     const comSos = !draft.esconderVazias || linhas.some(l => String(l.sos || '').trim());
@@ -34221,18 +34261,20 @@ function buildPlanoMedicacaoPage(container, goTo) {
     const linhaNode = (l) => h('tr', { class: l ? '' : 'plano-med-linha-branca' }, [
       h('td', { class: 'plano-med-col-med' }, l ? [
         h('span', { class: 'plano-med-nome' }, String(l.nome || '').trim() || '—'),
-        (l.unidade && l.unidade !== 'Comprimido') || l.cnp ? h('span', { class: 'plano-med-detalhe' }, [l.unidade && l.unidade !== 'Comprimido' ? `Dose em: ${l.unidade.toLowerCase()}` : '', l.cnp ? `CNP ${l.cnp}` : ''].filter(Boolean).join(' · ')) : null,
+        planoMedFreqTexto(l).longo ? h('span', { class: 'plano-med-freq' }, [planoMedIcone('calendario', 11), h('span', {}, planoMedFreqTexto(l).longo)]) : null,
+        (l.unidade && l.unidade !== 'Comprimido') || l.cnp || planoMedFreqTexto(l).proxima ? h('span', { class: 'plano-med-detalhe' }, [planoMedFreqTexto(l).proxima, l.unidade && l.unidade !== 'Comprimido' ? `Dose em: ${l.unidade.toLowerCase()}` : '', l.cnp ? `CNP ${l.cnp}` : ''].filter(Boolean).join(' · ')) : null,
       ].filter(Boolean) : ''),
       ...momentos.map(m => {
         const v = l ? String((l.doses || {})[m.k] || '').trim() : '';
-        return h('td', { class: 'plano-med-dose' + (v ? ' plano-med-dose-cheia' : '') }, v ? [h('span', { class: 'plano-med-dose-num' }, v), planoMedUnidadeCurta(l.unidade, v) ? h('span', { class: 'plano-med-dose-un' }, planoMedUnidadeCurta(l.unidade, v)) : null].filter(Boolean) : '');
+        const dia = v ? planoMedFreqTexto(l).curto : '';
+        return h('td', { class: 'plano-med-dose' + (v ? ' plano-med-dose-cheia' : '') }, v ? [h('span', { class: 'plano-med-dose-num' }, v), planoMedUnidadeCurta(l.unidade, v) ? h('span', { class: 'plano-med-dose-un' }, planoMedUnidadeCurta(l.unidade, v)) : null, dia ? h('span', { class: 'plano-med-dose-dia' }, dia) : null].filter(Boolean) : '');
       }),
       comSos ? h('td', { class: 'plano-med-dose plano-med-sos' }, l && String(l.sos || '').trim() ? String(l.sos).trim() : '') : null,
       comObs ? h('td', { class: 'plano-med-col-obs plano-med-obs' }, l ? String(l.obs || '').trim() : '') : null,
     ].filter(Boolean));
     const tabelas = [];
     for (let i = 0; i < Math.max(1, todas.length); i += PLANO_MED_LINHAS_POR_TABELA) {
-      tabelas.push(h('table', { class: 'plano-med-tabela' + (i ? ' plano-med-tabela-cont' : '') }, [cabecalhoTabela(), h('tbody', {}, todas.slice(i, i + PLANO_MED_LINHAS_POR_TABELA).map(linhaNode))]));
+      tabelas.push(h('table', { class: 'plano-med-tabela' + (compacto ? ' plano-med-compacta' : '') + (i ? ' plano-med-tabela-cont' : '') }, [cabecalhoTabela(), h('tbody', {}, todas.slice(i, i + PLANO_MED_LINHAS_POR_TABELA).map(linhaNode))]));
     }
     const nomeUt = planoMedNomeCompleto(draft.nomeUtente) || '—';
     const ajuste = planoMedAjustarNome(nomeUt);
@@ -34251,7 +34293,7 @@ function buildPlanoMedicacaoPage(container, goTo) {
       caixaUtente,
       ...tabelas,
       notas ? h('div', { class: 'plano-med-notas' }, [h('span', { class: 'plano-med-rot' }, 'Notas'), h('p', {}, notas)]) : null,
-      h('p', { class: 'plano-med-aviso' }, `Os números indicam quantas unidades tomar em cada altura do dia. Não altere nem pare nenhum medicamento sem falar com o seu médico ou farmacêutico. Traga este plano quando vier à farmácia ou ao médico.${info.telefone ? ` Dúvidas: ${info.nome || 'farmácia'} · ${info.telefone}.` : ''}`),
+      h('p', { class: 'plano-med-aviso' }, [linhas.some(l => planoMedFreqTexto(l).longo) ? h('strong', { class: 'plano-med-aviso-freq' }, [planoMedIcone('calendario', 11), ' Atenção: os medicamentos com o calendário NÃO são para tomar todos os dias — só nos dias indicados. ']) : null, `Os números indicam quantas unidades tomar em cada altura do dia. Não altere nem pare nenhum medicamento sem falar com o seu médico ou farmacêutico. Traga este plano quando vier à farmácia ou ao médico.${info.telefone ? ` Dúvidas: ${info.nome || 'farmácia'} · ${info.telefone}.` : ''}`]),
     ].filter(Boolean);
     const rodape = buildDocRodape(dataEmissaoISO);
     rodape.classList.add('plano-med-rodape');
@@ -34283,7 +34325,7 @@ function buildPlanoMedicacaoPage(container, goTo) {
       valorTotal: null,
       parametros: {
         numeroFicha: draft.numeroFicha, genero: draft.genero, dataNascimento: draft.dataNascimento, alergias: draft.alergias, notas: draft.notas,
-        inicio: draft.inicio, horas: draft.horas, linhas: linhas.map(l => ({ cnp: l.cnp, nome: String(l.nome).trim(), unidade: l.unidade, doses: l.doses, sos: l.sos, obs: l.obs })),
+        inicio: draft.inicio, horas: draft.horas, linhas: linhas.map(l => ({ cnp: l.cnp, nome: String(l.nome).trim(), unidade: l.unidade, doses: l.doses, sos: l.sos, obs: l.obs, freq: planoMedFreq(l) })),
         linhasExtra: draft.linhasExtra, esconderVazias: draft.esconderVazias,
       },
       responsavelNome: (activeUser && (activeUser.nomeCompleto || activeUser.username)) || '',
@@ -34372,6 +34414,35 @@ function buildPlanoMedicacaoPage(container, goTo) {
       const unSel = h('select', { class: 'select', title: 'Em que é medida a dose', style: 'height:34px;min-height:34px;padding-top:0;padding-bottom:0;font-size:12.5px;width:140px;' }, PLANO_MED_UNIDADES.map(u => h('option', { value: u, selected: l.unidade === u ? 'selected' : undefined }, u)));
       unSel.value = l.unidade || 'Comprimido';
       unSel.addEventListener('change', () => { l.unidade = unSel.value; });
+      l.freq = planoMedFreq(l);
+      const freqSel = h('select', { class: 'select', title: 'Com que frequência toma', style: 'height:34px;min-height:34px;padding-top:0;padding-bottom:0;font-size:12.5px;width:200px;' }, PLANO_MED_FREQ_TIPOS.map(([k, t]) => h('option', { value: k }, t)));
+      freqSel.value = l.freq.tipo;
+      freqSel.addEventListener('change', () => { l.freq.tipo = freqSel.value; if (l.freq.tipo === 'semanal' && !l.freq.dias.length) l.freq.dias = [1]; rerender(); });
+      const freqExtra = [];
+      if (l.freq.tipo === 'semanal') {
+        freqExtra.push(h('div', { style: 'display:flex;gap:4px;flex-wrap:wrap;' }, PLANO_MED_DIAS_SEMANA.map(([n, curto, longo]) => {
+          const ativo = l.freq.dias.includes(n);
+          const b = h('button', { type: 'button', class: 'btn btn-secondary', title: longo, 'aria-pressed': ativo ? 'true' : 'false', style: `padding:3px 8px;font-size:12px;min-height:0;${ativo ? 'background:var(--pharm-700,#0f766e);color:#fff;border-color:transparent;' : ''}` }, curto);
+          b.addEventListener('click', () => { const set = new Set(l.freq.dias); if (set.has(n)) set.delete(n); else set.add(n); l.freq.dias = [...set].sort((a, c) => a - c); rerender(); });
+          return b;
+        })));
+      } else if (l.freq.tipo === 'mensal') {
+        const dm = h('input', { class: 'input', type: 'number', min: '1', max: '31', inputmode: 'numeric', placeholder: 'Dia', title: 'Dia do mês', style: 'width:80px;height:32px;' });
+        dm.value = l.freq.diaMes || '';
+        dm.addEventListener('input', () => { const n = parseInt(dm.value, 10); l.freq.diaMes = n >= 1 && n <= 31 ? n : null; });
+        freqExtra.push(h('label', { style: 'display:flex;align-items:center;gap:6px;font-size:12.5px;' }, ['no dia', dm]));
+      } else if (l.freq.tipo === 'outra') {
+        const tx = h('input', { class: 'input', maxlength: '50', placeholder: 'Ex: de 3 em 3 meses', style: 'width:200px;height:32px;' });
+        tx.value = l.freq.texto || '';
+        tx.addEventListener('input', () => { l.freq.texto = tx.value; });
+        freqExtra.push(tx);
+      }
+      if (l.freq.tipo !== 'diaria') {
+        const px = h('input', { class: 'input', type: 'date', title: 'Próxima toma (opcional)', style: 'width:150px;height:32px;' });
+        px.value = l.freq.proxima || '';
+        px.addEventListener('input', () => { l.freq.proxima = px.value; });
+        freqExtra.push(h('label', { style: 'display:flex;align-items:center;gap:6px;font-size:12.5px;' }, ['Próxima toma', px]));
+      }
       const doseIn = (k) => {
         const i = h('input', { class: 'input plano-med-dose-input', list: 'plano-med-doses', maxlength: '8', placeholder: '–', 'aria-label': `${PLANO_MED_MOMENTOS.find(m => m.k === k).rot}: quantidade` });
         i.value = (l.doses || {})[k] || '';
@@ -34387,7 +34458,7 @@ function buildPlanoMedicacaoPage(container, goTo) {
       const tirar = h('button', { class: 'btn-fab-sm tone-gray', type: 'button', title: 'Tirar esta linha', 'aria-label': 'Tirar esta linha' }, Icon('x', { size: 14, strokeWidth: 2.2 }));
       tirar.addEventListener('click', () => { draft.linhas.splice(idx, 1); if (!draft.linhas.length) draft.linhas.push(planoMedLinhaVazia()); rerender(); });
       return h('tr', {}, [
-        h('td', {}, h('div', { style: 'display:flex;flex-direction:column;gap:4px;' }, [nomeIn, h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;' }, [cnpIn, unSel])])),
+        h('td', {}, h('div', { style: 'display:flex;flex-direction:column;gap:4px;' }, [nomeIn, h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;' }, [cnpIn, unSel]), h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;' }, [freqSel, ...freqExtra])])),
         ...PLANO_MED_MOMENTOS.map(m => doseIn(m.k)),
         h('td', {}, sosIn),
         h('td', {}, obsIn),
@@ -34406,7 +34477,7 @@ function buildPlanoMedicacaoPage(container, goTo) {
     notasIn.value = draft.notas;
     notasIn.addEventListener('input', () => { draft.notas = notasIn.value; });
     wrap.appendChild(h('div', { class: 'card card-pad' }, [
-      h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, 'Em cada altura do dia escreve quantas unidades tomar (1, ½, 2…). Deixa vazio onde não toma. No SOS escreve quando tomar (ex.: "1 se dor, máx. 3 por dia").'),
+      h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, 'Em cada altura do dia escreve quantas unidades tomar (1, ½, 2…). Deixa vazio onde não toma. Se não for todos os dias (semanal, mensal, dia sim dia não…), escolhe a frequência por baixo do nome — fica destacada na folha. No SOS escreve quando tomar (ex.: "1 se dor, máx. 3 por dia").'),
       dl, dlObs,
       h('div', { class: 'table-wrap' }, h('table', { class: 'pedidos-table plano-med-editor' }, [h('thead', {}, cab), h('tbody', {}, corpo)])),
       h('div', { style: 'display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-top:12px;' }, [
