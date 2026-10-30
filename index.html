@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-30 22:15" />
+<meta name="siga-versao" content="2026-10-30 22:50" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -7095,6 +7095,9 @@ body.tem-barra-inferior .topbar-mobile > .hamburger:first-child{display:none;}
   body.tem-barra-inferior:not(:has(.horarios-mobile)):has(.bottom-action-bar) .page-container{padding-bottom:calc(176px + env(safe-area-inset-bottom)) !important;}
 }
 
+  .camp-form-datas{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:flex-end;margin-top:6px;}
+  .camp-form-datas > .field{flex:0 0 auto;min-width:0;}
+  .camp-form-datas input[type=date]{width:172px;max-width:100%;}
 </style>
 <style id="plano-medicacao-css">
   .plano-med-icone{display:block;line-height:0;}
@@ -32731,10 +32734,13 @@ function buildCampanhasPage(container, goTo) {
         campo('Tipo de promoção', sel('tipoPromocao', CAMPANHA_TIPOS, rerender)),
         h('div', { class: 'field span2' }, [h('label', {}, (CAMPANHA_TIPOS.find(t => t.key === d.tipoPromocao) || {}).ajuda || 'Condição'), regraEl]),
       ]),
-      h('div', { class: 'form-grid', style: 'margin-top:6px;' }, [
+      // Datas curtas, lado a lado com os atalhos (2026-10-30, Hugo: "encurta os campos das datas").
+      h('div', { class: 'camp-form-datas' }, [
         campo('Início', inp('dataInicio', { type: 'date' })),
         campo('Fim', inp('dataFim', { type: 'date' })),
-        h('div', { class: 'field span2' }, [h('label', {}, 'Atalhos'), h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;' }, [atalhoMes('Este mês inteiro', 0), atalhoMes('Próximo mês inteiro', 1)])]),
+        h('div', { class: 'field' }, [h('label', {}, 'Atalhos'), h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;' }, [atalhoMes('Este mês inteiro', 0), atalhoMes('Próximo mês inteiro', 1)])]),
+      ]),
+      h('div', { class: 'form-grid', style: 'margin-top:6px;' }, [
         campo('Descrição (opcional)', descricao, 'span2'),
         campo('Condições (opcional)', condicoes, 'span2'),
         imagem,
@@ -74633,6 +74639,10 @@ function campainhaChamar() {
   if (Date.now() - CAMPAINHA.ultimoEnvio < 15000) { showToast('Chamada já enviada — aguarda uns segundos.', 'info'); return; }
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const remota = !cfg.chamar; // Administrador/Diretor Técnico fora de um posto de atendimento
+  if (remota && !campainhaChamar.__confirmado) {
+    confirmDialog('Chamar colegas para o atendimento? Toca na TV do backoffice e avisa os postos com o SIGA aberto.', () => { campainhaChamar.__confirmado = true; try { campainhaChamar(); } finally { campainhaChamar.__confirmado = false; } }, { confirmLabel: '📣 Chamar agora' });
+    return;
+  }
   const payload = { id, posto: remota ? 'O atendimento' : (cfg.nome || 'O atendimento'), por: activeUser ? (activeUser.nomeCompleto || activeUser.username) : '', remota, em: new Date().toISOString() };
   if (!campainhaEnviar('chamar', payload)) { showToast('Não foi possível chamar — sem ligação ao servidor da farmácia.', 'error'); return; }
   CAMPAINHA.ultimoEnvio = Date.now();
@@ -74640,13 +74650,14 @@ function campainhaChamar() {
   showToast(remota ? '📣 Colegas chamados para o atendimento.' : `📣 Colegas chamados para ${payload.posto}.`, 'success');
 }
 function campainhaTitulo(p) {
+  if (p.remota) return 'Precisam de ajuda no atendimento';
   if (p.por) return `${ecraTvNomeCurto(p.por)} precisa de ajuda no atendimento`;
   return p.remota ? 'Precisa-se de um colega no atendimento' : `${p.posto} precisa de ajuda no atendimento`;
 }
 function campainhaNotificarWindows(p) {
   if (!campainhaConfig().notificar || !('Notification' in window) || Notification.permission !== 'granted') return;
   try {
-    const n = new Notification(`📣 ${campainhaTitulo(p)}`, { body: p.por ? (p.remota ? 'Chamada à distância' : `No ${p.posto || 'atendimento'}`) : 'Um colega chamou do atendimento.', tag: 'campainha-' + p.id, requireInteraction: true, icon: 'icon-512.png' });
+    const n = new Notification(`📣 ${campainhaTitulo(p)}`, { body: p.remota ? `${p.por ? `Chamada feita por ${avisoPrimeiroNome(p.por)}` : 'Chamada'} à distância` : (p.por ? `No ${p.posto || 'atendimento'}` : 'Um colega chamou do atendimento.'), tag: 'campainha-' + p.id, requireInteraction: true, icon: 'icon-512.png' });
     n.onclick = () => { try { window.focus(); } catch (e) { /* ignora */ } n.close(); };
     CAMPAINHA.notificacoes = CAMPAINHA.notificacoes || new Map();
     CAMPAINHA.notificacoes.set(p.id, n);
@@ -74660,7 +74671,7 @@ function campainhaRecebida(p) {
   const tocou = campainhaTocarSom(2);
   // Falado: «Hugo precisa de ajuda no atendimento» (quem chamou, com sessão iniciada) — ou o nome do posto.
   const quemFala = p.por ? avisoPrimeiroNome(p.por) : (p.remota ? '' : p.posto);
-  const frase = quemFala ? `${quemFala} precisa de ajuda no atendimento` : 'Precisa-se de ajuda no atendimento';
+  const frase = p.remota ? `Precisam de ajuda no atendimento${p.por ? `. Chamada feita por ${avisoPrimeiroNome(p.por)}` : ''}` : (quemFala ? `${quemFala} precisa de ajuda no atendimento` : 'Precisa-se de ajuda no atendimento');
   // A chamada tem prioridade: cala o que estiver a ser dito e esconde o anúncio de tarefa (volta depois, ver ecraTvFila).
   try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch (e) { /* ignora */ }
   avisoFalar(frase, 2300); avisoFalar(frase, 6500);
@@ -74672,9 +74683,9 @@ function campainhaRecebida(p) {
   const banner = h('div', { class: 'campainha-banner', role: 'alert', 'data-sem-icones': '1' }, [
     h('span', { class: 'campainha-ic' }, Icon('megafone', { size: 30, strokeWidth: 2.2 })),
     h('div', { class: 'campainha-txt' }, [
-      p.por ? h('strong', { class: 'campainha-quem' }, ecraTvNomeCurto(p.por)) : null,
-      h('span', { class: 'campainha-o-que' }, p.por ? 'precisa de ajuda no atendimento' : campainhaTitulo(p)),
-      h('span', { class: 'campainha-onde' }, [p.por ? `${p.remota ? 'Chamada à distância' : (p.posto || 'Atendimento')} · ` : '', new Date(p.em || Date.now()).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' }), tocou ? '' : ' · clica no ecrã para ativar o som'].join('')),
+      p.remota ? h('strong', { class: 'campainha-quem' }, 'Precisam de ajuda') : (p.por ? h('strong', { class: 'campainha-quem' }, ecraTvNomeCurto(p.por)) : null),
+      h('span', { class: 'campainha-o-que' }, p.remota ? 'no atendimento' : (p.por ? 'precisa de ajuda no atendimento' : campainhaTitulo(p))),
+      h('span', { class: 'campainha-onde' }, [p.remota ? `${p.por ? `Chamada feita por ${avisoPrimeiroNome(p.por)}` : 'Chamada'} à distância · ` : (p.por ? `${p.posto || 'Atendimento'} · ` : ''), new Date(p.em || Date.now()).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' }), tocou ? '' : ' · clica no ecrã para ativar o som'].join('')),
     ].filter(Boolean)),
     fechar,
   ]);
@@ -74713,7 +74724,11 @@ function campainhaEmDestaque() { return !!(CAMPAINHA.banner && CAMPAINHA.banner.
 // computador (portátil ou desktop), nunca no telemóvel.
 function campainhaChamadaRemotaPermitida() {
   if (!activeUser || ehDispositivoMobileOuTablet()) return false;
-  return isAdministrador() || ['Diretor Técnico', 'Diretora Técnica'].includes(activeUser.categoriaProfissional);
+  // 2026-10-30 (Hugo: "o Paulo diretor e eu administrador possamos chamar colegas… dos nossos PCs pessoais… ele pode
+  // estar a trabalhar em casa, ir às câmaras e ver que os colegas precisam de ajuda"): também a Direção (na Juncal o
+  // Hugo e o Paulo; no produto, quem estiver em Acessos › Direção), em qualquer computador, mesmo fora da farmácia.
+  const daDirecao = (typeof escalaUsuariosDirecao === 'function') && escalaUsuariosDirecao().some(u => String(u.id) === String(activeUser.id));
+  return isAdministrador() || daDirecao || ['Diretor Técnico', 'Diretora Técnica'].includes(activeUser.categoriaProfissional);
 }
 function campainhaPodeChamar() { return !ehDispositivoMobileOuTablet() && (campainhaConfig().chamar || campainhaChamadaRemotaPermitida()); }
 function buildCampainhaBotao(classe) {
@@ -75976,7 +75991,13 @@ function clearSessionSilently() {
   // mesmo com dados ainda por gravar.
   // AUDITORIA 2026-09-29: o adiamento tem limite (15 min) — um popup que se abre sozinho (ex: entregas atrasadas)
   // num posto partilhado deixava a sessão aberta para sempre.
-  if (uiEstaOcupada() && (!adiamentoExpiracaoDesde || Date.now() - adiamentoExpiracaoDesde < 15 * 60 * 1000)) {
+  // 2026-10-30 (Hugo: "garante que a proteção de ecrã realmente ativa ao final de um minuto sem uso nos postos de
+  // atendimento"): no posto de atendimento a proteção tapa o ecrã mas não fecha nada — o formulário/janela que estava
+  // aberto fica intacto por baixo e volta igual depois de entrar. Por isso aí não se adia por haver um formulário
+  // aberto: só se espera se a pessoa estiver mesmo a clicar ou acabou de escrever (uso real).
+  if (usaProtecaoDeEcra()) {
+    if (cliqueAMeio() || Date.now() - ultimoFocoEmCampoEm < JANELA_TOLERANCIA_EDICAO_MS) { inactivityTimer = setTimeout(clearSessionSilently, 5000); return; }
+  } else if (uiEstaOcupada() && (!adiamentoExpiracaoDesde || Date.now() - adiamentoExpiracaoDesde < 15 * 60 * 1000)) {
     if (!adiamentoExpiracaoDesde) adiamentoExpiracaoDesde = Date.now();
     inactivityTimer = setTimeout(clearSessionSilently, 5000);
     return;
@@ -76042,7 +76063,7 @@ function manualLogout() {
   resetInactivityTimer();
 }
 function setupInactivityWatcher() {
-  ['mousemove', 'keydown', 'click', 'touchstart'].forEach(evt => {
+  ['mousemove', 'keydown', 'click', 'touchstart', 'wheel', 'pointerdown'].forEach(evt => {
     document.addEventListener(evt, resetInactivityTimer, { passive: true });
   });
   resetInactivityTimer();
