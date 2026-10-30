@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-30 23:50" />
+<meta name="siga-versao" content="2026-10-31 00:20" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -74476,7 +74476,9 @@ function mostrarProtecaoDeEcra(aoAcordar) {
   // O bloco muda de sítio de minuto a minuto (nunca deixa marca no ecrã).
   let passo = 0;
   function reposicionar() {
-    const posicoes = [[0, 0], [-14, -8], [12, -12], [-10, 10], [14, 8]];
+    // 2026-10-30 (Hugo: "a informação fica mais para a direita… não está centralizada"): fica sempre ao centro — só
+    // desliza uns milímetros de minuto a minuto (o suficiente para nada ficar marcado no ecrã).
+    const posicoes = [[0, 0], [-1.2, -1], [1.2, -1], [1.2, 1], [-1.2, 1]];
     const [x, y] = posicoes[passo++ % posicoes.length];
     bloco.style.transform = `translate(${x}vw, ${y}vh)`;
   }
@@ -74604,7 +74606,14 @@ function campainhaConfig() {
   const atendimento = tipo === 'atendimento';
   // 2026-10-30 (Hugo): chamar só existe nos Postos de atendimento; atendimento e backoffice com o SIGA aberto
   // recebem sempre a notificação do Windows (o som/aviso grande liga-se à parte, em «Toca a campainha»).
-  return { nome: String(c.nome || '').trim().slice(0, 30), atendimento, chamar: atendimento && c.chamar !== false, tocar: !!c.tocar, notificar: atendimento || tipo === 'escritorio' };
+  // 2026-10-30 (Hugo: "estas notificações deveriam aparecer somente nos PCs do backoffice… depois [com a TV] serão
+  // desnecessárias… há como programar o tempo em que aparecem no ecrã?"): por omissão só o backoffice recebe; cada
+  // computador (atendimento ou backoffice) pode ligar/desligar e escolher quanto tempo a notificação fica no ecrã.
+  const podeReceberNotif = atendimento || tipo === 'escritorio';
+  const receber = c.receberNotif !== undefined ? !!c.receberNotif : tipo === 'escritorio';
+  const tempos = [0, 10, 30, 60, 120];
+  const notifTempo = tempos.indexOf(Number(c.notifTempo)) >= 0 ? Number(c.notifTempo) : 30;
+  return { nome: String(c.nome || '').trim().slice(0, 30), atendimento, chamar: atendimento && c.chamar !== false, tocar: !!c.tocar, notificar: podeReceberNotif && receber, podeReceberNotif, receberNotif: receber, notifTempo, pipFixo: c.pipFixo === true };
 }
 function campainhaGuardar(c) { try { localStorage.setItem(CAMPAINHA_CHAVE, JSON.stringify(c)); } catch (e) { /* ignora */ } }
 function campainhaDeveTocar() { return campainhaConfig().tocar || !!(typeof ECRA_TV !== 'undefined' && ECRA_TV.overlay && ECRA_TV.overlay.isConnected); }
@@ -74701,6 +74710,8 @@ function campainhaNotificarWindows(p) {
   try {
     const n = new Notification(`📣 ${campainhaTitulo(p)}`, { body: p.remota ? `${p.por ? `Chamada feita por ${avisoPrimeiroNome(p.por)}` : 'Chamada'} à distância` : (p.por ? `No ${p.posto || 'atendimento'}` : 'Um colega chamou do atendimento.'), tag: 'campainha-' + p.id, requireInteraction: true, icon: 'icon-512.png' });
     n.onclick = () => { try { window.focus(); } catch (e) { /* ignora */ } n.close(); };
+    const tempo = campainhaConfig().notifTempo;
+    if (tempo > 0) setTimeout(() => { try { n.close(); } catch (e) { /* ignora */ } }, tempo * 1000);
     CAMPAINHA.notificacoes = CAMPAINHA.notificacoes || new Map();
     CAMPAINHA.notificacoes.set(p.id, n);
   } catch (e) { /* o sistema bloqueou — ignora */ }
@@ -74802,6 +74813,18 @@ function campainhaFabAtualizar() {
 // documentos do Chrome/Edge (Document Picture-in-Picture): fica sempre por cima, pode arrastar-se para um canto, e só
 // existe nos postos de atendimento com «Pode chamar colegas». O browser só a deixa abrir com um clique, e fecha-se se a
 // página do SIGA for fechada ou recarregada — por isso o botão «Fixar por cima das janelas» volta a aparecer.
+// O browser nunca deixa abrir esta janela sozinho — só com um clique de alguém. Por isso: fechada por um colega, volta a
+// abrir no primeiro clique em qualquer sítio do SIGA passado 1 minuto; com o SIGA acabado de abrir/recarregar, logo no
+// primeiro clique. Desliga-se em Segurança › Este aparelho («Botão por cima das outras janelas»).
+document.addEventListener('pointerdown', () => {
+  try {
+    if (CAMPAINHA.pip && !CAMPAINHA.pip.closed) return;
+    const cfg = campainhaConfig();
+    if (!cfg.pipFixo || !cfg.chamar || !campainhaPipDisponivel()) return;
+    if (CAMPAINHA.pipFechadoEm && Date.now() - CAMPAINHA.pipFechadoEm < 60000) return;
+    campainhaFixarPorCima();
+  } catch (e) { /* ignora */ }
+}, true);
 function campainhaPipDisponivel() { try { return 'documentPictureInPicture' in window && !ehDispositivoMobileOuTablet(); } catch (e) { return false; } }
 async function campainhaFixarPorCima() {
   const cfg = campainhaConfig();
@@ -74811,6 +74834,7 @@ async function campainhaFixarPorCima() {
   let w;
   try { w = await window.documentPictureInPicture.requestWindow({ width: 240, height: 120 }); } catch (e) { showToast('Não foi possível abrir a janela — tenta outra vez.', 'error'); return; }
   CAMPAINHA.pip = w;
+  if (!campainhaConfig().pipFixo) campainhaGuardar(Object.assign(campainhaConfig(), { pipFixo: true }));
   const d = w.document;
   d.title = 'Chamar colega';
   const st = d.createElement('style');
@@ -74836,7 +74860,7 @@ async function campainhaFixarPorCima() {
     repor = setTimeout(() => pintar('📣', 'Chamar colega', posto), 5000);
   });
   d.body.appendChild(b);
-  w.addEventListener('pagehide', () => { CAMPAINHA.pip = null; try { campainhaFabAtualizar(); } catch (e) { /* ignora */ } });
+  w.addEventListener('pagehide', () => { CAMPAINHA.pip = null; CAMPAINHA.pipFechadoEm = Date.now(); try { campainhaFabAtualizar(); } catch (e) { /* ignora */ } });
   campainhaFabAtualizar();
 }
 function buildCampainhaBotao(classe) {
@@ -74867,7 +74891,7 @@ function buildCartaoCampainha(podeMudar) {
   return h('div', { class: 'posto-mensagens', style: 'flex-direction:column;align-items:stretch;gap:10px;' }, [
     h('div', { class: 'posto-mensagens-texto' }, [
       h('strong', {}, '📣 Chamar colega para o atendimento'),
-      h('span', {}, 'Num posto de atendimento, o botão «Chamar colega» (em baixo, à direita) avisa os outros postos: os de atendimento e do backoffice recebem a notificação do Windows; os que têm «Toca a campainha» ligado (e o Ecrã do Backoffice) dão também um sinal sonoro e mostram um aviso grande; O SIGA tem de estar aberto nesses computadores.'),
+      h('span', {}, 'Num posto de atendimento, o botão «Chamar colega» (em baixo, à direita) avisa os outros computadores: os que têm a notificação do Windows ligada recebem-na (por omissão, os do backoffice); os que têm «Toca a campainha» ligado (e o Ecrã do Backoffice) dão também um sinal sonoro e mostram um aviso grande. O SIGA tem de estar aberto nesses computadores.'),
     ]),
     h('div', { style: 'display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;' }, [
       h('label', { style: 'display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;' }, ['Nome deste posto', nome]),
@@ -74875,7 +74899,30 @@ function buildCartaoCampainha(podeMudar) {
     cfg.atendimento
       ? h('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;' }, [h('span', { style: 'font-size:13px;' }, 'Pode chamar colegas (mostra o botão «Chamar colega»)'), interruptor('chamar', 'Pode chamar colegas')])
       : h('p', { class: 'field-helper-text', style: 'margin:0;' }, 'Só os computadores marcados como «Posto de atendimento» (acima) podem chamar colegas — e, à distância, a Direção num computador marcado como «Computador pessoal». Os computadores do backoffice nunca chamam.'),
-    h('p', { class: 'field-helper-text', style: 'margin:0;' }, cfg.notificar ? 'Este computador recebe a notificação do Windows quando alguém chama (com o SIGA aberto).' : 'Só os postos de atendimento e do backoffice recebem a notificação do Windows.'),
+    cfg.podeReceberNotif ? h('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;' }, [
+      h('span', { style: 'font-size:13px;' }, 'Recebe a notificação do Windows quando alguém chama (com o SIGA aberto)'),
+      h('div', { style: 'display:flex;align-items:center;gap:12px;' }, [
+        cfg.notificar ? (() => {
+          const sel = h('select', { class: 'select', style: 'width:auto;min-width:150px;', disabled: podeMudar ? undefined : 'disabled', 'aria-label': 'Tempo no ecrã' },
+            [[10, '10 segundos'], [30, '30 segundos'], [60, '1 minuto'], [120, '2 minutos'], [0, 'Até alguém fechar']].map(([v, t]) => h('option', { value: String(v), selected: cfg.notifTempo === v ? 'selected' : undefined }, `No ecrã: ${t}`)));
+          sel.addEventListener('change', () => guardar({ notifTempo: Number(sel.value) }));
+          return sel;
+        })() : null,
+        (() => {
+          const cb = h('input', { type: 'checkbox', checked: cfg.notificar ? 'checked' : undefined, disabled: podeMudar ? undefined : 'disabled', 'aria-label': 'Recebe a notificação do Windows' });
+          cb.addEventListener('change', () => guardar({ receberNotif: cb.checked }));
+          return h('label', { class: 'menu-pers-switch', title: podeMudar ? '' : 'Só a Direção pode mudar' }, [cb, h('span', { class: 'menu-pers-switch-pista' })]);
+        })(),
+      ].filter(Boolean)),
+    ]) : h('p', { class: 'field-helper-text', style: 'margin:0;' }, 'Só os postos de atendimento e do backoffice podem receber a notificação do Windows.'),
+    cfg.chamar && campainhaPipDisponivel() ? h('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;' }, [
+      h('span', { style: 'font-size:13px;' }, [h('strong', {}, 'Botão por cima das outras janelas'), ' — se alguém o fechar, volta a abrir sozinho 1 minuto depois, no primeiro clique no SIGA (e logo no primeiro clique depois de o SIGA abrir).']),
+      (() => {
+        const cb = h('input', { type: 'checkbox', checked: cfg.pipFixo ? 'checked' : undefined, disabled: podeMudar ? undefined : 'disabled', 'aria-label': 'Botão por cima das outras janelas' });
+        cb.addEventListener('change', () => { guardar({ pipFixo: cb.checked }); if (cb.checked) campainhaFixarPorCima(); else if (CAMPAINHA.pip && !CAMPAINHA.pip.closed) { try { CAMPAINHA.pip.close(); } catch (e) { /* ignora */ } } });
+        return h('label', { class: 'menu-pers-switch', title: podeMudar ? '' : 'Só a Direção pode mudar' }, [cb, h('span', { class: 'menu-pers-switch-pista' })]);
+      })(),
+    ]) : null,
     h('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;' }, [h('span', { style: 'font-size:13px;' }, 'Toca a campainha quando alguém chama'), interruptor('tocar', 'Toca a campainha')]),
     h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;' }, [testar, pedirNotif].filter(Boolean)),
   ]);
