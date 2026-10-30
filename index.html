@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-31 00:20" />
+<meta name="siga-versao" content="2026-10-31 00:50" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -5940,7 +5940,7 @@
   .tv-servico-txt strong{font-size:1.15vw;color:#fff;}
   .tv-servico-txt span{font-size:.95vw;color:#b9d3e2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .tv-servico-agora{margin-left:auto;font-size:.85vw;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:#0b2233;background:#7cc4e4;border-radius:999px;padding:.2vw .7vw;}
-  .tv-produto{display:flex;gap:1.2vw;align-items:center;flex:1;min-height:0;}
+  .tv-produto{display:flex;gap:1.2vw;align-items:flex-start;flex:0 0 auto;min-height:0;margin-bottom:.6vw;}
   .tv-produto-foto{flex:0 0 auto;width:8.5vw;height:8.5vw;border-radius:1vw;background:#fff center/contain no-repeat;display:flex;align-items:center;justify-content:center;box-shadow:0 .4vw 1.4vw rgba(0,0,0,.35);}
   .tv-produto-foto.com-imagem .tv-produto-inicial{display:none;}
   .tv-produto-inicial{font-size:3.6vw;font-weight:800;color:#c7d6df;}
@@ -13057,9 +13057,30 @@ function criarClienteServidorLocal(base) {
     return json || { ok: false, erro: 'Resposta inválida do servidor.' };
   }
   // Volta a entrar com as credenciais que a app tem em memória (sessão expirada / app recarregada).
+  // Ecrã do Backoffice sem sessão pessoal (2026-10-30): um computador ativado pela Direção guarda uma chave própria e,
+  // só enquanto o modo TV está aberto (ou abre ao arrancar), lê com a conta técnica «Ecrã do Backoffice».
+  const ECRA_CHAVE_LS = 'siga_ecra_chave';
+  function ecraChave() { try { return localStorage.getItem(ECRA_CHAVE_LS) || ''; } catch (e) { return ''; } }
+  function ecraEmUso() {
+    if (!ecraChave()) return false;
+    // Só enquanto o modo TV está mesmo aberto: fora dele (Sair do modo TV), este computador não lê nada sem sessão.
+    return !!window.__sigaEcraAtivo;
+  }
+  async function entrarComoEcra() {
+    if (!ecraEmUso()) return false;
+    const { json } = await pedidoBruto('/api/siga/ecra/sessao', { chave: ecraChave() });
+    if (json && json.ok && json.token) { S.guardarNoAparelho = false; definirSessao(json.token, json.farmacias, json.utilizadorId); return true; }
+    if (json && json.revogada) { try { localStorage.removeItem(ECRA_CHAVE_LS); } catch (e) { /* ignora */ } }
+    return false;
+  }
   async function reentrar() {
     const c = S.credenciais && S.credenciais();
-    if (!c || !c.username || !c.pin) return false;
+    if (!c || !c.username || !c.pin) {
+      if (!ecraEmUso()) return false;
+      if (!S.aEntrar) S.aEntrar = entrarComoEcra().then(ok => ({ ok })).finally(() => { S.aEntrar = null; });
+      const r = await S.aEntrar;
+      return !!(r && r.ok);
+    }
     if (!S.aEntrar) S.aEntrar = entrar(c.username, c.pin).finally(() => { S.aEntrar = null; });
     const r = await S.aEntrar;
     return !!(r && r.ok);
@@ -13344,7 +13365,22 @@ function criarClienteServidorLocal(base) {
     // Ligação com a app
     definirCredenciais(fn) { S.credenciais = typeof fn === 'function' ? fn : () => null; },
     temSessao: () => !!S.token,
-    podeLer: () => !!S.token || !!(S.credenciais && S.credenciais()),
+    podeLer: () => !!S.token || !!(S.credenciais && S.credenciais()) || ecraEmUso(),
+    // Ecrã do Backoffice (2026-10-30)
+    ecraTemChave: () => !!ecraChave(),
+    ecraEmUso: () => ecraEmUso(),
+    async ecraAtivar(nome) {
+      const r = await pedido('/api/siga/ecra/emparelhar', { nome: nome || 'Ecrã do Backoffice' });
+      const j = r && r.json;
+      if (j && j.ok && j.chave) { try { localStorage.setItem(ECRA_CHAVE_LS, j.chave); } catch (e) { return { ok: false, erro: 'Este browser não deixou guardar a chave.' }; } return { ok: true }; }
+      return { ok: false, erro: (j && (j.erro || (j.error && j.error.message))) || (r && r.status === 404 ? 'O servidor ainda não foi atualizado.' : 'Não foi possível ativar.') };
+    },
+    async ecraEntrar() { return entrarComoEcra(); },
+    async ecraDesativar() {
+      const chave = ecraChave();
+      try { if (chave) await pedidoBruto('/api/siga/ecra/desligar', { chave }); } catch (e) { /* ignora */ }
+      try { localStorage.removeItem(ECRA_CHAVE_LS); } catch (e) { /* ignora */ }
+    },
     guardarSessaoNoAparelho(sim) { S.guardarNoAparelho = !!sim; gravarPosto(); },
     terminarSessao() { S.token = null; S.utilizadorId = null; S.guardarNoAparelho = false; gravarPosto(); desligar(); },
     farmacia: () => S.farmacia,
@@ -32991,14 +33027,16 @@ function ecraTvPaginar(raiz) {
       const rc = corpo.getBoundingClientRect(), rb = b.getBoundingClientRect();
       return cabe() && Array.from(b.querySelectorAll('*')).every(x => { const r = x.getBoundingClientRect(); return !r.height || (r.top >= Math.max(rb.top, rc.top) - 1 && r.bottom <= Math.min(rb.bottom, rc.bottom) + 1); });
     };
-    painel.querySelectorAll('[data-ajustar]').forEach(b => {
-      b.style.zoom = '';
-      for (let z = 0.95; !blocoCabe(b) && z >= 0.55; z -= 0.05) b.style.zoom = z.toFixed(2);
-    });
+    // 2026-10-30 (Hugo: "não pode haver sobreposição da imagem do produto sobre o texto"): primeiro as listas passam a
+    // páginas; só depois, se o bloco em destaque (produto/campanha) ainda não couber, a letra e a imagem encolhem —
+    // o bloco nunca é espremido por baixo do seu conteúdo (era isso que punha a imagem por cima do texto).
+    const blocos = Array.from(painel.querySelectorAll('[data-ajustar]'));
+    blocos.forEach(b => { b.style.zoom = ''; });
+    const ajustarBlocos = () => blocos.forEach(b => { for (let z = 0.95; !blocoCabe(b) && z >= 0.5; z -= 0.05) b.style.zoom = z.toFixed(2); });
     const listas = Array.from(corpo.querySelectorAll('[data-paginar]'));
-    if (!listas.length) return;
+    if (!listas.length) { ajustarBlocos(); return; }
     listas.forEach(l => Array.from(l.children).forEach(c => { c.style.display = ''; }));
-    if (cabe()) { listas.forEach(l => { delete ECRA_TV.paginaDaLista[l.dataset.paginar]; }); return; }
+    if (cabe()) { listas.forEach(l => { delete ECRA_TV.paginaDaLista[l.dataset.paginar]; }); ajustarBlocos(); return; }
     const cap = listas.map(l => l.children.length);
     let guarda = 200;
     while (!cabe() && guarda-- > 0) {
@@ -33019,6 +33057,7 @@ function ecraTvPaginar(raiz) {
       if (paginas > maxPaginas) { maxPaginas = paginas; paginaMostrada = pg + 1; }
     });
     if (maxPaginas > 1 && cab) cab.appendChild(h('span', { class: 'tv-pag' }, `${paginaMostrada}/${maxPaginas}`));
+    ajustarBlocos();
   });
 }
 // Picagens do ponto na TV (2026-10-30, Hugo: "a hora definida do horário de entrada e saída e a picagem de ponto em
@@ -33949,10 +33988,52 @@ function ecraTvFechar(goTo, terminarSessao) {
   document.body.classList.remove('tv-ativo');
   // Aberto por endereço (…?ecra=backoffice)? Tira-o, para recarregar a página não voltar logo ao modo TV.
   try { if (/[?&]ecra=backoffice\b/.test(location.search)) { const u = new URL(location.href); u.searchParams.delete('ecra'); history.replaceState(null, '', u.pathname + (u.search || '') + u.hash); } } catch (e) { /* ignora */ }
+  if (ecraTvServidorSemSessao() && !activeUser) {
+    window.__sigaEcraAtivo = false;
+    try { sb.terminarSessao(); } catch (e) { /* ignora */ }
+    STATE.page = 'home'; render(); return;
+  }
   if (terminarSessao) { manualLogout(); return; }
   goTo('hub-definicoes');
 }
+function ecraTvServidorSemSessao() { return !!(sb && typeof sb.ecraAtivar === 'function'); }
 function buildEcraBackofficePage(container, goTo) {
+  // 2026-10-30 (Hugo: "colocar modo TV sem fazer login… para esse acesso não estar sempre ativo"): com o servidor da
+  // farmácia, o modo TV nunca corre com a sessão de uma pessoa. Quem o abre com sessão iniciada sai logo (a sessão
+  // pessoal termina) e a TV passa a ler com a conta técnica «Ecrã do Backoffice». O computador tem de ter sido ativado
+  // uma vez pela Direção (é a própria Direção que o ativa ao abrir aqui o Ecrã pela primeira vez).
+  if (ecraTvServidorSemSessao() && !(ECRA_TV.overlay && ECRA_TV.overlay.isConnected)) {
+    if (activeUser) {
+      clear(container);
+      container.appendChild(h('div', { class: 'tv-por-baixo' }, 'A preparar o Ecrã do Backoffice…'));
+      const passarParaTv = () => {
+        window.__sigaEcraAtivo = true;
+        try { sb.terminarSessao(); } catch (e) { /* ignora */ }   // a sessão pessoal termina já no servidor…
+        STATE.page = 'ecra-backoffice';
+        manualLogout();            // …e na app (a TV nunca fica com ela); o render seguinte entra como ecrã
+      };
+      if (sb.ecraTemChave()) { passarParaTv(); return; }
+      const daDirecao = isAdministrador() || ((typeof escalaUsuariosDirecao === 'function') && escalaUsuariosDirecao().some(u => String(u.id) === String(activeUser.id)));
+      if (!daDirecao) { showToast('Este computador ainda não está ativado como Ecrã do Backoffice — pede à Direção para o abrir aqui uma vez.', 'error'); goTo('hub-definicoes'); return; }
+      sb.ecraAtivar('Ecrã do Backoffice').then(r => {
+        if (!r.ok) { showToast(`Não foi possível ativar o ecrã: ${r.erro}`, 'error'); goTo('hub-definicoes'); return; }
+        showToast('Este computador ficou ativado como Ecrã do Backoffice — a partir de agora abre sem sessão de ninguém.', 'success');
+        passarParaTv();
+      });
+      return;
+    }
+    if (!sb.ecraTemChave()) {
+      clear(container);
+      container.appendChild(withBackButton(buildPageHeader('monitor', 'Ecrã do Backoffice', 'Este computador ainda não está ativado como ecrã.', undefined), goTo));
+      container.appendChild(h('div', { class: 'card', style: 'max-width:640px;' }, [
+        h('p', { style: 'margin:0 0 8px;font-weight:700;' }, 'Como ativar (só uma vez):'),
+        h('p', { style: 'margin:0;' }, 'Alguém da Direção inicia sessão neste computador e abre Definições › Ecrã do Backoffice. O ecrã fica ativado e passa a abrir sem a sessão de ninguém.'),
+      ]));
+      return;
+    }
+    window.__sigaEcraAtivo = true;
+    if (!sb.temSessao()) sb.ecraEntrar().then(ok => { if (ok) { try { loadAllData().then(() => { if (typeof ECRA_TV.desenhar === 'function') ECRA_TV.desenhar(); }); } catch (e) { /* ignora */ } } });
+  }
   // Já aberto (ex.: chegou uma atualização em tempo real e a app redesenhou): não se refaz o ecrã — só se atualiza
   // a informação, sem piscar, sem voltar ao início do ciclo e sem recomeçar a cruz/animações.
   if (ECRA_TV.overlay && ECRA_TV.overlay.isConnected && typeof ECRA_TV.desenhar === 'function' && ECRA_TV.dono === (activeUser && activeUser.id)) {
@@ -33971,10 +34052,18 @@ function buildEcraBackofficePage(container, goTo) {
   cbArranque.addEventListener('change', () => { try { localStorage.setItem(ECRA_TV_ARRANQUE_CHAVE, cbArranque.checked ? '1' : '0'); } catch (e) { /* ignora */ } showToast(cbArranque.checked ? 'Este computador abre sempre no Ecrã do Backoffice.' : 'Este computador volta a abrir na Página Inicial.', 'success'); });
   const btnInteiro = h('button', { type: 'button', class: 'tv-btn' }, [Icon('maximize', { size: 16 }), ' Ecrã inteiro']);
   btnInteiro.addEventListener('click', () => { try { (ECRA_TV.overlay.requestFullscreen || ECRA_TV.overlay.webkitRequestFullscreen).call(ECRA_TV.overlay); } catch (e) { /* ignora */ } });
-  const btnSair = h('button', { type: 'button', class: 'tv-btn tv-btn-sair' }, [Icon('x', { size: 16 }), pessoal ? ' Sair' : ' Sair e terminar sessão']);
+  const semSessao = ecraTvServidorSemSessao() && !activeUser;
+  const btnSair = h('button', { type: 'button', class: 'tv-btn tv-btn-sair' }, [Icon('x', { size: 16 }), semSessao || pessoal ? ' Sair do modo TV' : ' Sair e terminar sessão']);
+  // Desativar este computador como ecrã (deixa de conseguir abrir o modo TV sem a Direção o voltar a ativar).
+  const btnDesativar = semSessao ? h('button', { type: 'button', class: 'tv-btn' }, [Icon('lockClosed', { size: 16 }), ' Desativar este ecrã']) : null;
+  if (btnDesativar) btnDesativar.addEventListener('click', () => {
+    if (btnDesativar.dataset.confirmar !== '1') { btnDesativar.dataset.confirmar = '1'; btnDesativar.lastChild.textContent = ' Confirmar: desativar'; setTimeout(() => { if (btnDesativar.isConnected) { btnDesativar.dataset.confirmar = ''; btnDesativar.lastChild.textContent = ' Desativar este ecrã'; } }, 5000); return; }
+    try { localStorage.setItem(ECRA_TV_ARRANQUE_CHAVE, '0'); } catch (e) { /* ignora */ }
+    sb.ecraDesativar().finally(() => ecraTvFechar(goTo, false));
+  });
   btnSair.addEventListener('click', () => ecraTvFechar(goTo, !pessoal));
   const controlos = h('div', { class: 'tv-controlos', 'data-sem-icones': '1' }, [
-    h('label', { class: 'tv-arranque' }, [cbArranque, h('span', {}, 'Abrir sempre em modo TV neste computador')]), btnInteiro, btnSair,
+    h('label', { class: 'tv-arranque' }, [cbArranque, h('span', {}, 'Abrir sempre em modo TV neste computador')]), btnInteiro, btnDesativar, btnSair,
   ]);
   const topo = h('header', { class: 'tv-topo' }, [
     h('div', { class: 'tv-marca' }, [h('span', { class: 'tv-marca-nome' }, nomeFarmaciaAtual()), h('span', { class: 'tv-marca-sub' }, 'Backoffice')]),
@@ -69777,7 +69866,7 @@ function renderInterno(ehTransicaoDePagina) {
   // visível sem login individual — só a navegação para os setores e as
   // ações de escrita exigem sessão ativa (ver buildSidebarContent e
   // requireAuth).
-  if (!activeUser && STATE.page !== 'home') {
+  if (!activeUser && STATE.page !== 'home' && !(STATE.page === 'ecra-backoffice' && ecraTvServidorSemSessao())) {
     STATE.page = 'home';
   }
 
@@ -70010,7 +70099,7 @@ function renderInterno(ehTransicaoDePagina) {
     // Para páginas fora do mapa PAGINA_TABELAS_LAZY (a maioria), vale
     // sempre true (nada a esperar, comportamento inalterado).
     // Ecrã do Backoffice (2026-10-30): abre sozinho neste aparelho (opção guardada) ou com ?ecra=backoffice no endereço.
-    if (!ECRA_TV.arranqueVisto && STATE.page === 'home' && activeUser) {
+    if (!ECRA_TV.arranqueVisto && STATE.page === 'home') {
       ECRA_TV.arranqueVisto = true;
       if (ecraTvAbrirAoArrancar()) STATE.page = 'ecra-backoffice';
     }
