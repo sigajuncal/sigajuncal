@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-30 22:50" />
+<meta name="siga-versao" content="2026-10-30 23:15" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -7098,6 +7098,19 @@ body.tem-barra-inferior .topbar-mobile > .hamburger:first-child{display:none;}
   .camp-form-datas{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:flex-end;margin-top:6px;}
   .camp-form-datas > .field{flex:0 0 auto;min-width:0;}
   .camp-form-datas input[type=date]{width:172px;max-width:100%;}
+  .campainha-fab{position:fixed;right:22px;bottom:24px;z-index:55;display:inline-flex;align-items:center;gap:10px;height:58px;padding:0 24px 0 20px;border:0;border-radius:999px;cursor:pointer;
+    font-size:17px;font-weight:800;color:#fff;background:linear-gradient(135deg,#f97316,#dc2626);box-shadow:0 10px 28px rgba(220,38,38,.35),0 2px 6px rgba(0,0,0,.15);transition:transform .15s ease,box-shadow .15s ease;}
+  .campainha-fab:hover{transform:translateY(-2px);box-shadow:0 14px 34px rgba(220,38,38,.42),0 3px 8px rgba(0,0,0,.18);}
+  .campainha-fab:active{transform:translateY(0) scale(.98);}
+  .campainha-fab svg{flex:0 0 auto;}
+  body.tem-campainha-fab .page-container{padding-bottom:96px !important;}
+  body.tem-campainha-fab .voltar-topo{bottom:150px;}
+  body.tem-campainha-fab .app-signature{bottom:94px;}
+  body.gf-ativo .campainha-fab{bottom:96px;}
+  body.gf-ativo.tem-campainha-fab .voltar-topo{bottom:220px;}
+  body.gf-ativo.tem-campainha-fab .app-signature{bottom:166px;}
+  body.tv-ativo .campainha-fab{display:none;}
+  @media print{.campainha-fab{display:none !important;}}
 </style>
 <style id="plano-medicacao-css">
   .plano-med-icone{display:block;line-height:0;}
@@ -69054,7 +69067,7 @@ function buildTopbarDesktopDireita() {
   } else {
     cartao = buildTopbarUtilizador();
   }
-  return [buildAtivarNotificacoesBtn(), buildModoTesteButton(), buildCampainhaBotao('topbar-gaveta'), buildGavetaBotaoCompacto('topbar-gaveta'), h('div', { class: 'topbar-user-slot', 'data-assinatura': assinaturaCartaoUtilizador() }, cartao)].filter(Boolean);
+  return [buildAtivarNotificacoesBtn(), buildModoTesteButton(), (campainhaFabAtualizar(), null), buildGavetaBotaoCompacto('topbar-gaveta'), h('div', { class: 'topbar-user-slot', 'data-assinatura': assinaturaCartaoUtilizador() }, cartao)].filter(Boolean);
 }
 // O cartão do utilizador só se redesenha quando muda mesmo (outra pessoa, função, nível) — os refrescamentos da barra
 // de topo (Gaveta, notificações…) deixam-no como está, sem saltos nem animações cortadas a meio.
@@ -74421,7 +74434,13 @@ function aparelhoEhPessoal() {
   if (ehDispositivoMobileOuTablet()) return !aparelhoEhTelemovelPosto();
   return postoTipoDesteComputador() === 'pessoal';
 }
+// 2026-10-30 (Hugo: "permite que a proteção de ecrã seja opcional… se for posto de atendimento e eu não quiser que fique
+// visível, não fica"): ligada por omissão; desligada neste aparelho, a sessão continua a caducar ao fim de 1 minuto,
+// mas aparece só o pedido de login (como no backoffice), sem o ecrã do logótipo.
+const PROTECAO_ECRA_CHAVE = 'siga_protecao_ecra';
+function protecaoEcraLigadaNesteAparelho() { try { return localStorage.getItem(PROTECAO_ECRA_CHAVE) !== '0'; } catch (e) { return true; } }
 function usaProtecaoDeEcra() {
+  if (!protecaoEcraLigadaNesteAparelho()) return false;
   if (aparelhoEhTelemovelPosto()) return true;
   return !ehDispositivoMobileOuTablet() && postoTipoDesteComputador() === 'atendimento';
 }
@@ -74542,8 +74561,19 @@ function buildCartaoPostoComputador() {
       opcao('escritorio', 'Backoffice / outro computador', 'Backoffice, escritório ou gabinete (fora da vista dos clientes): quando a sessão caduca aparece só o pedido de login por cima do ecrã, como antes.', 'briefcase'),
       opcao('pessoal', 'Computador pessoal', 'Portátil ou iMac de uso pessoal (ex.: com Touch ID). A sessão não caduca; se terminar, entra-se logo com a impressão digital.', 'userIcon'),
     ]),
-    mobile ? null : h('button', { type: 'button', class: 'btn btn-secondary btn-sm', style: 'margin-top:12px;',
-      onclick: () => mostrarProtecaoDeEcra(null) }, [Icon('eye', { size: 14 }), ' Ver a proteção de ecrã']),
+    (mobile && !aparelhoEhTelemovelPosto()) || !(atual === 'atendimento' || aparelhoEhTelemovelPosto()) ? null : (() => {
+      const cb = h('input', { type: 'checkbox', checked: protecaoEcraLigadaNesteAparelho() ? 'checked' : undefined, disabled: podeMudar ? undefined : 'disabled', 'aria-label': 'Proteção de ecrã' });
+      cb.addEventListener('change', () => {
+        try { localStorage.setItem(PROTECAO_ECRA_CHAVE, cb.checked ? '1' : '0'); } catch (e) { /* ignora */ }
+        showToast(cb.checked ? 'Proteção de ecrã ligada neste posto.' : 'Proteção de ecrã desligada neste posto — quando a sessão caduca aparece só o pedido de login.', 'success');
+        render();
+      });
+      return h('div', { class: 'protecao-opcao', style: 'display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap;' }, [
+        h('label', { class: 'menu-pers-switch', title: podeMudar ? '' : 'Só a Direção pode mudar' }, [cb, h('span', { class: 'menu-pers-switch-pista' })]),
+        h('div', { style: 'flex:1;min-width:220px;' }, [h('strong', {}, 'Proteção de ecrã (logótipo)'), h('p', { class: 'field-helper-text', style: 'margin:2px 0 0;' }, 'Ao fim de 1 minuto sem uso o ecrã fica tapado. Desligada, a sessão caduca na mesma, mas aparece só o pedido de login.')]),
+        protecaoEcraLigadaNesteAparelho() ? h('button', { type: 'button', class: 'btn btn-secondary btn-sm', onclick: () => mostrarProtecaoDeEcra(null) }, [Icon('eye', { size: 14 }), ' Ver a proteção de ecrã']) : null,
+      ].filter(Boolean));
+    })(),
     buildCartaoEnvioMensagens(podeMudar),
     buildCartaoCampainha(podeMudar),
   ].filter(Boolean));
@@ -74727,10 +74757,26 @@ function campainhaChamadaRemotaPermitida() {
   // 2026-10-30 (Hugo: "o Paulo diretor e eu administrador possamos chamar colegas… dos nossos PCs pessoais… ele pode
   // estar a trabalhar em casa, ir às câmaras e ver que os colegas precisam de ajuda"): também a Direção (na Juncal o
   // Hugo e o Paulo; no produto, quem estiver em Acessos › Direção), em qualquer computador, mesmo fora da farmácia.
+  // 2026-10-30 (Hugo: "postos de backoffice não chamam para atendimento, não faz sentido"): à distância, só num
+  // computador marcado como «Computador pessoal» — nunca num PC do backoffice nem na TV.
+  if (postoTipoDesteComputador() !== 'pessoal') return false;
   const daDirecao = (typeof escalaUsuariosDirecao === 'function') && escalaUsuariosDirecao().some(u => String(u.id) === String(activeUser.id));
   return isAdministrador() || daDirecao || ['Diretor Técnico', 'Diretora Técnica'].includes(activeUser.categoriaProfissional);
 }
-function campainhaPodeChamar() { return !ehDispositivoMobileOuTablet() && (campainhaConfig().chamar || campainhaChamadaRemotaPermitida()); }
+function campainhaPodeChamar() { return !ehDispositivoMobileOuTablet() && !(typeof ECRA_TV !== 'undefined' && ECRA_TV.overlay && ECRA_TV.overlay.isConnected) && (campainhaConfig().chamar || campainhaChamadaRemotaPermitida()); }
+// Botão «Chamar colega» flutuante (2026-10-30, Hugo: "botão deve ser maior, flutuante, a acompanhar a página no canto
+// inferior direito, sem tapar conteúdo da app"): fica fixo em baixo à direita; a página ganha espaço em baixo para o
+// último conteúdo nunca ficar por trás dele, e o botão «voltar ao topo» sobe para cima dele.
+function campainhaFabAtualizar() {
+  let fab = document.querySelector('.campainha-fab');
+  const mostrar = !!activeUser && campainhaPodeChamar();
+  document.body.classList.toggle('tem-campainha-fab', mostrar);
+  if (!mostrar) { if (fab) fab.remove(); return; }
+  if (fab) return;
+  fab = h('button', { type: 'button', class: 'campainha-fab', title: 'Chamar um colega para o atendimento', 'aria-label': 'Chamar colega para o atendimento',
+    onclick: () => campainhaChamar() }, [Icon('megafone', { size: 24, strokeWidth: 2.3 }), h('span', {}, 'Chamar colega')]);
+  document.body.appendChild(fab);
+}
 function buildCampainhaBotao(classe) {
   if (!campainhaPodeChamar()) return null;
   return h('button', { type: 'button', class: classe + ' campainha-botao', title: 'Chamar um colega para o atendimento', 'aria-label': 'Chamar colega',
@@ -74759,7 +74805,7 @@ function buildCartaoCampainha(podeMudar) {
   return h('div', { class: 'posto-mensagens', style: 'flex-direction:column;align-items:stretch;gap:10px;' }, [
     h('div', { class: 'posto-mensagens-texto' }, [
       h('strong', {}, '📣 Chamar colega para o atendimento'),
-      h('span', {}, 'Num posto de atendimento, o botão «Chamar colega» no topo avisa os outros postos: os de atendimento e do backoffice recebem a notificação do Windows; os que têm «Toca a campainha» ligado (e o Ecrã do Backoffice) dão também um sinal sonoro e mostram um aviso grande; O SIGA tem de estar aberto nesses computadores.'),
+      h('span', {}, 'Num posto de atendimento, o botão «Chamar colega» (em baixo, à direita) avisa os outros postos: os de atendimento e do backoffice recebem a notificação do Windows; os que têm «Toca a campainha» ligado (e o Ecrã do Backoffice) dão também um sinal sonoro e mostram um aviso grande; O SIGA tem de estar aberto nesses computadores.'),
     ]),
     h('div', { style: 'display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;' }, [
       h('label', { style: 'display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;' }, ['Nome deste posto', nome]),
@@ -75995,7 +76041,8 @@ function clearSessionSilently() {
   // atendimento"): no posto de atendimento a proteção tapa o ecrã mas não fecha nada — o formulário/janela que estava
   // aberto fica intacto por baixo e volta igual depois de entrar. Por isso aí não se adia por haver um formulário
   // aberto: só se espera se a pessoa estiver mesmo a clicar ou acabou de escrever (uso real).
-  if (usaProtecaoDeEcra()) {
+  const postoDeBalcao = usaProtecaoDeEcra() || aparelhoEhTelemovelPosto() || (!ehDispositivoMobileOuTablet() && postoTipoDesteComputador() === 'atendimento');
+  if (postoDeBalcao) { // com ou sem o ecrã do logótipo: no balcão a sessão caduca sempre ao fim de 1 minuto sem uso
     if (cliqueAMeio() || Date.now() - ultimoFocoEmCampoEm < JANELA_TOLERANCIA_EDICAO_MS) { inactivityTimer = setTimeout(clearSessionSilently, 5000); return; }
   } else if (uiEstaOcupada() && (!adiamentoExpiracaoDesde || Date.now() - adiamentoExpiracaoDesde < 15 * 60 * 1000)) {
     if (!adiamentoExpiracaoDesde) adiamentoExpiracaoDesde = Date.now();
@@ -76010,6 +76057,7 @@ function clearSessionSilently() {
   fecharMensagemDoDiaPopupSeAberta(); fecharLembretePontoSeAberto();
   utilizadorSessaoExpiradaId = activeUser.id;
   activeUser = null;
+  try { campainhaFabAtualizar(); } catch (e) { /* ignora */ }
   activeUserPin = null;
   limparSessaoMovel();
   pontoLimparMemoria(); // 2026-09-25: as picagens de uma pessoa nunca ficam em memória depois de sair
@@ -76040,6 +76088,7 @@ function manualLogout() {
   // sessão atual?" — "é chato ter de clicar sempre sim terminar".
   if (activeUser) propagarChatLastReadParaConvidado();
   activeUser = null;
+  try { campainhaFabAtualizar(); } catch (e) { /* ignora */ }
   activeUserPin = null;
   limparSessaoMovel();
   pontoLimparMemoria(); // 2026-09-25: as picagens de uma pessoa nunca ficam em memória depois de sair
