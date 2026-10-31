@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-31 17:30" />
+<meta name="siga-versao" content="2026-10-31 17:45" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -7191,7 +7191,12 @@ body.tem-barra-inferior .topbar-mobile > .hamburger:first-child{display:none;}
   .msg-rapida-grupo-titulo button:hover{text-decoration:underline;}
   .msg-rapida-postos{display:grid;grid-template-columns:repeat(auto-fill,minmax(98px,1fr));gap:6px;}
   .msg-rapida-posto{border:1px solid #cbd5e1;background:#fff;color:#0f172a;border-radius:10px;padding:9px 8px;font-size:13.5px;font-weight:600;cursor:pointer;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  .msg-rapida-posto:hover,.msg-rapida-posto:focus-visible{border-color:#1d4ed8;background:#eff6ff;color:#1d4ed8;outline:none;}
+  .msg-rapida-posto{display:inline-flex;align-items:center;justify-content:center;gap:5px;}
+  .msg-rapida-posto:hover,.msg-rapida-posto:focus-visible{border-color:#1d4ed8;color:#1d4ed8;outline:none;}
+  .msg-rapida-posto.sel{background:#1d4ed8;border-color:#1d4ed8;color:#fff;}
+  .msg-rapida-todos{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;border:1.5px dashed #f59e0b;background:#fffbeb;color:#b45309;border-radius:10px;padding:9px;font-size:14px;font-weight:700;cursor:pointer;}
+  .msg-rapida-todos:hover,.msg-rapida-todos:focus-visible{background:#fef3c7;outline:none;}
+  .msg-rapida-todos.sel{border-style:solid;background:linear-gradient(135deg,#f59e0b,#ea580c);border-color:#ea580c;color:#fff;}
   .msg-rapida-chips{display:flex;flex-wrap:wrap;gap:6px;}
   .msg-rapida-chip{border:1px solid #e2e8f0;background:#f8fafc;color:#0f172a;border-radius:999px;padding:5px 10px;font-size:12.5px;cursor:pointer;}
   .msg-rapida-chip:hover{border-color:#1d4ed8;color:#1d4ed8;}
@@ -76283,21 +76288,38 @@ function postosMsgAbrir(preDestinoId) {
   const fechar = () => { fundo.remove(); document.removeEventListener('keydown', teclas, true); if (POSTOS_MSG.caixa === api) POSTOS_MSG.caixa = null; };
   const teclas = (ev) => { if (ev.key === 'Escape') { ev.stopPropagation(); if (escolhidos) { escolhidos = null; desenhar(); } else fechar(); } };
   const btnFechar = () => { const b = h('button', { type: 'button', class: 'icbtn fechar', 'aria-label': 'Fechar' }, Icon('x', { size: 17 })); b.addEventListener('click', fechar); return b; };
-  const escolher = (lista) => { escolhidos = lista; desenhar(); };
+  // Passo 1 (2026-10-31, Hugo: "enviar para todos ou selecionar um ou vários clicando ou desclicando, depois avança-se
+  // para a mensagem… «Todos» deve ser o primeiro botão, colorido de forma diferente").
+  const sel = new Set();
+  const seguinte = (lista) => { const esc = lista.filter(d => sel.has(d.chave)); if (!esc.length) return; escolhidos = esc; desenhar(); };
   const passo1 = () => {
     const lista = postosMsgDestinos();
-    const corpo = [h('div', { class: 'msg-rapida-topo' }, [Icon('message', { size: 17 }), h('strong', {}, 'Para que posto?'), btnFechar()])];
-    if (!lista.length) corpo.push(h('p', { class: 'msg-rapida-vazio' }, 'Nenhum outro posto com o SIGA aberto agora.'));
+    [...sel].forEach(c => { if (!lista.some(d => d.chave === c)) sel.delete(c); });
+    const corpo = [h('div', { class: 'msg-rapida-topo' }, [Icon('message', { size: 17 }), h('strong', {}, 'Para quem?'), btnFechar()])];
+    if (!lista.length) { corpo.push(h('p', { class: 'msg-rapida-vazio' }, 'Nenhum outro posto com o SIGA aberto agora.')); return corpo; }
+    const tudo = sel.size === lista.length;
+    const todos = h('button', { type: 'button', class: 'msg-rapida-todos' + (tudo ? ' sel' : ''), 'aria-pressed': tudo ? 'true' : 'false' },
+      [Icon(tudo ? 'check' : 'users', { size: 15, strokeWidth: 2.4 }), ` Todos (${lista.length})`]);
+    todos.addEventListener('click', () => { if (tudo) sel.clear(); else lista.forEach(d => sel.add(d.chave)); desenhar(); });
+    corpo.push(todos);
     ['atendimento', 'backoffice', 'gabinete', 'tv', 'direcao'].forEach(tipo => {
       const doGrupo = lista.filter(d => d.tipo === tipo);
       if (!doGrupo.length) return;
-      const titulo = [POSTOS_MSG_TIPO[tipo]];
-      if (doGrupo.length > 1) { const todos = h('button', { type: 'button' }, 'todos'); todos.addEventListener('click', () => escolher(doGrupo)); titulo.push(todos); }
       corpo.push(h('div', {}, [
-        h('div', { class: 'msg-rapida-grupo-titulo' }, titulo),
-        h('div', { class: 'msg-rapida-postos' }, doGrupo.map(d => { const b = h('button', { type: 'button', class: 'msg-rapida-posto', title: d.nome }, d.nome); b.addEventListener('click', () => escolher([d])); return b; })),
+        h('div', { class: 'msg-rapida-grupo-titulo' }, POSTOS_MSG_TIPO[tipo]),
+        h('div', { class: 'msg-rapida-postos' }, doGrupo.map(d => {
+          const on = sel.has(d.chave);
+          const b = h('button', { type: 'button', class: 'msg-rapida-posto' + (on ? ' sel' : ''), 'aria-pressed': on ? 'true' : 'false', title: d.nome }, [on ? Icon('check', { size: 13, strokeWidth: 2.6 }) : null, d.nome].filter(Boolean));
+          b.addEventListener('click', () => { if (sel.has(d.chave)) sel.delete(d.chave); else sel.add(d.chave); desenhar(); });
+          return b;
+        })),
       ]));
     });
+    const n = lista.filter(d => sel.has(d.chave)).length;
+    const avancar = h('button', { type: 'button', class: 'btn btn-primary btn-sm', disabled: n ? undefined : 'disabled' },
+      [n ? `Escrever mensagem (${n === lista.length && n > 1 ? 'todos' : n})` : 'Escolhe pelo menos um', ' ', Icon('arrowright', { size: 14 })]);
+    avancar.addEventListener('click', () => seguinte(lista));
+    corpo.push(h('div', { class: 'msg-rapida-rodape' }, [h('span', { class: 'conta' }, n ? `${n} escolhido${n === 1 ? '' : 's'}` : ''), avancar]));
     return corpo;
   };
   const passo2 = () => {
@@ -76337,7 +76359,11 @@ function postosMsgAbrir(preDestinoId) {
       h('div', { class: 'msg-rapida-rodape' }, [conta, enviar]),
     ];
   };
-  const desenhar = () => { caixa.innerHTML = ''; (escolhidos ? passo2() : passo1()).forEach(el => caixa.appendChild(el)); };
+  const desenhar = () => {
+    const focado = document.activeElement && caixa.contains(document.activeElement) ? (document.activeElement.getAttribute('title') || (document.activeElement.classList.contains('msg-rapida-todos') ? '__todos' : '')) : '';
+    caixa.innerHTML = ''; (escolhidos ? passo2() : passo1()).forEach(el => caixa.appendChild(el));
+    if (focado && !escolhidos) { const alvo = focado === '__todos' ? caixa.querySelector('.msg-rapida-todos') : [...caixa.querySelectorAll('.msg-rapida-posto')].find(b => b.getAttribute('title') === focado); if (alvo) alvo.focus(); }
+  };
   // Com o passo 1 aberto, a lista acompanha quem liga/desliga o SIGA; no passo 2 não se mexe (para não perder o texto).
   const redesenhar = () => { if (!escolhidos) desenhar(); };
   fundo.addEventListener('click', (ev) => { if (ev.target === fundo) fechar(); });
@@ -76345,9 +76371,9 @@ function postosMsgAbrir(preDestinoId) {
   document.body.appendChild(fundo);
   const api = { fechar, redesenhar };
   POSTOS_MSG.caixa = api;
-  if (preDestinoId) { const alvo = postosMsgDestinos().find(d => d.ids.includes(preDestinoId)); if (alvo) escolhidos = [alvo]; }
+  if (preDestinoId) { const alvo = postosMsgDestinos().find(d => d.ids.includes(preDestinoId)); if (alvo) { sel.add(alvo.chave); escolhidos = [alvo]; } }
   desenhar();
-  if (!escolhidos) setTimeout(() => { const b = caixa.querySelector('.msg-rapida-posto'); if (b) b.focus(); }, 30);
+  if (!escolhidos) setTimeout(() => { const b = caixa.querySelector('.msg-rapida-todos'); if (b) b.focus(); }, 30);
 }
 function buildCampainhaBotao(classe) {
   if (!campainhaPodeChamar()) return null;
