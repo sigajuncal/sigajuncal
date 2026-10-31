@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-31 12:50" />
+<meta name="siga-versao" content="2026-10-31 13:05" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -9419,7 +9419,7 @@ async function guardarNomeAgenda(prestadorKey, nome) {
     return { erro: /agenda_prestadores_config/i.test(lastDbError || '') || /relation .* does not exist|Could not find the table/i.test(lastDbError || '')
       ? 'Falta correr o SQL sigajuncal_agenda_nomes_utilizadores.sql no Supabase.' : `Não foi possível gravar. ${lastDbError || ''}`.trim() };
   }
-  STATE.agendaPrestadoresConfig = atual ? STATE.agendaPrestadoresConfig.map(c => c.id === res.id ? res : c) : [...(STATE.agendaPrestadoresConfig || []), res];
+  STATE.agendaPrestadoresConfig = atual ? STATE.agendaPrestadoresConfig.map(c => c.id === res.id ? res : c) : juntarNoFim(STATE.agendaPrestadoresConfig, [res]);
   aplicarNomesAgendasPersonalizados();
   return { ok: true };
 }
@@ -9467,7 +9467,7 @@ async function guardarVacinacaoDefinicoes(alteracoes) {
   if (!!res.abrirDiasRestrito !== !!alteracoes.abrirDiasRestrito) {
     return { erro: 'Falta preparar a base de dados para esta definição (ficheiro sigajuncal_vacinacao_abrir_dias.sql). Nada foi alterado.' };
   }
-  STATE.agendaPrestadoresConfig = atual ? STATE.agendaPrestadoresConfig.map(c => c.id === res.id ? res : c) : [...(STATE.agendaPrestadoresConfig || []), res];
+  STATE.agendaPrestadoresConfig = atual ? STATE.agendaPrestadoresConfig.map(c => c.id === res.id ? res : c) : juntarNoFim(STATE.agendaPrestadoresConfig, [res]);
   return { ok: true };
 }
 function abrirModalNomeAgenda(prestadorKey, aoGravar) {
@@ -10207,7 +10207,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     if (created) {
       STATE.agendaMarcacoes = formDraft.editId
         ? STATE.agendaMarcacoes.map(x => x.id === created.id ? created : x)
-        : [created, ...STATE.agendaMarcacoes];
+        : juntarNoInicio(STATE.agendaMarcacoes, [created]);
     }
     // Confirmação logo a seguir a gravar uma marcação NOVA (2026-09-28): se
     // um colega gravou uma marcação sobreposta no mesmo instante, fica a
@@ -12586,7 +12586,7 @@ function abrirRemarcacaoAgenda(m, onSaved, opts) {
     const res = vagaVazia ? await dbUpdate('agendaMarcacoes', vagaVazia.id, payload) : await dbInsert('agendaMarcacoes', payload);
     aGravar = false;
     if (!res) { showDbErrorToast('Não foi possível remarcar'); return; }
-    STATE.agendaMarcacoes = vagaVazia ? STATE.agendaMarcacoes.map(x => x.id === res.id ? res : x) : [res, ...STATE.agendaMarcacoes];
+    STATE.agendaMarcacoes = vagaVazia ? STATE.agendaMarcacoes.map(x => x.id === res.id ? res : x) : juntarNoInicio(STATE.agendaMarcacoes, [res]);
     fechar();
     showToast(`Remarcação feita: ${m.nomeCliente} a ${formatDate(dia)} às ${hora}${prestador ? ' · ' + prestador.nome : ''}.`, 'success');
     if (onSaved) onSaved();
@@ -14419,7 +14419,22 @@ async function comAutoLimpezaDeColunas(listKey, row, fn) {
     tentativas += 1;
   }
 }
-async function dbInsert(listKey, record, opts) {
+// 2026-10-31 (auditoria a duplicados): o MESMO registo (mesma tabela, mesmos campos) pedido outra vez enquanto o
+// primeiro ainda está a gravar — duplo clique, Enter + clique, sessão a reabrir — devolve a mesma gravação em vez de
+// criar outro registo igual. Gravações iguais feitas de propósito, uma depois da outra, não são afetadas.
+const DB_INSERT_EM_CURSO = new Map();
+function dbInsertChave(tabela, record) {
+  try { const c = Object.assign({}, record); delete c.criadoPor; delete c.createdAt; delete c.updatedAt; return tabela + '|' + JSON.stringify(c); } catch (e) { return null; }
+}
+function dbInsertUmaVez(tabela, record, fazer) {
+  const chave = dbInsertChave(tabela, record);
+  if (chave && DB_INSERT_EM_CURSO.has(chave)) return DB_INSERT_EM_CURSO.get(chave);
+  const p = Promise.resolve().then(fazer);
+  if (chave) { DB_INSERT_EM_CURSO.set(chave, p); p.finally(() => setTimeout(() => DB_INSERT_EM_CURSO.delete(chave), 800)); }
+  return p;
+}
+async function dbInsert(listKey, record, opts) { return dbInsertUmaVez(listKey, record, () => dbInsertReal(listKey, record, opts)); }
+async function dbInsertReal(listKey, record, opts) {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível (verifica se o CDN do Supabase carregou).'; return null; }
   try {
     if (record && !record.criadoPor) record = Object.assign({}, record, { criadoPor: (opts && opts.sistema) ? AUTORIA_SISTEMA : autoriaAtual() });
@@ -14559,7 +14574,8 @@ async function dbFetchGavetaRecados() {
     return sanitizarSupabase((data || []).map(rowToRecord));
   } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error('[Supabase] erro de rede ao ler gaveta_recados:', formatarErroSeguro(e)); return []; }
 }
-async function dbInsertRecado(record) {
+async function dbInsertRecado(record) { return dbInsertUmaVez('gavetaRecados', record, () => dbInsertRecadoReal(record)); }
+async function dbInsertRecadoReal(record) {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível.'; return null; }
   try {
     const rowBase = recordToRow(record);
@@ -15222,7 +15238,8 @@ async function dbCleanupOldChatMessages() {
     if (error) console.error('[Supabase] erro na limpeza automática do chat:', error.message);
   } catch (e) { console.error('[Supabase] erro de rede na limpeza automática do chat:', formatarErroSeguro(e)); }
 }
-async function dbInsertChatMsg(record) {
+async function dbInsertChatMsg(record) { return dbInsertUmaVez('mensagensChat', record, () => dbInsertChatMsgReal(record)); } // duplo clique nunca grava 2× (2026-10-31)
+async function dbInsertChatMsgReal(record) {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível.'; return null; }
   try {
     const { data, error } = await sb.from('mensagens_chat').insert(recordToRow(record)).select().single();
@@ -15664,7 +15681,8 @@ async function dbFetchMarcacoes(eventoId) {
     return lista;
   } catch (e) { lastDbError = e && e.message ? e.message : 'Falha de rede ao comunicar com o Supabase.'; console.error('[Supabase] erro de rede ao ler marcações:', formatarErroSeguro(e)); return []; }
 }
-async function dbInsertMarcacao(record) {
+async function dbInsertMarcacao(record) { return dbInsertUmaVez('eventosMarcacoes', record, () => dbInsertMarcacaoReal(record)); } // duplo clique nunca grava 2× (2026-10-31)
+async function dbInsertMarcacaoReal(record) {
   if (!sb) { lastDbError = 'Cliente Supabase indisponível.'; return null; }
   try {
     let { data, error } = await sb.from('eventos_marcacoes').insert(recordToRow(Object.assign({ criadoPor: autoriaAtual() }, record))).select().single();
@@ -30390,7 +30408,7 @@ function buildDiaEspecialModal(dateISO, evento, onSaved) {
       };
       const resultado = evento ? await dbUpdate('eventos', evento.id, payload) : await dbInsert('eventos', payload);
       if (resultado) {
-        STATE.eventos = evento ? STATE.eventos.map(e => e.id === evento.id ? resultado : e) : [resultado, ...STATE.eventos];
+        STATE.eventos = evento ? STATE.eventos.map(e => e.id === evento.id ? resultado : e) : juntarNoInicio(STATE.eventos, [resultado]);
         close();
         if (onSaved) onSaved();
         return;
@@ -32234,7 +32252,7 @@ function buildAfaFichasPage(container, goTo) {
     if (!resultado) { formError = `Não foi possível guardar. ${lastDbError || 'Verifica a ligação e tenta novamente.'}`; rerender(); return; }
     STATE.afaFichas = showForm.editingId
       ? STATE.afaFichas.map(x => x.id === resultado.id ? resultado : x)
-      : [resultado, ...STATE.afaFichas];
+      : juntarNoInicio(STATE.afaFichas, [resultado]);
     if (!draft._fichaClienteCarregada) guardarFichaClienteSeNova(draft.numFicha, draft.nome, draft.contacto, draft._nifSemFicha);
     showForm = false;
     showToast('Ficha guardada.', 'success');
@@ -43475,7 +43493,7 @@ async function notificarDirecaoNotaEquipaGlobal(nota, acaoTexto, extra) {
   }));
   resultados.forEach(({ tipo, registo }) => {
     if (!registo) return;
-    STATE.gavetaRecados = tipo === 'update' ? STATE.gavetaRecados.map(r => r.id === registo.id ? registo : r) : [registo, ...(STATE.gavetaRecados || [])];
+    STATE.gavetaRecados = tipo === 'update' ? STATE.gavetaRecados.map(r => r.id === registo.id ? registo : r) : juntarNoInicio(STATE.gavetaRecados, [registo]);
   });
 }
 function escalaTextoPedidoBanco(dataISO, ini, fim, horas, notaLivre) {
@@ -43494,7 +43512,7 @@ async function escalaCriarPedidoBanco(dataISO, ini, fim, notaLivre) {
   const criado = await dbInsert('escalaNotasSemana', payload);
   if (!criado) return { erro: `Não foi possível enviar o pedido. ${lastDbError || ''}`.trim() };
   if (!criado.horaInicio || !criado.horaFim) return { erro: 'O pedido ficou registado, mas sem as horas (falta uma coluna na base de dados) — fala com o Hugo.' };
-  STATE.escalaNotasSemana = [...(STATE.escalaNotasSemana || []), criado];
+  STATE.escalaNotasSemana = juntarNoFim(STATE.escalaNotasSemana, [criado]);
   const prev = escalaPrevisaoSaldoBanco(activeUser.id, 0);
   await notificarDirecaoNotaEquipaGlobal(criado, 'pediu para descontar Banco de Horas', prev && prev.depois < 0 ? `Atenção: fica com saldo de Banco de Horas negativo (${escalaFormatarHorasDecimalComSinal(prev.depois)}).` : '');
   return { nota: criado, horas: v.horas };
@@ -47398,7 +47416,7 @@ async function trocaPropor(dados) {
     if (nb && (nb.trocaId === undefined || nb.trocaId === null)) {
       await dbDelete('escalaNotasSemana', nb.id);
       aviso = 'A troca foi enviada, mas o desconto de Banco de Horas não ficou junto (falta correr o SQL sigajuncal_troca_banco.sql) — pede-o à parte depois.';
-    } else if (nb) STATE.escalaNotasSemana = [...(STATE.escalaNotasSemana || []), nb];
+    } else if (nb) STATE.escalaNotasSemana = juntarNoFim(STATE.escalaNotasSemana, [nb]);
     else aviso = `A troca foi enviada, mas não foi possível juntar o desconto de Banco de Horas. ${lastDbError || ''}`.trim();
   }
   await trocasEnviarRecado(criada.colegaId, `${trocasNomeUtilizador(criada.autorId)} propõe-te uma troca: ${trocaDescricao(criada)}${criada.nota ? `\nNota: ${criada.nota}` : ''}`, 'tarefa', 'escala_trocas', criada.id);
@@ -53088,7 +53106,7 @@ function buildHorariosPage(container, goTo) {
       if (created) criados.push(created); else { falhou = true; break; }
     }
     feriasSaving = false;
-    if (criados.length) STATE.escalaFerias = [...(STATE.escalaFerias || []), ...criados];
+    if (criados.length) STATE.escalaFerias = juntarNoFim(STATE.escalaFerias, criados);
     if (!falhou) {
       feriasDraft = feriasNovoDraft();
       mostrarModalMarcacaoFerias = false;
@@ -53431,7 +53449,7 @@ function buildHorariosPage(container, goTo) {
     if (resultado) {
       STATE.escalaSaldosFerias = existente
         ? STATE.escalaSaldosFerias.map(s => s.id === resultado.id ? resultado : s)
-        : [...(STATE.escalaSaldosFerias || []), resultado];
+        : juntarNoFim(STATE.escalaSaldosFerias, [resultado]);
       editingSaldoUserId = null;
       showToast('Saldo atualizado.', 'success');
     } else {
@@ -58519,7 +58537,7 @@ function buildMapa48hPage(container, goTo) {
       else formError = `Não foi possível guardar as alterações. ${lastDbError || 'Verifica a ligação e tenta novamente.'}`;
     } else {
       const created = await dbInsert('mapa48h', Object.assign({ dataRegisto: todayISO() }, draft));
-      if (created) STATE.mapa48h = [created, ...STATE.mapa48h];
+      if (created) STATE.mapa48h = juntarNoInicio(STATE.mapa48h, [created]);
       else formError = `Não foi possível criar o registo. ${lastDbError || 'Verifica a ligação e tenta novamente.'}`;
       // Confirmação logo a seguir a gravar: se um colega gravou no mesmo
       // instante uma marcação a menos de 72h, fica a que foi gravada primeiro.
@@ -63543,7 +63561,7 @@ function buildEmpresasParceirasPage(container, goTo, farmaciaAtiva) {
       // A dropdown "Empresa Parceira" do formulário de Entregas lê sempre
       // STATE.empresasParceiras em tempo real — ao gravar aqui, fica logo
       // disponível lá, sem qualquer passo extra de sincronização.
-      if (created) STATE.empresasParceiras = [created, ...records()];
+      if (created) STATE.empresasParceiras = juntarNoInicio(records(), [created]);
       else formError = `Não foi possível adicionar a empresa parceira. ${lastDbError || 'Verifica a ligação e tenta novamente.'}`;
     }
     saving = false;
