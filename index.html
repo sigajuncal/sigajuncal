@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-31 17:45" />
+<meta name="siga-versao" content="2026-10-31 18:15" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -43437,7 +43437,9 @@ function escalaValidarDescontoBanco(dataISO, uid, ini, fim, opts) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dataISO || ''))) return { ok: false, motivo: 'Escolhe o dia.' };
   const semana = escalaSemanaPorInicio(escalaSegundaFeiraDaSemanaDeISO(dataISO));
   if (!semana || semana.eliminado || !semana.dados) return { ok: false, motivo: 'A semana desse dia ainda não tem horário.' };
-  if (semana.semanaInicio < escalaSegundaFeiraDaSemanaDeISO(todayISO())) return { ok: false, motivo: 'Essa semana já passou.' };
+  // 2026-10-31 (Hugo: "aprovei um desconto de banco de horas depois de ter passado e diz para alterar à mão, não quero"):
+  // quem PEDE não pode escolher uma semana já passada, mas a Direção, ao APROVAR, aplica-o mesmo num dia que já passou.
+  if (!opts.permitirPassado && semana.semanaInicio < escalaSegundaFeiraDaSemanaDeISO(todayISO())) return { ok: false, motivo: 'Essa semana já passou.' };
   const diaInfo = ESCALA_DIAS.find(d => escalaDataDoDia(semana.semanaInicio, d.key) === dataISO);
   const vaga = diaInfo && escalaVagaDoColaboradorNoDia(semana, diaInfo.key, trocaUid(uid));
   if (!vaga) return { ok: false, motivo: 'Não há turno nesse dia.' };
@@ -43511,7 +43513,7 @@ function escalaReatribuirTarefaComum(semanaNova, diaKey, tipo, iniMin, fimMin, e
   return null;
 }
 function escalaAplicarBancoPedidoNoHorario(nota) {
-  const v = escalaValidarDescontoBanco(nota.dataPedido, nota.autorId, nota.horaInicio, nota.horaFim, { pedidoId: nota.id });
+  const v = escalaValidarDescontoBanco(nota.dataPedido, nota.autorId, nota.horaInicio, nota.horaFim, { pedidoId: nota.id, permitirPassado: true });
   if (!v.ok) return { ok: false, motivo: v.motivo };
   const { semana, diaInfo, vaga } = v;
   if (((vaga.dia.bancoHorasIntervalos) || []).some(iv => String(iv.pedidoId) === String(nota.id))) return { ok: true, jaAplicado: true, semana, novoDados: null, ajustes: [] };
@@ -43597,6 +43599,48 @@ async function escalaProcessarPedidoBancoAoDecidir(nota, aprovar, patch) {
   }
   return [];
 }
+// 2026-10-31 (Hugo: "foi do André no dia 17 de outubro, corriges?"): pedidos de Banco de Horas já APROVADOS que não
+// chegaram ao horário (antes, aprovar um dia já passado dava «ajusta à mão»). Quando alguém da Direção abre o SIGA,
+// pergunta uma vez por sessão se os aplica agora — desconta as horas no dia certo e o saldo do Banco de Horas acerta.
+// Só pedidos aprovados desde 01/10/2026 (quando a aprovação passou a mexer no horário sozinha — os anteriores eram
+// sempre acertados à mão e aplicá-los agora descontava duas vezes) e dos últimos 120 dias.
+function escalaBancoAprovadosPorAplicar() {
+  const limite = dateToISO(new Date(Date.now() - 120 * 86400000));
+  return (STATE.escalaNotasSemana || []).filter(n => n && !n.eliminado && n.tipo === 'banco' && n.validadoDirecao && !n.rejeitado && !n.aplicadoHorario
+    && n.dataPedido && n.horaInicio && n.horaFim && n.dataPedido >= limite && String(n.validadoEm || '') >= '2026-10-01');
+}
+async function escalaAplicarBancoAprovadosPorAplicar(lista) {
+  const feitos = [], falhas = [];
+  for (const nota of lista) {
+    const atual = (STATE.escalaNotasSemana || []).find(n => n.id === nota.id) || nota;
+    if (atual.aplicadoHorario) continue;
+    const patch = {};
+    const frases = await escalaProcessarPedidoBancoAoDecidir(atual, true, patch);
+    const nome = trocasNomeUtilizador(atual.autorId);
+    if (patch.aplicadoHorario) {
+      const upd = await dbUpdate('escalaNotasSemana', atual.id, { aplicadoHorario: true });
+      if (upd) STATE.escalaNotasSemana = (STATE.escalaNotasSemana || []).map(n => n.id === upd.id ? upd : n);
+      feitos.push(`${nome} ${formatDate(atual.dataPedido).slice(0, 5)}`);
+    } else falhas.push(`${nome} ${formatDate(atual.dataPedido).slice(0, 5)}${frases.length ? ` (${frases[0]})` : ''}`);
+  }
+  if (feitos.length) showToast(`Banco de Horas acertado no horário: ${feitos.join(', ')}.`, 'success', { duracao: 8000 });
+  if (falhas.length) showToast(`Não foi possível aplicar: ${falhas.join('; ')}.`, 'error', { duracao: 12000 });
+  render();
+}
+let ESCALA_BANCO_POR_APLICAR_PERGUNTADO = false;
+setInterval(() => {
+  try {
+    if (ESCALA_BANCO_POR_APLICAR_PERGUNTADO || !activeUser || typeof souDirecaoHorariosGlobal !== 'function' || !souDirecaoHorariosGlobal()) return;
+    if (!Array.isArray(STATE.escalaNotasSemana) || !(STATE.escalaSemanas || []).length) return;
+    if (document.querySelector('.modal-overlay, .login-gate, .form-registo-ativo')) return;
+    const lista = escalaBancoAprovadosPorAplicar();
+    ESCALA_BANCO_POR_APLICAR_PERGUNTADO = true;
+    if (!lista.length) return;
+    const txt = lista.map(n => `${trocasNomeUtilizador(n.autorId)} — ${formatDate(n.dataPedido)} (${n.horaInicio}–${n.horaFim})`).join('; ');
+    confirmDialog(`${lista.length === 1 ? 'Há 1 desconto de Banco de Horas aprovado que ainda não está' : `Há ${lista.length} descontos de Banco de Horas aprovados que ainda não estão`} no horário: ${txt}. Aplicar agora? As horas saem desse dia e o saldo do Banco de Horas fica certo.`,
+      () => { escalaAplicarBancoAprovadosPorAplicar(lista); }, { confirmLabel: 'Aplicar no horário' });
+  } catch (e) { /* tenta na próxima volta */ }
+}, 15000);
 // Estado de um pedido de Banco de Horas para quem o fez (as rejeições não ficam marcadas na nota — vê-se pela
 // tarefa da Direção já tratada).
 function escalaEstadoPedidoBanco(nota) {
@@ -75953,7 +75997,8 @@ function campainhaFabAtualizar() {
     onclick: () => postosMsgAbrir() }, [Icon('message', { size: 21, strokeWidth: 2.3 }), h('span', {}, 'Mensagem rápida para outro posto ou para a TV')]) : null;
   const pill = h('div', { class: 'posto-botoes' }, [fab, msg].filter(Boolean));
   const aberto = CAMPAINHA.pip && !CAMPAINHA.pip.closed;
-  const fixar = podeChamar && podeFixar && !aberto ? h('button', { type: 'button', class: 'campainha-fixar', title: 'Abre uma janela pequena com o botão «Chamar colega» que fica por cima de todos os programas (ex.: 4DigitalCare)',
+  // 2026-10-31 (Hugo: "deverias ter eliminado a opção fixar por cima das janelas, é desnecessário agora"): retirado.
+  const fixar = false && podeChamar && podeFixar && !aberto ? h('button', { type: 'button', class: 'campainha-fixar', title: 'Abre uma janela pequena com o botão «Chamar colega» que fica por cima de todos os programas (ex.: 4DigitalCare)',
     onclick: () => campainhaFixarPorCima() }, [Icon('pin', { size: 16, strokeWidth: 2.3 }), h('span', {}, 'Fixar por cima das janelas')]) : null;
   grupo = h('div', { class: 'campainha-fab-grupo', 'data-assinatura': assinatura }, [fixar, pill].filter(Boolean));
   document.body.appendChild(grupo);
@@ -75970,7 +76015,7 @@ document.addEventListener('pointerdown', () => {
   try {
     if (CAMPAINHA.pip && !CAMPAINHA.pip.closed) return;
     const cfg = campainhaConfig();
-    if (!cfg.pipFixo || !cfg.chamar || !campainhaPipDisponivel() || !acessoGeralValidado()) return;
+    if (true || !cfg.pipFixo || !cfg.chamar || !campainhaPipDisponivel() || !acessoGeralValidado()) return; // 2026-10-31: janela por cima retirada
     if (CAMPAINHA.pipFechadoEm && Date.now() - CAMPAINHA.pipFechadoEm < 60000) return;
     campainhaFixarPorCima();
   } catch (e) { /* ignora */ }
@@ -76427,7 +76472,7 @@ function buildCartaoCampainha(podeMudar) {
         })(),
       ].filter(Boolean)),
     ]) : h('p', { class: 'field-helper-text', style: 'margin:0;' }, 'Só os postos de atendimento e do backoffice podem receber a notificação do Windows.'),
-    cfg.chamar && campainhaPipDisponivel() ? h('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;' }, [
+    false ? h('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;' }, [
       h('span', { style: 'font-size:13px;' }, [h('strong', {}, 'Botão por cima das outras janelas'), ' — se alguém o fechar, volta a abrir sozinho 1 minuto depois, no primeiro clique no SIGA (e logo no primeiro clique depois de o SIGA abrir).']),
       (() => {
         const cb = h('input', { type: 'checkbox', checked: cfg.pipFixo ? 'checked' : undefined, disabled: podeMudar ? undefined : 'disabled', 'aria-label': 'Botão por cima das outras janelas' });
