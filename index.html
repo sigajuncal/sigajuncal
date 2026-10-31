@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-31 13:05" />
+<meta name="siga-versao" content="2026-10-31 13:25" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -7181,6 +7181,9 @@ body.tem-barra-inferior .topbar-mobile > .hamburger:first-child{display:none;}
 
   /* Gaveta mais limpa (2026-10-31) */
   .gaveta-filtros-row{flex-wrap:wrap;row-gap:6px;}
+  .gaveta-grupo-tit{margin:10px 4px 4px;font-size:11.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#64748b;}
+  .gaveta-aviso-ic{flex:0 0 auto;display:inline-flex;align-self:center;color:#94a3b8;}
+  .gaveta-ferr-btn{display:inline-flex;align-items:center;gap:4px;}
   .gaveta-marcar-lido{display:inline-flex;align-items:center;gap:4px;margin:2px 0 8px;font-size:12.5px;font-weight:700;}
   .gaveta-aviso-auto{display:flex;align-items:baseline;gap:8px;margin:4px 0;padding:5px 10px;border-radius:8px;background:rgba(100,116,139,.08);color:#475569;font-size:12.5px;line-height:1.35;max-width:92%;}
   .gaveta-aviso-auto.enviado{margin-left:auto;}
@@ -14673,7 +14676,7 @@ function recadoEhPedidoPonto(r) {
 function recadosDaGaveta() { return (STATE.gavetaRecados || []).filter(r => !recadoEhPedidoPonto(r)); }
 function recadosPendentesDoUtilizador() {
   if (!activeUser) return [];
-  return recadosDaGaveta().filter(r => String(r.destinatarioId) === String(activeUser.id) && !r.tratado);
+  return recadosDaGaveta().filter(r => String(r.destinatarioId) === String(activeUser.id) && !r.tratado && ((r.tipo || 'mensagem') !== 'tarefa' || gavetaTarefaAberta(r)));
 }
 // CRIADO 2026-08-27 (pedido explícito de Hugo: "quando já vi a
 // notificação, não deveria aparecer notificação na sidebar, apenas
@@ -21259,6 +21262,14 @@ const EMOJIS_GAVETA = ['😊', '😀', '😂', '😅', '🤔', '😮', '😢', '
 // Avisos automáticos = mensagens geradas pela app (validações, decisões da Direção, picagens, horários publicados…):
 // têm sempre uma referência a um registo e não pedem ação. Mostram-se como linhas compactas, juntam-se quando se
 // repetem («×4») e podem esconder-se. As trocas (com o painel da troca) e as tarefas continuam como estavam.
+// Tarefa ainda por fazer? (as ofertas de horas extra nunca contam — ver abaixo)
+function gavetaTarefaAberta(r) {
+  if (!r || r.tratado || (r.tipo || 'mensagem') !== 'tarefa') return false;
+  // 2026-10-31 (Hugo: "a pessoa não precisa de responder «não me interessa», basta ver e decidir não reivindicar"): uma oferta
+  // de horas extra nunca é uma tarefa pendente — conta só como «não lida» até ser vista; reivindicar é opcional.
+  if (r.referenciaTabela === 'escala_horas_extra') return false;
+  return true;
+}
 function gavetaEhAvisoAutomatico(r) {
   if (!r || (r.tipo || 'mensagem') === 'tarefa') return false;
   if (r.referenciaTabela === 'escala_trocas' || r.referenciaTabela === 'escala_trocas_movimentos') return false;
@@ -21353,7 +21364,7 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
     // não abertas (tratado é reaproveitado como "vista" para mensagens),
     // por isso 1 tarefa pendente + 1 mensagem por abrir mostravam "2",
     // quando só havia mesmo 1 coisa a exigir ação. Conta só tarefas.
-    return recadosDaGaveta().filter(r => String(r.destinatarioId) === String(activeUser.id) && String(r.remetenteId) === String(outroId) && !r.tratado && (r.tipo || 'mensagem') === 'tarefa').length;
+    return recadosDaGaveta().filter(r => String(r.destinatarioId) === String(activeUser.id) && String(r.remetenteId) === String(outroId) && gavetaTarefaAberta(r)).length;
   }
   // "Últimos Contactos": agrupa por outro participante, usa a mensagem mais
   // recente de cada grupo, ordenado da conversa mais recente para a mais
@@ -21825,6 +21836,8 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
           .sort((a, b) => (b.tratadoEm || b.createdAt || '').localeCompare(a.tratadoEm || a.createdAt || ''))
           .forEach(r => itens.push(buildTarefaConcluidaItem(r)));
       } else {
+        const pendenteParaMim = new Map();
+        const itensParaMim = [], itensEnviei = [];
         ultimosContactos()
           .filter(c => {
             if (q && !(normalizarTexto(nomeUtilizador(c.outroId)).includes(q) || normalizarTexto(c.ultima.mensagem).includes(q))) return false;
@@ -21848,8 +21861,10 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
             // agora é a outra pessoa.
             if (streamFiltro === 'naolidas' && !conversasPorLer.has(String(c.outroId))) return false;
             if (streamFiltro === 'pendentes') {
-              const dirigidaAMimNaoTratada = recadosDaThread(c.outroId).some(r => String(r.destinatarioId) === String(activeUser.id) && !r.tratado);
-              const tarefaQueEnvieiPorConfirmar = recadosDaThread(c.outroId).some(r => String(r.remetenteId) === String(activeUser.id) && (r.tipo || 'mensagem') === 'tarefa' && !r.tratado);
+              const dirigidaAMimNaoTratada = recadosDaThread(c.outroId).some(r => String(r.destinatarioId) === String(activeUser.id) && !r.tratado && ((r.tipo || 'mensagem') !== 'tarefa' || gavetaTarefaAberta(r)));
+              // As ofertas de horas extra que enviei não ficam «à espera de confirmação»: quem não quer simplesmente não reivindica.
+              const tarefaQueEnvieiPorConfirmar = recadosDaThread(c.outroId).some(r => String(r.remetenteId) === String(activeUser.id) && r.referenciaTabela !== 'escala_horas_extra' && gavetaTarefaAberta(r));
+              pendenteParaMim.set(String(c.outroId), dirigidaAMimNaoTratada);
               if (!dirigidaAMimNaoTratada && !tarefaQueEnvieiPorConfirmar) return false;
             }
             return true;
@@ -21870,7 +21885,7 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
             const ultimaPessoa = daThread.slice().reverse().find(r => !gavetaEhAvisoAutomatico(r));
             if (ultimaPessoa) c = Object.assign({}, c, { ultima: ultimaPessoa });
             const souEuRemetente = String(c.ultima.remetenteId) === String(activeUser.id);
-            const prefixo = gavetaEhAvisoAutomatico(c.ultima) ? '🔔 ' : (souEuRemetente ? 'Tu: ' : '');
+            const prefixo = gavetaEhAvisoAutomatico(c.ultima) ? 'Aviso: ' : (souEuRemetente ? 'Tu: ' : '');
             const ultimaEhTarefaPendenteParaMim = !souEuRemetente && (c.ultima.tipo || 'mensagem') === 'tarefa' && !c.ultima.tratado;
             // BUG CORRIGIDO 2026-09-03 (Hugo: "letras laranjas... dá a
             // sensação que há algo por ler, quando não é verdade"): a cor
@@ -21899,8 +21914,13 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
               if (prevEl) { prevEl.textContent = textoNovo; prevEl.classList.add('tone-novo'); }
               itemConversa.title = `Novo: ${gavetaTextoRecado(r0.mensagem || '')}`;
             }
-            itens.push(itemConversa);
+            if (streamFiltro === 'pendentes') (pendenteParaMim.get(String(c.outroId)) ? itensParaMim : itensEnviei).push(itemConversa);
+            else itens.push(itemConversa);
           });
+        if (streamFiltro === 'pendentes') {
+          if (itensParaMim.length) itens.push(h('p', { class: 'gaveta-grupo-tit' }, `Para mim · ${itensParaMim.length}`), ...itensParaMim);
+          if (itensEnviei.length) itens.push(h('p', { class: 'gaveta-grupo-tit' }, `Enviei — à espera de resposta · ${itensEnviei.length}`), ...itensEnviei);
+        }
       }
       const vazioTexto = streamFiltro === 'concluidas' ? 'Ainda sem tarefas concluídas.' : (streamFiltro === 'pendentes' ? 'Sem nada pendente — tudo em dia!' : 'Sem colegas encontrados.');
       resultsEl.appendChild(h('div', {}, itens.length ? itens : [h('p', { class: 'cell-muted', style: 'padding:8px;' }, vazioTexto)]));
@@ -22001,7 +22021,7 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
         if (aviso) {
           const badge = h('span', { class: 'gaveta-aviso-n', style: 'display:none;' }, '');
           el = h('div', { class: 'gaveta-aviso-auto' + (String(r.remetenteId) === String(activeUser.id) ? ' enviado' : '') }, [
-            h('span', { class: 'gaveta-aviso-ic', 'aria-hidden': 'true' }, '🔔'),
+            h('span', { class: 'gaveta-aviso-ic', 'aria-hidden': 'true' }, Icon('info', { size: 13, strokeWidth: 2 })),
             h('span', { class: 'gaveta-aviso-txt' }, gavetaTextoRecado(r.mensagem || '')),
             badge,
             h('span', { class: 'gaveta-aviso-hora' }, typeof formatCarimboNota === 'function' ? formatCarimboNota(r.createdAt) : ''),
@@ -22044,7 +22064,7 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
               acoes.push(verBtn);
             }
             // Ignorar (2026-10-03): sem interesse — o aviso passa a "Concluídas" e deixa de contar como pendente.
-            const ignorarBtn = botaoAcaoGaveta('neutro', blocoRef ? 'Não me interessa' : 'Arquivar', blocoRef ? 'x' : 'inbox');
+            const ignorarBtn = botaoAcaoGaveta('neutro', 'Arquivar', 'inbox'); // opcional — não reivindicar já basta (2026-10-31)
             ignorarBtn.addEventListener('click', () => requireAuth(async () => {
               ignorarBtn.disabled = true;
               const reg = await dbMarcarRecadoTratado(r.id);
@@ -22289,7 +22309,7 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
     if (!ehEquipa && !ehMulti) {
       const semAvisos = gavetaEsconderAvisos();
       const avisosBtn = h('button', { type: 'button', class: 'gaveta-ferr-btn' + (semAvisos ? ' ativo' : ''), title: semAvisos ? 'Mostrar os avisos automáticos (validações, picagens…)' : 'Esconder os avisos automáticos (validações, picagens…) e ver só as mensagens das pessoas' },
-        [h('span', {}, '🔔'), h('span', {}, semAvisos ? ' Mostrar avisos' : ' Esconder avisos')]);
+        [Icon(semAvisos ? 'eye' : 'eyeOff', { size: 14 }), h('span', {}, semAvisos ? ' Mostrar avisos' : ' Esconder avisos')]);
       avisosBtn.addEventListener('click', () => { gavetaDefinirEsconderAvisos(!semAvisos); render(); });
       const procura = h('input', { class: 'input gaveta-procura-conv', type: 'search', placeholder: 'Procurar nesta conversa…', value: pesquisaConversa });
       const contador = h('span', { class: 'gaveta-procura-n' }, '');
@@ -42904,7 +42924,9 @@ async function notificarColaboradoresPublicacaoSemana(semana, foiRepublicacao, d
   const resultados = await Promise.all(destinatarios.map(async u => {
     const mensagem = mensagemDe.get(String(u.id));
     const existente = existentes.find(r => String(r.destinatarioId) === String(u.id));
-    if (existente) return dbAtualizarRecado(existente.id, { mensagem, tratado: false, tratadoEm: null, notifVistaRecebida: false, createdAt: agoraISO });
+    // 2026-10-31 (Hugo: "porque é que na conversa com a Sofia aparece que o Paulo republicou?"): o aviso atualizado passa a vir de
+    // quem republicou — antes ficava com o remetente da 1.ª publicação e aparecia na conversa errada.
+    if (existente) return dbAtualizarRecado(existente.id, { mensagem, remetenteId: activeUser.id, tratado: false, tratadoEm: null, notifVistaRecebida: false, createdAt: agoraISO });
     return dbInsertRecado({ remetenteId: activeUser.id, destinatarioId: u.id, mensagem, tratado: false, tipo: 'mensagem', referenciaTabela: 'escala_semanas', referenciaId: semana.id });
   }));
   const validos = resultados.filter(Boolean);
