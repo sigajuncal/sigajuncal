@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-31 14:15" />
+<meta name="siga-versao" content="2026-10-31 14:30" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -74002,11 +74002,17 @@ function escalaEquipaHoje() {
   try { escalaAtribuirGrupoBParaDia(hojeISO).atribuicoes.forEach(a => { rotacaoB[a.codigo] = a; }); } catch (e) { /* sem rotação */ }
   const pessoas = [];
   const vistos = new Set();
+  const heSoltas = [];
   Object.keys(semana.dados || {}).forEach(codigo => {
     const linha = semana.dados[codigo];
     const dia = linha && linha.dias ? linha.dias[diaKey] : null;
-    if (!dia || dia.tipo !== 'normal' || !dia.entrada || !dia.saida) return;
     const rot = rotacaoB[codigo];
+    const idPre = (dia && dia.colaboradorId) || (rot && rot.utilizadorId) || (linha && linha.colaboradorId) || null;
+    if (!dia || dia.tipo !== 'normal' || !dia.entrada || !dia.saida) {
+      // 31/10/2026: dia sem turno mas com Horas Extra reivindicadas → a pessoa trabalha na mesma.
+      if (idPre && !vistos.has(`u${idPre}`)) heSoltas.push({ id: idPre, codigo, nome: (dia && dia.colaboradorNome) || (rot && rot.colaboradorNome) || (linha && linha.colaboradorNome) || '' });
+      return;
+    }
     const id = dia.colaboradorId || (rot && rot.utilizadorId) || (linha && linha.colaboradorId) || null;
     const nome = dia.colaboradorNome || (rot && rot.colaboradorNome) || (linha && linha.colaboradorNome) || '';
     if (!nome && !id) return;
@@ -74014,24 +74020,49 @@ function escalaEquipaHoje() {
     const chave = id ? `u${id}` : `n${nome}`;
     if (vistos.has(chave)) return;
     vistos.add(chave);
-    const entrada = escalaEntradaEfetivaDia(dia), saida = escalaSaidaEfetivaDia(dia);
+    pessoas.push(escalaEquipaHojePessoa(dia, semana, diaKey, id, codigo, nome, agoraMin));
+  });
+  // 31/10/2026 (Hugo: "Vânia aparece e depois desaparece… aqui também não aparece"): o painel lia só o turno base e
+  // ignorava as Horas Extra reivindicadas (ex.: Vânia HE 08:30–14:00 + turno 16:00–22:00 aparecia "entra às 16:00").
+  // Agora usa o turno efetivo (escalaTurnoComReivindicacoes), como a Home, o Ponto e a TV — e inclui quem só tem HE.
+  const semTurno = new Map();
+  heSoltas.forEach(p => { if (!vistos.has(`u${p.id}`)) semTurno.set(String(p.id), p); });
+  try {
+    escalaHorasExtraDoDia(semana.id, diaKey).forEach(b => escalaReivindicacoesDoBloco(b.id).forEach(r => {
+      const uid = r.utilizadorId; if (!uid || vistos.has(`u${uid}`) || semTurno.has(String(uid))) return;
+      semTurno.set(String(uid), { id: uid, codigo: '', nome: r.utilizadorNome || '' });
+    }));
+  } catch (e) { /* sem HE */ }
+  semTurno.forEach(p => {
+    if (escalaAusenciaDoDia(p.id, hojeISO)) return;
+    const pessoa = escalaEquipaHojePessoa(null, semana, diaKey, p.id, p.codigo, p.nome, agoraMin);
+    if (pessoa) { vistos.add(`u${p.id}`); pessoas.push(pessoa); }
+  });
+  const ordem = { a_trabalhar: 0, pausa: 1, vai_entrar: 2, saiu: 3 };
+  return pessoas.filter(Boolean).sort((a, b) => (ordem[a.estado] - ordem[b.estado]) || (a.ini - b.ini) || a.nome.localeCompare(b.nome, 'pt'));
+}
+function escalaEquipaHojePessoa(dia, semana, diaKey, id, codigo, nome, agoraMin) {
+    let efetivo = null;
+    try { efetivo = id ? escalaTurnoComReivindicacoes(dia, semana.id, diaKey, id) : null; } catch (e) { efetivo = null; }
+    if (!dia && !(efetivo && efetivo.entrada && efetivo.saida)) return null;
+    const usaHE = !!(efetivo && efetivo.alargadoPorHE);
+    const d = usaHE ? efetivo : dia;
+    const entrada = usaHE ? efetivo.entrada : escalaEntradaEfetivaDia(dia), saida = usaHE ? efetivo.saida : escalaSaidaEfetivaDia(dia);
     const ini = escalaMinutosAbsolutos(entrada, false), fim = escalaMinutosAbsolutos(saida, true);
-    const pIni = dia.pausaInicio ? escalaMinutosAbsolutos(dia.pausaInicio, false) : null;
-    const pFim = dia.pausaFim ? escalaMinutosAbsolutos(dia.pausaFim, true) : null;
+    const pIni = d.pausaInicio ? escalaMinutosAbsolutos(d.pausaInicio, false) : null;
+    const pFim = d.pausaFim ? escalaMinutosAbsolutos(d.pausaFim, true) : null;
     let estado;
     if (agoraMin < ini) estado = 'vai_entrar';
     else if (agoraMin >= fim) estado = 'saiu';
     else if (pIni !== null && pFim !== null && agoraMin >= pIni && agoraMin < pFim) estado = 'pausa';
     else estado = 'a_trabalhar';
     const u = id ? (STATE.usuarios || []).find(x => String(x.id) === String(id)) : null;
-    pessoas.push({
-      id, codigo, nome: (u && (u.nomeCompleto || u.username)) || nome, grupo: escalaGrupoDoCodigo(codigo),
-      entrada, saida, pausaInicio: dia.pausaInicio || '', pausaFim: dia.pausaFim || '', ini, fim, pIni, pFim, estado,
+    return {
+      id, codigo, nome: (u && (u.nomeCompleto || u.username)) || nome || '', grupo: codigo ? escalaGrupoDoCodigo(codigo) : '',
+      entrada, saida, pausaInicio: d.pausaInicio || '', pausaFim: d.pausaFim || '', ini, fim, pIni, pFim, estado,
+      horasExtra: usaHE, entradaBase: usaHE ? (efetivo.entradaBase || '') : '', saidaBase: usaHE ? (efetivo.saidaBase || '') : '',
       souEu: !!(activeUser && id && String(id) === String(activeUser.id)),
-    });
-  });
-  const ordem = { a_trabalhar: 0, pausa: 1, vai_entrar: 2, saiu: 3 };
-  return pessoas.sort((a, b) => (ordem[a.estado] - ordem[b.estado]) || (a.ini - b.ini) || a.nome.localeCompare(b.nome, 'pt'));
+    };
 }
 // "Impressão" do horário da equipa de hoje (quem trabalha e a que horas — não o estado, que muda com a hora).
 // Entra na assinatura da Página Inicial e dos cartões: se o horário for editado (aqui ou noutro posto, por Realtime),
