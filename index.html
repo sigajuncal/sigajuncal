@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-31 18:45" />
+<meta name="siga-versao" content="2026-10-31 19:00" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -75793,7 +75793,7 @@ function campainhaConfig() {
   const receber = c.receberNotif !== undefined ? !!c.receberNotif : tipo === 'escritorio';
   const tempos = [0, 10, 30, 60, 120];
   const notifTempo = tempos.indexOf(Number(c.notifTempo)) >= 0 ? Number(c.notifTempo) : 30;
-  return { nome: String(c.nome || '').trim().slice(0, 30), atendimento, chamar: atendimento && c.chamar !== false, tocar: !!c.tocar, notificar: podeReceberNotif && receber, podeReceberNotif, receberNotif: receber, notifTempo, pipFixo: c.pipFixo === true, mensagens: c.mensagens !== false, zona: c.zona === 'gabinete' ? 'gabinete' : 'backoffice', recebeDirecao: c.recebeDirecao === true, backofficeMarcado: tipo === 'escritorio' && (() => { try { return localStorage.getItem(POSTO_TIPO_CHAVE) === 'escritorio'; } catch (e) { return false; } })() };
+  return { nome: String(c.nome || '').trim().slice(0, 30), atendimento, chamar: atendimento && c.chamar !== false, tocar: !!c.tocar, notificar: podeReceberNotif && receber, podeReceberNotif, receberNotif: receber, notifTempo, pipFixo: c.pipFixo === true, mensagens: c.mensagens !== false, somBackoffice: tipo === 'escritorio' && c.somBackoffice !== false, zona: c.zona === 'gabinete' ? 'gabinete' : 'backoffice', recebeDirecao: c.recebeDirecao === true, backofficeMarcado: tipo === 'escritorio' && (() => { try { return localStorage.getItem(POSTO_TIPO_CHAVE) === 'escritorio'; } catch (e) { return false; } })() };
 }
 function campainhaGuardar(c) { try { localStorage.setItem(CAMPAINHA_CHAVE, JSON.stringify(c)); } catch (e) { /* ignora */ } }
 function campainhaDeveTocar() { return campainhaConfig().tocar || !!(typeof ECRA_TV !== 'undefined' && ECRA_TV.overlay && ECRA_TV.overlay.isConnected); }
@@ -75805,7 +75805,7 @@ function campainhaAudio() {
   } catch (e) { return null; }
 }
 // Os browsers só deixam tocar som depois de um clique: o primeiro clique em qualquer sítio deixa o som pronto.
-document.addEventListener('pointerdown', () => { if (campainhaDeveTocar()) campainhaAudio(); }, { capture: true, passive: true });
+document.addEventListener('pointerdown', () => { try { if (campainhaDeveTocar() || campainhaConfig().somBackoffice || postosMsgIdentidade()) campainhaAudio(); } catch (e) { /* ignora */ } }, { capture: true, passive: true });
 function campainhaTocarSom(vezes) {
   const ctx = campainhaAudio();
   if (!ctx) return false;
@@ -75888,7 +75888,7 @@ function campainhaTitulo(p) {
 function campainhaNotificarWindows(p) {
   if (!campainhaConfig().notificar || !('Notification' in window) || Notification.permission !== 'granted') return;
   try {
-    const n = new Notification(`📣 ${campainhaTitulo(p)}`, { body: p.remota ? `${p.por ? `Chamada feita por ${avisoPrimeiroNome(p.por)}` : 'Chamada'} à distância` : (p.por ? `No ${p.posto || 'atendimento'}` : 'Um colega chamou do atendimento.'), tag: 'campainha-' + p.id, requireInteraction: true, icon: 'icon-512.png' });
+    const n = new Notification(`📣 ${campainhaTitulo(p)}`, { body: p.remota ? `${p.por ? `Chamada feita por ${avisoPrimeiroNome(p.por)}` : 'Chamada'} à distância` : (p.por ? `No ${p.posto || 'atendimento'}` : 'Um colega chamou do atendimento.'), tag: 'campainha-' + p.id, requireInteraction: true, silent: false, icon: 'icon-512.png' });
     n.onclick = () => { try { window.focus(); } catch (e) { /* ignora */ } n.close(); };
     const tempo = campainhaConfig().notifTempo;
     if (tempo > 0) setTimeout(() => { try { n.close(); } catch (e) { /* ignora */ } }, tempo * 1000);
@@ -75900,7 +75900,8 @@ function campainhaRecebida(p) {
   if (!p || !p.id || CAMPAINHA.vistos.has(p.id) || !acessoGeralValidado()) return;
   CAMPAINHA.vistos.add(p.id);
   campainhaNotificarWindows(p);
-  if (!campainhaDeveTocar()) return;
+  // 2026-10-31 (Hugo: "acrescenta aviso sonoro nos computadores do backoffice"): sem o aviso grande, toca na mesma o «dim-dom».
+  if (!campainhaDeveTocar()) { if (campainhaConfig().somBackoffice) campainhaTocarSom(1); return; }
   const tocou = campainhaTocarSom(2);
   // Falado: «Hugo precisa de ajuda no atendimento» (quem chamou, com sessão iniciada) — ou o nome do posto.
   const quemFala = p.por ? avisoPrimeiroNome(p.por) : (p.remota ? '' : p.posto);
@@ -76274,7 +76275,7 @@ function postosMsgMostrarPosto(p, texto) {
   let notif = null;
   try {
     if ('Notification' in window && Notification.permission === 'granted') {
-      notif = new Notification(`💬 Mensagem de ${de}`, { body: texto, tag: 'msg-rapida-' + p.id, requireInteraction: true, icon: 'icon-512.png' });
+      notif = new Notification(`💬 Mensagem de ${de}`, { body: texto, tag: 'msg-rapida-' + p.id, requireInteraction: true, silent: false, icon: 'icon-512.png' });
       notif.onclick = () => { try { window.focus(); } catch (e) { /* ignora */ } try { notif.close(); } catch (e) { /* ignora */ } const c = POSTOS_MSG.cartoes.get(p.id); if (c) c.destacar(); };
     }
   } catch (e) { notif = null; }
@@ -76497,6 +76498,7 @@ function buildCartaoCampainha(podeMudar) {
         return sel;
       })(),
     ]) : null,
+    cfg.somBackoffice !== undefined && postoTipoDesteComputador() === 'escritorio' ? h('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;' }, [h('span', { style: 'font-size:13px;' }, 'Som curto quando alguém chama (sem o aviso grande)'), interruptor('somBackoffice', 'Som curto quando alguém chama')]) : null,
     h('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;' }, [h('span', { style: 'font-size:13px;' }, 'Toca a campainha quando alguém chama'), interruptor('tocar', 'Toca a campainha')]),
     h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;' }, [testar, pedirNotif].filter(Boolean)),
   ]);
