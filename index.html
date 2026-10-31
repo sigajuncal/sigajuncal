@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-31 13:55" />
+<meta name="siga-versao" content="2026-10-31 14:15" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -5847,6 +5847,9 @@
   .tv-pessoa-saiu.tv-ponto-falta,.tv-pessoa-saiu.tv-ponto-lembrar{opacity:.8;}
   .tv-sub-sairam{color:#64748b !important;}
   /* 2026-10-31: cada parte (horário, pausa, picagens) nunca se parte a meio — passa inteira para a linha de baixo. */
+  .esp-tarefas-resumo{display:inline-flex;align-items:center;gap:4px;border:1px dashed #b9cfe0;background:#f5f9fc;color:#355a76;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:700;cursor:pointer;}
+  .esp-tarefas-resumo:hover{background:#e8f2f9;}
+  .esp-toggle-tarefas{display:inline-flex;align-items:center;gap:4px;border:1px solid #cfdbe6;background:#fff;color:#0f2a43;border-radius:999px;padding:4px 11px;font-size:12.5px;font-weight:700;cursor:pointer;}
   .tv-titulo-n{display:inline-flex;align-items:center;justify-content:center;min-width:2.1vw;height:2.1vw;margin-left:.7vw;padding:0 .5vw;border-radius:999px;background:#16a34a;color:#fff;font-size:1.25vw;font-weight:900;vertical-align:middle;}
   .tv-sub-grupo{margin-top:.5vw !important;display:flex;align-items:baseline;gap:.2vw;}
   .tv-sub-grupo span{color:#4ade80;font-weight:800;}
@@ -33204,6 +33207,35 @@ function ecraTvImagemCampanha(c, alvo) {
 function ecraTvImagemDe(validade, alvo) {
   return ecraTvImagemPronta(ECRA_TV.imagens && ECRA_TV.imagens.get(String(validade.id)), alvo);
 }
+// Quem garante atendimento ao balcão (2026-10-31, Hugo: "técnicos de farmácia e farmacêuticos garantem atendimento, TAF
+// não… Simão é prestador, mas garante atendimento"). Ordem: escolha feita na ficha do utilizador (Sim/Não) → categoria
+// profissional (Farmacêutico/a, Técnico/a de Farmácia, Diretor/a Técnico/a, Estagiário/a = Atendimento; Técnico/a
+// Auxiliar e Administrativo/a = Backoffice) → prestador de serviços sem categoria (nutrição, podologia…) = Serviços →
+// posição do horário (Grupo B = Backoffice). As escolhas guardam-se em agenda_prestadores_config ('atendimento-utilizadores').
+const ATENDIMENTO_KEY = 'atendimento-utilizadores';
+function atendimentoEscolhas() { try { const r = agendaConfigDe(ATENDIMENTO_KEY); return r && r.nome ? (JSON.parse(r.nome) || {}) : {}; } catch (e) { return {}; } }
+async function guardarAtendimentoUtilizador(uid, valor) {
+  const mapa = atendimentoEscolhas();
+  if (valor === 'sim' || valor === 'nao') mapa[String(uid)] = valor; else delete mapa[String(uid)];
+  const atual = agendaConfigDe(ATENDIMENTO_KEY);
+  const campos = { nome: JSON.stringify(mapa), atualizadoPor: currentUserName() };
+  const res = atual ? await dbUpdate('agendaPrestadoresConfig', atual.id, campos) : await dbInsert('agendaPrestadoresConfig', Object.assign({ prestadorKey: ATENDIMENTO_KEY }, campos));
+  if (res) STATE.agendaPrestadoresConfig = juntarNoFim(STATE.agendaPrestadoresConfig, [res]);
+  return !!res;
+}
+function utilizadorSecaoEquipa(uid, codigo) {
+  const escolha = atendimentoEscolhas()[String(uid)];
+  const u = (STATE.usuarios || []).find(x => String(x.id) === String(uid)) || {};
+  if (escolha === 'sim') return 'atendimento';
+  if (escolha === 'nao') return u.perfilNivel === 'Prestador de Serviço' ? 'servicos' : 'backoffice';
+  const cat = normalizarTexto(u.categoriaProfissional || '');
+  if (/auxiliar|administrativ/.test(cat)) return 'backoffice';
+  if (/farmaceutic|tecnic[oa] de farmacia|diretor|estagiari/.test(cat)) return 'atendimento';
+  if (u.perfilNivel === 'Prestador de Serviço') return 'servicos';
+  const vaga = (STATE.escalaVagas || []).find(v => v.codigo === codigo);
+  const g = (vaga && vaga.grupo) || (/^B\d+$/i.test(String(codigo || '')) ? 'B' : 'A');
+  return g === 'B' ? 'backoffice' : g === 'P' ? 'servicos' : 'atendimento';
+}
 function ecraTvPainel(icone, titulo, extra, corpo, classe) {
   return h('section', { class: 'tv-painel ' + (classe || '') }, [
     h('header', { class: 'tv-painel-cab' }, [h('span', { class: 'tv-painel-ic' }, Icon(icone, { size: 22, strokeWidth: 2.2 })), h('h2', {}, titulo), extra ? h('span', { class: 'tv-painel-extra' }, extra) : null].filter(Boolean)),
@@ -33381,11 +33413,7 @@ function ecraTvConstruir() {
   trabalham.sort((a, b) => pesoAviso(a) - pesoAviso(b)); sairam.sort((a, b) => pesoAviso(a) - pesoAviso(b));
   const pessoa = (p) => linhaPessoa(p, p.estado === 'pausa' ? `em pausa até ${p.pausaFim}` : `até ${p.saida}`);
   const semEntrada = trabalham.filter(p => ecraTvPontoLinha(p, agoraMin).nivel === 'falta').length;
-  const grupoDaPessoa = (p) => {
-    const vaga = (STATE.escalaVagas || []).find(v => v.codigo === p.codigo);
-    const g = (vaga && vaga.grupo) || (/^B\d+$/i.test(String(p.codigo || '')) ? 'B' : 'A');
-    return g === 'B' ? 'backoffice' : g === 'P' ? 'servicos' : 'atendimento';
-  };
+  const grupoDaPessoa = (p) => utilizadorSecaoEquipa(p.uid, p.codigo);
   const gruposTrabalho = [['atendimento', 'Atendimento'], ['backoffice', 'Backoffice'], ['servicos', 'Serviços']]
     .map(([chave, rotulo]) => ({ chave, rotulo, pessoas: trabalham.filter(p => grupoDaPessoa(p) === chave) })).filter(g => g.pessoas.length);
   // 2026-10-31 (Hugo: "deveria estar tudo visível de relance… quem vai entrar pode ficar ainda mais reduzido"): quem
@@ -42083,6 +42111,7 @@ const ESCALA_TAREFAS_MANUAIS_PEDIVEIS = ESCALA_TAREFAS_ESPECIAIS.filter(t => ['c
 // quando existe (formato atual), senão cai para os campos singulares
 // antigos (dia.tarefaTipo/...), envolvidos num array de 1 item, para
 // nunca partir dados gravados antes desta funcionalidade existir.
+const MINHA_SEMANA_DIAS_ABERTOS = new Set();
 function escalaTarefasDoDia(dia) {
   if (!dia) return [];
   if (Array.isArray(dia.tarefas) && dia.tarefas.length) {
@@ -52312,6 +52341,9 @@ function buildHorariosPage(container, goTo) {
     return h('div', { style: 'margin-top:16px;max-width:720px;display:flex;flex-direction:column;gap:10px;' }, [tituloRow, ...corpo]);
   }
 
+  // 2026-10-31 (Hugo: "tarefas estão a confundir tudo… podem ficar escondidas e revelar com botão"): por omissão cada dia
+  // mostra só «N tarefas» (clicar abre esse dia); «Mostrar tarefas» no topo abre todas (fica guardado no aparelho).
+  function minhaSemanaVerTarefas() { try { return localStorage.getItem('siga_minha_semana_tarefas') === '1'; } catch (e) { return false; } }
   function buildVistaPessoal(semana) {
     if (!activeUser) return EmptyState('Inicia sessão para ver o teu horário pessoal.');
     if (!semana) return EmptyState('Ainda não existe nenhum horário gerado para esta semana.');
@@ -52481,7 +52513,12 @@ function buildHorariosPage(container, goTo) {
           }
           return partes.length ? h('span', { class: 'esp-comparacao' }, partes) : null;
         })();
-        const tarefasEl = h('span', { class: 'escala-pessoal-tarefas' }, [feitoEl, pill, ausenciaBadge].filter(Boolean));
+        let nTarefasDia = 0; try { nTarefasDia = tipoEfetivo === 'normal' ? (escalaTarefasDoDia(dia) || []).length : 0; } catch (e) { nTarefasDia = 0; }
+        const tarefasAbertas = minhaSemanaVerTarefas() || MINHA_SEMANA_DIAS_ABERTOS.has(dataDoDia);
+        const pillMostrar = !pill || !nTarefasDia || tarefasAbertas ? pill
+          : h('button', { type: 'button', class: 'esp-tarefas-resumo', title: 'Ver as tarefas deste dia', onclick: () => { MINHA_SEMANA_DIAS_ABERTOS.add(dataDoDia); rerender(); } },
+            [Icon('clipboard', { size: 12 }), ` ${nTarefasDia} tarefa${nTarefasDia > 1 ? 's' : ''}`]);
+        const tarefasEl = h('span', { class: 'escala-pessoal-tarefas' }, [feitoEl, pillMostrar, ausenciaBadge].filter(Boolean));
         // Rótulo simplificado (pedido explícito 2026-08-18): só dia da
         // semana + dia do mês (ex: "17 · Segunda"), à semelhança da Vista
         // Mensal — o mês/ano fica de fora, já visível no seletor de
@@ -52519,7 +52556,11 @@ function buildHorariosPage(container, goTo) {
             codigoUnicoDaSemana ? escalaBadgePosicao(codigoUnicoDaSemana, escalaGrupoDoCodigo(codigoUnicoDaSemana)) : null,
             h('h3', { class: 'dash-card-title', style: 'margin:0;' }, 'A Minha Semana'),
           ].filter(Boolean)),
-          h('span', { class: 'cell-strong' }, `Total: ${escalaFormatarHoras(escalaTotalHorasLinha(linha, semana.id))}`),
+          h('div', { style: 'display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:flex-end;' }, [
+            h('button', { type: 'button', class: 'esp-toggle-tarefas', onclick: () => { const v = !minhaSemanaVerTarefas(); try { localStorage.setItem('siga_minha_semana_tarefas', v ? '1' : '0'); } catch (e) { /* ignora */ } if (!v) MINHA_SEMANA_DIAS_ABERTOS.clear(); rerender(); } },
+              [Icon(minhaSemanaVerTarefas() ? 'eyeOff' : 'eye', { size: 14 }), minhaSemanaVerTarefas() ? ' Esconder tarefas' : ' Mostrar tarefas']),
+            h('span', { class: 'cell-strong' }, `Total: ${escalaFormatarHoras(escalaTotalHorasLinha(linha, semana.id))}`),
+          ]),
         ]),
         ...rows,
       ]));
