@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-31 22:30" />
+<meta name="siga-versao" content="2026-10-31 23:15" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -6004,6 +6004,8 @@
   .tv-produto-foto{flex:0 0 auto;width:8.5vw;height:8.5vw;border-radius:1vw;background:#fff center/contain no-repeat;display:flex;align-items:center;justify-content:center;box-shadow:0 .4vw 1.4vw rgba(0,0,0,.35);}
   .tv-produto-foto.com-imagem .tv-produto-inicial{display:none;}
   .tv-produto-inicial{font-size:3.6vw;font-weight:800;color:#c7d6df;}
+  .tv-produto-generica{display:flex;width:78%;height:78%;}
+  .tv-produto-generica svg{width:100%;height:100%;}
   .tv-produto-info{display:flex;flex-direction:column;align-items:flex-start;gap:.6vw;min-width:0;}
   .tv-produto-nome{margin:0;font-size:1.5vw;font-weight:800;color:#fff;line-height:1.15;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;}
   .tv-produto-validade{font-size:1.05vw !important;padding:.35vw .9vw !important;}
@@ -7259,6 +7261,11 @@ body.tem-barra-inferior .topbar-mobile > .hamburger:first-child{display:none;}
   .msg-rapida-emojis button{border:0;background:transparent;font-size:19px;line-height:1;width:32px;height:32px;border-radius:8px;cursor:pointer;padding:0;}
   .msg-rapida-emojis button:hover{background:#e0e7ff;}
   .msg-rapida-original{font-size:13px;color:#475569;background:#f1f5f9;border-left:3px solid #94a3b8;border-radius:8px;padding:7px 10px;white-space:pre-wrap;word-break:break-word;}
+  .orc-falcao-bloqueada{opacity:.75;}
+  .orc-falcao-bloqueada .orc-cabecalho{display:flex !important;justify-content:space-between;align-items:center;gap:12px;}
+  .orc-falcao-bloqueada .orc-nome{display:flex !important;flex-direction:row !important;align-items:center;justify-content:flex-start !important;gap:10px;text-align:left;flex:1;}
+  .orc-falcao-bloqueada .orcamento-fornecedor-fixo{margin:0;text-align:left;}
+  .orc-falcao-so{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;font-weight:700;color:#92400e;background:#fef3c7;border-radius:999px;padding:2px 9px;}
   .orc-nota-falcao{margin:4px 0 0;font-size:12px;color:#475569;}
   .orc-nota-falcao.erro{color:#b91c1c;font-weight:600;}
   .orc-nota-falcao button{all:unset;cursor:pointer;color:#1d4ed8;font-weight:700;text-decoration:underline;}
@@ -7932,7 +7939,57 @@ function manipuladoEhMinoxidilOral(txt) {
   const t = String(txt || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   return /minoxidil/.test(t) && !/(solu|topic|locao|capilar|spray|espuma|gel|creme|champo|shampoo|cutane)/.test(t);
 }
-const AVISO_FALCAO = 'A Farmácia Falcão só produz manipulados de minoxidil oral.';
+const AVISO_FALCAO = 'A Farmácia Falcão só produz manipulados de minoxidil.';
+// «Minoxidil» ou aproximado (erros de escrita: minoxidl, minoxydil, monoxidil…) — distância de edição até 2.
+function manipuladoMencionaMinoxidil(txt) {
+  const t = String(txt || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  if (/minox/.test(t)) return true;
+  const alvo = 'minoxidil';
+  const dist = (a, b) => {
+    const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+    for (let j = 1; j <= b.length; j++) d[0][j] = j;
+    for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    return d[a.length][b.length];
+  };
+  return t.split(/[^a-z]+/).some(w => w.length >= 7 && w.length <= 11 && dist(w, alvo) <= 2);
+}
+// Bloco da Falcão bloqueado? Não, se o manipulado fala em minoxidil, se já há motivo escrito, ou se já tem algo
+// (pedido, valor, «não produz» ou aprovado) — um orçamento em curso nunca fica preso.
+function orcamentoFalcaoBloqueada(draft) {
+  if (manipuladoMencionaMinoxidil(draft.manipulado)) return false;
+  if (String(draft.orcamento5Motivo || '').trim()) return false;
+  if (draft.orcamento5Pedido || draft.orcamento5NaoProduz || String(draft.orcamento5Valor || '').trim() || parseInt(draft.orcamentoAprovado, 10) === 5) return false;
+  return true;
+}
+function orcamentoLinhaFalcaoBloqueada(draft, rerender, bloqueado) {
+  const desbloquear = h('button', { type: 'button', class: 'btn btn-secondary btn-sm', disabled: bloqueado ? 'disabled' : undefined }, [Icon('lockOpen', { size: 13 }), ' Desbloquear']);
+  desbloquear.addEventListener('click', () => {
+    const area = h('textarea', { class: 'input', rows: '2', maxlength: '200', placeholder: 'Porque se vai pedir à Falcão? (obrigatório)', style: 'width:100%;margin-top:10px;' });
+    const erro = h('p', { class: 'form-error', style: 'display:none;margin:6px 0 0;' }, 'Escreve o motivo para desbloquear.');
+    const overlay = h('div', { class: 'modal-overlay' });
+    const fechar = () => overlay.remove();
+    const confirmar = () => {
+      const m = area.value.replace(/\s+/g, ' ').trim();
+      if (m.length < 4) { erro.style.display = ''; area.focus(); return; }
+      draft.orcamento5Motivo = m; fechar(); rerender();
+    };
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) fechar(); });
+    area.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); confirmar(); } if (e.key === 'Escape') fechar(); });
+    overlay.appendChild(h('div', { class: 'modal-panel confirm-panel' }, [
+      h('p', { class: 'confirm-message' }, 'A Farmácia Falcão só produz manipulados de minoxidil. Para lhe pedir este, escreve o motivo:'),
+      area, erro,
+      h('div', { class: 'form-actions' }, [h('button', { type: 'button', class: 'btn btn-primary', onclick: confirmar }, 'Desbloquear'), h('button', { type: 'button', class: 'btn btn-secondary', onclick: fechar }, 'Cancelar')]),
+    ]));
+    document.body.appendChild(overlay);
+    setTimeout(() => area.focus(), 30);
+  });
+  return h('div', { class: 'orcamento-linha orc-falcao-bloqueada' }, [
+    h('div', { class: 'orc-cabecalho' }, [
+      h('div', { class: 'orc-nome' }, [h('p', { class: 'orcamento-fornecedor-fixo' }, 'Farmácia Falcão'), h('span', { class: 'orc-falcao-so' }, [Icon('lockClosed', { size: 12 }), ' Só minoxidil'])]),
+      desbloquear,
+    ]),
+  ]);
+}
 
 // CORRIGIDO 2026-08-27 (pedido explícito de André, via Hugo: "confunde
 // satisfeito e resolvido, por serem os dois verdes"): "Satisfeito" e
@@ -8242,21 +8299,22 @@ const outrosSchema = [
      que já existe no formulário principal.
 ================================================================= */
 const FORNECEDOR_PRESETS = {
-  manipulados: ['Farmácia Guarani', 'Farmácia Clérigos', 'Farmácia Serpa Pinto', 'Farmácia Falcão'],
+  manipulados: ['Farmácia Guarani', 'Farmácia Clérigos', 'Farmácia Serpa Pinto'],
   ortopedia: ['STOP Ortopedia', 'PRIM', 'Medi'],
   ervanaria: ['Ervanário Portuense'],
   veterinaria: ['Siloal'],
 };
 // Rótulos fixos e não editáveis para os blocos com fornecedor predefinido.
 const ORCAMENTO_LINHA_LABELS = {
-  manipulados: ['Farmácia Guarani', 'Farmácia Clérigos', 'Farmácia Serpa Pinto'],
+  // 4.º = «Outra Farmácia» (livre, como sempre); 5.º = Farmácia Falcão (2026-10-31 — só minoxidil).
+  manipulados: ['Farmácia Guarani', 'Farmácia Clérigos', 'Farmácia Serpa Pinto', '', 'Farmácia Falcão'],
   ortopedia: ['STOP Ortopedia', 'PRIM', 'Medi'],
   ervanaria: ['Ervanário Portuense'],
   veterinaria: ['Siloal'],
 };
 // Número total de blocos de orçamento por sector (fixos + o bloco livre).
 const ORCAMENTO_MAX_SLOTS = {
-  manipulados: 4,
+  manipulados: 5,
   ortopedia: 4,
   ervanaria: 2,
   veterinaria: 2,
@@ -8265,7 +8323,7 @@ function orcamentoMaxSlots(listKey) { return ORCAMENTO_MAX_SLOTS[listKey] || 0; 
 function orcamentoLinhaLabel(listKey, i) {
   const labels = ORCAMENTO_LINHA_LABELS[listKey];
   if (labels && labels[i - 1]) return labels[i - 1];
-  if (i === orcamentoMaxSlots(listKey)) return listKey === 'manipulados' ? 'Outra Farmácia' : 'Outro Fornecedor';
+  if (i === orcamentoMaxSlots(listKey) || (labels && i - 1 < labels.length && !labels[i - 1])) return listKey === 'manipulados' ? 'Outra Farmácia' : 'Outro Fornecedor';
   return `Orçamento ${i}`;
 }
 function categoriaTemOrcamentos(listKey) {
@@ -8414,10 +8472,22 @@ function buildOrcamentosPanel(listKey, draft, rerender, bloqueado) {
   if (!categoriaTemOrcamentos(listKey)) return null;
   const presets = FORNECEDOR_PRESETS[listKey];
   const rotulosFixos = ORCAMENTO_LINHA_LABELS[listKey];
+  // Farmácia Falcão (2026-10-31, Hugo: "fixa mas bloqueada até o manipulado mencionar minoxidil… e bloquear se não for
+  // apresentado motivo"): 5.º orçamento, mostrado logo a seguir à Serpa Pinto. Fica bloqueado enquanto o manipulado
+  // não falar em minoxidil (aceita erros de escrita); pode desbloquear-se, mas só com um motivo escrito (fica gravado).
+  const falcaoBloqueada = listKey === 'manipulados' && orcamentoFalcaoBloqueada(draft);
+  if (listKey === 'manipulados') setTimeout(() => {
+    const campo = document.querySelector('[data-campo="manipulado"]');
+    if (!campo || campo.dataset.falcaoOuvinte) return;
+    campo.dataset.falcaoOuvinte = '1';
+    campo.addEventListener('change', () => { if (orcamentoFalcaoBloqueada(draft) !== falcaoBloqueada) rerender(); });
+  }, 0);
   const max = orcamentoMaxSlots(listKey);
   const slots = [];
   for (let i = 1; i <= max; i++) slots.push(i);
+  if (listKey === 'manipulados' && max >= 5) { slots.splice(slots.indexOf(5), 1); slots.splice(3, 0, 5); } // Falcão antes de «Outra Farmácia»
   const linhas = slots.map(i => {
+    if (listKey === 'manipulados' && i === 5 && falcaoBloqueada) return orcamentoLinhaFalcaoBloqueada(draft, rerender, bloqueado);
     const fCampo = `orcamento${i}Fornecedor`, vCampo = `orcamento${i}Valor`, pCampo = `orcamento${i}Prazo`, oCampo = `orcamento${i}Obs`;
     const pedidoCampo = orcamentoPedidoField(i);
     const aprovado = parseInt(draft.orcamentoAprovado, 10) === i;
@@ -8434,6 +8504,9 @@ function buildOrcamentosPanel(listKey, draft, rerender, bloqueado) {
     let fornInput;
     if (nomeFixo) {
       fornInput = h('p', { class: 'orcamento-fornecedor-fixo' }, nomeFixo);
+      if (listKey === 'manipulados' && i === 5 && String(draft.orcamento5Motivo || '').trim() && !manipuladoMencionaMinoxidil(draft.manipulado)) {
+        fornInput = h('div', {}, [fornInput, h('p', { class: 'orc-nota-falcao' }, `Desbloqueada — motivo: ${draft.orcamento5Motivo}`)]);
+      }
     } else if (presets.length) {
       const listId = 'dl-orc-' + i + '-' + (__datalistCounter++);
       const dl = h('datalist', { id: listId }, presets.map(p => h('option', { value: p }, p)));
@@ -8450,14 +8523,9 @@ function buildOrcamentosPanel(listKey, draft, rerender, bloqueado) {
         const nota = h('p', { class: 'orc-nota-falcao' });
         const pintarNota = () => {
           nota.innerHTML = '';
-          const ehMinox = manipuladoEhMinoxidilOral(draft.manipulado);
+          const ehMinox = manipuladoMencionaMinoxidil(draft.manipulado);
           if (fornecedorEhFalcao(inp.value) && !ehMinox) { nota.className = 'orc-nota-falcao erro'; nota.textContent = `⚠️ ${AVISO_FALCAO}`; }
-          else if (ehMinox && !inp.value.trim() && !bloqueado) {
-            nota.className = 'orc-nota-falcao';
-            const usar = h('button', { type: 'button' }, 'Farmácia Falcão');
-            usar.addEventListener('click', () => { inp.value = 'Farmácia Falcão'; draft[fCampo] = inp.value; if (aprovado) draft.fornecedor = inp.value; pintarNota(); });
-            nota.append('💡 Minoxidil oral: também pode pedir à ', usar, '.');
-          }
+          else nota.className = 'orc-nota-falcao';
         };
         inp.addEventListener('input', pintarNota);
         pintarNota();
@@ -19130,7 +19198,7 @@ function buildOrtopediaPage(container, goTo) {
       showForm = false;
       // Aviso informativo de Pedido Direto — só na criação. A Ortopedia não
       // usa o ficheiro Excel de rotas, por isso mostra-se só a frase geral.
-      if (listKey === 'manipulados' && fornecedorEhFalcao(draft.fornecedor) && !manipuladoEhMinoxidilOral(draft.manipulado)) showToast(`Atenção: ${AVISO_FALCAO}`, 'error');
+      if (listKey === 'manipulados' && fornecedorEhFalcao(draft.fornecedor) && !manipuladoMencionaMinoxidil(draft.manipulado) && !String(draft.orcamento5Motivo || '').trim()) showToast(`Atenção: ${AVISO_FALCAO}`, 'error');
       if (!editingId && draft.estado === 'Pedido' && String(draft.fornecedor || '').trim()) {
         showToast('Atenção: Registo guardado como PEDIDO DIRETO (sem pedido de orçamento prévio).', 'info');
       }
@@ -19550,7 +19618,7 @@ function buildCategoryPage(container, title, icon, subtitle, schema, listKey, go
       // a QUALQUER categoria de Pedidos: basta ter Farmácia/Fornecedor
       // preenchido e o Estado ter ficado "Pedido". (Isto é só um toast, não
       // um modal — nunca empilha por cima da pergunta da Ficha de Cliente.)
-      if (listKey === 'manipulados' && fornecedorEhFalcao(draft.fornecedor) && !manipuladoEhMinoxidilOral(draft.manipulado)) showToast(`Atenção: ${AVISO_FALCAO}`, 'error');
+      if (listKey === 'manipulados' && fornecedorEhFalcao(draft.fornecedor) && !manipuladoMencionaMinoxidil(draft.manipulado) && !String(draft.orcamento5Motivo || '').trim()) showToast(`Atenção: ${AVISO_FALCAO}`, 'error');
       if (!editingId && draft.estado === 'Pedido' && String(draft.fornecedor || '').trim()) {
         let aviso = 'Atenção: Registo guardado como PEDIDO DIRETO (sem pedido de orçamento prévio).';
         const ehGuaraniAviso = listKey === 'manipulados' && String(draft.fornecedor).trim().toLowerCase().includes('guarani');
@@ -33632,8 +33700,10 @@ function ecraTvConstruir() {
       gruposTrabalho.length > 1 ? h('p', { class: 'tv-sub tv-sub-grupo' }, [g.rotulo, h('span', {}, ` · ${g.pessoas.length}`)]) : null,
       h('div', { class: 'tv-pessoas' + (trabalham.length > 6 ? ' tv-pessoas-compacto' : ''), 'data-paginar': 'trabalham-' + g.chave, 'data-prioridade': '2' }, g.pessoas.map(pessoa)),
     ]).flat().filter(Boolean) : [ecraTvVazio('Ninguém em turno neste momento.')]),
-    h('p', { class: 'tv-sub', style: 'margin-top:18px;' }, 'A seguir entram'),
-    entram.length ? h('div', { class: 'tv-pessoas tv-pessoas-entram', 'data-paginar': 'entram', 'data-prioridade': '1' }, gruposEntram.map(linhaEntrada)) : ecraTvVazio('Já entraram todos hoje.'),
+    // 2026-10-31 (Hugo: "perda de espaço… «já entraram todos hoje», informação desnecessária"): sem ninguém por entrar, a
+    // secção «A seguir entram» desaparece.
+    entram.length ? h('p', { class: 'tv-sub', style: 'margin-top:18px;' }, 'A seguir entram') : null,
+    entram.length ? h('div', { class: 'tv-pessoas tv-pessoas-entram', 'data-paginar': 'entram', 'data-prioridade': '1' }, gruposEntram.map(linhaEntrada)) : null,
     sairam.length ? h('p', { class: 'tv-sub tv-sub-sairam', style: 'margin-top:18px;' }, 'Já saíram') : null,
     sairam.length ? h('div', { class: 'tv-pessoas tv-pessoas-sairam', 'data-paginar': 'sairam', 'data-prioridade': '0' }, sairam.map(p => linhaPessoa(p, `saiu às ${p.saida}`))) : null,
     // Indisponibilidades e folgas saíram (2026-10-31, Hugo: "se não está a trabalhar nem entra mais tarde é porque está de
@@ -33682,7 +33752,10 @@ function ecraTvConstruir() {
     ECRA_TV.idxValidade = ECRA_TV.idxValidade % validades.length;
     const v = validades[ECRA_TV.idxValidade];
     const urg = validadeUrgencia(v.validade);
-    const foto = h('div', { class: 'tv-produto-foto' }, h('span', { class: 'tv-produto-inicial' }, String(v.produto || v.cnp || '?').trim().charAt(0).toUpperCase()));
+    // 2026-10-31 (Hugo: "quando produto sem imagem, coloca imagem genérica"): caixa de medicamento com a cruz verde.
+    const generica = h('span', { class: 'tv-produto-inicial tv-produto-generica', 'aria-hidden': 'true' });
+    generica.innerHTML = '<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg"><rect x="9" y="15" width="46" height="36" rx="5" fill="#eef3f7" stroke="#c7d6df" stroke-width="2"/><path d="M9 24h46" stroke="#c7d6df" stroke-width="2"/><rect x="15" y="18" width="14" height="3" rx="1.5" fill="#c7d6df"/><path d="M29 29h6v6h6v6h-6v6h-6v-6h-6v-6h6z" fill="#16a34a"/><rect x="40" y="44" width="16" height="7" rx="3.5" transform="rotate(-28 48 47.5)" fill="#60a5fa"/><rect x="40" y="44" width="8" height="7" rx="3.5" transform="rotate(-28 48 47.5)" fill="#f87171"/></svg>';
+    const foto = h('div', { class: 'tv-produto-foto' }, generica);
     ecraTvImagemDe(v, foto);
     const proximos = validades.filter((_, i) => i !== ECRA_TV.idxValidade).slice(0, 12);
     painelValidade = ecraTvPainel('hourglass', 'Produtos a escoar', `${ECRA_TV.idxValidade + 1} / ${validades.length}`, [
@@ -34177,8 +34250,13 @@ function ecraTvAtualizarAviso(rodape) {
     if (meta) rodape.appendChild(h('span', { class: 'tv-aviso-meta' }, meta));
     rodape.appendChild(janela);
     requestAnimationFrame(() => {
-      if (fita.scrollWidth <= janela.clientWidth) return;
-      fita.textContent = conteudo + '  •  ' + conteudo + '  •  ';
+      // 2026-10-31 (Hugo: "mensagem não está a correr… mesmo assim devia correr"): o rodapé passa SEMPRE da direita para
+      // a esquerda, mesmo quando o texto cabe (repete-se até encher a largura). Também ajuda a proteger o ecrã OLED.
+      const unidade = conteudo + '  •  ';
+      fita.textContent = unidade;
+      const larg = Math.max(1, fita.scrollWidth), vezes = Math.max(1, Math.ceil(janela.clientWidth / larg));
+      const bloco = unidade.repeat(vezes);
+      fita.textContent = bloco + bloco;
       const px = fita.scrollWidth / 2;
       fita.style.setProperty('--tv-fita-dist', `-${px}px`);
       fita.style.animationDuration = `${Math.max(14, Math.round(px / 80))}s`; // ~80 px por segundo — dá para ler
