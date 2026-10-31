@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-31 19:15" />
+<meta name="siga-versao" content="2026-10-31 20:00" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -13185,9 +13185,10 @@ function criarClienteServidorLocal(base) {
     ouvintesSessao.forEach((fn) => { try { fn(mudouPessoa); } catch (e) { /* ignora */ } });
   }
 
-  async function pedidoBruto(caminho, corpo, metodo) {
+  async function pedidoBruto(caminho, corpo, metodo, tokenForcado) {
     const cab = { 'Content-Type': 'application/json', 'X-Siga-Farmacia': S.farmacia };
-    if (S.token) cab.Authorization = S.token;
+    const tk = tokenForcado !== undefined ? tokenForcado : S.token;
+    if (tk) cab.Authorization = tk;
     // 2026-10-18: nenhum pedido fica pendurado para sempre (um só pedido preso deixava o login em "A preparar a
     // sessão…" indefinidamente) — ao fim de 60 s desiste, como numa falha de rede.
     const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
@@ -13256,6 +13257,42 @@ function criarClienteServidorLocal(base) {
     } catch (e) { /* tenta outra vez mais tarde */ }
   }
 
+  // Posto sem sessão pessoal (2026-10-31, Hugo: "os botões para chamar e mensagem devem dar quando aparece a janela de
+  // login"): sem ninguém com sessão, o posto não tinha ligação ao servidor — não aparecia nas mensagens rápidas nem
+  // conseguia chamar. Um posto ativado pela Direção guarda uma chave própria e liga-se com a conta técnica «Postos da
+  // farmácia», que SÓ serve para os sinais e a presença do «Chamar colega» e das mensagens (pb_hooks/siga_posto.pb.js).
+  // Nunca é usada para ler ou gravar dados.
+  const POSTO_CHAVE_LS = 'siga_posto_chave';
+  function postoChave() { try { return localStorage.getItem(POSTO_CHAVE_LS) || ''; } catch (e) { return ''; } }
+  let postoAEntrar = null;
+  async function garantirTokenPosto() {
+    if (S.token) return true;
+    if (S.tokenPosto && Date.now() - (S.tokenPostoEm || 0) < 20 * 3600 * 1000) return true;
+    const chave = postoChave();
+    let permitido = false;
+    try { permitido = !!(window.__sigaPostoPermitido && window.__sigaPostoPermitido()); } catch (e) { permitido = false; }
+    if (!chave || !permitido) return false;
+    if (!postoAEntrar) {
+      postoAEntrar = pedidoBruto('/api/siga/posto/sessao', { chave }, 'POST', null).then(({ json }) => {
+        if (json && json.ok && json.token) { S.tokenPosto = json.token; S.tokenPostoEm = Date.now(); if (!S.token && Array.isArray(json.farmacias) && json.farmacias.length) S.farmacia = String(json.farmacias[0]); return true; }
+        if (json && json.revogada) { try { localStorage.removeItem(POSTO_CHAVE_LS); } catch (e) { /* ignora */ } }
+        return false;
+      }).catch(() => false).finally(() => { postoAEntrar = null; });
+    }
+    return postoAEntrar;
+  }
+  function tokenRT() { return S.token || S.tokenPosto || null; }
+  function temPessoa() { return !!(S.token || (S.credenciais && S.credenciais())); }
+  // Pedidos do tempo real (sinal/presença): com sessão de alguém, como sempre; sem ninguém, com a conta do posto.
+  async function pedidoTR(caminho, corpo) {
+    if (temPessoa() || !postoChave()) return pedido(caminho, corpo);
+    if (!(await garantirTokenPosto())) return { status: 401, json: { ok: false } };
+    if (S.token) return pedido(caminho, corpo);
+    let r = await pedidoBruto(caminho, corpo, 'POST', S.tokenPosto);
+    if (r.status === 401 || r.status === 403) { S.tokenPosto = null; if (await garantirTokenPosto()) r = await pedidoBruto(caminho, corpo, 'POST', S.tokenPosto); }
+    return r;
+  }
+  function ligarComoPosto() { if (!S.token && !RT.fonte) garantirTokenPosto().then((ok) => { if (ok && !S.token) ligar(); }); }
   const SEM_SESSAO = { message: 'Sessão necessária — inicia sessão para ver e gravar dados.', code: 'SEM_SESSAO', details: null, hint: null };
   // Pedido autenticado; com sessão expirada volta a entrar uma vez e repete.
   async function pedido(caminho, corpo) {
@@ -13351,8 +13388,8 @@ function criarClienteServidorLocal(base) {
   function estadoCanais(estado) { RT.canais.forEach((c) => c.mudarEstado(estado)); }
 
   function ligar() {
-    if (RT.fonte || !S.token || typeof EventSource === 'undefined') return;
-    RT.pessoa = S.utilizadorId;
+    if (RT.fonte || !tokenRT() || typeof EventSource === 'undefined') return;
+    RT.pessoa = S.token ? S.utilizadorId : 'posto';
     const fonte = new EventSource(BASE + '/api/realtime');
     RT.fonte = fonte;
     fonte.addEventListener('PB_CONNECT', (ev) => {
@@ -13388,7 +13425,7 @@ function criarClienteServidorLocal(base) {
   }
   async function subscrever() {
     RT.agendado = null;
-    if (!S.token) return;
+    if (!S.token && !(await garantirTokenPosto())) return;
     if (!RT.fonte) { ligar(); return; }
     if (!RT.clienteId) return;
     const lista = topicosDeTodos();
@@ -13396,8 +13433,12 @@ function criarClienteServidorLocal(base) {
     const assinatura = lista.slice().sort().join('|');
     if (assinatura === RT.ultimoSub) { estadoCanais('SUBSCRIBED'); return; }
     try {
-      let r = await pedidoBruto('/api/realtime', { clientId: RT.clienteId, subscriptions: lista });
-      if (r.status === 401 || r.status === 403) { if (await reentrar()) { desligar(); ligar(); } return; }
+      let r = await pedidoBruto('/api/realtime', { clientId: RT.clienteId, subscriptions: lista }, 'POST', tokenRT());
+      if (r.status === 401 || r.status === 403) {
+        const ok = temPessoa() ? await reentrar() : (S.tokenPosto = null, await garantirTokenPosto());
+        if (ok) { desligar(); ligar(); }
+        return;
+      }
       if (r.status >= 400) { estadoCanais('CHANNEL_ERROR'); return; }
       RT.ultimoSub = assinatura;
       estadoCanais('SUBSCRIBED');
@@ -13437,6 +13478,7 @@ function criarClienteServidorLocal(base) {
       this.aoMudarEstado = typeof fn === 'function' ? fn : null;
       RT.canais.add(this);
       if (S.token && !RT.fonte) ligar();
+      else if (!S.token && !RT.fonte) ligarComoPosto();
       agendarSubscricao();
       return this;
     }
@@ -13476,8 +13518,9 @@ function criarClienteServidorLocal(base) {
     }
     async lerPresenca() {
       try {
-        if (!S.token) return;
-        const resp = await fetch(`${BASE}/api/siga/presenca?canal=${encodeURIComponent(this.nome)}`, { headers: { Authorization: S.token, 'X-Siga-Farmacia': S.farmacia }, cache: 'no-store' });
+        const tk = tokenRT();
+        if (!tk) return;
+        const resp = await fetch(`${BASE}/api/siga/presenca?canal=${encodeURIComponent(this.nome)}`, { headers: { Authorization: tk, 'X-Siga-Farmacia': S.farmacia }, cache: 'no-store' });
         const j = await resp.json();
         if (j && j.ok) this.receber(topico('presenca', this.nome), { tipo: 'sync', estado: j.estado || {} });
       } catch (e) { /* o próximo "sync" corrige */ }
@@ -13485,7 +13528,7 @@ function criarClienteServidorLocal(base) {
     async enviarPresenca(meta) {
       if (!RT.clienteId) return 'error';
       try {
-        const r = await pedido('/api/siga/presenca', { clienteId: RT.clienteId, canal: this.nome, chave: this.chavePresenca, meta });
+        const r = await pedidoTR('/api/siga/presenca', { clienteId: RT.clienteId, canal: this.nome, chave: this.chavePresenca, meta });
         if (r.json && r.json.ok && r.json.estado) this.receber(topico('presenca', this.nome), { tipo: 'sync', estado: r.json.estado });
         return r.json && r.json.ok ? 'ok' : 'error';
       } catch (e) { return 'error'; }
@@ -13503,7 +13546,7 @@ function criarClienteServidorLocal(base) {
     async send(m) {
       if (!m || m.type !== 'broadcast') return 'error';
       try {
-        const r = await pedido('/api/siga/sinal', { clienteId: RT.clienteId || '', canal: this.nome, evento: m.event, payload: m.payload });
+        const r = await pedidoTR('/api/siga/sinal', { clienteId: RT.clienteId || '', canal: this.nome, evento: m.event, payload: m.payload });
         return r.json && r.json.ok ? 'ok' : 'error';
       } catch (e) { return 'error'; }
     }
@@ -13529,6 +13572,22 @@ function criarClienteServidorLocal(base) {
     temSessao: () => !!S.token,
     podeLer: () => !!S.token || !!(S.credenciais && S.credenciais()) || ecraEmUso(),
     // Ecrã do Backoffice (2026-10-30)
+    postoTemChave: () => !!postoChave(),
+    async postoAtivar(nome) {
+      const r = await pedido('/api/siga/posto/emparelhar', { nome: nome || 'Posto' });
+      const j = r && r.json;
+      if (j && j.ok && j.chave) { try { localStorage.setItem(POSTO_CHAVE_LS, j.chave); } catch (e) { return { ok: false, erro: 'Este browser não deixou guardar a chave.' }; } return { ok: true }; }
+      return { ok: false, erro: (j && (j.erro || (j.error && j.error.message))) || (r && r.status === 404 ? 'O servidor da farmácia ainda não foi atualizado.' : 'Não foi possível ativar.') };
+    },
+    async postoDesativar() {
+      const chave = postoChave();
+      try { if (chave) await pedidoBruto('/api/siga/posto/desligar', { chave }, 'POST', null); } catch (e) { /* ignora */ }
+      try { localStorage.removeItem(POSTO_CHAVE_LS); } catch (e) { /* ignora */ }
+      S.tokenPosto = null;
+      if (!S.token) desligar();
+    },
+    postoLigar() { try { ligarComoPosto(); } catch (e) { /* ignora */ } },
+    postoLigado: () => !!(RT.fonte && RT.clienteId),
     ecraTemChave: () => !!ecraChave(),
     ecraEmUso: () => ecraEmUso(),
     async ecraAtivar(nome) {
@@ -13544,7 +13603,7 @@ function criarClienteServidorLocal(base) {
       try { localStorage.removeItem(ECRA_CHAVE_LS); } catch (e) { /* ignora */ }
     },
     guardarSessaoNoAparelho(sim) { S.guardarNoAparelho = !!sim; gravarPosto(); },
-    terminarSessao() { S.token = null; S.utilizadorId = null; S.guardarNoAparelho = false; gravarPosto(); desligar(); },
+    terminarSessao() { S.token = null; S.utilizadorId = null; S.guardarNoAparelho = false; gravarPosto(); desligar(); setTimeout(ligarComoPosto, 400); },
     farmacia: () => S.farmacia,
     // Dados que não podem estar no index.html público (2026-10-17) — ver pb_hooks/siga/privado.js.
     privado: {
@@ -75797,7 +75856,7 @@ function campainhaConfig() {
   const receber = c.receberNotif !== undefined ? !!c.receberNotif : tipo === 'escritorio';
   const tempos = [0, 10, 30, 60, 120];
   const notifTempo = tempos.indexOf(Number(c.notifTempo)) >= 0 ? Number(c.notifTempo) : 30;
-  return { nome: String(c.nome || '').trim().slice(0, 30), atendimento, chamar: atendimento && c.chamar !== false, tocar: !!c.tocar, notificar: podeReceberNotif && receber, podeReceberNotif, receberNotif: receber, notifTempo, pipFixo: c.pipFixo === true, mensagens: c.mensagens !== false, somBackoffice: tipo === 'escritorio' && c.somBackoffice !== false, zona: c.zona === 'gabinete' ? 'gabinete' : 'backoffice', recebeDirecao: c.recebeDirecao === true, backofficeMarcado: tipo === 'escritorio' && (() => { try { return localStorage.getItem(POSTO_TIPO_CHAVE) === 'escritorio'; } catch (e) { return false; } })() };
+  return { nome: String(c.nome || '').trim().slice(0, 30), atendimento, chamar: atendimento && c.chamar !== false, tocar: !!c.tocar, notificar: podeReceberNotif && receber, podeReceberNotif, receberNotif: receber, notifTempo, pipFixo: c.pipFixo === true, mensagens: c.mensagens !== false, somBackoffice: tipo === 'escritorio' && c.somBackoffice !== false, zona: c.zona === 'gabinete' ? 'gabinete' : 'backoffice', recebeDirecao: c.recebeDirecao === true, backofficeMarcado: tipo === 'escritorio' && !!String(c.nome || '').trim() };
 }
 function campainhaGuardar(c) { try { localStorage.setItem(CAMPAINHA_CHAVE, JSON.stringify(c)); } catch (e) { /* ignora */ } }
 function campainhaDeveTocar() { return campainhaConfig().tocar || !!(typeof ECRA_TV !== 'undefined' && ECRA_TV.overlay && ECRA_TV.overlay.isConnected); }
@@ -76131,7 +76190,40 @@ function postosMsgLigar() {
   } catch (e) { POSTOS_MSG.canal = null; }
 }
 // Entra/sai do canal e anuncia-se (nome/tipo) conforme o que este aparelho é agora. Chamado a cada render e a cada 20 s.
+// 2026-10-31: este computador é um posto da farmácia (atendimento, ou backoffice/gabinete com nome dado pela Direção),
+// com a palavra-passe de acesso introduzida? Só esses usam a ligação técnica do posto quando ninguém tem sessão.
+function postoFarmaciaDesteComputador() {
+  try {
+    if (!acessoGeralValidado() || ehDispositivoMobileOuTablet() || postosMsgTvAqui()) return false;
+    const cfg = campainhaConfig();
+    return postoTipoDesteComputador() === 'atendimento' || !!cfg.backofficeMarcado;
+  } catch (e) { return false; }
+}
+window.__sigaPostoPermitido = postoFarmaciaDesteComputador;
+function postoSouDirecao() {
+  try { return !!activeUser && (isAdministrador() || ((typeof escalaUsuariosDirecao === 'function') && escalaUsuariosDirecao().some(u => String(u.id) === String(activeUser.id)))); } catch (e) { return false; }
+}
+// Ativa sozinho o posto quando alguém da Direção entra nele (uma vez); sem sessão, liga-se como posto.
+let POSTO_A_ATIVAR = false;
+function postoGarantirLigacao() {
+  try {
+    if (!sb || !sb.postoTemChave || !postoFarmaciaDesteComputador()) return;
+    if (!sb.postoTemChave()) {
+      if (POSTO_A_ATIVAR || !postoSouDirecao()) return;
+      POSTO_A_ATIVAR = true;
+      const cfg = campainhaConfig();
+      sb.postoAtivar(cfg.nome || (postoTipoDesteComputador() === 'atendimento' ? 'Posto de atendimento' : 'Backoffice')).then(r => {
+        POSTO_A_ATIVAR = false;
+        if (r.ok) { showToast('Este posto ficou ativado: chamar colega e mensagens rápidas funcionam mesmo sem ninguém com sessão.', 'success', { duracao: 6000 }); try { render(); } catch (e) { /* ignora */ } }
+        else POSTO_A_ATIVAR = 'falhou';
+      });
+      return;
+    }
+    if (!activeUser) sb.postoLigar();
+  } catch (e) { /* ignora */ }
+}
 function postosMsgSincronizar() {
+  postoGarantirLigacao();
   const eu = postosMsgIdentidade();
   POSTOS_MSG.meu = eu;
   if (!eu) {
@@ -76509,6 +76601,37 @@ function buildCartaoCampainha(podeMudar) {
       })(),
     ]) : null,
     cfg.somBackoffice !== undefined && postoTipoDesteComputador() === 'escritorio' ? h('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;' }, [h('span', { style: 'font-size:13px;' }, 'Som curto quando alguém chama (sem o aviso grande)'), interruptor('somBackoffice', 'Som curto quando alguém chama')]) : null,
+    (postoFarmaciaDesteComputador() && sb && sb.postoTemChave) ? (() => {
+      const ativo = sb.postoTemChave();
+      const linha = h('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;' }, [
+        h('span', { style: 'font-size:13px;flex:1 1 260px;' }, ativo
+          ? [h('strong', {}, '✅ Posto ativado'), ' — chamar colega e mensagens rápidas funcionam mesmo sem ninguém com sessão.']
+          : [h('strong', {}, '⚠️ Posto ainda não ativado'), ' — sem ninguém com sessão, não chama nem aparece nas mensagens. Ativa-se sozinho quando alguém da Direção entra aqui.']),
+      ]);
+      if (podeMudar) {
+        const b = h('button', { type: 'button', class: 'btn btn-secondary btn-sm' }, ativo ? 'Desativar' : 'Ativar agora');
+        b.addEventListener('click', async () => {
+          b.disabled = true;
+          if (ativo) { await sb.postoDesativar(); showToast('Posto desativado.', 'success'); }
+          else { const r = await sb.postoAtivar(cfg.nome || 'Posto'); showToast(r.ok ? 'Posto ativado.' : `Não foi possível ativar: ${r.erro}`, r.ok ? 'success' : 'error'); }
+          render();
+        });
+        linha.appendChild(b);
+      }
+      return linha;
+    })() : null,
+    (() => {
+      // 2026-10-31: diagnóstico rápido das mensagens/chamar neste computador (para perceber porque um posto não aparece).
+      let eu = null, ligado = false, vistos = 0, motivo = '';
+      try { eu = postosMsgIdentidade(); ligado = !!(sb && sb.postoLigado && sb.postoLigado()); vistos = postosMsgDestinos().length; } catch (e) { /* ignora */ }
+      if (!acessoGeralValidado()) motivo = 'sem a palavra-passe de acesso';
+      else if (ehDispositivoMobileOuTablet()) motivo = 'este aparelho é visto como telemóvel/tablet (ecrã tátil estreito)';
+      else if (!eu) motivo = cfg.atendimento ? 'mensagens desligadas neste posto' : 'não é posto de atendimento nem tem nome de backoffice';
+      const txt = eu
+        ? `Neste computador: ${POSTOS_MSG_TIPO[eu.tipo] || eu.tipo}${eu.nome ? ` «${eu.nome}»` : ' (sem nome)'} · ${ligado ? '🟢 ligado ao servidor' : '🔴 sem ligação ao servidor'} · vê ${vistos} outro${vistos === 1 ? '' : 's'} posto${vistos === 1 ? '' : 's'}`
+        : `Neste computador: fora das mensagens — ${motivo}.`;
+      return h('p', { class: 'field-helper-text', style: 'margin:0;font-size:12px;' }, txt);
+    })(),
     h('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;' }, [h('span', { style: 'font-size:13px;' }, 'Toca a campainha quando alguém chama'), interruptor('tocar', 'Toca a campainha')]),
     h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;' }, [testar, pedirNotif].filter(Boolean)),
   ]);
