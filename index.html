@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-31 13:25" />
+<meta name="siga-versao" content="2026-10-31 13:55" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -5847,6 +5847,17 @@
   .tv-pessoa-saiu.tv-ponto-falta,.tv-pessoa-saiu.tv-ponto-lembrar{opacity:.8;}
   .tv-sub-sairam{color:#64748b !important;}
   /* 2026-10-31: cada parte (horário, pausa, picagens) nunca se parte a meio — passa inteira para a linha de baixo. */
+  .tv-titulo-n{display:inline-flex;align-items:center;justify-content:center;min-width:2.1vw;height:2.1vw;margin-left:.7vw;padding:0 .5vw;border-radius:999px;background:#16a34a;color:#fff;font-size:1.25vw;font-weight:900;vertical-align:middle;}
+  .tv-sub-grupo{margin-top:.5vw !important;display:flex;align-items:baseline;gap:.2vw;}
+  .tv-sub-grupo span{color:#4ade80;font-weight:800;}
+  .tv-pessoas-compacto .tv-pessoa-trabalha,.tv-pessoas-compacto .tv-pessoa-pausa{padding:.4vw .8vw;}
+  .tv-pessoas-compacto .tv-pessoa-nome{font-size:1.25vw !important;}
+  .tv-pessoas-compacto .tv-pessoa-picagem{font-size:.8vw;}
+  .tv-entra-grupo{padding:.32vw .8vw;}
+  .tv-entra-grupo .tv-pessoa-nome{white-space:normal;font-size:1.02vw;line-height:1.2;}
+  .tv-entra-grupo .tv-pessoa-hora{font-size:.95vw;}
+  .tv-entra-grupo.tv-pessoa-a-entrar .tv-pessoa-nome{font-size:1.15vw;}
+  .tv-pessoas-entram{gap:.3vw;}
   .tv-pessoa-picagem{display:flex;flex-wrap:wrap;column-gap:.4vw;}
   .tv-pp{white-space:nowrap;}
   .tv-pessoa-picagem > span{white-space:nowrap;}
@@ -33247,7 +33258,8 @@ function ecraTvPaginar(raiz) {
     const cap = listas.map(l => l.children.length);
     let guarda = 200;
     while (!cabe() && guarda-- > 0) {
-      let i = -1; cap.forEach((c, k) => { if (c > 1 && (i < 0 || c > cap[i])) i = k; });
+      const prio = listas.map(l => Number(l.dataset.prioridade || 0));
+      let i = -1; cap.forEach((c, k) => { if (c > 1 && (i < 0 || prio[k] < prio[i] || (prio[k] === prio[i] && c > cap[i]))) i = k; });
       if (i < 0) break;
       cap[i] -= 1; listas[i].children[cap[i]].style.display = 'none';
     }
@@ -33369,16 +33381,41 @@ function ecraTvConstruir() {
   trabalham.sort((a, b) => pesoAviso(a) - pesoAviso(b)); sairam.sort((a, b) => pesoAviso(a) - pesoAviso(b));
   const pessoa = (p) => linhaPessoa(p, p.estado === 'pausa' ? `em pausa até ${p.pausaFim}` : `até ${p.saida}`);
   const semEntrada = trabalham.filter(p => ecraTvPontoLinha(p, agoraMin).nivel === 'falta').length;
+  const grupoDaPessoa = (p) => {
+    const vaga = (STATE.escalaVagas || []).find(v => v.codigo === p.codigo);
+    const g = (vaga && vaga.grupo) || (/^B\d+$/i.test(String(p.codigo || '')) ? 'B' : 'A');
+    return g === 'B' ? 'backoffice' : g === 'P' ? 'servicos' : 'atendimento';
+  };
+  const gruposTrabalho = [['atendimento', 'Atendimento'], ['backoffice', 'Backoffice'], ['servicos', 'Serviços']]
+    .map(([chave, rotulo]) => ({ chave, rotulo, pessoas: trabalham.filter(p => grupoDaPessoa(p) === chave) })).filter(g => g.pessoas.length);
+  // 2026-10-31 (Hugo: "deveria estar tudo visível de relance… quem vai entrar pode ficar ainda mais reduzido"): quem
+  // entra fica numa linha por hora («14:00 · André, Hugo, Mariana»), para quem está a trabalhar caber sempre todo.
+  const gruposEntram = [];
+  entram.slice().sort((a, b) => a.ini - b.ini).forEach(p => { let g = gruposEntram.find(x => x.ini === p.ini); if (!g) { g = { ini: p.ini, entrada: p.entrada, pessoas: [] }; gruposEntram.push(g); } g.pessoas.push(p); });
+  const linhaEntrada = (g) => {
+    const falta = g.ini - agoraMin, aEntrar = falta >= 0 && falta <= ECRA_TV_AVISO_ENTRADA_MIN, varios = g.pessoas.length > 1;
+    return h('div', { class: 'tv-pessoa tv-pessoa-entra tv-entra-grupo' + (aEntrar ? ' tv-pessoa-a-entrar' : '') }, [
+      h('span', { class: 'tv-pessoa-ponto', 'aria-hidden': 'true' }),
+      h('span', { class: 'tv-pessoa-nome' }, g.pessoas.map(p => ecraTvNomeCurto(p.nome)).join(', ')),
+      h('span', { class: 'tv-pessoa-hora' }, aEntrar ? `entra${varios ? 'm' : ''} ${falta <= 0 ? 'agora' : `daqui a ${falta} min`}` : g.entrada),
+    ]);
+  };
   const corpoEquipa = eq.semHorario ? [ecraTvVazio('O horário desta semana ainda não está publicado.')] : [
-    h('p', { class: 'tv-sub' }, [h('strong', {}, String(trabalham.length)), ` a trabalhar agora`]),
-    trabalham.length ? h('div', { class: 'tv-pessoas', 'data-paginar': 'trabalham' }, trabalham.map(pessoa)) : ecraTvVazio('Ninguém em turno neste momento.'),
+    // 2026-10-31 (Hugo: "separa entre pessoal do quadro que faz atendimento e backoffice"): pela posição do horário —
+    // Grupo B (vagas B1, B2…) = Backoffice; Prestadores = Serviços; o resto = Atendimento. O total vai para o título.
+    ...(trabalham.length ? gruposTrabalho.map(g => [
+      gruposTrabalho.length > 1 ? h('p', { class: 'tv-sub tv-sub-grupo' }, [g.rotulo, h('span', {}, ` · ${g.pessoas.length}`)]) : null,
+      h('div', { class: 'tv-pessoas' + (trabalham.length > 6 ? ' tv-pessoas-compacto' : ''), 'data-paginar': 'trabalham-' + g.chave, 'data-prioridade': '2' }, g.pessoas.map(pessoa)),
+    ]).flat().filter(Boolean) : [ecraTvVazio('Ninguém em turno neste momento.')]),
     h('p', { class: 'tv-sub', style: 'margin-top:18px;' }, 'A seguir entram'),
-    entram.length ? h('div', { class: 'tv-pessoas', 'data-paginar': 'entram' }, entram.map(p => linhaPessoa(p, `entra às ${p.entrada}`))) : ecraTvVazio('Já entraram todos hoje.'),
+    entram.length ? h('div', { class: 'tv-pessoas tv-pessoas-entram', 'data-paginar': 'entram', 'data-prioridade': '1' }, gruposEntram.map(linhaEntrada)) : ecraTvVazio('Já entraram todos hoje.'),
     sairam.length ? h('p', { class: 'tv-sub tv-sub-sairam', style: 'margin-top:18px;' }, 'Já saíram') : null,
-    sairam.length ? h('div', { class: 'tv-pessoas tv-pessoas-sairam', 'data-paginar': 'sairam' }, sairam.map(p => linhaPessoa(p, `saiu às ${p.saida}`))) : null,
-    eq.ausentes.length ? h('div', { class: 'tv-ausentes' }, eq.ausentes.map(a => h('p', {}, [h('strong', {}, `${a.rotulo}: `), a.nomes.join(', ')]))) : null,
+    sairam.length ? h('div', { class: 'tv-pessoas tv-pessoas-sairam', 'data-paginar': 'sairam', 'data-prioridade': '0' }, sairam.map(p => linhaPessoa(p, `saiu às ${p.saida}`))) : null,
+    // Indisponibilidades e folgas saíram (2026-10-31, Hugo: "se não está a trabalhar nem entra mais tarde é porque está de
+    // folga ou férias").
   ].filter(Boolean);
-  const painelEquipa = ecraTvPainel('users', 'Equipa agora', semEntrada ? `⚠ ${semEntrada} sem picar` : '', corpoEquipa, 'tv-equipa');
+  const painelEquipa = ecraTvPainel('users', ['Equipa agora', trabalham.length ? h('span', { class: 'tv-titulo-n', title: 'A trabalhar agora' }, String(trabalham.length)) : null].filter(Boolean),
+    semEntrada ? `⚠ ${semEntrada} sem picar` : '', corpoEquipa, 'tv-equipa');
   // ---- Tarefas ----
   const ativas = escalaTarefasAtivasAgora();
   const linhasTarefa = [];
@@ -33833,6 +33870,8 @@ function ecraTvPausarAnuncio() {
 //  - qualquer troca de texto faz-se com um esbatimento curto, nunca um salto.
 // A TV vai buscar o aviso de 30 em 30 s (o aviso não chega por tempo real e a TV nunca "volta ao separador").
 function ecraTvResumoDoDia() {
+  // 2026-10-31 (Hugo: "neste momento não há aviso à equipa, o que mostra então?"): sem aviso, o rodapé mostra o que vem a
+  // seguir — serviços que faltam, a próxima tarefa, quem entra a seguir, o tempo, campanhas a acabar e aniversários.
   const partes = [];
   const agora = new Date(), hoje = dateToISO(agora), agoraMin = agora.getHours() * 60 + agora.getMinutes();
   let serv = 0;
@@ -33843,14 +33882,23 @@ function ecraTvResumoDoDia() {
   });
   (STATE.eventos || []).forEach(ev => { if (ev.dataEvento !== hoje) return; const fim = ecraTvMin(ev.horaFinal); if (fim === null || fim > agoraMin) serv += 1; });
   partes.push(serv ? `${serv} serviço${serv > 1 ? 's' : ''} ainda hoje` : 'Sem mais serviços marcados para hoje');
+  try {
+    const prox = escalaTarefasHojeEquipa().filter(f => f.estado !== 'decorrer').map(f => f.itens[0]).filter(t => t && t.inicio).sort((a, b) => String(a.inicio).localeCompare(String(b.inicio)))[0];
+    if (prox) partes.push(`Próxima tarefa: ${String(escalaTarefaTextoItem(prox)).replace(/^[^\p{L}\p{N}]+/u, '')} às ${prox.inicio} (${avisoPrimeiroNome(prox.colaboradorNome)})`);
+  } catch (e) { /* ignora */ }
+  try {
+    const eq = ecraTvEquipaHoje();
+    const seguinte = eq.pessoas.filter(p => p.estado === 'entra').sort((a, b) => a.ini - b.ini);
+    if (seguinte.length) { const h0 = seguinte[0].ini, grupo = seguinte.filter(p => p.ini === h0).map(p => avisoPrimeiroNome(p.nome)); partes.push(`Às ${seguinte[0].entrada} ${grupo.length > 1 ? 'entram' : 'entra'} ${grupo.length > 1 ? `${grupo.slice(0, -1).join(', ')} e ${grupo[grupo.length - 1]}` : grupo[0]}`); }
+  } catch (e) { /* ignora */ }
+  try {
+    const m = ECRA_TV_METEO.dados || {};
+    if (typeof m.max === 'number') partes.push(`Máx. ${Math.round(m.max)}° · mín. ${Math.round(m.min)}°${typeof m.chuva === 'number' && m.chuva >= 40 ? ` · chuva ${Math.round(m.chuva)}%` : ''}`);
+  } catch (e) { /* ignora */ }
   const camp = (STATE.campanhas || []).filter(c => !c.eliminado && campanhaEstado(c).chave === 'ativa');
-  if (camp.length) partes.push(`${camp.length} campanha${camp.length > 1 ? 's' : ''} em curso`);
   const acabam = camp.filter(c => { const e = campanhaEstado(c); return e.dias !== null && e.dias <= 3; });
   if (acabam.length) partes.push(`${acabam.map(c => String(c.marca || c.titulo || '').trim()).filter(Boolean).join(', ')} termina${acabam.length > 1 ? 'm' : ''} em breve`);
-  const val = (STATE.validades || []).length;
-  if (val) partes.push(`${val} produto${val > 1 ? 's' : ''} a escoar`);
   try { const an = ecraTvAniversarios().find(a => a.dias > 0 && a.dias <= 7); if (an) partes.push(`🎂 ${an.primeiro} faz anos ${an.dias === 1 ? 'amanhã' : `no dia ${an.data.getDate()}`}`); } catch (e) { /* ignora */ }
-  partes.push('Sem avisos à equipa');
   return partes;
 }
 function ecraTvBuscarAviso(rodape) {
