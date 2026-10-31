@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-31 23:45" />
+<meta name="siga-versao" content="2026-11-01 00:15" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -5786,8 +5786,17 @@
   .tv-corpo{flex:1;min-height:0;}
   .tv-grelha{height:100%;display:grid;grid-template-columns:0.95fr 0.9fr 1.3fr;grid-template-rows:1fr;gap:1.1vw;}
   .tv-coluna{display:flex;flex-direction:column;gap:1.1vw;min-height:0;}
+  .tv-ponto-legenda{margin:auto 0 0;padding-top:.6vw;font-size:.85vw;color:#94a3b8;opacity:.85;letter-spacing:.01em;}
   .tv-coluna > .tv-painel{flex:1;}
   .tv-coluna-destaque > .tv-camp-painel{flex:1.7;}
+  .tv-grelha:has(.tv-coluna-meio){grid-template-columns:0.95fr 1.2fr 1.05fr;}
+  .tv-coluna-meio > .tv-validade{flex:1.7;}
+  .tv-coluna-meio > .tv-servicos-painel{flex:.8;}
+  .tv-coluna-meio .tv-produto{gap:1.3vw;}
+  .tv-coluna-meio .tv-produto-foto{width:13vw;height:13vw;border-radius:1.2vw;}
+  .tv-coluna-meio .tv-produto-nome{font-size:1.5vw;line-height:1.2;}
+  .tv-coluna-destaque > .tv-tarefas-painel{flex:1;}
+  .tv-pessoa-aviso{text-wrap:balance;}
   .tv-camp-painel{--cor:#3b82f6;background:linear-gradient(150deg,#1e4fa8 0%,#173a78 45%,#132a55 100%);border-color:rgba(147,197,253,.4);}
   .tv-camp{flex:1;min-height:0;display:flex;gap:1.2vw;align-items:center;animation:tvEntra .6s ease;}
   .tv-camp-texto{flex:1;min-width:0;display:flex;flex-direction:column;gap:.5vw;}
@@ -33738,10 +33747,12 @@ function ecraTvPontoLinha(p, agoraMin) {
   // 2026-10-31 (Hugo): em pausa, a pausa já está à direita («em pausa até…») — não se repete aqui.
   const plano = `${p.entrada}–${p.saida}${temPausa && p.estado !== 'pausa' ? ` · pausa ${p.pausaInicio}–${p.pausaFim}` : ''}`;
   if (!pt) return { texto: plano, aviso: '' };
-  const pend = (r) => r && r.estado === 'pendente' ? ' (por validar)' : '';
+  // 2026-10-31 (Hugo: "basta pôr a hora e um check, ou uma ampulheta a aguardar, sem cor; esquecimento um símbolo de
+  // proibido"): ✓ picagem validada · ⧗ por validar · ⊘ esquecida, comunicada à Direção (legenda no fundo do painel).
+  const pend = (r) => !r ? '' : (r.estado === 'pendente' ? ' ⧗' : ' ✓');
   const partes = [plano];
   let aviso = '', nivel = '';
-  const comTxt = (c, o) => `${o} comunicada à Direção${c.hora ? ` (${c.hora})` : ''}`;
+  const comTxt = (c, o) => c.hora ? `${o === 'entrada' ? 'entrou' : 'saiu'} ${c.hora} ⊘` : `${o} ⊘`;
   if (pt.entrada) {
     const atraso = ecraTvMin(pt.entrada.hora) - p.ini;
     partes.push(`entrou ${pt.entrada.hora}${atraso > ECRA_TV_PONTO_TOL ? ` (+${atraso} min)` : ''}${pend(pt.entrada)}`);
@@ -33756,7 +33767,7 @@ function ecraTvPontoLinha(p, agoraMin) {
     if (!temEntrada && agoraMin - p.ini > ECRA_TV_PONTO_TOL) { aviso = 'Ainda não picou a entrada'; nivel = 'falta'; }
     else if (temEntrada && p.estado === 'pausa' && !pt.pausaIni && agoraMin - pi > ECRA_TV_PONTO_TOL) { aviso = 'Lembrar: picar a saída para a pausa'; nivel = 'lembrar'; }
     else if (pausaAberta && temPausa && agoraMin - pf > ECRA_TV_PONTO_TOL) { aviso = 'Lembrar: picar o regresso da pausa'; nivel = 'lembrar'; }
-    else if (!temSaida && p.fim - agoraMin <= 15) { aviso = `Lembrar: picar a saída às ${p.saida}`; nivel = 'lembrar'; }
+    else if (!temSaida && p.fim - agoraMin <= 15) { aviso = `Lembrar: picar a saída às\u00a0${p.saida}`; nivel = 'lembrar'; }
   } else if (p.estado === 'saiu') {
     if (!temEntrada && !temSaida) { aviso = 'Sem picagens'; nivel = 'falta'; }
     else if (!temSaida) { aviso = 'Falta picar a saída'; nivel = 'lembrar'; }
@@ -33832,6 +33843,7 @@ function ecraTvConstruir() {
     sairam.length ? h('div', { class: 'tv-pessoas tv-pessoas-sairam', 'data-paginar': 'sairam', 'data-prioridade': '0' }, sairam.map(p => linhaPessoa(p, `saiu às ${p.saida}`))) : null,
     // Indisponibilidades e folgas saíram (2026-10-31, Hugo: "se não está a trabalhar nem entra mais tarde é porque está de
     // folga ou férias").
+    (trabalham.length || sairam.length) ? h('p', { class: 'tv-ponto-legenda' }, '✓ validada  ·  ⧗ por validar  ·  ⊘ esquecimento comunicado') : null,
   ].filter(Boolean);
   const painelEquipa = ecraTvPainel('users', ['Equipa agora', trabalham.length ? h('span', { class: 'tv-titulo-n', title: 'A trabalhar agora' }, String(trabalham.length)) : null].filter(Boolean),
     semEntrada ? `⚠ ${semEntrada} sem picar` : '', corpoEquipa, 'tv-equipa');
@@ -33928,8 +33940,11 @@ function ecraTvConstruir() {
   // ---- Aviso à equipa (fita no fundo) ----
   return h('div', { class: 'tv-grelha' }, [
     painelEquipa,
-    h('div', { class: 'tv-coluna' }, [painelTarefas, painelServicos]),
-    h('div', { class: 'tv-coluna tv-coluna-destaque' }, [painelCampanhas, painelValidade]),
+    // 2026-10-31 (Hugo: "passar produtos a escoar para onde diz tarefas e tarefas para produtos a escoar… a imagem precisa de
+    // ser maior… serviços de hoje pode ser mais pequeno"): coluna do meio = Produtos a escoar (grande) + Serviços (compacto);
+    // coluna da direita = Campanhas + Tarefas.
+    h('div', { class: 'tv-coluna tv-coluna-meio' }, [painelValidade, painelServicos]),
+    h('div', { class: 'tv-coluna tv-coluna-destaque' }, [painelCampanhas, painelTarefas]),
   ].filter(Boolean));
 }
 // Anúncio do início de cada tarefa (2026-10-30, Hugo: "quero também que anuncies início de tarefas"): quando uma
