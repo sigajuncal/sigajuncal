@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-10-31 12:25" />
+<meta name="siga-versao" content="2026-10-31 12:50" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -7178,6 +7178,23 @@ body.tem-barra-inferior .topbar-mobile > .hamburger:first-child{display:none;}
   .img-prod-quadro img{max-width:100%;max-height:100%;object-fit:contain;display:block;}
   .img-prod-xadrez{background-color:#fff;background-image:linear-gradient(45deg,#eef2f6 25%,transparent 25%,transparent 75%,#eef2f6 75%),linear-gradient(45deg,#eef2f6 25%,transparent 25%,transparent 75%,#eef2f6 75%);background-size:18px 18px;background-position:0 0,9px 9px;}
   .img-prod-opcao{display:inline-flex;align-items:center;gap:8px;margin-top:10px;font-size:14px;}
+
+  /* Gaveta mais limpa (2026-10-31) */
+  .gaveta-filtros-row{flex-wrap:wrap;row-gap:6px;}
+  .gaveta-marcar-lido{display:inline-flex;align-items:center;gap:4px;margin:2px 0 8px;font-size:12.5px;font-weight:700;}
+  .gaveta-aviso-auto{display:flex;align-items:baseline;gap:8px;margin:4px 0;padding:5px 10px;border-radius:8px;background:rgba(100,116,139,.08);color:#475569;font-size:12.5px;line-height:1.35;max-width:92%;}
+  .gaveta-aviso-auto.enviado{margin-left:auto;}
+  .gaveta-aviso-txt{flex:1 1 auto;min-width:0;}
+  .gaveta-aviso-hora{flex:0 0 auto;font-size:11px;color:#94a3b8;white-space:nowrap;}
+  .gaveta-aviso-n{flex:0 0 auto;font-size:11px;font-weight:800;color:#fff;background:#64748b;border-radius:999px;padding:0 7px;}
+  .gaveta-avisos-escondidos{margin:8px 0 0;text-align:center;font-size:12px;color:#94a3b8;}
+  .gaveta-ferramentas{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px;}
+  .gaveta-procura-conv{flex:1 1 180px;min-width:0;height:32px;font-size:13px;}
+  .gaveta-procura-n{font-size:12px;color:#64748b;min-width:60px;}
+  .gaveta-ferr-btn{border:1px solid #cfdbe6;background:#fff;border-radius:999px;padding:5px 11px;font-size:12.5px;cursor:pointer;color:#0f2a43;white-space:nowrap;}
+  .gaveta-ferr-btn.ativo{background:#e6f2f9;border-color:#256f95;font-weight:700;}
+  .gaveta-procura-hit{outline:2px solid rgba(250,204,21,.55);outline-offset:2px;border-radius:10px;}
+  .gaveta-procura-atual{outline:3px solid #f59e0b;}
 </style>
 <style id="plano-medicacao-css">
   .plano-med-icone{display:block;line-height:0;}
@@ -21220,6 +21237,21 @@ function cliqueComecouEm(el) {
   return !PONTEIRO_DESCEU_EM || PONTEIRO_DESCEU_EM === el;
 }
 const EMOJIS_GAVETA = ['😊', '😀', '😂', '😅', '🤔', '😮', '😢', '😉', '🙂', '😴', '👍', '🙏', '❤️', '🎉', '👏', '✅', '⚠️'];
+// ---- Gaveta mais limpa (2026-10-31, Hugo: "botão para ir para as não lidas, filtrar? o que melhorarias na gaveta") ----
+// Avisos automáticos = mensagens geradas pela app (validações, decisões da Direção, picagens, horários publicados…):
+// têm sempre uma referência a um registo e não pedem ação. Mostram-se como linhas compactas, juntam-se quando se
+// repetem («×4») e podem esconder-se. As trocas (com o painel da troca) e as tarefas continuam como estavam.
+function gavetaEhAvisoAutomatico(r) {
+  if (!r || (r.tipo || 'mensagem') === 'tarefa') return false;
+  if (r.referenciaTabela === 'escala_trocas' || r.referenciaTabela === 'escala_trocas_movimentos') return false;
+  return !!r.referenciaTabela || /^A tua picagem/.test(String(r.mensagem || ''));
+}
+function gavetaPorLer(r) {
+  if (!activeUser || String(r.destinatarioId) !== String(activeUser.id)) return false;
+  return (r.tipo || 'mensagem') === 'tarefa' ? !r.notifVistaRecebida && !r.tratado : !r.tratado;
+}
+function gavetaEsconderAvisos() { try { return localStorage.getItem('siga_gaveta_sem_avisos') === '1'; } catch (e) { return false; } }
+function gavetaDefinirEsconderAvisos(v) { try { localStorage.setItem('siga_gaveta_sem_avisos', v ? '1' : '0'); } catch (e) { /* ignora */ } }
 function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
   if (!utilizadorAtualTemGaveta()) return;
   const focoInicial = opcoesAbertura && opcoesAbertura.focoRecadoId ? opcoesAbertura.focoRecadoId : null;
@@ -21240,7 +21272,8 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
   document.addEventListener('keydown', onKeydown);
 
   let searchQuery = '';
-  let streamFiltro = 'tudo'; // 'tudo' | 'pendentes' | 'concluidas'
+  let streamFiltro = 'tudo'; // 'tudo' | 'naolidas' | 'pendentes' | 'concluidas'
+  let pesquisaConversa = '', pesquisaConversaIdx = 0;
   let threadComId = null; // id do utilizador, 'EQUIPA' (broadcast) ou 'MULTI' (seleção múltipla)
   // CRIADO 2026-09-03 (Hugo: "novas notificações continuam a não abrir no
   // fundo da conversa, obriga a pessoa a fazer scroll"): scrollHistoricoParaFim()
@@ -21501,7 +21534,7 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
   function abrirThread(outroId, focoId) {
     const ehConversaDireta = outroId !== 'EQUIPA' && outroId !== 'MULTI';
     const primeiro = ehConversaDireta ? primeiroNaoLidoDaThread(outroId, focoId) : null;
-    threadComId = outroId; tipoEnvio = 'mensagem'; modoTarefaGrupo = null; composerTexto = lerRascunhoLocal(`gaveta_composer_${activeUser.id}_${outroId}`) || ''; composerError = ''; multiSelecionados = new Map(); searchQuery = ''; ultimaMensagemVistaIdNaThread = null;
+    threadComId = outroId; tipoEnvio = 'mensagem'; modoTarefaGrupo = null; composerTexto = lerRascunhoLocal(`gaveta_composer_${activeUser.id}_${outroId}`) || ''; composerError = ''; multiSelecionados = new Map(); searchQuery = ''; pesquisaConversa = ''; pesquisaConversaIdx = 0; ultimaMensagemVistaIdNaThread = null;
     primeiroNaoLidoIdNaThread = primeiro;
     // Uma vez aberta, a conversa fica lida: voltar a ela nesta mesma Gaveta já abre no fim.
     if (ehConversaDireta) recadosDaThread(outroId).forEach(r => NAO_VISTOS_AO_ABRIR.delete(r.id));
@@ -21689,15 +21722,28 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
     const concBtn = h('button', { class: 'tab-btn tone-green' + (streamFiltro === 'concluidas' ? ' active' : '') }, [
       Icon('checkcircle', { size: 12 }), h('span', {}, 'Concluídas'),
     ]);
+    const porLerTodos = meusRecados().filter(gavetaPorLer);
+    const conversasPorLer = new Set(porLerTodos.map(r => String(r.remetenteId)));
+    const naoLidasBtn = h('button', { class: 'tab-btn tone-blue' + (streamFiltro === 'naolidas' ? ' active' : ''), title: 'Só as conversas com mensagens por ler' }, [
+      Icon('inbox', { size: 12 }), h('span', {}, 'Não lidas'), conversasPorLer.size ? h('span', { class: 'tab-count' }, String(conversasPorLer.size)) : null,
+    ]);
+    naoLidasBtn.addEventListener('click', () => { streamFiltro = 'naolidas'; render(); });
+    const marcarTudoBtn = porLerTodos.length ? h('button', { type: 'button', class: 'btn-link gaveta-marcar-lido', onclick: () => requireAuth(async () => {
+      marcarTudoBtn.disabled = true; marcarTudoBtn.textContent = 'A marcar…';
+      for (const outro of conversasPorLer) { try { await marcarMensagensLidas(outro); } catch (e) { /* segue */ } }
+      porLerTodos.forEach(r => NAO_VISTOS_AO_ABRIR.delete(r.id));
+      showToast('Tudo marcado como lido.', 'success'); render();
+    }) }, [Icon('checkcircle', { size: 12 }), ' Marcar tudo como lido']) : null;
     tudoBtn.addEventListener('click', () => { streamFiltro = 'tudo'; render(); });
     pendBtn.addEventListener('click', () => { streamFiltro = 'pendentes'; render(); });
     concBtn.addEventListener('click', () => { streamFiltro = 'concluidas'; render(); });
-    filtrosEl.appendChild(tudoBtn); filtrosEl.appendChild(pendBtn); filtrosEl.appendChild(concBtn);
+    filtrosEl.appendChild(tudoBtn); filtrosEl.appendChild(naoLidasBtn); filtrosEl.appendChild(pendBtn); filtrosEl.appendChild(concBtn);
     // Subtítulo do filtro ativo — deixa sempre claro, em palavras, o que
     // cada botão mostra (não só o ícone/cor).
     const filtroSubtexto = h('p', { class: 'gaveta-filtro-subtexto' },
       streamFiltro === 'pendentes' ? '📋 Tarefas por fazer — atribuídas a mim, ou que enviei e ainda aguardam confirmação.'
       : streamFiltro === 'concluidas' ? '✅ Tarefas finalizadas — já confirmadas por quem as recebeu.'
+      : streamFiltro === 'naolidas' ? '✉️ Conversas com mensagens ou tarefas que ainda não abriste.'
       : 'Todas as conversas e tarefas, mais recentes primeiro.');
 
     // Controlo "Selecionar Todos" / "Desselecionar Todos" — alternador
@@ -21782,6 +21828,7 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
             // que EU enviei e ainda aguarda confirmação de quem a recebeu
             // — nunca "esconde" uma tarefa só porque quem tem de agir
             // agora é a outra pessoa.
+            if (streamFiltro === 'naolidas' && !conversasPorLer.has(String(c.outroId))) return false;
             if (streamFiltro === 'pendentes') {
               const dirigidaAMimNaoTratada = recadosDaThread(c.outroId).some(r => String(r.destinatarioId) === String(activeUser.id) && !r.tratado);
               const tarefaQueEnvieiPorConfirmar = recadosDaThread(c.outroId).some(r => String(r.remetenteId) === String(activeUser.id) && (r.tipo || 'mensagem') === 'tarefa' && !r.tratado);
@@ -21791,13 +21838,21 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
           })
           // Conversas com algo NOVO (o que acendeu o número da Gaveta) aparecem primeiro — 2026-09-30.
           .sort((a, b) => {
-            const na = recadosDaThread(a.outroId).some(r => NAO_VISTOS_AO_ABRIR.has(r.id)) ? 1 : 0;
-            const nb = recadosDaThread(b.outroId).some(r => NAO_VISTOS_AO_ABRIR.has(r.id)) ? 1 : 0;
+            if (streamFiltro === 'pendentes') { // as pendentes mais antigas primeiro (2026-10-31)
+              const maisAntiga = (c) => recadosDaThread(c.outroId).filter(r => !r.tratado && ((r.tipo || 'mensagem') === 'tarefa' || String(r.destinatarioId) === String(activeUser.id))).map(r => r.createdAt || '').sort()[0] || '9';
+              return maisAntiga(a).localeCompare(maisAntiga(b));
+            }
+            const na = recadosDaThread(a.outroId).some(r => NAO_VISTOS_AO_ABRIR.has(r.id) || gavetaPorLer(r)) ? 1 : 0;
+            const nb = recadosDaThread(b.outroId).some(r => NAO_VISTOS_AO_ABRIR.has(r.id) || gavetaPorLer(r)) ? 1 : 0;
             return nb - na;
           })
-          .forEach(c => {
+          .forEach(c0 => {
+            let c = c0;
+            const daThread = recadosDaThread(c.outroId);
+            const ultimaPessoa = daThread.slice().reverse().find(r => !gavetaEhAvisoAutomatico(r));
+            if (ultimaPessoa) c = Object.assign({}, c, { ultima: ultimaPessoa });
             const souEuRemetente = String(c.ultima.remetenteId) === String(activeUser.id);
-            const prefixo = souEuRemetente ? 'Tu: ' : '';
+            const prefixo = gavetaEhAvisoAutomatico(c.ultima) ? '🔔 ' : (souEuRemetente ? 'Tu: ' : '');
             const ultimaEhTarefaPendenteParaMim = !souEuRemetente && (c.ultima.tipo || 'mensagem') === 'tarefa' && !c.ultima.tratado;
             // BUG CORRIGIDO 2026-09-03 (Hugo: "letras laranjas... dá a
             // sensação que há algo por ler, quando não é verdade"): a cor
@@ -21838,6 +21893,7 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
     col.appendChild(searchInput);
     col.appendChild(filtrosEl);
     col.appendChild(filtroSubtexto);
+    if (marcarTudoBtn) col.appendChild(marcarTudoBtn);
     // "Selecionar Todos" ESCONDIDO em Pendentes/Concluídas 2026-09-03
     // (Hugo: "faz sentido ali? eu acho que não, só polui visualmente"):
     // este botão serve só para escolher vários colegas e começar uma
@@ -21908,14 +21964,37 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
         const t = (STATE.escalaTrocas || []).find(y => String(y.id) === String(x.referenciaId));
         return t ? trocaPainelAcoesEl(t, render) : null;
       };
+      const semAvisos = gavetaEsconderAvisos();
+      let divisorPendente = false, ultimoAviso = null, escondidos = 0;
+      const qConv = normalizarTexto(pesquisaConversa).trim();
       mensagens.forEach(r => {
-        if (primeiroNaoLidoIdNaThread && String(r.id) === String(primeiroNaoLidoIdNaThread)) {
-          itens.push(h('div', { class: 'gaveta-por-ler-divisor', role: 'separator' }, [h('span', {}, 'Por ler')]));
+        if (primeiroNaoLidoIdNaThread && String(r.id) === String(primeiroNaoLidoIdNaThread)) divisorPendente = true;
+        const aviso = gavetaEhAvisoAutomatico(r);
+        if (aviso && semAvisos) { escondidos++; return; }
+        // Avisos iguais e seguidos juntam-se num só («×N»), com as horas de todos no título.
+        if (aviso && ultimoAviso && ultimoAviso.texto === gavetaTextoRecado(r.mensagem || '') && !divisorPendente) {
+          ultimoAviso.n++; ultimoAviso.horas.push(formatCarimboNota ? formatCarimboNota(r.createdAt) : String(r.createdAt || ''));
+          ultimoAviso.badge.textContent = `×${ultimoAviso.n}`; ultimoAviso.badge.style.display = '';
+          ultimoAviso.el.title = `Repetido ${ultimoAviso.n} vezes: ${ultimoAviso.horas.join(' · ')}`;
+          return;
         }
-        const el = construirItemDaConversa(r);
+        if (divisorPendente) { itens.push(h('div', { class: 'gaveta-por-ler-divisor', role: 'separator' }, [h('span', {}, 'Por ler')])); divisorPendente = false; }
+        let el;
+        if (aviso) {
+          const badge = h('span', { class: 'gaveta-aviso-n', style: 'display:none;' }, '');
+          el = h('div', { class: 'gaveta-aviso-auto' + (String(r.remetenteId) === String(activeUser.id) ? ' enviado' : '') }, [
+            h('span', { class: 'gaveta-aviso-ic', 'aria-hidden': 'true' }, '🔔'),
+            h('span', { class: 'gaveta-aviso-txt' }, gavetaTextoRecado(r.mensagem || '')),
+            badge,
+            h('span', { class: 'gaveta-aviso-hora' }, typeof formatCarimboNota === 'function' ? formatCarimboNota(r.createdAt) : ''),
+          ]);
+          ultimoAviso = { texto: gavetaTextoRecado(r.mensagem || ''), n: 1, el, badge, horas: [typeof formatCarimboNota === 'function' ? formatCarimboNota(r.createdAt) : ''] };
+        } else { el = construirItemDaConversa(r); ultimoAviso = null; }
         el.dataset.recadoId = String(r.id);
+        if (qConv && normalizarTexto(gavetaTextoRecado(r.mensagem || '')).includes(qConv)) el.classList.add('gaveta-procura-hit');
         itens.push(el);
       });
+      if (escondidos) itens.push(h('p', { class: 'gaveta-avisos-escondidos' }, `${escondidos} aviso${escondidos > 1 ? 's' : ''} automático${escondidos > 1 ? 's' : ''} escondido${escondidos > 1 ? 's' : ''}.`));
       function construirItemDaConversa(r) {
         const souEuRemetente = String(r.remetenteId) === String(activeUser.id);
         const ehTarefa = (r.tipo || 'mensagem') === 'tarefa';
@@ -22188,10 +22267,34 @@ function abrirModalGaveta(abrirThreadInicial, opcoesAbertura) {
     const enviarBtn = h('button', { class: 'btn btn-primary', onclick: composerSaving ? null : () => requireAuth(enviarComposer), disabled: composerSaving ? 'disabled' : undefined },
       composerSaving ? 'A enviar…' : (tipoEnvio === 'tarefa' ? 'Enviar Tarefa' : 'Enviar Mensagem'));
 
+    let ferramentas = null;
+    if (!ehEquipa && !ehMulti) {
+      const semAvisos = gavetaEsconderAvisos();
+      const avisosBtn = h('button', { type: 'button', class: 'gaveta-ferr-btn' + (semAvisos ? ' ativo' : ''), title: semAvisos ? 'Mostrar os avisos automáticos (validações, picagens…)' : 'Esconder os avisos automáticos (validações, picagens…) e ver só as mensagens das pessoas' },
+        [h('span', {}, '🔔'), h('span', {}, semAvisos ? ' Mostrar avisos' : ' Esconder avisos')]);
+      avisosBtn.addEventListener('click', () => { gavetaDefinirEsconderAvisos(!semAvisos); render(); });
+      const procura = h('input', { class: 'input gaveta-procura-conv', type: 'search', placeholder: 'Procurar nesta conversa…', value: pesquisaConversa });
+      const contador = h('span', { class: 'gaveta-procura-n' }, '');
+      const saltar = (passo) => {
+        const hits = [...document.querySelectorAll('.gaveta-thread-lista .gaveta-procura-hit')];
+        contador.textContent = pesquisaConversa.trim() ? (hits.length ? `${Math.min(hits.length, pesquisaConversaIdx + 1)} de ${hits.length}` : '0 resultados') : '';
+        if (!hits.length) return;
+        pesquisaConversaIdx = ((pesquisaConversaIdx + passo) % hits.length + hits.length) % hits.length;
+        hits.forEach(x => x.classList.remove('gaveta-procura-atual'));
+        const alvo = hits[pesquisaConversaIdx]; alvo.classList.add('gaveta-procura-atual'); alvo.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        contador.textContent = `${pesquisaConversaIdx + 1} de ${hits.length}`;
+      };
+      const aplicarProcura = debounce(() => { pesquisaConversaIdx = 0; render(); setTimeout(() => { const i = document.querySelector('.gaveta-procura-conv'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } saltar(0); }, 30); }, 250);
+      procura.addEventListener('input', () => { pesquisaConversa = procura.value; aplicarProcura(); });
+      procura.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saltar(e.shiftKey ? -1 : 1); } });
+      ferramentas = h('div', { class: 'gaveta-ferramentas' }, [procura, contador, avisosBtn]);
+      if (pesquisaConversa.trim()) setTimeout(() => saltar(0), 0);
+    }
     const header = h('div', { class: 'gaveta-main-header' }, [
       voltarBtn,
       h('p', { class: 'modal-tag', style: 'margin:4px 0 0;' }, ehEquipa ? '📢 Toda a Equipa' : (ehMulti ? `${multiSelecionados.size} colegas selecionados` : `Conversa com ${nomeUtilizador(threadComId)}`)),
-    ]);
+      ferramentas,
+    ].filter(Boolean));
     const historicoWrap = h('div', { class: 'gaveta-main-historico' }, [historico]);
     // Tarefa para várias pessoas: pergunta SEMPRE como é (nunca assume) — Individual ou Partilhada.
     const nDestinatarios = ehEquipa ? colegasElegiveis().length : (ehMulti ? multiSelecionados.size : 1);
@@ -49766,6 +49869,13 @@ function buildHorariosPage(container, goTo) {
       payload.texto = texto.trim();
       payload.dataPedido = novoPedidoData;
     }
+    // 2026-10-31: o mesmo pedido (mesma pessoa, tipo, dia, horas, tarefa e texto) gravado há menos de 3 min não se repete
+    // (houve pedidos gravados 2 vezes — duplo clique / sessão a reabrir / dois aparelhos).
+    const igualRecente = (STATE.escalaNotasSemana || []).find(n => !n.eliminado && String(n.autorId) === String(payload.autorId) && (n.tipo || 'nota') === (payload.tipo || 'nota')
+      && String(n.dataPedido || '') === String(payload.dataPedido || '') && String(n.horaInicio || '') === String(payload.horaInicio || '') && String(n.horaFim || '') === String(payload.horaFim || '')
+      && String(n.tarefaTipo || '') === String(payload.tarefaTipo || '') && String(n.texto || '').trim() === String(payload.texto || '').trim()
+      && Date.now() - new Date(n.createdAt || 0).getTime() < 3 * 60000);
+    if (igualRecente) { showToast('Este pedido já foi enviado agora mesmo — não foi repetido.', 'info'); if (aoTerminar) aoTerminar(); rerender(); return; }
     notaEquipaSaving = true; rerender();
     const created = await dbInsert('escalaNotasSemana', payload);
     notaEquipaSaving = false;
