@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-01 20:10" />
+<meta name="siga-versao" content="2026-11-01 20:40" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -13962,13 +13962,20 @@ function criarClienteServidorLocal(base) {
         return r.blob();
       },
       // 2026-11-01: imagens das Validades/Campanhas para o Ecrã do Backoffice (a conta da TV não chega aos Ficheiros).
+      // 2026-11-01 (Hugo: "no PC do servidor já não aparecem no ecrã normal, mas aparecem em modo TV"): sem ninguém com
+      // sessão, as imagens vêm com a chave do posto da farmácia (como o «Chamar colega»); com sessão, como sempre.
+      async pedidoImagens(caminho) {
+        if (S.token) return pedidoComSessao(caminho, { method: 'GET' });
+        if (await garantirTokenPosto()) return fetch(BASE + caminho, { headers: { Authorization: S.tokenPosto, 'X-Siga-Farmacia': S.farmacia }, cache: 'no-store' });
+        return pedidoComSessao(caminho, { method: 'GET' });
+      },
       async imagensEcra() {
-        const r = await pedidoComSessao('/api/siga/ecra/imagens', { method: 'GET' });
+        const r = await this.pedidoImagens('/api/siga/ecra/imagens');
         const j = await r.json().catch(() => null);
         return r.ok && j && j.ok && Array.isArray(j.ficheiros) ? j.ficheiros : null; // null = servidor antigo
       },
       async obterEcra(id) {
-        const r = await pedidoComSessao('/api/siga/ecra/imagens/' + encodeURIComponent(id), { method: 'GET' });
+        const r = await this.pedidoImagens('/api/siga/ecra/imagens/' + encodeURIComponent(id));
         if (!r.ok) throw new Error(`O servidor respondeu ${r.status}.`);
         return r.blob();
       },
@@ -21081,18 +21088,33 @@ function validadeUrgencia(mesAno) {
 let ESCOAR_IDX = 0;
 const ESCOAR_POR_PAGINA = 2;
 const ESCOAR_SVG_GENERICO = '<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg"><rect x="9" y="15" width="46" height="36" rx="5" fill="#eef3f7" stroke="#c7d6df" stroke-width="2"/><path d="M9 24h46" stroke="#c7d6df" stroke-width="2"/><rect x="15" y="18" width="14" height="3" rx="1.5" fill="#c7d6df"/><path d="M29 29h6v6h6v6h-6v6h-6v-6h-6v-6h6z" fill="#16a34a"/><rect x="40" y="44" width="16" height="7" rx="3.5" transform="rotate(-28 48 47.5)" fill="#60a5fa"/><rect x="40" y="44" width="8" height="7" rx="3.5" transform="rotate(-28 48 47.5)" fill="#f87171"/></svg>';
-function escoarPorImagem(r, alvo) {
-  const aplicar = () => {
-    const f = ECRA_TV.imagens && ECRA_TV.imagens.get(String(r.id));
+// 2026-11-01 (Hugo: "fiz login e continua sem aparecer"): a Página Inicial é construída fora do ecrã e só entra o que
+// mudou — o elemento a que a imagem chegava (no fim do pedido) podia já não ser o que está no ecrã. Agora cada
+// quadrado diz de que produto é (data-img-validade) e a imagem vai para TODOS os quadrados desse produto que
+// estiverem no ecrã naquele momento; uma verificação de 3 em 3 s apanha qualquer um que tenha ficado por preencher.
+function escoarAplicarImagens(raiz) {
+  (raiz || document).querySelectorAll('[data-img-validade]:not(.com-imagem)').forEach(el => {
+    const f = ECRA_TV.imagens && ECRA_TV.imagens.get(el.dataset.imgValidade);
     if (!f) return;
     const k = String(f.id);
-    const por = () => { if (ECRA_TV.urls.has(k) && alvo.isConnected) { alvo.style.backgroundImage = `url("${ECRA_TV.urls.get(k)}")`; alvo.classList.add('com-imagem'); } };
-    if (ECRA_TV.urls.has(k)) { por(); return; }
-    ecraTvPreCarregarImagem(f).then(por).catch(() => {});
-  };
-  if (ECRA_TV.imagens) aplicar();
-  else ecraTvCarregarImagens().then(aplicar).catch(() => {});
+    if (ECRA_TV.urls.has(k)) { el.style.backgroundImage = `url("${ECRA_TV.urls.get(k)}")`; el.classList.add('com-imagem'); }
+    else ecraTvPreCarregarImagem(f).then(() => escoarAplicarImagens()).catch(() => {});
+  });
 }
+function escoarPorImagem(r, alvo) {
+  alvo.dataset.imgValidade = String(r.id);
+  const f = ECRA_TV.imagens && ECRA_TV.imagens.get(String(r.id));
+  if (f && ECRA_TV.urls.has(String(f.id))) { alvo.style.backgroundImage = `url("${ECRA_TV.urls.get(String(f.id))}")`; alvo.classList.add('com-imagem'); return; }
+  const depois = () => setTimeout(() => escoarAplicarImagens(), 0);
+  if (ECRA_TV.imagens) depois(); else ecraTvCarregarImagens().then(depois).catch(() => {});
+}
+setInterval(() => {
+  try {
+    if (!document.querySelector('[data-img-validade]:not(.com-imagem)')) return;
+    if (!ECRA_TV.imagens) { ecraTvCarregarImagens().then(() => escoarAplicarImagens()).catch(() => {}); return; }
+    escoarAplicarImagens();
+  } catch (e) { /* ignora */ }
+}, 3000);
 function escoarIrPara(car, alvo) {
   const slides = car.querySelectorAll('.escoar-slide');
   if (!slides.length) return;
@@ -33751,6 +33773,14 @@ function ecraTvEquipaHoje(dataRef) {
 // independentemente do sítio onde se faça o upload"). Junta as duas fontes (rota do ecrã + Ficheiros), um só pedido de
 // cada vez, volta a tentar em 30 s se falhar (nunca fica 10 min «sem imagens» por causa de uma falha) e a lista é
 // refeita sempre que alguém carrega/substitui uma imagem em qualquer sítio da app (aviso em tempo real do servidor).
+// Cópia local das imagens dos produtos/campanhas (2026-11-01): cada imagem vista fica guardada neste aparelho (cache do
+// browser) e a lista também — sem sessão nem ligação, o ecrã continua a mostrar as últimas imagens conhecidas.
+const IMG_CACHE_NOME = 'siga-imagens-v1', IMG_MAPA_LS = 'siga_imagens_mapa';
+function imgCacheDisponivel() { try { return typeof caches !== 'undefined' && window.isSecureContext; } catch (e) { return false; } }
+async function imgCacheGuardar(id, blob) { if (!imgCacheDisponivel()) return; try { const c = await caches.open(IMG_CACHE_NOME); await c.put('/siga-img/' + id, new Response(blob, { headers: { 'Content-Type': blob.type || 'image/jpeg' } })); } catch (e) { /* sem espaço */ } }
+async function imgCacheLer(id) { if (!imgCacheDisponivel()) throw new Error('sem cache'); const c = await caches.open(IMG_CACHE_NOME); const r = await c.match('/siga-img/' + id); if (!r) throw new Error('sem cópia'); return r.blob(); }
+function imgMapaGuardar(lista) { try { localStorage.setItem(IMG_MAPA_LS, JSON.stringify(lista.map(f => ({ id: f.id, nome: f.nome, tipo_mime: f.tipo_mime, origem_tabela: f.origem_tabela, origem_id: f.origem_id, criado_em: f.criado_em, __ecra: !!f.__ecra })))); } catch (e) { /* ignora */ } }
+function imgMapaLer() { try { const l = JSON.parse(localStorage.getItem(IMG_MAPA_LS) || '[]'); return Array.isArray(l) ? l : []; } catch (e) { return []; } }
 let ECRA_TV_IMG_PEDIDO = null;
 function ecraTvImagensInvalidar() { ECRA_TV.imagens = null; ECRA_TV.imagensCampanha = null; ECRA_TV.imagensEm = 0; }
 async function ecraTvCarregarImagens() {
@@ -33770,7 +33800,8 @@ async function ecraTvCarregarImagens() {
         if (Array.isArray(l)) { algumaFonte = true; l.forEach(f => { const k = String(f.id); if (!todos.has(k)) todos.set(k, Object.assign({ origem_tabela: tabela }, f)); }); }
       } catch (e) { /* a conta da TV não chega aqui — fica a rota do ecrã */ }
     }
-    if (!algumaFonte) { ECRA_TV.imagens = ECRA_TV.imagens || new Map(); ECRA_TV.imagensEm = Date.now() - 9.5 * 60000; return; } // tenta outra vez daqui a 30 s
+    if (!algumaFonte) { imgMapaLer().forEach(f => todos.set(String(f.id), f)); ECRA_TV.imagensEm = Date.now() - 9.5 * 60000; } // última lista conhecida; tenta outra vez daqui a 30 s
+    else imgMapaGuardar([...todos.values()]);
     const mapaDe = (tabela) => {
       const m = new Map();
       [...todos.values()].filter(f => f.origem_tabela === tabela && ficheiroEhImagem(f))
@@ -33780,7 +33811,7 @@ async function ecraTvCarregarImagens() {
     };
     ECRA_TV.imagens = mapaDe('validades');
     ECRA_TV.imagensCampanha = mapaDe('campanhas');
-    ECRA_TV.imagensEm = Date.now();
+    if (algumaFonte) ECRA_TV.imagensEm = Date.now();
     await Promise.all([...ECRA_TV.imagens.values(), ...ECRA_TV.imagensCampanha.values()].slice(0, 60).map(f => ecraTvPreCarregarImagem(f).catch(() => false)));
   })().finally(() => { ECRA_TV_IMG_PEDIDO = null; });
   return ECRA_TV_IMG_PEDIDO;
@@ -38923,7 +38954,9 @@ function ficheiroObterComMemoria(f) {
   const viaFicheiros = () => sb.ficheiros.obter(f.id);
   const soImagem = (b) => (b && b.size && !/json|html|text/i.test(b.type || '') ? b : Promise.reject(new Error('não é imagem')));
   const primeiro = f.__ecra ? viaEcra : viaFicheiros, segundo = f.__ecra ? viaFicheiros : viaEcra;
-  const pedido = primeiro().then(soImagem).catch(() => segundo().then(soImagem)).then((blob) => (blob.type ? blob : new Blob([blob], { type: f.tipo_mime || 'application/octet-stream' })));
+  const pedido = primeiro().then(soImagem).catch(() => segundo().then(soImagem))
+    .then(b => { imgCacheGuardar(f.id, b); return b; }, () => imgCacheLer(f.id))
+    .then((blob) => (blob.type ? blob : new Blob([blob], { type: f.tipo_mime || 'application/octet-stream' })));
   FICHEIROS_EM_MEMORIA.set(id, { pedido, em: Date.now() });
   pedido.catch(() => FICHEIROS_EM_MEMORIA.delete(id));
   while (FICHEIROS_EM_MEMORIA.size > 6) FICHEIROS_EM_MEMORIA.delete(FICHEIROS_EM_MEMORIA.keys().next().value);
