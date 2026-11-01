@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-01 16:45" />
+<meta name="siga-versao" content="2026-11-01 17:40" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -6350,6 +6350,29 @@
   @keyframes turno-relogio-onda{from{transform:translateX(0);}to{transform:translateX(-20px);}}
   @media (prefers-reduced-motion: reduce){ .turno-relogio-onda, .turno-relogio-onda2{animation:none;} }
   .escoar-card{display:flex;flex-direction:column;gap:8px;padding:12px 14px !important;}
+  /* Produtos a escoar em carrossel com imagem (2026-11-01) */
+  .escoar-carrossel{flex:1 1 auto;display:flex;flex-direction:column;min-height:0;}
+  .escoar-slides{position:relative;flex:1 1 auto;min-height:150px;}
+  .escoar-slide{position:absolute;inset:0;display:flex;align-items:center;gap:14px;opacity:0;transform:translateX(12px);transition:opacity .45s ease,transform .45s ease;pointer-events:none;}
+  .escoar-slide.ativo{opacity:1;transform:none;pointer-events:auto;}
+  .escoar-foto{flex:0 0 auto;width:min(42%,170px);aspect-ratio:1/1;border-radius:14px;background:#fff center/contain no-repeat;border:1px solid #e2e8f0;box-shadow:0 6px 16px rgba(15,23,42,.08);display:flex;align-items:center;justify-content:center;}
+  .escoar-foto svg{width:72%;height:72%;}
+  .escoar-foto.com-imagem svg{display:none;}
+  .escoar-slide-info{min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:6px;}
+  .escoar-slide-nome{margin:0;font-size:15.5px;font-weight:800;line-height:1.25;color:#0f172a;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;}
+  .escoar-slide-loc{margin:0;font-size:12.5px;color:#475569;display:flex;align-items:center;gap:2px;}
+  .escoar-slide-qtd{margin:0;font-size:12px;font-weight:700;color:#64748b;}
+  .escoar-pontos{display:flex;justify-content:center;gap:5px;margin-top:8px;}
+  .escoar-ponto{width:6px;height:6px;border-radius:50%;background:#e2e8f0;transition:background .3s;}
+  .escoar-ponto.ativo{background:#ea580c;}
+  /* Pré-visualização da imagem como no Ecrã do Backoffice (formulário das Validades) */
+  .anexo-previa-tv{display:flex;align-items:center;gap:14px;margin:8px 0;padding:12px;border-radius:14px;background:linear-gradient(150deg,#3b2a1a,#1f2937);color:#fff;max-width:520px;}
+  .anexo-previa-tv .previa-foto{flex:0 0 auto;width:120px;height:120px;border-radius:12px;background:#fff center/contain no-repeat;display:flex;align-items:center;justify-content:center;}
+  .anexo-previa-tv .previa-foto svg{width:70%;height:70%;}
+  .anexo-previa-tv .previa-foto.com-imagem svg{display:none;}
+  .anexo-previa-tv strong{display:block;font-size:15px;line-height:1.25;}
+  .anexo-previa-tv span{display:block;font-size:11.5px;color:#fcd34d;font-weight:700;margin-top:6px;letter-spacing:.03em;text-transform:uppercase;}
+
   .escoar-cabecalho{display:flex;justify-content:space-between;align-items:center;gap:8px;}
   .escoar-titulo{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:700;color:#9a3412;}
   .escoar-contagem{font-size:11.5px;font-weight:800;color:#9a3412;background:#ffedd5;border-radius:999px;padding:2px 9px;}
@@ -21024,48 +21047,71 @@ function validadeUrgencia(mesAno) {
   if (meses <= 4) return { classe: 'escoar-badge-breve', texto: `Expira daqui a ${meses} meses` };
   return { classe: 'escoar-badge-margem', texto: `Expira daqui a ${meses} meses — ainda com margem` };
 }
+// Produtos a escoar na Página Inicial (2026-11-01, Hugo: "passas a mostrar como no modo TV em carrossel, com as
+// imagens carregadas"): um produto de cada vez, com a imagem (ou a genérica), a validade, onde está e o stock; muda
+// sozinho de 5 em 5 s (parado com o rato por cima). Clicar abre as Validades.
+let ESCOAR_IDX = 0;
+const ESCOAR_SVG_GENERICO = '<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg"><rect x="9" y="15" width="46" height="36" rx="5" fill="#eef3f7" stroke="#c7d6df" stroke-width="2"/><path d="M9 24h46" stroke="#c7d6df" stroke-width="2"/><rect x="15" y="18" width="14" height="3" rx="1.5" fill="#c7d6df"/><path d="M29 29h6v6h6v6h-6v6h-6v-6h-6v-6h6z" fill="#16a34a"/><rect x="40" y="44" width="16" height="7" rx="3.5" transform="rotate(-28 48 47.5)" fill="#60a5fa"/><rect x="40" y="44" width="8" height="7" rx="3.5" transform="rotate(-28 48 47.5)" fill="#f87171"/></svg>';
+function escoarPorImagem(r, alvo) {
+  const aplicar = () => {
+    const f = ECRA_TV.imagens && ECRA_TV.imagens.get(String(r.id));
+    if (!f) return;
+    const k = String(f.id);
+    const por = () => { if (ECRA_TV.urls.has(k) && alvo.isConnected) { alvo.style.backgroundImage = `url("${ECRA_TV.urls.get(k)}")`; alvo.classList.add('com-imagem'); } };
+    if (ECRA_TV.urls.has(k)) { por(); return; }
+    ecraTvPreCarregarImagem(f).then(por).catch(() => {});
+  };
+  if (ECRA_TV.imagens) aplicar();
+  else if (typeof servidorTem === 'function' && servidorTem('ficheiros')) ecraTvCarregarImagens().then(aplicar).catch(() => {});
+}
+function escoarAvancarTodos() {
+  document.querySelectorAll('.escoar-carrossel').forEach(car => {
+    if (car.matches(':hover')) return;
+    const slides = car.querySelectorAll('.escoar-slide');
+    if (slides.length < 2) return;
+    const atual = [...slides].findIndex(s => s.classList.contains('ativo'));
+    const prox = (atual + 1) % slides.length;
+    slides.forEach((s, k) => s.classList.toggle('ativo', k === prox));
+    car.querySelectorAll('.escoar-ponto').forEach((p, k) => p.classList.toggle('ativo', k === prox));
+    const cont = car.closest('.escoar-card') && car.closest('.escoar-card').querySelector('.escoar-contagem');
+    if (cont) cont.textContent = `${prox + 1} / ${slides.length}`;
+    ESCOAR_IDX = prox;
+  });
+}
+setInterval(escoarAvancarTodos, 5000);
 function buildValidadesTickerWidget(goTo) {
-  // Produtos a escoar (2026-09-26): mostra 3 de cada vez e vai correndo de baixo para cima sozinho (de 4 em 4 s),
-  // para se verem todos sem clicar; parado enquanto o rato está por cima. "Ver todos" abre as Validades.
   const lista = (STATE.validades || []).slice().sort((a, b) => (a.validade || '').localeCompare(b.validade || ''));
   if (!lista.length) return null;
-  const linha = (r) => { const urg = validadeUrgencia(r.validade); return h('div', { class: 'escoar-linha', title: [r.produto || r.cnp, r.localizacao, urg.texto].filter(Boolean).join(' — ') }, [
-    h('div', { class: 'escoar-linha-texto' }, [
-      h('span', { class: 'escoar-nome' }, r.produto || r.cnp || 'Produto'),
-      r.localizacao ? h('span', { class: 'escoar-loc' }, r.localizacao) : null,
-    ]),
-    h('span', { class: 'escoar-badge ' + urg.classe }, validadeFormatarMesAnoCurto(r.validade)),
-  ]); };
-  // 2026-09-26 (Hugo: "não quero aquele ver todos... devem aparecer logo todos, clicando no card vai diretamente
-  // para a listagem"): a lista ocupa toda a altura do cartão e mostra todos os produtos; só se não couberem todos é
-  // que vai correndo de baixo para cima sozinha. Clicar em qualquer parte do cartão abre as Validades.
-  const faixa = h('div', { class: 'escoar-faixa' }, lista.map(linha));
-  const janela = h('div', { class: 'escoar-janela escoar-janela-cheia' }, faixa);
+  if (ESCOAR_IDX >= lista.length) ESCOAR_IDX = 0;
+  const slide = (r, k) => {
+    const urg = validadeUrgencia(r.validade);
+    const foto = h('div', { class: 'escoar-foto' });
+    foto.innerHTML = ESCOAR_SVG_GENERICO;
+    escoarPorImagem(r, foto);
+    const temQtd = r.quantidade !== null && r.quantidade !== undefined && r.quantidade !== '';
+    return h('div', { class: 'escoar-slide' + (k === ESCOAR_IDX ? ' ativo' : ''), title: [r.produto || r.cnp, r.localizacao, urg.texto].filter(Boolean).join(' — ') }, [
+      foto,
+      h('div', { class: 'escoar-slide-info' }, [
+        h('p', { class: 'escoar-slide-nome' }, r.produto || r.cnp || 'Produto'),
+        h('span', { class: 'escoar-badge ' + urg.classe }, `Validade ${validadeFormatarMesAnoCurto(r.validade)}`),
+        r.localizacao ? h('p', { class: 'escoar-slide-loc' }, [Icon('mapPin', { size: 13, strokeWidth: 2.2 }), ' ', r.localizacao]) : null,
+        temQtd ? h('p', { class: 'escoar-slide-qtd' }, `${r.quantidade} em stock`) : null,
+      ].filter(Boolean)),
+    ]);
+  };
+  const carrossel = h('div', { class: 'escoar-carrossel' }, [
+    h('div', { class: 'escoar-slides' }, lista.map(slide)),
+    lista.length > 1 && lista.length <= 20 ? h('div', { class: 'escoar-pontos' }, lista.map((_, k) => h('span', { class: 'escoar-ponto' + (k === ESCOAR_IDX ? ' ativo' : '') }))) : null,
+  ].filter(Boolean));
   const card = h('div', { class: 'card card-pad escoar-card clickable' }, [
     h('div', { class: 'escoar-cabecalho' }, [
       h('span', { class: 'escoar-titulo' }, [Icon('hourglass', { size: 14, strokeWidth: 2.2 }), ' Produtos a escoar']),
-      h('span', { class: 'escoar-contagem' }, String(lista.length)),
+      h('span', { class: 'escoar-contagem', 'data-volatil': '1' }, lista.length > 1 ? `${ESCOAR_IDX + 1} / ${lista.length}` : '1'),
     ]),
-    janela,
+    carrossel,
   ]);
   card.title = 'Abrir a listagem das Validades';
   card.addEventListener('click', () => goTo('validades'));
-  // Corre de forma CONTÍNUA de baixo para cima (2026-09-26, Hugo: "a lista deve correr de baixo para cima,
-  // continuamente, mostrar uns 6"): a lista é duplicada e desliza sem parar, em ciclo, sem saltos; para com o rato
-  // por cima. Só corre se houver mais produtos do que cabem na janela.
-  let escoarPreparada = false;
-  const prepararEscoar = () => {
-    if (escoarPreparada || !card.isConnected || faixa.scrollHeight <= janela.clientHeight + 2) return;
-    escoarPreparada = true;
-    lista.forEach(r => { const copia = linha(r); copia.setAttribute('aria-hidden', 'true'); faixa.appendChild(copia); });
-    const duracaoEscoar = Math.max(12, lista.length * 3);
-    faixa.style.animationDuration = `${duracaoEscoar}s`;
-    // Sem recomeçar do início a cada redesenho: a lista continua no ponto do ciclo em que ia.
-    faixa.style.animationDelay = `-${(((typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000) % duracaoEscoar).toFixed(3)}s`;
-    faixa.classList.add('escoar-faixa-a-correr');
-  };
-  registarAjusteAposInserir(prepararEscoar);
-  requestAnimationFrame(prepararEscoar); // fora da Página Inicial (ou se o ajuste imediato não chegar a correr)
   return card;
 }
 
@@ -25043,7 +25089,7 @@ function buildValidadesPage(container, goTo) {
     // Imagem do produto (2026-10-30) — aparece no Ecrã do Backoffice; vai para o servidor (Ficheiros), como as receitas.
     const imagemCampo = servidorTem('ficheiros') ? buildAnexosRegisto({
       tabela: 'validades', registoId: editingId || null, pendentes: imagensValidadePendentes, categoria: 'Imagem do produto',
-      titulo: 'Imagem do produto (para o Ecrã do Backoffice)', rotulo: () => draft.produto || draft.cnp || 'Produto', tratarImagem: true,
+      titulo: 'Imagem do produto (para o Ecrã do Backoffice)', rotulo: () => draft.produto || draft.cnp || 'Produto', tratarImagem: true, umaImagem: true,
       textoVazio: 'Sem imagem. Na internet: botão direito na imagem › «Copiar imagem» e cola aqui (Ctrl+V). Também podes anexar ou arrastar o ficheiro. A app tira o fundo liso e centra o produto.',
     }) : null;
     if (imagemCampo) { try { imagemCampo.appendChild(validadeBotoesProcurarImagem(() => draft)); } catch (e) { /* ignora */ } }
@@ -25070,6 +25116,7 @@ function buildValidadesPage(container, goTo) {
   }
 
   function build() {
+    window.__validadesFormAberto = !!showForm; // 2026-11-01: com o formulário aberto, nenhum redesenho de fundo volta à lista
     const wrap = h('div', { class: 'animate-in' });
     wrap.appendChild(withBackButton(buildPageHeader('hourglass', 'Validades', 'Produtos a escoar prioritariamente — validade inferior a 1 ano.', STATE.validades.length), goTo, showForm ? cancel : undefined));
 
@@ -38933,6 +38980,9 @@ async function imagemProdutoTratar(ficheiro, opcoes) {
   const TOL = 34;
   const bordaLisa = (opacos.filter(i => dist(i) < TOL).length + transparentes) / borda.length;
   const fundoLiso = bordaLisa >= 0.72;
+  // 2026-11-01 (Hugo: imagem da Mebocaína com partes brancas da caixa apagadas): fundo branco nunca se apaga — no
+  // ecrã o produto aparece sempre sobre branco, por isso fica igual e a embalagem não perde as partes brancas.
+  const fundoBranco = fundoLiso && opacos.length >= transparentes && fundo.every(v => v >= 228);
   // 2) Máscara do fundo: tudo o que está ligado às margens e é parecido com a cor do fundo (ou já transparente).
   const mascara = new Uint8Array(W * H);
   if (fundoLiso) {
@@ -38948,11 +38998,11 @@ async function imagemProdutoTratar(ficheiro, opcoes) {
   let x0 = W, y0 = H, x1 = -1, y1 = -1;
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     const i = y * W + x;
-    if (mascara[i] || px[i * 4 + 3] < 20) continue;
+    if ((fundoBranco ? dist(i) < 14 : mascara[i]) || px[i * 4 + 3] < 20) continue;
     if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
   }
   if (x1 < x0 || (x1 - x0) * (y1 - y0) < W * H * 0.01) { x0 = 0; y0 = 0; x1 = W - 1; y1 = H - 1; } // nada encontrado → a imagem toda
-  const removido = fundoLiso && removerFundo;
+  const removido = fundoLiso && removerFundo && !fundoBranco;
   if (removido) {
     for (let i = 0; i < W * H; i++) {
       if (mascara[i]) { px[i * 4 + 3] = 0; continue; }
@@ -38974,7 +39024,7 @@ async function imagemProdutoTratar(ficheiro, opcoes) {
   const tipo = removido ? 'image/png' : 'image/jpeg';
   const blob = await new Promise(res => out.toBlob(res, tipo, 0.88));
   const base = String(ficheiro.name || 'produto').replace(/\.[a-z0-9]+$/i, '') || 'produto';
-  return { blob, nome: `${base}.${removido ? 'png' : 'jpg'}`, tipo, fundoLiso, removido, corFundo: fundo, larg: sw, alt: sh };
+  return { blob, nome: `${base}.${removido ? 'png' : 'jpg'}`, tipo, fundoLiso, fundoBranco, removido, corFundo: fundo, larg: sw, alt: sh };
 }
 // Janela «antes / depois» para uma imagem. Resolve com o File a gravar (tratado ou original) ou null (cancelar).
 function imagemProdutoEscolher(ficheiro) {
@@ -39001,13 +39051,13 @@ function imagemProdutoEscolher(ficheiro) {
         return;
       }
       const kb = (b) => `${Math.max(1, Math.round(b / 1024))} KB`;
-      painel.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 10px;' }, r.removido ? 'Fundo retirado, margens cortadas e produto centrado — fica igual aos outros no Ecrã do Backoffice.'
+      painel.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 10px;' }, r.fundoBranco ? 'Fundo branco mantido (assim as partes brancas da embalagem não se perdem), margens cortadas e produto centrado — fica igual aos outros no Ecrã do Backoffice.' : r.removido ? 'Fundo retirado, margens cortadas e produto centrado — fica igual aos outros no Ecrã do Backoffice.'
         : r.fundoLiso ? 'Margens cortadas e produto centrado, com o fundo original.' : 'O fundo desta imagem não é liso, por isso fica como está — só centrada e reduzida.'));
       painel.appendChild(h('div', { class: 'img-prod-comparar' }, [
         h('figure', {}, [h('div', { class: 'img-prod-quadro' }, h('img', { src: urlOriginal, alt: 'Original' })), h('figcaption', {}, `Original · ${r.larg}×${r.alt} · ${kb(ficheiro.size)}`)]),
         h('figure', {}, [h('div', { class: 'img-prod-quadro img-prod-xadrez' }, h('img', { src: urlTratada, alt: 'Tratada' })), h('figcaption', {}, `Tratada · ${IMG_PRODUTO_LADO}×${IMG_PRODUTO_LADO} · ${kb(r.blob.size)}`)]),
       ]));
-      const cb = h('input', { type: 'checkbox', checked: manterFundo ? 'checked' : undefined, disabled: r.fundoLiso ? undefined : 'disabled' });
+      const cb = h('input', { type: 'checkbox', checked: manterFundo ? 'checked' : undefined, disabled: r.fundoLiso && !r.fundoBranco ? undefined : 'disabled' });
       cb.addEventListener('change', () => { manterFundo = cb.checked; processar(); });
       painel.appendChild(h('label', { class: 'img-prod-opcao' }, [cb, h('span', {}, 'Manter o fundo')]));
       painel.appendChild(h('div', { class: 'form-actions', style: 'margin-top:12px;flex-wrap:wrap;' }, [
@@ -39036,6 +39086,8 @@ function buildAnexosRegisto(opts) {
   let existentes = [];
   let aCarregar = !!opts.registoId;
   let aEnviar = 0;
+  let botaoAnexar = null;
+  const previa = opts.umaImagem ? h('div', { class: 'anexo-previa-tv', style: 'display:none;' }) : null;
   const lista = h('div', { class: 'anexos-lista' });
   function linha(f, pendente, idx) {
     return h('div', { class: 'anexo-item' + (pendente ? ' anexo-pendente' : '') }, [
@@ -39047,9 +39099,24 @@ function buildAnexosRegisto(opts) {
         : (isMasterUser() ? h('button', { type: 'button', class: 'anexo-remover', title: 'Eliminar', 'aria-label': 'Eliminar', onclick: () => confirmarEliminarFicheiro(f, recarregar) }, Icon('trash', { size: 14 })) : null),
     ].filter(Boolean));
   }
+  function desenharPrevia() {
+    if (!previa) return;
+    clear(previa);
+    const pend = (opts.pendentes || [])[0];
+    const imgs = existentes.filter(ficheiroEhImagem).sort((a, b) => String(b.criado_em || '').localeCompare(String(a.criado_em || '')));
+    if (!pend && !imgs.length) { previa.style.display = 'none'; if (botaoAnexar) botaoAnexar.lastChild.textContent = ' Escolher imagem'; return; }
+    previa.style.display = '';
+    if (botaoAnexar) botaoAnexar.lastChild.textContent = ' Substituir imagem';
+    const foto = h('div', { class: 'previa-foto' }); foto.innerHTML = ESCOAR_SVG_GENERICO;
+    const por = (url) => { foto.style.backgroundImage = `url("${url}")`; foto.classList.add('com-imagem'); };
+    if (pend) por(URL.createObjectURL(pend));
+    else ficheiroObterComMemoria(imgs[0]).then(b => por(URL.createObjectURL(b))).catch(() => {});
+    previa.append(foto, h('div', {}, [h('strong', {}, (opts.rotulo && opts.rotulo()) || 'Produto'), h('span', {}, pend ? 'Assim vai aparecer no Ecrã do Backoffice (grava ao guardar)' : 'Assim aparece no Ecrã do Backoffice')]));
+  }
   function desenhar() {
     clear(lista);
     if (aCarregar) { lista.appendChild(h('p', { class: 'anexos-vazio' }, 'A carregar…')); return; }
+    desenharPrevia();
     existentes.forEach(f => lista.appendChild(linha(f, false)));
     (opts.pendentes || []).forEach((f, i) => lista.appendChild(linha({ nome: f.name, tamanho: f.size }, true, i)));
     if (aEnviar) lista.appendChild(h('p', { class: 'anexos-vazio' }, `A enviar ${aEnviar} ficheiro${aEnviar > 1 ? 's' : ''}…`));
@@ -39062,25 +39129,30 @@ function buildAnexosRegisto(opts) {
   }
   async function adicionar(ficheiros) {
     let recebidos = [...ficheiros];
+    if (opts.umaImagem) recebidos = recebidos.slice(0, 1); // 2026-11-01: uma só imagem por produto
     if (opts.tratarImagem) recebidos = await imagemProdutoTratarLista(recebidos); // imagens dos produtos: tratadas antes de gravar
     const novos = recebidos.filter(f => {
       if (f.size > FICHEIRO_TAM_MAX) { showToast(`«${f.name}» tem mais de 25 MB.`, 'error'); return false; }
       return true;
     });
     if (!novos.length) return;
-    if (!opts.registoId) { opts.pendentes.push(...novos); desenhar(); return; }
+    if (opts.umaImagem) novos.splice(1);
+    if (!opts.registoId) { if (opts.umaImagem) opts.pendentes.splice(0, opts.pendentes.length); opts.pendentes.push(...novos); desenhar(); return; }
+    const antigas = opts.umaImagem ? existentes.filter(ficheiroEhImagem) : [];
     aEnviar += novos.length; desenhar();
     const n = await carregarFicheirosParaServidor(novos, { origem_tabela: opts.tabela, origem_id: opts.registoId, origem_rotulo: opts.rotulo(), categoria: opts.categoria || '', utente: opts.utente ? opts.utente() : '' });
     aEnviar -= novos.length;
-    if (n) showToast(n === 1 ? 'Ficheiro guardado.' : `${n} ficheiros guardados.`, 'success');
+    if (n) showToast(n === 1 ? (opts.umaImagem ? 'Imagem guardada.' : 'Ficheiro guardado.') : `${n} ficheiros guardados.`, 'success');
+    if (n && antigas.length) { for (const f of antigas) { try { await sb.ficheiros.eliminar(f.id); } catch (e) { /* sem permissão: fica a mais recente */ } } }
+    if (n && opts.tratarImagem) { try { ECRA_TV.imagens = null; } catch (e) { /* ignora */ } }
     recarregar();
   }
-  const escolher = h('input', { type: 'file', multiple: 'multiple', style: 'display:none;' });
+  const escolher = h('input', opts.umaImagem ? { type: 'file', accept: 'image/*', style: 'display:none;' } : { type: 'file', multiple: 'multiple', style: 'display:none;' });
   escolher.addEventListener('change', () => { adicionar(escolher.files); escolher.value = ''; });
   const fotografar = h('input', { type: 'file', accept: 'image/*', capture: 'environment', style: 'display:none;' });
   fotografar.addEventListener('change', () => { adicionar(fotografar.files); fotografar.value = ''; });
   const botoes = h('div', { class: 'anexos-botoes' }, [
-    h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => escolher.click() }, [Icon('upload', { size: 15 }), ' Anexar ficheiro']),
+    (botaoAnexar = h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => escolher.click() }, [Icon('upload', { size: 15 }), opts.umaImagem ? ' Escolher imagem' : ' Anexar ficheiro'])),
     ehDispositivoMobileOuTablet() ? h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => fotografar.click() }, [Icon('camera', { size: 15 }), ' Fotografar']) : null,
     escolher, fotografar,
   ].filter(Boolean));
@@ -39088,6 +39160,7 @@ function buildAnexosRegisto(opts) {
   caixa.addEventListener('dragleave', () => caixa.classList.remove('anexos-arrastar'));
   caixa.addEventListener('drop', (e) => { e.preventDefault(); caixa.classList.remove('anexos-arrastar'); if (e.dataTransfer && e.dataTransfer.files) adicionar(e.dataTransfer.files); });
   caixa.appendChild(h('label', {}, opts.titulo || 'Ficheiros'));
+  if (previa) caixa.appendChild(previa);
   caixa.appendChild(lista);
   caixa.appendChild(botoes);
   desenhar();
@@ -71792,7 +71865,7 @@ function renderInterno(ehTransicaoDePagina) {
   // trocar. Corrigido marcando o placeholder com dataset.carregando='1' (ver
   // mais abaixo) e excluindo-o explicitamente da proteção: só se salta a
   // reconstrução se o contentor antigo NÃO for um placeholder.
-  if (!ehTransicaoDePagina && tabelasProntas && PAGINAS_NUNCA_RECONSTROI_EM_FUNDO.has(STATE.page) && pageContainerAntigo && pageContainerAntigo.dataset.pagina === STATE.page && pageContainerAntigo.dataset.carregando !== '1') {
+  if (!ehTransicaoDePagina && tabelasProntas && (PAGINAS_NUNCA_RECONSTROI_EM_FUNDO.has(STATE.page) || (STATE.page === 'validades' && window.__validadesFormAberto)) && pageContainerAntigo && pageContainerAntigo.dataset.pagina === STATE.page && pageContainerAntigo.dataset.carregando !== '1') {
     // A sidebar/topbar continuam a atualizar-se normalmente a seguir a
     // este bloco (badges, destaque de página ativa) — só o conteúdo
     // principal do módulo protegido é que fica intocado.
