@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-01 19:55" />
+<meta name="siga-versao" content="2026-11-01 20:10" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -422,6 +422,8 @@
      única linha horizontal, para caber o máximo de produtos no ecrã sem
      scroll excessivo. */
   .validade-item-row{display:flex;align-items:center;gap:10px;padding:6px 14px;}
+  .validade-mini{flex:0 0 auto;width:34px;height:34px;border-radius:7px;border:1px solid #e2e8f0;background:#fff center/contain no-repeat;display:flex;align-items:center;justify-content:center;}
+  .validade-mini svg{width:78%;height:78%;opacity:.55;} .validade-mini.com-imagem svg{display:none;}
   .validade-item-row.row-selected{background:var(--pharm-100) !important;}
   .validade-item-urgente{border-left:4px solid var(--red);background:var(--red-bg);}
   .validade-item-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;overflow:hidden;}
@@ -21089,7 +21091,7 @@ function escoarPorImagem(r, alvo) {
     ecraTvPreCarregarImagem(f).then(por).catch(() => {});
   };
   if (ECRA_TV.imagens) aplicar();
-  else if (typeof servidorTem === 'function' && servidorTem('ficheiros')) ecraTvCarregarImagens().then(aplicar).catch(() => {});
+  else ecraTvCarregarImagens().then(aplicar).catch(() => {});
 }
 function escoarIrPara(car, alvo) {
   const slides = car.querySelectorAll('.escoar-slide');
@@ -25240,8 +25242,10 @@ function buildValidadesPage(container, goTo) {
         cb.addEventListener('click', (e) => e.stopPropagation());
         cb.addEventListener('change', () => toggleSelect(r.id));
 
+        const mini = h('div', { class: 'validade-mini', title: 'Imagem do produto' }); mini.innerHTML = ESCOAR_SVG_GENERICO; escoarPorImagem(r, mini);
         const row = h('div', { class: 'card validade-item-row' + (perto ? ' validade-item-urgente' : '') + (selected ? ' row-selected' : ''), style: 'cursor:pointer;' }, [
           cb,
+          mini,
           h('div', { class: 'validade-item-info' }, [
             h('div', { class: 'validade-item-linha1' }, [
               h('span', { class: 'validade-item-nome' }, r.produto || r.cnp || 'Sem nome'),
@@ -33743,26 +33747,57 @@ function ecraTvEquipaHoje(dataRef) {
   if (folga.length) out.ausentes.push({ rotulo: 'Folga', nomes: folga.sort((a, b) => a.localeCompare(b)) });
   return out;
 }
-// Imagens das Validades (anexos no servidor) — lista lida no máximo de 10 em 10 min; cada imagem fica em memória.
+// Imagens das Validades e Campanhas (anexos no servidor) — 2026-11-01 (Hugo: "problemas a mostrar imagem… corrige de vez,
+// independentemente do sítio onde se faça o upload"). Junta as duas fontes (rota do ecrã + Ficheiros), um só pedido de
+// cada vez, volta a tentar em 30 s se falhar (nunca fica 10 min «sem imagens» por causa de uma falha) e a lista é
+// refeita sempre que alguém carrega/substitui uma imagem em qualquer sítio da app (aviso em tempo real do servidor).
+let ECRA_TV_IMG_PEDIDO = null;
+function ecraTvImagensInvalidar() { ECRA_TV.imagens = null; ECRA_TV.imagensCampanha = null; ECRA_TV.imagensEm = 0; }
 async function ecraTvCarregarImagens() {
-  if (!(typeof servidorTem === 'function' && servidorTem('ficheiros')) || !sb || !sb.ficheiros) return;
+  if (!sb || !sb.ficheiros) return;
   if (ECRA_TV.imagens && Date.now() - ECRA_TV.imagensEm < 10 * 60000) return;
-  ECRA_TV.imagensEm = Date.now();
-  try {
-    // 2026-11-01: primeiro pela rota própria do ecrã (funciona também na conta da TV); servidor antigo → Ficheiros.
-    const doEcra = sb.ficheiros.imagensEcra ? await sb.ficheiros.imagensEcra().catch(() => null) : null;
-    if (doEcra) doEcra.forEach(f => { f.__ecra = true; });
-    const lista = doEcra ? doEcra.filter(f => f.origem_tabela === 'validades') : await sb.ficheiros.listar({ tabela: 'validades', limite: 500 });
-    const mapa = new Map();
-    (lista || []).filter(ficheiroEhImagem).sort((a, b) => String(b.criado_em || '').localeCompare(String(a.criado_em || ''))).forEach(f => { const k = String(f.origem_id); if (!mapa.has(k)) mapa.set(k, f); });
-    ECRA_TV.imagens = mapa;
-    const listaC = doEcra ? doEcra.filter(f => f.origem_tabela === 'campanhas') : await sb.ficheiros.listar({ tabela: 'campanhas', limite: 300 });
-    const mapaC = new Map();
-    (listaC || []).filter(ficheiroEhImagem).sort((a, b) => String(b.criado_em || '').localeCompare(String(a.criado_em || ''))).forEach(f => { const k = String(f.origem_id); if (!mapaC.has(k)) mapaC.set(k, f); });
-    ECRA_TV.imagensCampanha = mapaC;
-    await Promise.all([...mapa.values(), ...mapaC.values()].slice(0, 60).map(f => ecraTvPreCarregarImagem(f).catch(() => false)));
-  } catch (e) { ECRA_TV.imagens = ECRA_TV.imagens || new Map(); }
+  if (ECRA_TV_IMG_PEDIDO) return ECRA_TV_IMG_PEDIDO;
+  ECRA_TV_IMG_PEDIDO = (async () => {
+    const todos = new Map();
+    let algumaFonte = false;
+    try {
+      const doEcra = sb.ficheiros.imagensEcra ? await sb.ficheiros.imagensEcra().catch(() => null) : null;
+      if (Array.isArray(doEcra)) { algumaFonte = true; doEcra.forEach(f => { f.__ecra = true; todos.set(String(f.id), f); }); }
+    } catch (e) { /* segue */ }
+    for (const tabela of ['validades', 'campanhas']) {
+      try {
+        const l = await sb.ficheiros.listar({ tabela, limite: 1000 });
+        if (Array.isArray(l)) { algumaFonte = true; l.forEach(f => { const k = String(f.id); if (!todos.has(k)) todos.set(k, Object.assign({ origem_tabela: tabela }, f)); }); }
+      } catch (e) { /* a conta da TV não chega aqui — fica a rota do ecrã */ }
+    }
+    if (!algumaFonte) { ECRA_TV.imagens = ECRA_TV.imagens || new Map(); ECRA_TV.imagensEm = Date.now() - 9.5 * 60000; return; } // tenta outra vez daqui a 30 s
+    const mapaDe = (tabela) => {
+      const m = new Map();
+      [...todos.values()].filter(f => f.origem_tabela === tabela && ficheiroEhImagem(f))
+        .sort((a, b) => String(b.criado_em || '').localeCompare(String(a.criado_em || '')))
+        .forEach(f => { const k = String(f.origem_id); if (!m.has(k)) m.set(k, f); });
+      return m;
+    };
+    ECRA_TV.imagens = mapaDe('validades');
+    ECRA_TV.imagensCampanha = mapaDe('campanhas');
+    ECRA_TV.imagensEm = Date.now();
+    await Promise.all([...ECRA_TV.imagens.values(), ...ECRA_TV.imagensCampanha.values()].slice(0, 60).map(f => ecraTvPreCarregarImagem(f).catch(() => false)));
+  })().finally(() => { ECRA_TV_IMG_PEDIDO = null; });
+  return ECRA_TV_IMG_PEDIDO;
 }
+// Uma imagem carregada/substituída em qualquer posto: a lista refaz-se e a Página Inicial redesenha o cartão.
+setTimeout(() => {
+  try {
+    ouvirFicheiros((p) => {
+      if (!p || (p.origem_tabela !== 'validades' && p.origem_tabela !== 'campanhas')) return;
+      ecraTvImagensInvalidar();
+      ecraTvCarregarImagens().then(() => {
+        if (typeof ECRA_TV.desenhar === 'function' && ECRA_TV.overlay && ECRA_TV.overlay.isConnected) ECRA_TV.desenhar();
+        if (STATE.page === 'home') { try { render(); } catch (e) { /* ignora */ } }
+      }).catch(() => {});
+    });
+  } catch (e) { /* sem tempo real */ }
+}, 4000);
 function ecraTvImagemPronta(f, alvo) {
   if (!f) return false;
   const k = String(f.id);
@@ -38884,7 +38919,11 @@ function ficheiroObterComMemoria(f) {
   const id = String(f.id);
   const m = FICHEIROS_EM_MEMORIA.get(id);
   if (m && Date.now() - m.em < 10 * 60000) return m.pedido;
-  const pedido = (f.__ecra && sb.ficheiros.obterEcra ? sb.ficheiros.obterEcra(f.id) : sb.ficheiros.obter(f.id)).then((blob) => (blob.type ? blob : new Blob([blob], { type: f.tipo_mime || 'application/octet-stream' })));
+  const viaEcra = () => sb.ficheiros.obterEcra ? sb.ficheiros.obterEcra(f.id) : Promise.reject(new Error('sem rota'));
+  const viaFicheiros = () => sb.ficheiros.obter(f.id);
+  const soImagem = (b) => (b && b.size && !/json|html|text/i.test(b.type || '') ? b : Promise.reject(new Error('não é imagem')));
+  const primeiro = f.__ecra ? viaEcra : viaFicheiros, segundo = f.__ecra ? viaFicheiros : viaEcra;
+  const pedido = primeiro().then(soImagem).catch(() => segundo().then(soImagem)).then((blob) => (blob.type ? blob : new Blob([blob], { type: f.tipo_mime || 'application/octet-stream' })));
   FICHEIROS_EM_MEMORIA.set(id, { pedido, em: Date.now() });
   pedido.catch(() => FICHEIROS_EM_MEMORIA.delete(id));
   while (FICHEIROS_EM_MEMORIA.size > 6) FICHEIROS_EM_MEMORIA.delete(FICHEIROS_EM_MEMORIA.keys().next().value);
@@ -39075,11 +39114,13 @@ function validadesAbrirImagensEmFalta(lista, aoTerminar) {
 }
 async function carregarFicheirosParaServidor(lista, meta) {
   let ok = 0;
+  const imagemDaTv = meta && (meta.origem_tabela === 'validades' || meta.origem_tabela === 'campanhas');
   for (const fich of lista) {
     if (fich.size > FICHEIRO_TAM_MAX) { showToast(`«${fich.name}» tem mais de 25 MB — não foi enviado.`, 'error'); continue; }
     try { await sb.ficheiros.carregar(fich, meta); ok++; }
     catch (e) { showToast(`Não foi possível enviar «${fich.name}». ${e.message || ''}`, 'error'); }
   }
+  if (ok && imagemDaTv) { try { ecraTvImagensInvalidar(); ecraTvCarregarImagens().catch(() => {}); } catch (e) { /* ignora */ } }
   return ok;
 }
 // Bloco «ficheiros» dentro de um formulário. Registo já gravado → envia logo; registo novo → guarda em `pendentes`
