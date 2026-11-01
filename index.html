@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-01 15:20" />
+<meta name="siga-versao" content="2026-11-01 16:00" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -7396,6 +7396,18 @@ body.tem-barra-inferior .topbar-mobile > .hamburger:first-child{display:none;}
   .fachada-caixas{display:flex;flex-wrap:wrap;gap:8px;} .fachada-caixas label{display:flex;align-items:center;gap:6px;font-size:13px;background:#f7fafc;border:1px solid #dbe5ee;border-radius:10px;padding:6px 10px;cursor:pointer;}
 
   /* Imagem do produto tratada ao carregar (2026-10-31) */
+  /* Procurar imagem do produto (2026-11-01) */
+  .val-img-procurar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;font-size:12.5px;color:#475569;}
+  .val-img-procurar > span{font-weight:700;}
+  .val-img-painel{max-width:620px;width:min(620px,94vw);}
+  .val-img-topo{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;}
+  .val-img-contador{font-size:12px;font-weight:800;color:#64748b;background:#f1f5f9;border-radius:999px;padding:3px 10px;}
+  .val-img-produto{display:flex;flex-direction:column;gap:2px;padding:10px 12px;border-radius:10px;background:#f8fafc;border:1px solid #e2e8f0;}
+  .val-img-produto strong{font-size:15px;} .val-img-produto span{font-size:12.5px;color:#64748b;}
+  .val-img-zona{margin-top:12px;display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center;padding:26px 16px;border:2px dashed #94a3b8;border-radius:12px;color:#334155;cursor:pointer;outline:none;}
+  .val-img-zona:focus,.val-img-zona.arrastar{border-color:#16a34a;background:#f0fdf4;}
+  .val-img-zona span{font-size:12.5px;color:#64748b;max-width:420px;}
+  .val-img-falta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:10px 0 12px;padding:8px 12px;border-radius:10px;background:#fffbeb;border:1px solid #fde68a;font-size:13px;}
   .img-prod-painel{max-width:640px;}
   .img-prod-comparar{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
   .img-prod-comparar figure{margin:0;} .img-prod-comparar figcaption{margin-top:6px;font-size:12px;color:#5b7a92;text-align:center;}
@@ -25018,6 +25030,7 @@ function buildValidadesPage(container, goTo) {
       titulo: 'Imagem do produto (para o Ecrã do Backoffice)', rotulo: () => draft.produto || draft.cnp || 'Produto', tratarImagem: true,
       textoVazio: 'Sem imagem. Na internet: botão direito na imagem › «Copiar imagem» e cola aqui (Ctrl+V). Também podes anexar ou arrastar o ficheiro. A app tira o fundo liso e centra o produto.',
     }) : null;
+    if (imagemCampo) { try { imagemCampo.appendChild(validadeBotoesProcurarImagem(() => draft)); } catch (e) { /* ignora */ } }
     const campos = [
       buildCnpAutoFillField(),
       h('div', { class: 'field span2' }, [h('label', {}, 'Nome do Produto / Descrição'), produtoInput]),
@@ -25046,6 +25059,17 @@ function buildValidadesPage(container, goTo) {
 
     if (showForm) { wrap.appendChild(buildForm()); return wrap; }
 
+    // 2026-11-01: produtos sem imagem → percorrer um a um (procurar no site, copiar, Ctrl+V).
+    if (typeof servidorTem === 'function' && servidorTem('ficheiros')) {
+      const faixa = h('div', { class: 'val-img-falta', style: 'display:none;' });
+      wrap.appendChild(faixa);
+      validadesSemImagem().then(semImg => {
+        if (!semImg || !semImg.length || !faixa.isConnected) return;
+        faixa.style.display = '';
+        faixa.append(Icon('image', { size: 16 }), h('span', { style: 'flex:1;min-width:200px;' }, `${semImg.length} produto${semImg.length === 1 ? '' : 's'} sem imagem (no Ecrã do Backoffice aparece a imagem genérica).`),
+          h('button', { type: 'button', class: 'btn btn-primary btn-sm', onclick: () => requireAuth(() => validadesAbrirImagensEmFalta(semImg.slice(), (n) => { if (n) render(); })) }, 'Pôr imagens'));
+      }).catch(() => { /* sem servidor de ficheiros */ });
+    }
     const searchInput = h('input', { class: 'search-input', type: 'text', placeholder: 'Pesquisar por produto, CNP ou localização...' });
     searchInput.value = searchQuery;
     wrap.appendChild(searchInput);
@@ -38703,6 +38727,120 @@ function confirmarEliminarFicheiro(f, depois) {
     try { await sb.ficheiros.eliminar(f.id); showToast('Ficheiro eliminado.', 'success'); if (depois) depois(); }
     catch (e) { showToast(`Não foi possível eliminar. ${e.message || ''}`, 'error'); }
   }, { danger: true, confirmLabel: 'Eliminar' });
+}
+// ---- Procurar a imagem do produto (2026-11-01) ----
+// Hugo: "Semiautomático: junto a cada produto a escoar sem imagem, um botão «Procurar imagem» que abre a pesquisa desse
+// CNP no site das Farmácias Portuguesas… copiar imagem e, no SIGA, Ctrl+V". O site não deixa programas lerem as páginas,
+// por isso é a pessoa que procura (no browser) e valida; o SIGA trata a imagem e grava-a no servidor.
+function validadeUrlsPesquisa(r) {
+  const cnp = String((r && r.cnp) || '').replace(/\D/g, '');
+  const nome = String((r && r.produto) || '').replace(/\s+/g, ' ').trim();
+  const fp = (q) => 'https://www.farmaciasportuguesas.pt/catalogo/catalogsearch/result/?q=' + encodeURIComponent(q);
+  return {
+    cnp: cnp ? fp(cnp) : null,
+    nome: nome ? fp(nome.split(' ').slice(0, 6).join(' ')) : null,
+    // 2026-11-01: as Farmácias Portuguesas não têm todas as imagens. O CNP aparece nas páginas de quase todas as farmácias
+    // online portuguesas, por isso o Google Imagens só em sites .pt junta-as todas numa pesquisa (a mais completa).
+    google: (cnp || nome) ? 'https://www.google.com/search?tbm=isch&q=' + encodeURIComponent([cnp, nome.split(' ').slice(0, 5).join(' '), 'site:.pt'].filter(Boolean).join(' ')) : null,
+  };
+}
+function validadeBotoesProcurarImagem(obterRegisto) {
+  const abrir = (qual) => {
+    const u = validadeUrlsPesquisa(obterRegisto())[qual];
+    if (!u) { showToast(qual === 'cnp' ? 'Escreve primeiro o CNP.' : 'Escreve primeiro o nome do produto.', 'info'); return; }
+    try { window.open(u, '_blank', 'noopener'); } catch (e) { location.href = u; }
+  };
+  return h('div', { class: 'val-img-procurar' }, [
+    h('span', {}, 'Procurar imagem:'),
+    h('button', { type: 'button', class: 'btn btn-primary btn-sm', title: 'Imagens de todas as farmácias online portuguesas com este CNP', onclick: () => abrir('google') }, [Icon('search', { size: 13 }), ' Farmácias online (CNP)']),
+    h('button', { type: 'button', class: 'btn btn-secondary btn-sm', onclick: () => abrir('cnp') }, 'Farmácias Portuguesas'),
+    h('button', { type: 'button', class: 'btn btn-secondary btn-sm', onclick: () => abrir('nome') }, 'F. Portuguesas pelo nome'),
+  ]);
+}
+async function validadesSemImagem() {
+  if (!(typeof servidorTem === 'function' && servidorTem('ficheiros')) || !sb || !sb.ficheiros) return null;
+  const lista = await sb.ficheiros.listar({ tabela: 'validades', limite: 1000 });
+  const com = new Set((lista || []).filter(ficheiroEhImagem).map(f => String(f.origem_id)));
+  return (STATE.validades || []).filter(v => v && !v.eliminado && !com.has(String(v.id)))
+    .sort((a, b) => String(a.validade || '').localeCompare(String(b.validade || '')));
+}
+// Percorre, um a um, os produtos a escoar sem imagem: procurar → copiar imagem → Ctrl+V → validar → seguinte.
+function validadesAbrirImagensEmFalta(lista, aoTerminar) {
+  let i = 0, ocupado = false, gravadas = 0;
+  const overlay = h('div', { class: 'modal-overlay' });
+  const painel = h('div', { class: 'modal-panel val-img-painel' });
+  overlay.appendChild(painel);
+  const fechar = () => { document.removeEventListener('paste', aoColar, true); overlay.remove(); if (gravadas) { try { ECRA_TV.imagens = null; } catch (e) { /* ignora */ } } if (aoTerminar) aoTerminar(gravadas); };
+  overlay.addEventListener('click', (e) => { if (e.target === overlay && !ocupado) fechar(); });
+  const ficheiro = h('input', { type: 'file', accept: 'image/*', style: 'display:none' });
+  async function usar(f) {
+    if (ocupado || !f || i >= lista.length) return;
+    if (!/^image\//.test(f.type || '')) { showToast('Isso não é uma imagem. No site: botão direito na fotografia › «Copiar imagem».', 'info'); return; }
+    ocupado = true;
+    try {
+      const escolhido = await imagemProdutoEscolher(f);
+      if (!escolhido) return;
+      const r = lista[i];
+      const n = await carregarFicheirosParaServidor([escolhido], { origem_tabela: 'validades', origem_id: r.id, origem_rotulo: r.produto || r.cnp || 'Produto', categoria: 'Imagem do produto' });
+      if (n) { gravadas++; lista.splice(i, 1); showToast(`Imagem de «${r.produto || r.cnp}» guardada.`, 'success'); }
+    } finally { ocupado = false; desenhar(); }
+  }
+  function aoColar(e) {
+    const itens = [...((e.clipboardData && e.clipboardData.items) || [])];
+    const img = itens.find(x => x.kind === 'file' && /^image\//.test(x.type));
+    if (!img) return;
+    e.preventDefault(); e.stopPropagation();
+    const f = img.getAsFile();
+    if (f) usar(new File([f], `${String(lista[i] && (lista[i].cnp || lista[i].produto) || 'produto').replace(/[^\w-]+/g, '_')}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`, { type: f.type }));
+  }
+  document.addEventListener('paste', aoColar, true);
+  ficheiro.addEventListener('change', () => { const f = ficheiro.files && ficheiro.files[0]; ficheiro.value = ''; if (f) usar(f); });
+  function desenhar() {
+    clear(painel);
+    if (i >= lista.length) {
+      painel.append(
+        h('h3', { class: 'modal-title', style: 'margin:0 0 8px;' }, lista.length ? 'Fim da lista' : 'Todos os produtos têm imagem'),
+        h('p', { style: 'margin:0 0 12px;' }, gravadas ? `${gravadas} imagem${gravadas === 1 ? '' : 'ns'} guardada${gravadas === 1 ? '' : 's'}.${lista.length ? ` Ficaram ${lista.length} por fazer (saltadas).` : ''}` : (lista.length ? `Ficaram ${lista.length} por fazer.` : 'Nada a fazer.')),
+        h('div', { class: 'form-actions' }, [
+          lista.length ? h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => { i = 0; desenhar(); } }, 'Voltar às saltadas') : null,
+          h('button', { type: 'button', class: 'btn btn-primary', onclick: fechar }, 'Fechar'),
+        ].filter(Boolean)));
+      return;
+    }
+    const r = lista[i];
+    const zona = h('div', { class: 'val-img-zona', tabindex: '0' }, [
+      Icon('image', { size: 28 }),
+      h('strong', {}, 'Cola aqui a imagem (Ctrl+V)'),
+      h('span', {}, 'No site: botão direito na fotografia do produto › «Copiar imagem». Também podes arrastar a imagem ou um ficheiro para aqui.'),
+    ]);
+    zona.addEventListener('click', () => ficheiro.click());
+    zona.addEventListener('dragover', (e) => { e.preventDefault(); zona.classList.add('arrastar'); });
+    zona.addEventListener('dragleave', () => zona.classList.remove('arrastar'));
+    zona.addEventListener('drop', async (e) => {
+      e.preventDefault(); zona.classList.remove('arrastar');
+      const f = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) { usar(f); return; }
+      const url = e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain');
+      if (url && /^https?:/i.test(url)) showToast('O site não deixa arrastar a imagem diretamente — usa «Copiar imagem» e Ctrl+V.', 'info', { duracao: 6000 });
+    });
+    painel.append(
+      h('div', { class: 'val-img-topo' }, [h('h3', { class: 'modal-title', style: 'margin:0;' }, 'Imagens dos produtos a escoar'), h('span', { class: 'val-img-contador' }, `${i + 1} de ${lista.length}`)]),
+      h('div', { class: 'val-img-produto' }, [
+        h('strong', {}, r.produto || '(sem nome)'),
+        h('span', {}, [r.cnp ? `CNP ${r.cnp}` : 'Sem CNP', r.validade ? ` · validade ${String(r.validade).slice(0, 7).split('-').reverse().join('/')}` : ''].join('')),
+      ]),
+      validadeBotoesProcurarImagem(() => r),
+      zona, ficheiro,
+      h('div', { class: 'form-actions', style: 'margin-top:12px;' }, [
+        h('button', { type: 'button', class: 'btn btn-secondary', disabled: i === 0 ? 'disabled' : undefined, onclick: () => { i = Math.max(0, i - 1); desenhar(); } }, [Icon('arrowleft', { size: 14 }), ' Anterior']),
+        h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => { i++; desenhar(); } }, ['Saltar ', Icon('arrowright', { size: 14 })]),
+        h('button', { type: 'button', class: 'btn btn-secondary', style: 'margin-left:auto;', onclick: fechar }, 'Fechar'),
+      ]),
+    );
+    setTimeout(() => { try { zona.focus(); } catch (e) { /* ignora */ } }, 50);
+  }
+  document.body.appendChild(overlay);
+  desenhar();
 }
 async function carregarFicheirosParaServidor(lista, meta) {
   let ok = 0;
@@ -77269,7 +77407,7 @@ function buildCartaoCampainha(podeMudar) {
       (() => {
         const sel = h('select', { class: 'select', style: 'width:auto;min-width:150px;', disabled: podeMudar ? undefined : 'disabled', 'aria-label': 'Grupo nas mensagens rápidas' },
           [['backoffice', 'Backoffice'], ['gabinete', 'Gabinete']].map(([v, t]) => h('option', { value: v, selected: cfg.zona === v ? 'selected' : undefined }, t)));
-        sel.addEventListener('change', () => guardar({ zona: sel.value }));
+        sel.addEventListener('change', () => guardar({ zona: sel.value, somBackoffice: sel.value !== 'gabinete' })); // 2026-11-01: o gabinete não toca por defeito
         return sel;
       })(),
     ]) : null,
