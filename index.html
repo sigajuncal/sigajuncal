@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-01 16:00" />
+<meta name="siga-versao" content="2026-11-01 16:45" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -5820,6 +5820,22 @@
   .tv-camp-datas{margin:.2vw 0 0;font-size:1.1vw;font-weight:800;color:#8fb0c3;}
   .tv-camp-datas.urgente{color:#fca5a5;}
   .tv-camp-img{flex:0 0 auto;width:12vw;height:12vw;border-radius:1vw;background:#fff center/contain no-repeat;box-shadow:0 .4vw 1.4vw rgba(0,0,0,.35);}
+  .tv-camp-painel .tv-painel-extra{background:none;padding:0;color:inherit;}
+  .tv-camp-contagem{display:inline-flex;gap:.4vw;}
+  .tv-camp-cont{font-size:.95vw;font-weight:700;border-radius:999px;padding:.25vw .7vw;opacity:.75;}
+  .tv-camp-cont b{font-weight:900;}
+  .tv-camp-cont.agora{background:rgba(74,222,128,.18);color:#bbf7d0;}
+  .tv-camp-cont.breve{background:rgba(147,197,253,.2);color:#dbeafe;}
+  .tv-camp-cont.atual{opacity:1;box-shadow:0 0 0 2px currentColor inset;}
+  .tv-camp-seguir{margin:0;align-self:flex-start;font-size:1.15vw;font-weight:900;letter-spacing:.04em;text-transform:uppercase;color:#0f172a;background:#93c5fd;border-radius:999px;padding:.25vw .9vw;}
+  .tv-camp-seguir span{text-transform:none;font-weight:700;letter-spacing:0;}
+  .tv-camp-breve .tv-camp-negocio{color:#bfdbfe;}
+  .tv-camp-marcas{display:flex;flex-wrap:wrap;gap:.35vw;}
+  .tv-camp-evento .tv-camp-negocio{font-size:3.2vw;}
+  .tv-camp-marcas span{font-size:.9vw;font-weight:700;color:#fff;background:rgba(255,255,255,.12);border-radius:.5vw;padding:.2vw .5vw;}
+  .tv-camp-marcas b{color:#fcd34d;}
+  .tv-camp-barra{height:.35vw;border-radius:999px;background:rgba(255,255,255,.15);margin-top:.6vw;overflow:hidden;}
+  .tv-camp-barra span{display:block;height:100%;background:#fcd34d;border-radius:999px;transition:width .6s ease;}
   .tv-pontos{display:flex;gap:.4vw;justify-content:center;margin-top:.6vw;}
   .tv-pontos span{width:.6vw;height:.6vw;border-radius:50%;background:rgba(255,255,255,.25);}
   .tv-pontos span.ativo{background:#fcd34d;}
@@ -34078,32 +34094,50 @@ function ecraTvConstruir() {
   }
   // ---- Campanhas da farmácia — carrossel em destaque (2026-10-30, Hugo: "devem passar em carrossel com a marca e as
   // condições bem visíveis, esta secção deve ter bastante destaque"). Uma campanha de cada vez, a mudar de 10 em 10 s.
-  const campanhas = (STATE.campanhas || []).filter(c => !c.eliminado && c.mostrarTv !== false && campanhaEstado(c).chave === 'ativa')
+  // 2026-11-01 (Hugo: "campanhas roda com pouca frequência… contagem das campanhas a decorrer e das ainda por vir,
+  // contagens distintas"): passam primeiro as que estão a decorrer, depois as que começam este mês (ou nos próximos
+  // 14 dias), assinaladas «A seguir». Muda de 10 em 10 s.
+  const tvCampVisivel = (c) => !c.eliminado && c.mostrarTv !== false;
+  const limiteBreve = (() => { const d = new Date(); d.setDate(d.getDate() + 14); const a = dateToISO(d), b = fimDoMesISO(); return a > b ? a : b; })();
+  const campAtivas = (STATE.campanhas || []).filter(c => tvCampVisivel(c) && campanhaEstado(c).chave === 'ativa')
     .sort((a, b) => String(a.dataFim || '9').localeCompare(String(b.dataFim || '9')));
+  const campBreve = (STATE.campanhas || []).filter(c => tvCampVisivel(c) && campanhaEstado(c).chave === 'futura' && String(c.dataInicio || '') <= limiteBreve)
+    .sort((a, b) => String(a.dataInicio || '9').localeCompare(String(b.dataInicio || '9')));
+  const campanhas = campAtivas.concat(campBreve);
   let painelCampanhas;
-  if (!campanhas.length) painelCampanhas = ecraTvPainel('tag', 'Campanhas em curso', '', [ecraTvVazio('Sem campanhas em curso.')], 'tv-camp-painel');
+  if (!campanhas.length) painelCampanhas = ecraTvPainel('tag', 'Campanhas', '', [ecraTvVazio('Sem campanhas em curso.')], 'tv-camp-painel');
   else {
     ECRA_TV.idxCampanha = ECRA_TV.idxCampanha % campanhas.length;
     const c = campanhas[ECRA_TV.idxCampanha];
     const r = campanhaRegra(c), e = campanhaEstado(c);
+    const breve = e.chave === 'futura';
+    const umDia = c.dataInicio && c.dataInicio === c.dataFim;
+    const posAtiva = breve ? null : ECRA_TV.idxCampanha + 1, posBreve = breve ? ECRA_TV.idxCampanha - campAtivas.length + 1 : null;
+    const contagem = h('span', { class: 'tv-camp-contagem' }, [
+      h('span', { class: 'tv-camp-cont agora' + (breve ? '' : ' atual') }, [h('b', {}, posAtiva ? `${posAtiva}/${campAtivas.length}` : String(campAtivas.length)), ' a decorrer']),
+      campBreve.length ? h('span', { class: 'tv-camp-cont breve' + (breve ? ' atual' : '') }, [h('b', {}, posBreve ? `${posBreve}/${campBreve.length}` : String(campBreve.length)), ' a seguir']) : null,
+    ].filter(Boolean));
     const imagem = h('div', { class: 'tv-camp-img' });
     const temImagem = ecraTvImagemCampanha(c, imagem);
-    painelCampanhas = ecraTvPainel('tag', 'Campanhas em curso', campanhas.length > 1 ? `${ECRA_TV.idxCampanha + 1} / ${campanhas.length}` : '', [
-      h('div', { class: 'tv-camp' + (temImagem ? ' com-img' : ''), 'data-chave': 'c' + c.id, 'data-ajustar': '1' }, [
+    painelCampanhas = ecraTvPainel('tag', 'Campanhas', contagem, [
+      h('div', { class: 'tv-camp' + (temImagem ? ' com-img' : '') + (breve ? ' tv-camp-breve' : '') + (c.tipoPromocao === 'evento' ? ' tv-camp-evento' : ''), 'data-chave': 'c' + c.id, 'data-ajustar': '1' }, [
         h('div', { class: 'tv-camp-texto' }, [
-          h('p', { class: 'tv-camp-marca' }, String(c.marca || '').trim() || campanhaAbrangenciaTexto(c)),
-          h('p', { class: 'tv-camp-titulo' }, [c.titulo || 'Campanha', c.marca ? h('span', {}, ` · ${({ gama: c.gama ? `gama ${c.gama}` : 'gama', categoria: c.categoria || 'categoria', produtos: 'produtos indicados' })[c.abrangencia] || 'toda a marca'}`) : null].filter(Boolean)),
+          breve ? h('p', { class: 'tv-camp-seguir' }, [`A seguir · ${umDia ? 'só dia' : 'começa'} ${String(c.dataInicio).slice(8, 10)}/${String(c.dataInicio).slice(5, 7)}`, e.dias !== null ? h('span', {}, e.dias === 1 ? ' (amanhã)' : ` (daqui a ${e.dias} dias)`) : null].filter(Boolean)) : null,
+          h('p', { class: 'tv-camp-marca' }, c.tipoPromocao === 'evento' ? (c.titulo || 'Evento') : (String(c.marca || '').trim() || campanhaAbrangenciaTexto(c))),
+          c.tipoPromocao === 'evento' ? null : h('p', { class: 'tv-camp-titulo' }, [c.titulo || 'Campanha', c.marca ? h('span', {}, ` · ${({ gama: c.gama ? `gama ${c.gama}` : 'gama', categoria: c.categoria || 'categoria', produtos: 'produtos indicados' })[c.abrangencia] || 'toda a marca'}`) : null].filter(Boolean)),
+          r.marcas ? h('div', { class: 'tv-camp-marcas' }, r.marcas.slice(0, 18).map(m => h('span', {}, [m.marca + (m.gama ? ` ${m.gama}` : ''), m.oferta ? h('b', {}, ` ${m.oferta.split(' · ')[0]}`) : null].filter(Boolean)))) : null,
           r.escaloes ? h('div', { class: 'tv-camp-escada' }, r.escaloes.map((x, k) => h('div', {}, [h('span', {}, k === r.escaloes.length - 1 && r.escaloes.length > 1 ? `${x.qtd}+ un.` : `${x.qtd} un.`), h('strong', {}, campanhaDesc(x.valor, r.unidade))])))
             : h('p', { class: 'tv-camp-negocio' }, r.grande),
-          (r.frase && !r.escaloes && r.frase !== r.grande) ? h('p', { class: 'tv-camp-frase' }, r.frase) : null,
-          c.descricao && (c.tipoPromocao === 'oferta' || c.tipoPromocao === 'outro') ? null : (c.descricao ? h('p', { class: 'tv-camp-frase' }, c.descricao) : null),
+          (r.frase && !r.escaloes && !r.marcas && r.frase !== r.grande) ? h('p', { class: 'tv-camp-frase' }, r.frase) : null,
+          c.descricao && (c.tipoPromocao === 'oferta' || c.tipoPromocao === 'outro' || c.tipoPromocao === 'evento') ? null : (c.descricao ? h('p', { class: 'tv-camp-frase' }, c.descricao) : null),
           c.abrangencia === 'produtos' && c.produtos ? h('p', { class: 'tv-camp-frase' }, c.produtos) : null,
           c.condicoes ? h('p', { class: 'tv-camp-cond' }, c.condicoes) : null,
-          h('p', { class: 'tv-camp-datas' + (e.dias !== null && e.dias <= 3 ? ' urgente' : '') }, [`Até ${c.dataFim ? formatDate(c.dataFim) : '—'}`, e.dias !== null ? ` · ${e.rotulo.toLowerCase()}` : '']),
+          breve ? (umDia ? null : h('p', { class: 'tv-camp-datas' }, `De ${formatDate(c.dataInicio)} a ${c.dataFim ? formatDate(c.dataFim) : '—'}`))
+            : h('p', { class: 'tv-camp-datas' + (e.dias !== null && e.dias <= 3 ? ' urgente' : '') }, umDia ? 'Só hoje!' : [`Até ${c.dataFim ? formatDate(c.dataFim) : '—'}`, e.dias !== null ? ` · ${e.rotulo.toLowerCase()}` : '']),
         ].filter(Boolean)),
         temImagem ? imagem : null,
       ].filter(Boolean)),
-      campanhas.length > 1 ? h('div', { class: 'tv-pontos' }, campanhas.map((_, k) => h('span', { class: k === ECRA_TV.idxCampanha ? 'ativo' : '' }))) : null,
+      campanhas.length > 1 ? h('div', { class: 'tv-camp-barra' }, [h('span', { style: `width:${Math.round((ECRA_TV.idxCampanha + 1) / campanhas.length * 100)}%;` + (breve ? 'background:#93c5fd;' : '') })]) : null,
     ].filter(Boolean), 'tv-camp-painel');
   }
   // ---- Aviso à equipa (fita no fundo) ----
@@ -35542,7 +35576,7 @@ function buildEcraBackofficePage(container, goTo) {
     if (n % ECRA_TV_CICLO_PASSOS === ECRA_TV_CICLO_PASSOS - ECRA_TV_EXTRA_PASSOS - 3) ecraTvMeteoDia().catch(() => {}); // tempo fresco antes de entrar
     if (ECRA_TV.pagina === 'principal') {
       ECRA_TV.idxValidade += 1; // produto seguinte a cada 10 s
-      if (n % 2 === 0) ECRA_TV.idxCampanha += 1; // campanhas mudam de página a cada 20 s
+      ECRA_TV.idxCampanha += 1; // campanhas mudam a cada 10 s (2026-11-01: antes 20 s)
     }
     if (n % 30 === 0) ecraTvCarregarImagens().then(desenhar);
     desenhar();
@@ -66212,6 +66246,32 @@ function pontoPerguntarChegadaOuSaida(sit, turno, aoChegar) {
   overlay.appendChild(painel);
   document.body.appendChild(overlay);
 }
+// 2026-11-01 (Hugo: "problemas com os iPhones… ligação ao Wi-Fi enquanto dados móveis… perguntar se este é o seu
+// dispositivo pessoal e que a partir daí será usado para verificar a autenticidade da picagem"): na primeira picagem
+// neste telemóvel pergunta se é o telemóvel pessoal. Se for, fica associado a esta pessoa e, daí em diante, as picagens
+// nele contam logo, mesmo sem o Wi-Fi da farmácia (o servidor deixa de olhar para a rede quando o aparelho é o dela).
+const PONTO_PESSOAL_LS = 'siga_ponto_pessoal';
+function pontoAparelhoPessoalResposta() {
+  try { const o = JSON.parse(localStorage.getItem(PONTO_PESSOAL_LS) || '{}'); return activeUser ? o[String(activeUser.id)] : undefined; } catch (e) { return undefined; }
+}
+function pontoAparelhoPessoalGravar(sim) {
+  try { const o = JSON.parse(localStorage.getItem(PONTO_PESSOAL_LS) || '{}'); o[String(activeUser.id)] = !!sim; localStorage.setItem(PONTO_PESSOAL_LS, JSON.stringify(o)); } catch (e) { /* ignora */ }
+}
+function pontoPerguntarAparelhoPessoal(continuar) {
+  const overlay = h('div', { class: 'modal-overlay' });
+  const painel = h('div', { class: 'modal-panel', style: 'max-width:440px;' });
+  const escolher = (sim) => { pontoAparelhoPessoalGravar(sim); overlay.remove(); continuar(); };
+  painel.append(
+    h('p', { class: 'confirm-message', style: 'font-weight:800;font-size:18px;margin:0 0 8px;' }, '📱 Este telemóvel é teu?'),
+    h('p', { style: 'margin:0 0 14px;font-size:14.5px;line-height:1.45;' }, 'Se for o teu telemóvel pessoal, fica associado a ti e passa a ser a prova das tuas picagens — já não precisas do Wi-Fi da farmácia. Só se pergunta uma vez.'),
+    h('div', { class: 'ponto-escolha-pausa' }, [
+      h('button', { class: 'btn btn-primary', type: 'button', onClick: () => escolher(true) }, 'Sim, é o meu telemóvel'),
+      h('button', { class: 'btn btn-secondary', type: 'button', onClick: () => escolher(false) }, 'Não — estou a usar o de outra pessoa'),
+    ]),
+  );
+  overlay.appendChild(painel);
+  document.body.appendChild(overlay);
+}
 let PONTO_QR_A_PROCESSAR = false;
 async function pontoQrProcessar(codigo) {
   if (PONTO_QR_A_PROCESSAR || !activeUser) return; // duas leituras quase em simultâneo no mesmo aparelho → só uma
@@ -66227,6 +66287,7 @@ async function pontoQrProcessar(codigo) {
     const espera = pontoQrMostrarResultado({ estado: 'a-registar', titulo: 'A registar…' });
     const params = {
       p_qr: codigo, p_chave: pontoChaveAparelho(), p_descricao: pontoDescricaoAparelho(), p_telemovel: dispositivoMobileNativo() && !aparelhoEhTelemovelPosto(),
+      p_pessoal: pontoAparelhoPessoalResposta() !== false,
       p_prevista_entrada: turno ? turno.entrada : null, p_prevista_saida: turno ? turno.saida : null,
       p_hora_declarada: horaDeclarada || null, p_confirmar: !!confirmar,
     };
@@ -66269,18 +66330,22 @@ async function pontoQrProcessar(codigo) {
       const motivos = pontoMotivosLista(reg);
       const senhaWifi = PONTO_REDE_ESTADO_CACHE.dados && PONTO_REDE_ESTADO_CACHE.dados.wifi_senha;
       const dica = (motivos.includes('fora_rede') ? ` Da próxima vez liga-te primeiro ao Wi-Fi ${PONTO_REDE_WIFI_NOME}${senhaWifi ? ` (palavra-passe: ${senhaWifi})` : ''}.` : '')
-        + (motivos.includes('aparelho_novo') ? ' Não é um erro: este telemóvel (ou este browser) ainda não está associado a ti — a Direção associa-o ao validar e as próximas picagens passam a contar logo.' : '')
+        + (motivos.includes('aparelho_novo') ? (pontoAparelhoPessoalResposta() === false ? ' Como não é o teu telemóvel, a Direção valida esta picagem.' : ' Não é um erro: este telemóvel (ou este browser) ainda não está associado a ti — a Direção associa-o ao validar e as próximas picagens passam a contar logo, mesmo sem Wi-Fi.') : '')
         + (motivos.includes('aparelho_de_outro') ? ' Este telemóvel está associado a outra pessoa — se é o teu, avisa a Direção.' : '');
       pontoQrMostrarResultado({ estado: 'pendente', tipo: reg.tipo, titulo: `${nomeTipo} ${registadaTxt}`, hora: reg.horaReal, texto: `${textoPausa ? textoPausa + ' ' : ''}Fica por validar pela Direção (${pontoMotivosTexto(reg)}).${dica}` });
     } else {
-      pontoQrMostrarResultado({ estado: 'ok', tipo: reg.tipo, titulo: `${nomeTipo} ${registadaTxt}`, hora: reg.horaReal, texto: res.aparelho_associado ? `${textoPausa ? textoPausa + ' ' : ''}Este telemóvel ficou associado a ti.` : (textoPausa || (reg.tipo === 'entrada' ? 'Bom trabalho! 👋' : 'Até amanhã! 👋')) });
+      pontoQrMostrarResultado({ estado: 'ok', tipo: reg.tipo, titulo: `${nomeTipo} ${registadaTxt}`, hora: reg.horaReal, texto: res.aparelho_associado ? `${textoPausa ? textoPausa + ' ' : ''}Este telemóvel ficou associado a ti — a partir de agora as picagens nele contam logo, mesmo sem o Wi-Fi da farmácia.` : (textoPausa || (reg.tipo === 'entrada' ? 'Bom trabalho! 👋' : 'Até amanhã! 👋')) });
     }
     render();
   };
-  const seguir = () => {
+  const seguirOriginal = () => {
     // Picou bastante depois da hora prevista: dá para indicar a hora certa (fica por validar), como já existia.
     if (codigo !== 'livre' && comp && !comp.dentro && comp.atraso > 10 && comp.atraso <= 240) { pontoQrPerguntarHoraCerta(tipoPrevisto, prevista, (hora) => enviar(hora, false)); return; }
     enviar('', false);
+  };
+  const seguir = () => {
+    if (codigo !== 'livre' && dispositivoMobileNativo() && !aparelhoEhTelemovelPosto() && pontoAparelhoPessoalResposta() === undefined) { pontoPerguntarAparelhoPessoal(seguirOriginal); return; }
+    seguirOriginal();
   };
   // Entrada esquecida (2026-10-16): sem entrada picada e a leitura não faz sentido como entrada → pergunta sempre.
   if (tipoPrevisto === 'entrada') {
@@ -66473,7 +66538,9 @@ function pontoAbrirConfigRedeQr(rerender) {
   };
   pontoRedeEstado(true).then(desenhar);
 }
-// Folha A4 para afixar: QR code grande + instruções curtas.
+// Folha A4 para afixar (2026-11-01, Hugo: "QR um pouco maior mas letras GARRAFAIS porque há muita tendência para
+// esquecimentos"). Sem o passo do Wi-Fi: o telemóvel pessoal de cada um passa a ser a prova da picagem (o Wi-Fi fica só
+// numa linha pequena em baixo, para quem picar noutro telemóvel).
 function pontoImprimirFolhaQr(codigo, geradoEm, wifiPass) {
   const endereco = pontoQrEndereco(codigo);
   let svg = '';
@@ -66481,78 +66548,35 @@ function pontoImprimirFolhaQr(codigo, geradoEm, wifiPass) {
   const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const data = geradoEm ? formatDate(String(geradoEm).slice(0, 10)) : formatDate(todayISO());
   const pass = String(wifiPass || '').trim();
-  // QR code de ligação ao Wi-Fi (formato padrão WIFI:…, lido pela câmara do iPhone e do Android).
-  const escWifi = (t) => String(t).replace(/([\\;,:"])/g, '\\$1');
-  let svgWifi = '';
-  if (pass) { try { svgWifi = pontoQrSvg(`WIFI:T:WPA;S:${escWifi(PONTO_REDE_WIFI_NOME)};P:${escWifi(pass)};;`, 4); } catch (e) { svgWifi = ''; } }
-  // (2026-10-07, Hugo: "separa um pouco os dois QR codes para as pessoas não confundirem, talvez colocar o grande em
-  // baixo e distinguir mais o que é o de rede e o de picar o ponto") — dois passos numerados e com cores diferentes:
-  // 1 = Wi-Fi (verde, tracejado, QR pequeno com "não pica o ponto"); 2 = Picar o ponto (azul-escuro, QR grande, em baixo).
-  const passoWifi = pass
-    ? `<section class="passo passo-wifi"><div class="passo-cab"><span class="num">1</span>Ligar ao Wi-Fi <b>${esc(PONTO_REDE_WIFI_NOME)}</b></div>
-<div class="wifi-linha">${svgWifi ? `<div class="wifi-qr-bloco"><div class="wifi-qr">${svgWifi}</div><div class="etq etq-wifi">QR do Wi-Fi</div></div>` : ''}
-<div class="wifi-txt"><div class="wifi-senha">Palavra-passe: <b>${esc(pass)}</b></div>
-<div class="wifi-dica">Escreve a palavra-passe ou lê este QR pequeno com a câmara: o telemóvel liga-se à rede.<br><b>Este QR serve só para o Wi-Fi — não pica o ponto.</b></div></div></div></section>`
-    : `<section class="passo passo-wifi"><div class="passo-cab"><span class="num">1</span>Ligar ao Wi-Fi <b>${esc(PONTO_REDE_WIFI_NOME)}</b></div>
-<div class="wifi-dica" style="text-align:center;">Antes de picar, liga o telemóvel ao Wi-Fi da farmácia.</div></section>`;
   const html = `<!doctype html><html lang="pt"><head><meta charset="utf-8"><title>Picar o Ponto — QR code</title>
 <style>
-@page{size:A4 portrait;margin:12mm;}
+@page{size:A4 portrait;margin:10mm;}
 html,body{margin:0;padding:0;}
 *{box-sizing:border-box;}
-body{font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:#0f172a;margin:0;}
-.folha{display:flex;flex-direction:column;align-items:center;text-align:center;height:271mm;overflow:hidden;
-  border:3.5mm solid #dc2626;border-radius:6mm;padding:4mm 5mm 3mm;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+body{font-family:"Arial Black","Segoe UI Black",-apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:#0f172a;margin:0;}
+.folha{display:flex;flex-direction:column;align-items:center;text-align:center;height:277mm;overflow:hidden;
+  border:5mm solid #dc2626;border-radius:7mm;padding:5mm 6mm 4mm;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
 @media screen{.folha{height:auto;overflow:visible;max-width:200mm;margin:6mm auto;}}
-h1{font-size:30pt;margin:0;letter-spacing:.5px;}
-.lembrete{display:inline-block;background:#dc2626;color:#fff;font-size:12.5pt;font-weight:800;letter-spacing:.4px;border-radius:999px;padding:1.5mm 6mm;margin:2mm 0 1mm;}
-.sub{font-size:12pt;color:#334155;margin:1mm 0 3mm;}
-.passo{width:166mm;border-radius:14px;padding:3mm 6mm;break-inside:avoid;}
-.passo-cab{display:flex;align-items:center;justify-content:center;gap:3mm;font-size:16pt;font-weight:800;}
-.num{display:inline-flex;align-items:center;justify-content:center;width:10mm;height:10mm;border-radius:50%;color:#fff;font-size:15pt;font-weight:800;flex-shrink:0;}
-.passo-wifi{background:#f0fdf4;border:2px dashed #16a34a;color:#14532d;}
-.passo-wifi .num{background:#16a34a;}
-.wifi-linha{display:flex;align-items:center;gap:6mm;margin-top:3mm;text-align:left;}
-.wifi-qr-bloco{display:flex;flex-direction:column;align-items:center;flex-shrink:0;}
-.wifi-qr{width:25mm;height:25mm;background:#fff;border-radius:6px;}
-.wifi-qr svg,.qr svg{width:100%;height:100%;display:block;}
-.etq{font-size:9pt;font-weight:800;letter-spacing:.6px;text-transform:uppercase;margin-top:1mm;}
-.etq-wifi{color:#15803d;}
-.wifi-senha{font-size:14pt;font-weight:600;}
-.wifi-senha b{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:15pt;letter-spacing:.5px;}
-.wifi-dica{font-size:10.5pt;color:#166534;margin-top:2mm;line-height:1.4;}
-.seta{font-size:14pt;color:#94a3b8;margin:1mm 0;line-height:1;}
-.passo-ponto{background:#fff;border:3px solid #1e3a8a;color:#0f172a;padding-bottom:3mm;}
-.passo-ponto .num{background:#1e3a8a;}
-.passo-ponto .passo-cab{color:#1e3a8a;}
-.qr{width:${pass ? 60 : 80}mm;height:${pass ? 60 : 80}mm;margin:2mm auto 0;}
-.etq-ponto{color:#1e3a8a;font-size:10pt;}
-ol{text-align:left;font-size:11.5pt;line-height:1.35;max-width:150mm;margin:2mm auto 0;padding-left:8mm;}
-ol li{margin-bottom:1mm;}
-.regras{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:6mm;row-gap:1mm;text-align:left;font-size:9.5pt;color:#334155;width:166mm;padding-top:2mm;margin-top:2mm;border-top:1px solid #cbd5e1;line-height:1.35;}
-.rodape{margin-top:3mm;font-size:9pt;color:#64748b;}
+h1{font-size:62pt;line-height:.95;margin:1mm 0 0;color:#dc2626;letter-spacing:-1px;font-weight:900;text-transform:uppercase;}
+.momentos{display:flex;justify-content:center;gap:2.5mm;flex-wrap:nowrap;margin:4mm 0 3mm;}
+.momentos span{font-size:18pt;font-weight:900;color:#fff;background:#0f172a;border-radius:4mm;padding:1.5mm 3.5mm;letter-spacing:.2px;white-space:nowrap;}
+.qr{width:130mm;height:130mm;margin:2mm auto 0;}
+.qr svg{width:100%;height:100%;display:block;}
+.passos{font-size:24pt;font-weight:900;line-height:1.15;margin:4mm 0 0;color:#1e3a8a;}
+.passos b{color:#dc2626;}
+.pausa{font-size:16pt;font-weight:800;margin:3mm 0 0;color:#0f172a;font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif;}
+.rodape{margin-top:auto;font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif;font-size:9.5pt;color:#475569;line-height:1.4;}
+.rodape b{color:#0f172a;}
 </style></head><body><div class="folha">
-<h1>Picar o Ponto</h1>
-<div class="lembrete">NÃO TE ESQUEÇAS DE PICAR!</div>
-<p class="sub">Entrada ao chegar · Pausa e regresso · Saída no fim do dia</p>
-${passoWifi}
-<div class="seta">▼</div>
-<section class="passo passo-ponto"><div class="passo-cab"><span class="num">2</span>Picar o ponto — lê ESTE QR code</div>
+<h1>Pica<br>o ponto!</h1>
+<div class="momentos"><span>ENTRADA</span><span>PAUSA</span><span>REGRESSO</span><span>SAÍDA</span></div>
 <div class="qr">${svg}</div>
-<div class="etq etq-ponto">QR do ponto</div>
-<ol>
-<li>Abre a <b>câmara</b>, aponta para este QR code e toca na ligação que aparece.</li>
-<li>Se pedir, entra com o teu <b>username e PIN</b>.</li>
-<li>A app regista a <b>ENTRADA</b>, a <b>PAUSA</b> (escolhe «Sair para a pausa») e o <b>REGRESSO</b>, ou a <b>SAÍDA</b>, e mostra a hora em grande.</li>
-</ol></section>
-<div class="regras">
-<div>• Tens pausa no horário? Lê o QR ao sair para a pausa e outra vez ao regressar.</div>
-<div>• Leste o QR duas vezes seguidas? Só conta uma.</div>
-<div>• Saída pouco depois da entrada (ou muito antes do fim do turno) pede confirmação.</div>
-<div>• Fora do Wi-Fi ${esc(PONTO_REDE_WIFI_NOME)}, a picagem fica por validar pela Direção.</div>
-<div>• Esqueceste-te de picar? Avisa a Direção na app (cartão "Picar Ponto").</div>
-</div>
-<p class="rodape">SigaFarmácia · QR code criado a ${esc(data)} — se a Direção trocar o QR code, esta folha deixa de funcionar.</p>
+<p class="passos">📷 Câmara → aponta → <b>toca na ligação</b></p>
+<p class="pausa">Pausa? Lê ao sair e outra vez ao voltar.</p>
+<p class="rodape">Usa o <b>teu telemóvel</b>: na primeira vez a app pergunta se é o teu — a partir daí, as picagens nele contam logo.
+${pass ? `Noutro telemóvel, liga-te primeiro ao Wi-Fi <b>${esc(PONTO_REDE_WIFI_NOME)}</b> (palavra-passe <b>${esc(pass)}</b>).` : `Noutro telemóvel, liga-te primeiro ao Wi-Fi <b>${esc(PONTO_REDE_WIFI_NOME)}</b>.`}
+Esqueceste-te? Avisa a Direção na app (cartão «Picar Ponto»).<br>
+SigaFarmácia · QR code criado a ${esc(data)} — se a Direção trocar o QR code, esta folha deixa de funcionar.</p>
 </div><script>window.onload=function(){setTimeout(function(){window.print();},300);};<\/script></body></html>`;
   const w = window.open('', '_blank');
   if (!w) { showToast('O browser bloqueou a janela de impressão — permite pop-ups para o SigaFarmácia e tenta de novo.', 'error'); return; }
