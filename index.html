@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-01 15:10" />
+<meta name="siga-versao" content="2026-11-01 15:20" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -6173,15 +6173,6 @@
   .camp-registo{margin:0;font-size:11.5px;color:#94a3b8;}
   .camp-marcas-ed{display:flex;flex-direction:column;gap:6px;}
   .camp-marca-ed{display:grid;grid-template-columns:1.2fr 1fr .8fr auto;gap:6px;align-items:center;}
-  .camp-imp{max-width:860px;width:min(860px,94vw);}
-  .camp-imp-corpo{margin-top:12px;}
-  .camp-imp-lista{max-height:52vh;overflow:auto;border:1px solid #e2e8f0;border-radius:10px;}
-  .camp-imp-linha{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto auto;gap:10px;align-items:center;padding:7px 10px;border-bottom:1px solid #f1f5f9;font-size:13px;cursor:pointer;}
-  .camp-imp-linha.evento{background:#111827;color:#f9fafb;} .camp-imp-linha.evento em{color:#d1d5db;}
-  .camp-imp-linha.inativa{opacity:.5;}
-  .camp-imp-tit{display:flex;flex-direction:column;min-width:0;} .camp-imp-tit em{font-style:normal;font-size:11.5px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .camp-imp-regra{font-weight:800;white-space:nowrap;} .camp-imp-datas{font-size:12px;white-space:nowrap;color:#475569;} .camp-imp-linha.evento .camp-imp-datas{color:#fde047;}
-  .camp-imp-estado{font-size:11px;font-weight:700;color:#64748b;}
   .camp-grelha{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr));gap:16px;}
   .camp-card{display:flex;flex-direction:column;gap:8px;background:#fff;border:1px solid var(--pharm-200);border-left:5px solid #16a34a;border-radius:16px;padding:16px 18px;box-shadow:0 1px 2px rgba(0,0,0,.03);}
   .camp-card.camp-futura{border-left-color:#2563eb;} .camp-card.camp-terminada{border-left-color:#94a3b8;opacity:.85;}
@@ -33328,15 +33319,11 @@ function campanhaEstado(c) {
   const d = c.dataFim ? Math.round((new Date(c.dataFim + 'T00:00:00') - new Date(hoje + 'T00:00:00')) / 86400000) : null;
   return { chave: 'ativa', rotulo: d === null ? 'Em curso' : (d === 0 ? 'Termina hoje' : `Faltam ${d} dia${d === 1 ? '' : 's'}`), dias: d };
 }
-// ---- Campanhas: evento com várias marcas, importação do ficheiro mensal (2026-11-01) ----
+// ---- Campanhas: evento com várias marcas (2026-11-01) ----
 // Hugo: "Black Friday devia constituir um tipo de promoção distinta em que se colocam várias marcas… campanha pode ser só
-// de um dia… data de fim predefinida no fim do mês… fazer entrada das campanhas a partir dos ficheiros (Excel/CSV)".
-//  - Tipo «Evento com várias marcas» (tipoPromocao 'evento'): a lista de marcas e o que cada uma dá fica em `produtos`
-//    (JSON: [{ marca, gama, oferta }]) — sem colunas novas na base de dados.
-//  - Importação: o ficheiro das campanhas comerciais do mês, guardado do Excel como CSV (separado por «;»). Lê só as linhas
-//    marcadas com «x» na coluna da farmácia, tira o tipo de promoção do texto («25% desconto» → desconto; «1=2» → leve 2
-//    pague 1; «1P_20%; 2P_25%» → por quantidade; «Oferta de…» → oferta) e junta numa campanha «Black Friday» de um só dia
-//    as marcas que trazem o desconto desse dia (coluna «30% SÓ DIA 27»).
+// de um dia… data de fim predefinida no fim do mês". Tipo «Evento com várias marcas» (tipoPromocao 'evento'): a lista
+// de marcas e o que cada uma dá fica em `produtos` (JSON: [{ marca, gama, oferta }]) — sem colunas novas na base de dados.
+// (As campanhas do mês entram diretamente no servidor; a app não carrega ficheiros de campanhas — pedido do Hugo.)
 function fimDoMesISO(base) { const b = base ? new Date(String(base).slice(0, 10) + 'T12:00:00') : new Date(); return dateToISO(new Date(b.getFullYear(), b.getMonth() + 1, 0)); }
 function campanhaMarcasEvento(c) {
   let l = c && c.produtos;
@@ -33347,210 +33334,6 @@ function campanhaMaxPercent(txts) {
   let max = null;
   txts.forEach(t => { (String(t || '').match(/(\d+(?:[.,]\d+)?)\s*%/g) || []).forEach(m => { const n = parseFloat(m.replace(',', '.')); if (Number.isFinite(n) && (max === null || n > max)) max = n; }); });
   return max;
-}
-// Do texto da oferta comercial para os campos da campanha.
-function campanhaDoTextoOferta(txt) {
-  const t = String(txt || '').replace(/\s+/g, ' ').trim();
-  const out = { tipoPromocao: 'outro', descontoValor: null, descontoUnidade: '%', escaloes: [], leve: null, pague: null };
-  const esc = [...t.matchAll(/(\d+)\s*(?:p|un(?:i|id|idade)?s?\.?|ou\s*p)?\s*[_\s:-]*\s*(\d+(?:[.,]\d+)?)\s*%/gi)].map(m => ({ qtd: parseInt(m[1], 10), valor: parseFloat(m[2].replace(',', '.')) }));
-  const lp = /(\d+)\s*=\s*(\d+)/.exec(t);
-  if (/oferta/i.test(t) && !/%/.test(t)) out.tipoPromocao = 'oferta';
-  else if (lp && !/%/.test(t.slice(0, lp.index))) { const a = parseInt(lp[1], 10), b = parseInt(lp[2], 10); out.tipoPromocao = 'leve_pague'; out.leve = Math.max(a, b); out.pague = Math.min(a, b); }
-  else if (esc.length >= 2 && /\b[123]\s*(p|un)/i.test(t)) { out.tipoPromocao = 'escalonado'; out.escaloes = esc.filter(e => e.qtd > 0 && e.qtd < 10); }
-  else if (/(\d+(?:[.,]\d+)?)\s*€/.test(t) && !/%/.test(t)) { out.tipoPromocao = 'desconto'; out.descontoUnidade = '€'; out.descontoValor = parseFloat(/(\d+(?:[.,]\d+)?)\s*€/.exec(t)[1].replace(',', '.')); }
-  else if (/(\d+(?:[.,]\d+)?)\s*%/.test(t)) { out.tipoPromocao = 'desconto'; out.descontoValor = parseFloat(/(\d+(?:[.,]\d+)?)\s*%/.exec(t)[1].replace(',', '.')); }
-  else if (/oferta/i.test(t)) out.tipoPromocao = 'oferta';
-  return out;
-}
-function campanhasLerCSV(texto) {
-  const linhas = [];
-  let campo = '', linha = [], aspas = false;
-  for (let i = 0; i < texto.length; i++) {
-    const ch = texto[i];
-    if (aspas) { if (ch === '"') { if (texto[i + 1] === '"') { campo += '"'; i++; } else aspas = false; } else campo += ch; continue; }
-    if (ch === '"') aspas = true;
-    else if (ch === ';' || ch === '\t') { linha.push(campo); campo = ''; }
-    else if (ch === '\n') { linha.push(campo); linhas.push(linha); linha = []; campo = ''; }
-    else if (ch !== '\r') campo += ch;
-  }
-  if (campo || linha.length) { linha.push(campo); linhas.push(linha); }
-  return linhas.map(l => l.map(c => String(c || '').replace(/\s+/g, ' ').trim()));
-}
-// Analisa o ficheiro: devolve { mes, farmacias, coluna, campanhas:[…], evento, avisos:[…] }.
-function campanhasAnalisarFicheiro(texto, farmaciaPreferida) {
-  const L = campanhasLerCSV(texto);
-  const norm = (s) => normalizarTexto(String(s || '')).trim();
-  const MESES = ['janeiro', 'fevereiro', 'marco', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
-  let mesRef = null;
-  for (const l of L.slice(0, 4)) { const t = norm(l.join(' ')); const mi = MESES.findIndex(m => t.includes(m)); const an = /(20\d\d)/.exec(t); if (mi >= 0 && an) { mesRef = `${an[1]}-${String(mi + 1).padStart(2, '0')}-01`; break; } }
-  const iCab = L.findIndex(l => norm(l[0]) === 'marca' && l.some(c => /oferta/.test(norm(c))));
-  if (iCab < 0) return { erro: 'Não encontrei a linha de cabeçalho («Marca; Categoria/Gama; Oferta comercial; Data início…»).' };
-  const cab = L[iCab].map(norm);
-  const cIni = cab.findIndex(c => c.startsWith('data in')), cFim = cab.findIndex(c => c.startsWith('data fim')), cObs = cab.findIndex(c => c.startsWith('obs'));
-  const cOferta = cab.findIndex(c => c.startsWith('oferta'));
-  const temColDia = cOferta >= 0 && cOferta > 2 && !cab[2]; // coluna sem nome entre a gama e a oferta: desconto de um dia (Black Friday)
-  const inicioFarm = (cObs >= 0 ? cObs : cFim) + 1;
-  const farmacias = L[iCab].slice(inicioFarm).map((n, k) => ({ nome: n, rel: inicioFarm + k - cIni })).filter(f => f.nome);
-  const pref = norm(farmaciaPreferida || '');
-  let farm = farmacias.find(f => pref && (norm(f.nome).includes(pref) || pref.includes(norm(f.nome)))) || null;
-  const dataISO = (s) => { const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(String(s || '').trim()); if (!m) return null; const a = +m[3], me = +m[2], d = +m[1]; const ult = new Date(a, me, 0).getDate(); return `${a}-${String(me).padStart(2, '0')}-${String(Math.min(d, ult)).padStart(2, '0')}`; };
-  const linhas = [], avisos = [];
-  let categoria = '';
-  for (let i = iCab + 1; i < L.length; i++) {
-    const l = L[i];
-    if (!l.some(Boolean)) continue;
-    const iIni = l.findIndex(c => dataISO(c));
-    if (iIni < 0) { if (l[0] && !l.slice(1).some(Boolean) && !/marca do m/i.test(l[0])) categoria = l[0]; continue; }
-    const marcaBruta = l[0];
-    if (!marcaBruta) continue;
-    const gama = l[1] || '';
-    const oferta = l[iIni - 1] || '';
-    const diaTxt = temColDia && iIni - 1 > 2 ? l[2] : '';
-    const ini = dataISO(l[iIni]);
-    let fim = dataISO(l[iIni + 1]);
-    if (!fim) { fim = fimDoMesISO(mesRef || ini); avisos.push(`${marcaBruta}: sem data de fim — ficou o fim do mês.`); }
-    if (/\b31\/11\//.test(l[iIni + 1] || '')) avisos.push(`${marcaBruta}: «31/11» não existe — ficou 30/11.`);
-    const obs = l[iIni + 2] || '';
-    const marcas = {};
-    farmacias.forEach(f => { marcas[f.nome] = /^x$/i.test(String(l[iIni + f.rel] || '').trim()); });
-    linhas.push({ marcaBruta, gama, oferta, diaTxt, ini, fim, obs, categoria, marcas });
-  }
-  return { mes: mesRef, farmacias, farmacia: farm ? farm.nome : '', linhas, avisos, temColDia };
-}
-// Linhas analisadas → campanhas a criar (para a farmácia escolhida) + o evento de um dia.
-function campanhasPrepararImportacao(an, nomeFarmacia) {
-  const hoje = todayISO();
-  const doFicheiro = an.linhas.filter(r => r.marcas[nomeFarmacia]);
-  const existentes = (STATE.campanhas || []).filter(c => !c.eliminado);
-  const ja = (t, i, f) => existentes.some(c => normalizarTexto(c.titulo || '') === normalizarTexto(t) && c.dataInicio === i && c.dataFim === f);
-  const condicoesDe = (obs, oferta) => {
-    const partes = String(obs || '').replace(/^\*+\s*/, '').split(/[;_]|,\s(?=[a-zà-ú])/i).map(s => s.replace(/^\*+\s*/, '').trim()).filter(s => /exceto|apenas|limitad|não acumula|nao acumula|mesma gama|fim de stock/i.test(s));
-    const daOferta = (/(exceto[^;]*)/i.exec(oferta) || [])[1];
-    return [...new Set([daOferta, ...partes].filter(Boolean).map(s => s.charAt(0).toUpperCase() + s.slice(1)))].join(' · ');
-  };
-  // Gama do ficheiro: «Isdinceutics_Black Friday» → «Isdinceutics · Black Friday»; «Apenas nas ref. indicadas» é condição, não gama.
-  const limparGama = (g) => { const t = String(g || '').replace(/_/g, ' · ').trim(); return /^apenas\b/i.test(t) ? '' : t; };
-  const condGama = (g) => (/^apenas\b/i.test(String(g || '').trim()) ? String(g).trim() : '');
-  an.linhas.forEach(r => { if (r.__gamaLimpa) return; r.__gamaLimpa = true; const cg = condGama(r.gama); if (cg) r.obs = [cg, r.obs].filter(Boolean).join('; '); r.gama = limparGama(r.gama); });
-  const camp = doFicheiro.map(r => {
-    const partes = r.marcaBruta.split('_');
-    const marca = partes[0].replace(/^\s*l['’]?[oó]r[eé]al\s*$/i, "L'Oréal").trim();
-    const sufixo = partes.slice(1).join(' ').trim();
-    const gamaN = normalizarTexto(r.gama);
-    const todaMarca = !r.gama || /^tod[ao]s? a (marca|gama)/.test(gamaN) || /^toda a marca/.test(gamaN);
-    const marcaReal = (marca === "L'Oréal" && r.gama && !todaMarca) ? r.gama : marca; // «L'Oréal · La Roche Posay» → a marca é a La Roche-Posay
-    const regra = campanhaDoTextoOferta(r.oferta);
-    const titulo = [marcaReal, (!todaMarca && marcaReal !== r.gama) ? r.gama : '', sufixo].filter(Boolean).join(' · ').slice(0, 80);
-    const c = {
-      titulo, marca: marcaReal, gama: todaMarca || marcaReal === r.gama ? '' : r.gama, categoria: r.categoria || '', produtos: '',
-      abrangencia: todaMarca || marcaReal === r.gama ? 'marca' : 'gama',
-      tipoPromocao: regra.tipoPromocao, descontoValor: regra.descontoValor, descontoUnidade: regra.descontoUnidade,
-      escaloes: regra.escaloes, leve: regra.leve, pague: regra.pague,
-      descricao: r.oferta.slice(0, 400), condicoes: condicoesDe(r.obs, r.oferta).slice(0, 300),
-      dataInicio: r.ini, dataFim: r.fim, mostrarTv: true,
-    };
-    c.__estado = r.fim < hoje ? 'terminada' : ja(titulo, r.ini, r.fim) ? 'existe' : 'nova';
-    return c;
-  });
-  // Evento de um dia (Black Friday): marcas com desconto na coluna do dia («30% SÓ DIA 27»).
-  let evento = null;
-  const doDia = doFicheiro.filter(r => r.diaTxt && /%/.test(r.diaTxt));
-  if (doDia.length) {
-    const dia = (/dia\s*(\d{1,2})/i.exec(doDia[0].diaTxt) || [])[1];
-    const mes = an.mes || doDia[0].ini;
-    const data = dia ? `${mes.slice(0, 8)}${String(dia).padStart(2, '0')}` : null;
-    if (data) {
-      const marcas = doDia.map(r => {
-        const marca = r.marcaBruta.split('_')[0].trim();
-        const gamaN = normalizarTexto(r.gama);
-        const toda = !r.gama || /^tod[ao]s? a (marca|gama)/.test(gamaN) || /black friday|dermocosm/i.test(gamaN);
-        const pct = (/(\d+(?:[.,]\d+)?)\s*%/.exec(r.diaTxt) || [])[0] || '';
-        const nota = (/\(([^)]+)\)/.exec(r.diaTxt) || [])[1] || '';
-        return { marca: marca.replace(/^\s*l['’]?[oó]r[eé]al\s*$/i, "L'Oréal"), gama: toda ? '' : r.gama, oferta: [pct.replace(/\s+/g, ''), nota].filter(Boolean).join(' · ') };
-      });
-      const unicas = [];
-      marcas.forEach(m => { if (!unicas.some(u => normalizarTexto(u.marca + u.gama) === normalizarTexto(m.marca + m.gama))) unicas.push(m); });
-      const titulo = /black/i.test(doDia.map(r => r.marcaBruta + r.gama + r.oferta).join(' ')) || data.slice(5) === '11-27' ? 'Black Friday' : 'Evento de um dia';
-      evento = {
-        titulo, marca: 'Várias marcas', gama: '', categoria: '', produtos: JSON.stringify(unicas), abrangencia: 'marca',
-        tipoPromocao: 'evento', descontoValor: campanhaMaxPercent(unicas.map(u => u.oferta)), descontoUnidade: '%', escaloes: [], leve: null, pague: null,
-        descricao: `Só no dia ${formatDate(data)} — desconto especial em ${unicas.length} marcas.`, condicoes: '', dataInicio: data, dataFim: data, mostrarTv: true,
-      };
-      evento.__estado = data < hoje ? 'terminada' : ja(titulo, data, data) ? 'existe' : 'nova';
-    }
-  }
-  return { campanhas: camp, evento };
-}
-// Janela de importação: escolher o ficheiro → pré-visualizar → importar.
-function campanhasAbrirImportacao(aoTerminar) {
-  const overlay = h('div', { class: 'modal-overlay' });
-  const corpo = h('div', { class: 'camp-imp-corpo' });
-  const fechar = () => overlay.remove();
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) fechar(); });
-  const ficheiro = h('input', { type: 'file', accept: '.csv,text/csv', class: 'input' });
-  const nomeFarm = (() => { try { return (typeof nomeFarmaciaCurto === 'function' && nomeFarmaciaCurto()) || (typeof nomeFarmacia === 'function' && nomeFarmacia()) || 'Juncal'; } catch (e) { return 'Juncal'; } })();
-  let an = null, prep = null, farmEscolhida = '';
-  const desenhar = () => {
-    clear(corpo);
-    if (!an) { corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0;' }, 'No Excel: Ficheiro › Guardar como › «CSV (separado por vírgulas)». A app lê as linhas marcadas com «x» na coluna da farmácia.')); return; }
-    if (an.erro) { corpo.appendChild(h('p', { class: 'form-error' }, an.erro)); return; }
-    const sel = h('select', { class: 'select', style: 'max-width:220px;' }, an.farmacias.map(f => h('option', { value: f.nome }, f.nome)));
-    sel.value = farmEscolhida;
-    sel.addEventListener('change', () => { farmEscolhida = sel.value; prep = campanhasPrepararImportacao(an, farmEscolhida); desenhar(); });
-    corpo.appendChild(h('div', { style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;' }, [h('strong', {}, 'Farmácia:'), sel]));
-    const todas = [...(prep.evento ? [prep.evento] : []), ...prep.campanhas];
-    const novas = todas.filter(c => c.__estado === 'nova');
-    const linha = (c) => {
-      const r = campanhaRegra(c);
-      const cb = h('input', { type: 'checkbox', checked: c.__estado === 'nova' ? 'checked' : undefined, disabled: c.__estado !== 'nova' ? 'disabled' : undefined });
-      cb.addEventListener('change', () => { c.__importar = cb.checked; });
-      c.__importar = c.__estado === 'nova';
-      const datas = c.dataInicio === c.dataFim ? `só ${formatDate(c.dataInicio)}` : `${formatDate(c.dataInicio)} – ${formatDate(c.dataFim)}`;
-      return h('label', { class: 'camp-imp-linha' + (c.tipoPromocao === 'evento' ? ' evento' : '') + (c.__estado !== 'nova' ? ' inativa' : '') }, [
-        cb,
-        h('span', { class: 'camp-imp-tit' }, [h('strong', {}, c.titulo), h('em', {}, c.tipoPromocao === 'evento' ? campanhaMarcasEvento(c).map(m => `${m.marca}${m.gama ? ` ${m.gama}` : ''} ${m.oferta}`).join(' · ') : (c.descricao || ''))]),
-        h('span', { class: 'camp-imp-regra' }, r.grande),
-        h('span', { class: 'camp-imp-datas' }, datas),
-        c.__estado !== 'nova' ? h('span', { class: 'camp-imp-estado' }, c.__estado === 'existe' ? 'já existe' : 'já terminou') : null,
-      ].filter(Boolean));
-    };
-    corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:0 0 8px;' }, `${novas.length} para importar · ${todas.length - novas.length} ignoradas (já existem ou já terminaram). Podes desmarcar as que não quiseres.`));
-    corpo.appendChild(h('div', { class: 'camp-imp-lista' }, todas.map(linha)));
-    if (an.avisos.length) corpo.appendChild(h('p', { class: 'field-helper-text', style: 'margin:8px 0 0;color:#b45309;' }, an.avisos.join(' ')));
-  };
-  ficheiro.addEventListener('change', async () => {
-    const f = ficheiro.files && ficheiro.files[0];
-    if (!f) return;
-    const buf = await f.arrayBuffer();
-    let texto = '';
-    try { texto = new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch (e) { texto = new TextDecoder('windows-1252').decode(buf); }
-    an = campanhasAnalisarFicheiro(texto, nomeFarm);
-    if (!an.erro) { farmEscolhida = an.farmacia || (an.farmacias[0] && an.farmacias[0].nome) || ''; prep = campanhasPrepararImportacao(an, farmEscolhida); }
-    desenhar();
-  });
-  let aImportar = false;
-  const importar = h('button', { type: 'button', class: 'btn btn-primary' }, 'Importar');
-  importar.addEventListener('click', async () => {
-    if (aImportar || !prep) return;
-    const lista = [...(prep.evento ? [prep.evento] : []), ...prep.campanhas].filter(c => c.__importar && c.__estado === 'nova');
-    if (!lista.length) { showToast('Nada para importar.', 'info'); return; }
-    aImportar = true; importar.disabled = true; importar.textContent = 'A importar…';
-    let ok = 0;
-    for (const c of lista) {
-      const payload = Object.assign({}, c); delete payload.__estado; delete payload.__importar;
-      const r = await dbInsert('campanhas', payload);
-      if (r) { ok++; STATE.campanhas = juntarNoInicio(STATE.campanhas || [], [r]); }
-    }
-    showToast(`${ok} campanha${ok === 1 ? '' : 's'} importada${ok === 1 ? '' : 's'}${ok < lista.length ? ` (${lista.length - ok} falharam — ${lastDbError || 'verifica a ligação'})` : ''}.`, ok ? 'success' : 'error', { duracao: 6000 });
-    fechar(); if (aoTerminar) aoTerminar();
-  });
-  overlay.appendChild(h('div', { class: 'modal-panel camp-imp' }, [
-    h('h3', { style: 'margin:0 0 10px;' }, 'Importar campanhas do ficheiro do mês'),
-    ficheiro, corpo,
-    h('div', { class: 'form-actions' }, [importar, h('button', { type: 'button', class: 'btn btn-secondary', onclick: fechar }, 'Cancelar')]),
-  ]));
-  document.body.appendChild(overlay);
-  desenhar();
 }
 function campanhasAtivas() { return (STATE.campanhas || []).filter(c => !c.eliminado && campanhaEstado(c).chave === 'ativa'); }
 function buildCampanhasPage(container, goTo) {
@@ -33692,8 +33475,7 @@ function buildCampanhasPage(container, goTo) {
     todas.forEach(c => { const e = campanhaEstado(c).chave; conta[e === 'ativa' ? 'ativas' : e === 'futura' ? 'futuras' : 'terminadas'] += 1; });
     const tab = (k, rot, ic, tom) => h('button', { class: `tab-btn ${tom}` + (aba === k ? ' active' : ''), onclick: () => { aba = k; rerender(); } }, [Icon(ic, { size: 14 }), h('span', {}, rot), h('span', { class: 'tab-count' }, String(conta[k]))]);
     wrap.appendChild(h('div', { class: 'tabs-row', style: 'margin-bottom:14px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;' }, [tab('ativas', 'Em curso', 'tag', 'tone-green'), tab('futuras', 'A começar', 'clock', 'tone-blue'), tab('terminadas', 'Terminadas', 'checkcircle', 'tone-gray'),
-      editor ? h('button', { class: 'btn btn-secondary', type: 'button', style: 'margin-left:auto;', title: 'Importar o ficheiro das campanhas comerciais do mês (Excel guardado como CSV)', onclick: () => requireAuth(() => campanhasAbrirImportacao(rerender)) }, iconeTexto('upload', 'Importar ficheiro')) : null,
-      editor ? h('button', { class: 'btn btn-primary btn-fab camp-nova', type: 'button', onclick: () => requireAuth(abrirNovo) }, iconeTexto('plus', 'Nova campanha')) : null].filter(Boolean)));
+      editor ? h('button', { class: 'btn btn-primary btn-fab camp-nova', type: 'button', style: 'margin-left:auto;', onclick: () => requireAuth(abrirNovo) }, iconeTexto('plus', 'Nova campanha')) : null].filter(Boolean)));
     const busca = h('input', { class: 'search-input', type: 'text', placeholder: 'Pesquisar por marca, gama, categoria ou título…' });
     busca.value = pesquisa;
     const lista = h('div', {});
