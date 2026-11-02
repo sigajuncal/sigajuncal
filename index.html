@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-02 18:45" />
+<meta name="siga-versao" content="2026-11-02 19:10" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -7607,6 +7607,30 @@ body.tem-barra-inferior .topbar-mobile > .hamburger:first-child{display:none;}
 /* Formulário de Entrega: empresa onde se entrega (2026-11-02) — bem visível, a preto, sem depender de cor. */
 .doc-entrega-empresa{margin:6px 0 4px;padding:5px 10px;border:2px solid #000;border-radius:6px;display:inline-flex;align-items:baseline;gap:4px;flex-wrap:wrap;}
 .doc-entrega-empresa-nome{font-size:17pt;font-weight:800;color:#000;text-transform:uppercase;letter-spacing:.02em;}
+
+/* Dia de agenda fechado com motivo (2026-11-02) */
+.agenda-fecho-faixa{display:flex;align-items:flex-start;gap:10px;margin:0 0 12px;padding:10px 13px;border-radius:12px;background:#fef2f2;border:1px solid #fecaca;color:#7f1d1d;font-size:13px;}
+.agenda-fecho-faixa > div{display:flex;flex-direction:column;gap:2px;min-width:0;}
+.agenda-fecho-faixa strong{font-size:13.5px;}
+.agenda-fecho-faixa span{color:#991b1b;opacity:.9;}
+.agenda-fecho-nota{font-style:italic;}
+.agenda-fecho-ic{flex:0 0 auto;width:24px;height:24px;border-radius:50%;background:#dc2626;color:#fff;font-weight:800;font-size:13px;display:inline-flex;align-items:center;justify-content:center;}
+.agenda-fecho-painel{max-width:480px;width:calc(100vw - 24px);}
+.agenda-fecho-lista{margin:12px 0 4px;padding:10px 12px;border-radius:12px;background:#fff7ed;border:1px solid #fed7aa;}
+.agenda-fecho-lista-tit{margin:0 0 6px;font-size:12.5px;font-weight:800;color:#9a3412;}
+.agenda-fecho-linha{display:flex;align-items:center;gap:10px;padding:5px 0;border-top:1px solid #fde2c4;font-size:13.5px;}
+.agenda-fecho-linha:first-of-type{border-top:0;}
+.agenda-fecho-hora{flex:0 0 auto;font-weight:800;font-variant-numeric:tabular-nums;color:#7c2d12;}
+.agenda-fecho-nome{flex:1;min-width:0;color:#0f172a;}
+.agenda-fecho-tel{flex:0 0 auto;font-weight:700;color:#1d4ed8;text-decoration:none;white-space:nowrap;}
+.agenda-fecho-tel.sem{color:#94a3b8;font-weight:500;}
+.agenda-fecho-aviso-equipa{margin:12px 0 0;font-size:12.5px;font-weight:700;color:#1d4ed8;}
+.agenda-fecho-erro{margin:10px 0 0;font-size:13px;font-weight:700;color:#dc2626;}
+.agenda-fecho-ok{display:inline-flex;align-items:center;gap:6px;}
+.cal-cell.cal-cell-cancelado{position:relative;}
+.cal-cell.cal-cell-cancelado::after{content:'';position:absolute;inset:18%;pointer-events:none;opacity:.55;
+  background:linear-gradient(45deg,transparent calc(50% - 1.5px),#dc2626 calc(50% - 1.5px),#dc2626 calc(50% + 1.5px),transparent calc(50% + 1.5px)),
+             linear-gradient(-45deg,transparent calc(50% - 1.5px),#dc2626 calc(50% - 1.5px),#dc2626 calc(50% + 1.5px),transparent calc(50% + 1.5px));}
 </style>
 <style id="plano-medicacao-css">
   .plano-med-icone{display:block;line-height:0;}
@@ -10183,6 +10207,186 @@ function agendaContagemLabel(n) {
 // Um dia de Agenda fica "aberto" quando existe um registo em
 // STATE.agendaDias para aquele prestador+data — isto permite marcar o dia
 // como ativo no calendário (badge/cor) mesmo sem qualquer marcação ainda.
+/* =================================================================
+   FECHAR UM DIA DE AGENDA COM MOTIVO (2026-11-02, Hugo: "quando se fecha um dia de serviço com agenda (nutrição etc)
+   … perguntar o motivo, porque às vezes o prestador diz que não vem, as marcações são canceladas mas o dia fica fechado
+   sem nenhuma indicação do motivo… gosto das tuas sugestões, implementa").
+   - «Fechar Dia» abre uma janela com o motivo (um toque), nota opcional e, se ainda houver marcações, a lista com nome
+     e telefone de cada utente e o botão «Cancelar todas e fechar» (um só passo; o motivo fica em cada marcação).
+   - O motivo fica à vista: faixa ao abrir esse dia, aviso antes de o reabrir, nota na remarcação e uma cruz no
+     calendário da agenda. No calendário da Página Inicial um dia fechado deixa de aparecer.
+   - «O prestador não pode comparecer» e «Mudou para outro dia» avisam toda a equipa (uma vez por pessoa, em qualquer
+     posto — o «visto» fica no servidor, como nas ausências da estafeta).
+   - Guarda-se em agenda_prestadores_config (prestador_key 'agenda-dia-fechado', JSON no campo «nome»): sem mexer no
+     servidor.
+================================================================= */
+const AGENDA_FECHO_KEY = 'agenda-dia-fechado';
+const AGENDA_FECHO_MOTIVOS = [
+  ['nao-comparece', 'O prestador não pode comparecer'],
+  ['outro-dia', 'Mudou para outro dia'],
+  ['poucas', 'Poucas marcações'],
+  ['gabinete', 'Gabinete indisponível'],
+  ['engano', 'Aberto por engano'],
+  ['outro', 'Outro'],
+];
+const AGENDA_FECHO_AVISA = ['nao-comparece', 'outro-dia'];
+function agendaFechos() {
+  return (STATE.agendaPrestadoresConfig || []).filter(c => c && c.prestadorKey === AGENDA_FECHO_KEY && !c.eliminado).map(c => {
+    let d = {}; try { d = JSON.parse(c.nome || '{}') || {}; } catch (e) { d = {}; }
+    return Object.assign({}, d, { id: c.id });
+  }).filter(f => f.prestadorKey && f.data);
+}
+// Último fecho deste dia — só conta enquanto o dia continuar fechado (reaberto = já não se mostra).
+function agendaFechoDe(prestadorKey, dateISO) {
+  if (agendaDiaAberto(prestadorKey, dateISO)) return null;
+  const l = agendaFechos().filter(f => f.prestadorKey === prestadorKey && f.data === dateISO).sort((a, b) => String(a.em || '').localeCompare(String(b.em || '')));
+  return l.length ? l[l.length - 1] : null;
+}
+function agendaFechoCancelado(prestadorKey, dateISO) { const f = agendaFechoDe(prestadorKey, dateISO); return !!f && f.motivo !== 'engano'; }
+function agendaFechoMotivoTxt(f) {
+  if (!f) return '';
+  const base = f.motivo === 'outro' ? (f.outro || 'Outro motivo') : ((AGENDA_FECHO_MOTIVOS.find(m => m[0] === f.motivo) || [])[1] || 'Fechado');
+  return base + (f.motivo === 'outro-dia' && f.novaData ? ` (passa para ${formatDate(f.novaData)})` : '');
+}
+function agendaFechoQuemQuando(f) {
+  let q = '';
+  try { const d = new Date(f.em); if (!isNaN(d)) q = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')} às ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; } catch (e) { q = ''; }
+  return ['Fechado', f.por ? `por ${f.por}` : '', q ? `a ${q}` : ''].filter(Boolean).join(' ');
+}
+function agendaNomeServico(prestadorKey) {
+  const p = PRESTADORES_AGENDA.find(x => x.key === prestadorKey);
+  return p ? `${p.especialidade}${p.nome ? ` (${p.nome})` : ''}` : 'Agenda';
+}
+function agendaFechoFaixa(prestadorKey, dateISO) {
+  const f = agendaFechoDe(prestadorKey, dateISO);
+  if (!f || f.motivo === 'engano') return null;
+  return h('div', { class: 'agenda-fecho-faixa', role: 'status' }, [
+    h('span', { class: 'agenda-fecho-ic', 'aria-hidden': 'true' }, '✕'),
+    h('div', {}, [
+      h('strong', {}, `Dia cancelado — ${agendaFechoMotivoTxt(f)}`),
+      h('span', {}, [agendaFechoQuemQuando(f), f.canceladas ? ` · ${f.canceladas} marcaç${f.canceladas === 1 ? 'ão cancelada' : 'ões canceladas'}` : ''].join('')),
+      f.nota ? h('span', { class: 'agenda-fecho-nota' }, `«${f.nota}»`) : null,
+    ].filter(Boolean)),
+  ]);
+}
+// Janela «Fechar o dia».
+function agendaFecharDiaComMotivo(prestadorKey, dateISO, registo, depois) {
+  const ativas = (STATE.agendaMarcacoes || []).filter(m => m.prestadorKey === prestadorKey && m.data === dateISO && m.tipoLinha !== 'bloqueado' && !agendaMarcacaoAnulada(m))
+    .sort((a, b) => String(normalizarHora(a.hora)).localeCompare(String(normalizarHora(b.hora))));
+  const comCliente = ativas.filter(m => String(m.nomeCliente || '').trim());
+  const st = { motivo: '', novaData: '', outro: '', nota: '' };
+  const overlay = h('div', { class: 'modal-overlay' });
+  const painel = h('div', { class: 'modal-panel agenda-fecho-painel', role: 'dialog', 'aria-label': 'Fechar o dia' });
+  const fechar = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) fechar(); });
+  const dataTxt = (() => { const d = new Date(dateISO + 'T12:00:00'); const s = d.toLocaleDateString('pt-PT', { weekday: 'long', day: '2-digit', month: '2-digit' }); return s.charAt(0).toUpperCase() + s.slice(1); })();
+  let erroEl;
+  const desenhar = () => {
+    clear(painel);
+    painel.appendChild(h('div', { class: 'ausencia-topo' }, [
+      h('h3', { class: 'modal-title', style: 'margin:0;' }, 'Fechar o dia'),
+      h('button', { type: 'button', class: 'btn btn-secondary', 'aria-label': 'Fechar', onclick: fechar }, Icon('x', { size: 16 })),
+    ]));
+    painel.appendChild(h('p', { class: 'ausencia-sub' }, [h('strong', {}, agendaNomeServico(prestadorKey)), ` · ${dataTxt}`, registo && registo.responsavel ? ` · aberto por ${registo.responsavel}` : '']));
+    if (comCliente.length) {
+      painel.appendChild(h('div', { class: 'agenda-fecho-lista' }, [
+        h('p', { class: 'agenda-fecho-lista-tit' }, `${comCliente.length} marcaç${comCliente.length === 1 ? 'ão vai ser cancelada' : 'ões vão ser canceladas'} — avisa os utentes:`),
+        ...comCliente.map(m => h('div', { class: 'agenda-fecho-linha' }, [
+          h('span', { class: 'agenda-fecho-hora' }, normalizarHora(m.hora) || '—'),
+          h('span', { class: 'agenda-fecho-nome' }, m.nomeCliente),
+          m.contacto ? h('a', { class: 'agenda-fecho-tel', href: `tel:${String(m.contacto).replace(/\s+/g, '')}` }, `☎ ${typeof formatarTelefonePT === 'function' ? formatarTelefonePT(m.contacto) : m.contacto}`) : h('span', { class: 'agenda-fecho-tel sem' }, 'sem contacto'),
+        ])),
+      ]));
+    }
+    painel.appendChild(h('label', { class: 'ausencia-rot' }, 'Motivo'));
+    painel.appendChild(h('div', { class: 'ausencia-chips' }, AGENDA_FECHO_MOTIVOS.map(([k, t]) => {
+      const b = h('button', { type: 'button', class: 'ausencia-chip' + (st.motivo === k ? ' ativo' : '') }, t);
+      b.addEventListener('click', () => { st.motivo = k; desenhar(); }); return b;
+    })));
+    if (st.motivo === 'outro-dia') {
+      const inData = h('input', { class: 'input', type: 'date', value: st.novaData, min: todayISO() });
+      inData.addEventListener('change', () => { st.novaData = inData.value; });
+      painel.appendChild(h('div', { class: 'ausencia-data', style: 'margin-top:10px;max-width:220px;' }, [h('span', {}, 'Nova data (opcional)'), inData]));
+    }
+    if (st.motivo === 'outro') {
+      const inOutro = h('input', { class: 'input', type: 'text', maxlength: '80', placeholder: 'Qual o motivo?', value: st.outro });
+      inOutro.addEventListener('input', () => { st.outro = inOutro.value; });
+      painel.appendChild(h('div', { style: 'margin-top:10px;' }, inOutro));
+      setTimeout(() => { try { inOutro.focus(); } catch (e) { /* ignora */ } }, 50);
+    }
+    const inNota = h('input', { class: 'input', type: 'text', maxlength: '120', placeholder: 'Nota (opcional) — ex.: avisou por telefone às 10h', value: st.nota });
+    inNota.addEventListener('input', () => { st.nota = inNota.value; });
+    painel.appendChild(h('div', { style: 'margin-top:12px;' }, inNota));
+    if (AGENDA_FECHO_AVISA.includes(st.motivo)) painel.appendChild(h('p', { class: 'agenda-fecho-aviso-equipa' }, '📣 A equipa vai ser avisada (podem aparecer utentes ao balcão a perguntar).'));
+    erroEl = h('p', { class: 'agenda-fecho-erro', hidden: 'hidden' });
+    painel.appendChild(erroEl);
+    const ok = h('button', { type: 'button', class: 'btn ' + (comCliente.length ? 'btn-danger-solid' : 'btn-primary') + ' agenda-fecho-ok' },
+      [Icon('lockClosed', { size: 15, strokeWidth: 2.4 }), comCliente.length ? ` Cancelar ${comCliente.length === 1 ? 'a marcação' : `as ${comCliente.length}`} e fechar` : ' Fechar o dia']);
+    ok.addEventListener('click', () => confirmar(ok));
+    painel.appendChild(h('div', { class: 'ausencia-acoes' }, [h('button', { type: 'button', class: 'btn btn-secondary', onclick: fechar }, 'Voltar'), ok]));
+  };
+  async function confirmar(btn) {
+    if (!st.motivo) { erroEl.textContent = 'Escolhe o motivo.'; erroEl.removeAttribute('hidden'); return; }
+    if (st.motivo === 'outro' && !st.outro.trim()) { erroEl.textContent = 'Escreve o motivo.'; erroEl.removeAttribute('hidden'); return; }
+    btn.disabled = true;
+    const motivoTxt = agendaFechoMotivoTxt({ motivo: st.motivo, outro: st.outro.trim(), novaData: st.novaData });
+    let canceladas = 0;
+    for (const m of ativas) {
+      const obs = [String(m.observacoes || '').trim(), `Cancelada — dia fechado: ${motivoTxt}`].filter(Boolean).join(' · ');
+      const upd = await dbUpdate('agendaMarcacoes', m.id, { estado: 'cancelada', observacoes: obs });
+      if (upd) { STATE.agendaMarcacoes = STATE.agendaMarcacoes.map(x => x.id === upd.id ? upd : x); if (String(m.nomeCliente || '').trim()) canceladas++; }
+    }
+    if (agendaDiaTemMarcacaoAtiva(prestadorKey, dateISO)) { btn.disabled = false; showDbErrorToast('Não foi possível cancelar todas as marcações'); return; }
+    const dados = { prestadorKey, data: dateISO, motivo: st.motivo, outro: st.outro.trim(), novaData: st.novaData, nota: st.nota.trim(), canceladas,
+      avisar: AGENDA_FECHO_AVISA.includes(st.motivo), abertoPor: (registo && registo.responsavel) || '', por: currentUserName(), porId: activeUser && activeUser.id, em: new Date().toISOString() };
+    const res = await dbInsert('agendaPrestadoresConfig', { prestadorKey: AGENDA_FECHO_KEY, nome: JSON.stringify(dados), atualizadoPor: currentUserName() });
+    if (res) {
+      STATE.agendaPrestadoresConfig = juntarNoFim(STATE.agendaPrestadoresConfig, [res]);
+      try { dbMarcarMensagemLida(String(activeUser.id), agendaFechoCodigoVisto(res.id)); } catch (e) { /* ignora */ }
+    }
+    const okDel = registo ? await dbDelete('agendaDias', registo.id) : true;
+    if (!okDel) { btn.disabled = false; showDbErrorToast('Não foi possível fechar o dia'); return; }
+    if (registo) STATE.agendaDias = STATE.agendaDias.filter(d => d.id !== registo.id);
+    fechar();
+    showToast(canceladas ? `Dia fechado — ${canceladas} marcaç${canceladas === 1 ? 'ão cancelada' : 'ões canceladas'}.` : 'Dia fechado.', 'success');
+    if (depois) depois();
+  }
+  desenhar();
+  overlay.appendChild(painel);
+  document.body.appendChild(overlay);
+}
+// Aviso a toda a equipa (uma vez por pessoa, em qualquer posto — «visto» no servidor com o número -(3e9 + id)).
+function agendaFechoCodigoVisto(id) { return -(3e9 + (Number(id) || 0)); }
+const AGENDA_FECHO_A_VERIFICAR = new Set();
+async function agendaFechosVerificarAvisos() {
+  try {
+    if (!activeUser || (typeof acessoGeralValidado === 'function' && !acessoGeralValidado())) return;
+    if (typeof isPrestadorServico === 'function' && isPrestadorServico()) return;
+    const uid = String(activeUser.id), hoje = todayISO();
+    for (const f of agendaFechos()) {
+      if (!f.avisar || f.data < hoje || String(f.porId) === uid) continue;
+      if (!f.em || Date.now() - new Date(f.em).getTime() > 7 * 86400000) continue;
+      const suf = `siga_fecho_visto_${uid}_${f.id}`;
+      try { if (localStorage.getItem(suf) === '1') continue; } catch (e) { /* segue */ }
+      if (AGENDA_FECHO_A_VERIFICAR.has(suf)) continue;
+      AGENDA_FECHO_A_VERIFICAR.add(suf);
+      try {
+        const cod = agendaFechoCodigoVisto(f.id);
+        const ja = await dbMensagemJaLida(uid, cod);
+        try { localStorage.setItem(suf, '1'); } catch (e) { /* ignora */ }
+        if (ja) continue;
+        dbMarcarMensagemLida(uid, cod);
+        const p = PRESTADORES_AGENDA.find(x => x.key === f.prestadorKey);
+        const titulo = `📅 ${p ? p.especialidade : 'Agenda'} — dia ${formatDate(f.data)} cancelado`;
+        const corpo = `${agendaFechoMotivoTxt(f)}${f.canceladas ? ` · ${f.canceladas} marcaç${f.canceladas === 1 ? 'ão cancelada' : 'ões canceladas'}` : ''}.`;
+        showToast(`${titulo} — ${corpo}`, 'info', { duracao: 12000 });
+        try { if ('Notification' in window && Notification.permission === 'granted') new Notification(titulo, { body: corpo, tag: `fecho-${f.id}`, icon: 'icon-512.png' }); } catch (e) { /* ignora */ }
+      } finally { AGENDA_FECHO_A_VERIFICAR.delete(suf); }
+    }
+  } catch (e) { /* nunca interfere com a app */ }
+}
+setInterval(agendaFechosVerificarAvisos, 60000);
+setTimeout(agendaFechosVerificarAvisos, 20000);
 function agendaDiaAbertoRegisto(prestadorKey, dateISO) {
   return (STATE.agendaDias || []).find(d => d.prestadorKey === prestadorKey && d.data === dateISO);
 }
@@ -10505,6 +10709,12 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
 
   // ---- Controlo de Dia Aberto/Fechado ----
   async function abrirDiaAgenda() {
+    const fecho = agendaFechoDe(prestadorKey, dateISO);
+    if (fecho && fecho.motivo !== 'engano' && !abrirDiaAgenda.__confirmado) {
+      confirmDialog(`Este dia foi cancelado: ${agendaFechoMotivoTxt(fecho)}.\n${agendaFechoQuemQuando(fecho)}${fecho.nota ? ` — «${fecho.nota}»` : ''}.\n\nReabrir o dia mesmo assim?`,
+        () => { abrirDiaAgenda.__confirmado = true; try { abrirDiaAgenda(); } finally { abrirDiaAgenda.__confirmado = false; } }, { confirmLabel: 'Reabrir o dia' });
+      return;
+    }
     const p = PRESTADORES_AGENDA.find(x => x.key === prestadorKey);
     confirmarGabineteDisponivel(dateISO, { chave: `agenda-${prestadorKey}`, nome: p ? `${p.especialidade} (${p.nome})` : 'esta agenda', ini: 0, fim: 1440, diaTodo: true }, abrirDiaAgendaConfirmado);
   }
@@ -10525,19 +10735,8 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
   function fecharDiaAgenda() {
     const registo = agendaDiaAbertoRegisto(prestadorKey, dateISO);
     if (!registo) return;
-    if (agendaDiaTemMarcacaoAtiva(prestadorKey, dateISO)) {
-      confirmDialog(
-        'Impossível fechar o dia: é necessário primeiro concluir, cancelar ou eliminar todas as marcações ativas para esta data.',
-        () => {}, { confirmLabel: 'Entendido' }
-      );
-      return;
-    }
-    const nomeAbriu = registo.responsavel || 'alguém da equipa';
-    confirmDialog(`O dia foi aberto por ${nomeAbriu}. Tens a certeza de que desejas fechar este dia?`, async () => {
-      const ok = await dbDelete('agendaDias', registo.id);
-      if (ok) { STATE.agendaDias = STATE.agendaDias.filter(d => d.id !== registo.id); renderHeaderAcoes(); if (onSaved) onSaved(); render(); }   // render(): volta a bloquear as vagas
-      else showDbErrorToast('Não foi possível fechar o dia');
-    }, { confirmLabel: 'Sim, Fechar Dia' });
+    // 2026-11-02: pergunta sempre o motivo e, se ainda houver marcações, cancela-as no mesmo passo (ver agendaFecharDiaComMotivo).
+    agendaFecharDiaComMotivo(prestadorKey, dateISO, registo, () => { renderHeaderAcoes(); if (onSaved) onSaved(); render(); });
   }
   function buildAbrirFecharDiaBtn() {
     if (isPast) return null;
@@ -11194,6 +11393,7 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
     clear(footerEl);
     if (showForm) { bodyEl.appendChild(avisoPresencaAgenda); bodyEl.appendChild(buildForm()); sincronizarBarraSelecao(); return; }
     sincronizarBarraSelecao();
+    { const fx = agendaFechoFaixa(prestadorKey, dateISO); if (fx) bodyEl.appendChild(fx); }
 
     const marcacoes = marcacoesDoDia();
     const ocupacao = {};
@@ -11456,6 +11656,9 @@ function calendarioItensDoDia(dateISO, restringirPorPerfil, opcoes) {
   });
   (STATE.agendaMarcacoes || []).forEach(m => {
     if (m.data !== dateISO || m.tipoLinha === 'bloqueado') return;
+    // 2026-11-02 (Hugo: "no calendário da página inicial já não deve aparecer o dia se foi fechado"): marcações de um
+    // dia fechado (todas canceladas) não fazem aparecer o serviço.
+    if (agendaMarcacaoAnulada(m) && agendaFechoDe(m.prestadorKey, dateISO)) return;
     const servico = SERVICOS_CALENDARIO.find(s => s.key === m.prestadorKey);
     if (!servico) return;
     const horaM = normalizarHora(m.hora);
@@ -11813,6 +12016,8 @@ function buildMonthCalendar(year, month, posicao, onDayClick, prestadorKey, cale
     // Dias sem qualquer marcação/serviço ficam sem listener — clicar não
     // faz nada; para abrir um novo dia é obrigatório ir à página da agenda
     // do prestador específico (só aí é possível marcar/abrir dias).
+    // 2026-11-02: na agenda do prestador, um dia cancelado (fechado com motivo) leva uma cruz e o motivo no tooltip.
+    if (prestadorKey && onDayClick) { try { const fc = agendaFechoDe(prestadorKey, dateISO); if (fc && fc.motivo !== 'engano') { cell.classList.add('cal-cell-cancelado'); cell.title = `Cancelado — ${agendaFechoMotivoTxt(fc)}`; } } catch (e) { /* ignora */ } }
     cells.push(cell);
   }
 
@@ -13021,6 +13226,7 @@ function abrirRemarcacaoAgenda(m, onSaved, opts) {
         Icon('lockClosed', { size: 15, strokeWidth: 2.3 }),
         h('span', {}, [h('strong', {}, 'Dia por abrir. '), 'Escolhe outro dia ou abre este dia nesta agenda.']),
       ]));
+      { const fx = agendaFechoFaixa(prestadorKey, dia); if (fx) corpo.appendChild(fx); }
       corpo.appendChild(abrirBtn);
       return;
     }
@@ -67690,7 +67896,7 @@ function ausenciaRegistoTxt(a) {
   if (!a.em && !a.por) return '';
   let quando = '';
   try { const d = new Date(a.em); if (!isNaN(d)) quando = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')} às ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; } catch (e) { quando = ''; }
-  const quem = a.por ? (String(a.por).trim() === String(a.nome || '').trim() ? `${ausenciaPrimeiroNome(a.nome)} (a própria)` : a.por) : '';
+  const quem = a.por ? String(a.por).trim() : ''; // 2026-11-02 (Hugo: "não gosto que diga a própria")
   return ['Registada', quem ? `por ${quem}` : '', quando ? `a ${quando}` : ''].filter(Boolean).join(' ');
 }
 function buildAusenciasCard(rerender) {
