@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-02 11:35" />
+<meta name="siga-versao" content="2026-11-02 14:10" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -7586,6 +7586,10 @@ body.tem-barra-inferior .topbar-mobile > .hamburger:first-child{display:none;}
 .ausencia-previa-rot{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#0369a1;}
 .ausencia-acoes{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;}
 .ausencia-guardar{display:inline-flex;align-items:center;gap:6px;}
+
+/* Formulário de Entrega: empresa onde se entrega (2026-11-02) — bem visível, a preto, sem depender de cor. */
+.doc-entrega-empresa{margin:6px 0 4px;padding:5px 10px;border:2px solid #000;border-radius:6px;display:inline-flex;align-items:baseline;gap:4px;flex-wrap:wrap;}
+.doc-entrega-empresa-nome{font-size:17pt;font-weight:800;color:#000;text-transform:uppercase;letter-spacing:.02em;}
 </style>
 <style id="plano-medicacao-css">
   .plano-med-icone{display:block;line-height:0;}
@@ -64107,9 +64111,12 @@ function buildFormularioEntregaDoc(r) {
   // (entregaEmpresaParceira é só um estado de checkbox no formulário, nunca
   // vai para o servidor — ver CAMPOS_SO_UI_POR_TABELA), por isso é o único
   // em que se pode confiar aqui, incluindo logo a seguir a criar o registo.
-  const empresaEnderecoEmprestado = r.enderecoEmpresaParceiraId
-    ? (STATE.empresasParceiras || []).find(e => String(e.id) === String(r.enderecoEmpresaParceiraId))
-    : null;
+  // 2026-11-02 (Hugo: "o formulário de entrega já não mostra a entidade quando a encomenda é para um colaborador ou
+  // utente da entidade, mas a entrega é feita nas instalações… deve estar sempre impressa"): a empresa procura-se por
+  // ordem — (1) pela escolha «Entregar numa Empresa Parceira», também entre as empresas entretanto eliminadas ou ainda
+  // não carregadas neste aparelho (ENTREGAS_EMPRESAS_CACHE, ver imprimirFormularioEntrega); (2) se ninguém marcou a
+  // caixa mas a morada é a de uma empresa parceira registada, é essa a empresa.
+  const empresaEnderecoEmprestado = entregaEmpresaDasInstalacoes(r);
   // Empresa Parceira como destinatária DIRETA (tipoDestinatario ===
   // 'Empresa Parceira') — o nome da empresa já vem em r.nomeCliente, mas
   // sozinho é ambíguo com um Particular normal; o sufixo "(Empresa
@@ -64144,7 +64151,7 @@ function buildFormularioEntregaDoc(r) {
   const destaqueEntrega = h('div', { class: 'doc-entrega-destaque' }, [
     h('div', { class: 'doc-entrega-rotulo' }, 'Entregar a'),
     h('div', { class: 'doc-entrega-nome' }, clienteDestinatarioTxt),
-    empresaEnderecoEmprestado ? h('div', { style: 'margin:4px 0 2px;' }, [h('span', { class: 'doc-entrega-rotulo', style: 'margin-right:6px;' }, 'Ao cuidado de'), h('span', { class: 'doc-empresa-parceira-destaque' }, empresaEnderecoEmprestado.nome)]) : null,
+    empresaEnderecoEmprestado ? h('div', { class: 'doc-entrega-empresa' }, [h('span', { class: 'doc-entrega-rotulo', style: 'margin-right:6px;' }, 'Entregar nas instalações de'), h('span', { class: 'doc-entrega-empresa-nome' }, empresaEnderecoEmprestado.nome)]) : null,
     h('div', { class: 'doc-entrega-morada' }, r.morada || '— sem morada —'),
     r.localidade ? h('div', { class: 'doc-entrega-localidade' }, r.localidade) : null,
     h('div', { class: 'doc-entrega-linha' }, [
@@ -64280,7 +64287,30 @@ function buildFormularioEntregaDoc(r) {
   const rodape = h('div', { class: 'doc-rodape doc-rodape-formulario-entrega' }, [avisoLegalBox, assinaturaBlock]);
   return buildDocA4(kids, rodape, 'doc-a4-formulario-entrega');
 }
-function imprimirFormularioEntrega(r) {
+const ENTREGAS_EMPRESAS_CACHE = new Map();
+function entregaNormMorada(t) { return String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, ''); }
+function entregaEmpresaDasInstalacoes(r) {
+  if (!r || r.tipoDestinatario === 'Empresa Parceira') return null;
+  const id = r.enderecoEmpresaParceiraId;
+  if (id) {
+    const e = (STATE.empresasParceiras || []).find(x => String(x.id) === String(id)) || ENTREGAS_EMPRESAS_CACHE.get(String(id));
+    if (e) return e;
+  }
+  const m = entregaNormMorada(r.morada);
+  if (m.length < 8) return id ? { nome: 'Empresa parceira (ver no SIGA)' } : null;
+  const porMorada = (STATE.empresasParceiras || []).find(x => !x.eliminado && (!r.farmacia || !x.farmacia || x.farmacia === r.farmacia) && entregaNormMorada(x.morada) === m);
+  return porMorada || (id ? { nome: 'Empresa parceira (ver no SIGA)' } : null);
+}
+async function imprimirFormularioEntrega(r) {
+  // Empresa escolhida mas não presente neste aparelho (eliminada entretanto, ou lista ainda por carregar): vai buscá-la
+  // ao servidor antes de imprimir (no máximo 2,5 s), para o nome sair SEMPRE na folha.
+  try {
+    const id = r && r.enderecoEmpresaParceiraId;
+    if (id && !(STATE.empresasParceiras || []).some(x => String(x.id) === String(id)) && !ENTREGAS_EMPRESAS_CACHE.has(String(id))) {
+      const emp = await Promise.race([dbFetchOne('empresasParceiras', id), new Promise(res => setTimeout(() => res(null), 2500))]);
+      if (emp) ENTREGAS_EMPRESAS_CACHE.set(String(id), emp);
+    }
+  } catch (e) { /* imprime na mesma */ }
   // Nome do ficheiro sugerido ao "Guardar como PDF": inclui o nome do
   // cliente (sem acentos, espaços trocados por "_") e a data — formato
   // formulario_entrega_Nome_Cliente_AAAA-MM-DD.pdf. Sem nome de cliente
