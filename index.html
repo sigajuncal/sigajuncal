@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-03 21:30" />
+<meta name="siga-versao" content="2026-11-03 21:45" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -7635,6 +7635,14 @@ body.tem-barra-inferior .topbar-mobile > .hamburger:first-child{display:none;}
    brilho do relógio do turno (background-position / stroke) ficam paradas nos telemóveis. */
 @media (hover: none), (max-width: 900px) {
   .turno-barra-preenchido, .turno-barra-preenchido::after, .turno-relogio-brilho{animation:none !important;}
+}
+
+/* 2026-11-03 (Hugo: «se tiveres de simplificar as animações, simplifica»): nos telemóveis os desenhos da Página Inicial
+   (dia/noite, ilustração de descanso) ficam parados — mesma imagem, sem movimento. O resto da app não muda. */
+@media (hover: none), (max-width: 900px) {
+  .dianoite-card *, .dianoite-card *::before, .dianoite-card *::after,
+  .descanso-desenho *, .descanso-desenho *::before, .descanso-desenho *::after{animation:none !important;transition:none !important;}
+  .dianoite-cruz-leds circle{opacity:1;}
 }
 </style>
 <style id="plano-medicacao-css">
@@ -21424,6 +21432,9 @@ const ESCOAR_SVG_GENERICO = '<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2
 // estiverem no ecrã naquele momento; uma verificação de 3 em 3 s apanha qualquer um que tenha ficado por preencher.
 function escoarAplicarImagens(raiz) {
   (raiz || document).querySelectorAll('[data-img-validade]:not(.com-imagem)').forEach(el => {
+    // Telemóvel: só o slide à vista e o seguinte (os outros carregam quando lá chegarem) — poupa memória.
+    const slide = el.closest('.escoar-slide');
+    if (slide && !slide.classList.contains('ativo') && !(slide.previousElementSibling && slide.previousElementSibling.classList.contains('ativo')) && window.matchMedia && window.matchMedia('(hover: none)').matches) return;
     const f = ECRA_TV.imagens && ECRA_TV.imagens.get(el.dataset.imgValidade);
     if (!f) return;
     const k = String(f.id);
@@ -21455,6 +21466,7 @@ function escoarIrPara(car, alvo) {
   const total = Number(car.dataset.total || 0);
   if (cont) { const a = prox * ESCOAR_POR_PAGINA + 1, b = Math.min(total, a + ESCOAR_POR_PAGINA - 1); cont.textContent = a === b ? `${a} / ${total}` : `${a}–${b} / ${total}`; }
   ESCOAR_IDX = prox;
+  try { escoarAplicarImagens(car); } catch (e) { /* ignora */ }
 }
 function escoarAvancarTodos() {
   document.querySelectorAll('.escoar-carrossel').forEach(car => {
@@ -34144,7 +34156,12 @@ async function ecraTvCarregarImagens() {
     ECRA_TV.imagens = mapaDe('validades');
     ECRA_TV.imagensCampanha = mapaDe('campanhas');
     if (algumaFonte) ECRA_TV.imagensEm = Date.now();
-    await Promise.all([...ECRA_TV.imagens.values(), ...ECRA_TV.imagensCampanha.values()].slice(0, 60).map(f => ecraTvPreCarregarImagem(f).catch(() => false)));
+    // 2026-11-03 (Hugo: «o separador avariou» / «a página deixou de responder» no telemóvel, sobretudo no Wi-Fi): fora
+    // do modo TV já não se descarregam TODAS as imagens (até 60, incluindo cartazes das campanhas) — no telemóvel isso
+    // enchia a memória (cada imagem fica descodificada) até o Chrome fechar o separador. Na Página Inicial só se
+    // carregam as imagens dos produtos que estão a aparecer (escoarAplicarImagens, a pedido).
+    const emModoTv = !!(ECRA_TV.overlay && ECRA_TV.overlay.isConnected);
+    if (emModoTv) await Promise.all([...ECRA_TV.imagens.values(), ...ECRA_TV.imagensCampanha.values()].slice(0, 60).map(f => ecraTvPreCarregarImagem(f).catch(() => false)));
   })().finally(() => { ECRA_TV_IMG_PEDIDO = null; });
   return ECRA_TV_IMG_PEDIDO;
 }
