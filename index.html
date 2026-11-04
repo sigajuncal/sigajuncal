@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-04 22:05" />
+<meta name="siga-versao" content="2026-11-04 22:25" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -60459,7 +60459,8 @@ function buildHorariosPage(container, goTo) {
     if (!lista.length) {
       return h('div', { class: 'card card-pad', style: 'margin-top:16px;padding:10px 14px;font-size:13px;color:#15803d;' }, `✓ ${nomeSel} não tem picagens por validar.`);
     }
-    const minha = activeUser && String(colaboradorValidacaoId) === String(activeUser.id);
+    // 2026-11-04 (Hugo): exceção só da Juncal — o Administrador valida as suas próprias picagens (não espera por ninguém).
+    const minha = activeUser && String(colaboradorValidacaoId) === String(activeUser.id) && activeUser.perfilNivel !== 'Administrador';
     const decidir = (r, decisao) => requireAuth(async () => {
       pontoDecidindoId = r.id; rerender();
       const feito = await decidirPicagemPonto(r.id, decisao);
@@ -74969,6 +74970,7 @@ function pontoPedirRegistoManual(problema, opcoes) {
     const ok = await pontoPedirRegistoDirecao(`${nome} não conseguiu picar a ${tipoTxt} de ${formatDate(data)} — diz que ${tipo === 'entrada' ? 'entrou' : 'saiu'} às ${hora}${correcao}.${problema ? ` Problema: ${problema}.` : ''} Aparelho: ${pontoDescricaoAparelho()}.`,
       { referenciaTabela: 'ponto_falha', referenciaId: chave });
     if (!ok) { enviar.removeAttribute('disabled'); erroEl.textContent = 'Não foi possível enviar — tenta de novo.'; erroEl.style.display = ''; return; }
+    try { pontoLembreteMarcarPedido(chave); } catch (e) { /* ignora */ }
     fechar();
     showToast(ja ? `Pedido corrigido — a Direção vai registar a tua ${tipoTxt} às ${hora}.` : `Pronto — a Direção vai registar a tua ${tipoTxt} às ${hora}.`, 'success');
   }));
@@ -75106,6 +75108,14 @@ function pontoEntradaJaPedidaNaGaveta(userId, dataISO, chave) {
     return msg.includes(dataPt); // o texto guardado leva sempre a data (no ecrã aparece «de hoje»)
   });
 }
+// 2026-11-04 (Hugo: «cliquei "Já saí", pus 21:00 e volta a pedir — corrige de vez»): a saída de um dia já pedida à
+// Direção (por «Já saí», «Pedir à Direção para registar a hora» ou saída esquecida) nunca mais volta a ser lembrada.
+function pontoSaidaJaPedida(uid, dataISO) {
+  const chave = `${uid}:${dataISO}:saida`;
+  if (pontoLembreteJaPediuDirecao(chave)) return true;
+  return (STATE.gavetaRecados || []).some(r => String(r.remetenteId) === String(uid) && !r.eliminado
+    && ((r.referenciaTabela === 'ponto_falha' || r.referenciaTabela === 'ponto_saida') && String(r.referenciaId) === chave));
+}
 function pontoLembreteSituacao() {
   if (!activeUser || !temCredencialServidor() || !PONTO_SYNC_ULTIMA_EM) return null;
   // 2026-10-31 (Hugo: "defini a hora e mesmo assim recebo este pop up sem parar"): o ponto e a Gaveta leem-se em paralelo
@@ -75121,14 +75131,14 @@ function pontoLembreteSituacao() {
     const esq = j.esquecida;
     const chave = `${activeUser.id}:${esq.data}:saida`;
     const jaAvisou = pontoSaidaJaDeclarada(activeUser.id, esq.data, chave);
-    if (!jaAvisou) return { tipo: 'saida_esquecida', data: esq.data, entrada: esq, turno: pontoTurnoPlaneado(activeUser.id, esq.data), chave };
+    if (!jaAvisou && !pontoSaidaJaPedida(activeUser.id, esq.data)) return { tipo: 'saida_esquecida', data: esq.data, entrada: esq, turno: pontoTurnoPlaneado(activeUser.id, esq.data), chave };
   }
   // 2) Saída de hoje (ou da jornada ainda aberta) por picar, com o turno já acabado.
   if (j.entrada && !j.saida && !j.pausaAberta) {
     const turno = pontoTurnoPlaneado(activeUser.id, j.data);
     if (turno) {
       const fim = pontoMomentoDoDia(j.data, turno.saida, true);
-      if (agora > fim + 20 * 60000 && agora <= pontoLimiteSaidaJornada(j.entrada)) return { tipo: 'saida', data: j.data, entrada: j.entrada, turno, chave: `${activeUser.id}:${j.data}:saida` };
+      if (agora > fim + 20 * 60000 && agora <= pontoLimiteSaidaJornada(j.entrada) && !pontoSaidaJaPedida(activeUser.id, j.data)) return { tipo: 'saida', data: j.data, entrada: j.entrada, turno, chave: `${activeUser.id}:${j.data}:saida` };
     }
   }
   // 1) Entrada de hoje por picar, com o turno de hoje a decorrer.
