@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-04 18:00" />
+<meta name="siga-versao" content="2026-11-04 18:40" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -3650,7 +3650,15 @@
   .troca-resumo-quem b{color:#1e293b;}
   .troca-recado{display:flex;flex-direction:column;gap:8px;}
   .troca-recado-titulo{margin:0;font-size:13.5px;font-weight:700;color:#1e293b;}
-  .troca-recado-resto{margin:0;font-size:12px;color:#64748b;}
+
+  .troca-recado-resto{display:flex;flex-direction:column;gap:3px;margin:0;font-size:12px;color:#64748b;}
+  .troca-recado-resto p{margin:0;line-height:1.4;}
+  .troca-recado-muda{margin-top:4px;padding:6px 9px;border-radius:8px;background:#f0f9ff;border:1px solid #bae6fd;display:flex;flex-direction:column;gap:2px;color:#0f172a;font-size:12.5px;}
+  .troca-recado-muda-tit{font-size:11px;font-weight:800;color:#0369a1;text-transform:uppercase;letter-spacing:.04em;}
+  .troca-recado-muda-linha s{color:#94a3b8;}
+  .troca-recado-muda-linha b{color:#0f172a;}
+  .troca-recado-aviso{margin:2px 0 0;font-size:11px;color:#b45309;font-style:italic;}
+
   .troca-tipo-escolha{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin:0 0 12px;}
   .troca-tipo-opcao{display:flex;flex-direction:column;gap:2px;text-align:left;padding:9px 11px;border-radius:11px;border:1.5px solid #e2e8f0;background:#fff;cursor:pointer;font:inherit;}
   .troca-tipo-opcao b{font-size:13px;color:#1e293b;}
@@ -49238,18 +49246,54 @@ function trocaResumoEl(t, opts) {
   ]);
 }
 // Recado de troca na Gaveta: título curto + resumo visual (o texto guardado no recado continua igual).
+// 2026-11-04 (Hugo: «corrige a desformatação daquela mensagem de troca e previne situações do género»):
+//  - as linhas «O teu horário passa a ser:» aparecem numa caixa, uma alteração por linha (antes ficavam coladas);
+//  - se a troca mudou depois de o recado ser enviado (outro colega, outras horas…) o resumo visual ficaria errado —
+//    mostra-se então o texto do próprio recado, arrumado (título, frases e alterações), nunca um bloco corrido.
+function trocaRecadoRestoEl(linhas) {
+  const i = linhas.findIndex(x => /^O teu horário passa a ser/i.test(x));
+  const frases = i < 0 ? linhas : linhas.slice(0, i);
+  const muda = i < 0 ? [] : linhas.slice(i + 1).map(x => x.replace(/^[•\-·]\s*/, ''));
+  if (!frases.length && !muda.length) return null;
+  return h('div', { class: 'troca-recado-resto' }, [
+    ...frases.map(f => h('p', {}, f)),
+    muda.length ? h('div', { class: 'troca-recado-muda' }, [
+      h('span', { class: 'troca-recado-muda-tit' }, 'O teu horário passa a ser'),
+      ...muda.map(m => { const [antes, depois] = m.split(/\s*→\s*/); return h('div', { class: 'troca-recado-muda-linha' }, depois !== undefined ? [h('s', {}, antes), h('span', { 'aria-hidden': 'true' }, ' → '), h('b', {}, depois)] : m); }),
+    ]) : null,
+  ].filter(Boolean));
+}
 function trocaCorpoRecadoEl(r, troca) {
   const msg = String(r.mensagem || '');
   const desc = trocaDescricao(troca);
   const i = msg.indexOf(desc);
-  if (i < 0) return null; // recado antigo/diferente — mostra-se o texto tal como está
+  if (i < 0) {
+    // O recado pode ser de outra troca (ex.: a mesma pessoa com dois colegas): procura a troca cujo texto coincide.
+    const outra = (STATE.escalaTrocas || []).find(x => x && x !== troca && !x.eliminado && msg.includes(trocaDescricao(x)));
+    if (outra) return trocaCorpoRecadoEl(r, outra);
+    // Texto que já não coincide com nenhuma troca atual: arruma-se o próprio texto.
+    const linhas = msg.split('\n').map(x => x.trim()).filter(Boolean);
+    if (!linhas.length) return null;
+    const m = linhas[0].match(/^([^:\[]{6,90}):\s*(.+)$/);
+    const titulo = m ? m[1] : null;
+    const corpo = m ? [m[2].replace(/^\[[^\]]*\]\s*/, ''), ...linhas.slice(1)] : linhas;
+    const blocos = corpo.filter(x => !/^O teu horário passa a ser/i.test(x) && !/^[•\-·]\s/.test(x));
+    const restoIdx = corpo.findIndex(x => /^O teu horário passa a ser/i.test(x));
+    return h('div', { class: 'troca-recado' }, [
+      titulo ? h('p', { class: 'troca-recado-titulo' }, titulo) : null,
+      trocaRecadoRestoEl(restoIdx < 0 ? blocos : [...blocos, ...corpo.slice(restoIdx)]),
+      h('p', { class: 'troca-recado-aviso' }, 'Texto guardado no momento do envio.'),
+    ].filter(Boolean));
+  }
   const titulo = msg.slice(0, i).replace(/[:\s]+$/, '').trim();
-  const resto = msg.slice(i + desc.length).split('\n').map(x => x.trim()).filter(x => x && !x.startsWith('Nota:'));
+  const resto = msg.slice(i + desc.length).split('\n').map(x => x.trim()).filter(x => x && !x.startsWith('Nota:'))
+    .flatMap(x => x.replace(/^—\s*/, '').split(/(?<=\.)\s+(?=[A-ZÁÉÍÓÚÂÊÔÃÕÇ])/)).filter(Boolean)
+    .filter(x => !/fica a dever|Ninguém fica a dever/i.test(x) || /^O teu horário|^[•\-·]/.test(x)); // a dívida já aparece no resumo
   return h('div', { class: 'troca-recado' }, [
     titulo ? h('p', { class: 'troca-recado-titulo' }, titulo) : null,
     trocaResumoEl(troca, { comNota: true }),
-    resto.length ? h('p', { class: 'troca-recado-resto' }, resto.join(' ')) : null,
-  ]);
+    trocaRecadoRestoEl(resto),
+  ].filter(Boolean));
 }
 // Etiqueta com o ícone único das trocas entre colegas (2026-09-28).
 function conteudoComIconeTroca(texto, tamanho) {
