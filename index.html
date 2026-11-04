@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-04 22:25" />
+<meta name="siga-versao" content="2026-11-04 22:58" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -67175,6 +67175,30 @@ function pontoCarregarJsQR() {
   });
   return PONTO_JSQR_PROMESSA;
 }
+// 2026-11-04 (Hugo: «garante que, dependendo do telemóvel dos colegas, mostra as instruções corretas»): como desbloquear
+// a câmara para o SIGA, passo a passo, conforme o telemóvel e o browser — sempre com o endereço exato da app (a câmara
+// autoriza-se por endereço: juncal.sigafarmacia.pt não é o mesmo que o antigo sigajuncal.github.io).
+function pontoInstrucoesCamara() {
+  const ua = navigator.userAgent || '';
+  const host = location.host || 'o endereço do SIGA';
+  const instalada = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
+  const ios = /iPhone|iPad|iPod/i.test(ua) || (/Macintosh/i.test(ua) && 'ontouchend' in document);
+  if (ios) {
+    if (/CriOS/i.test(ua)) return `iPhone com Chrome: Definições do iPhone › Apps › Chrome › Câmara › ligar. Depois fecha e volta a abrir o SIGA.`;
+    if (/FxiOS/i.test(ua)) return `iPhone com Firefox: Definições do iPhone › Apps › Firefox › Câmara › ligar. Depois fecha e volta a abrir o SIGA.`;
+    if (/EdgiOS/i.test(ua)) return `iPhone com Edge: Definições do iPhone › Apps › Edge › Câmara › ligar. Depois fecha e volta a abrir o SIGA.`;
+    return instalada
+      ? `iPhone (SIGA no ecrã principal): Definições do iPhone › Apps › Safari › Câmara › «Permitir». Depois fecha e volta a abrir o SIGA.`
+      : `iPhone com Safari: toca em «aA» (ou no ícone à esquerda do endereço) › Definições do site › Câmara › «Permitir». Se não aparecer: Definições do iPhone › Apps › Safari › Câmara › «Permitir».`;
+  }
+  if (/SamsungBrowser/i.test(ua)) return `Samsung Internet: menu ≡ › Definições › Sites e transferências › Permissões de sites › toca na palavra «Câmara» › liga ${host}. Depois fecha o SIGA de vez (apps recentes › deslizar) e volta a abrir.`;
+  if (/EdgA/i.test(ua)) return `Edge: menu ⋯ › Definições › Privacidade e segurança › Permissões do site › Câmara › ${host} › Permitir. Depois fecha e volta a abrir o SIGA.`;
+  if (/Firefox/i.test(ua)) return `Firefox: menu ⋮ › Definições › Permissões do site › Câmara › ${host} › Permitir. Depois fecha e volta a abrir o SIGA.`;
+  if (/Android/i.test(ua)) return instalada
+    ? `Android (SIGA instalado): abre o Chrome › menu ⋮ › Definições › Definições de sites › Câmara › ${host} › Permitir. Se continuar: Definições do telemóvel › Aplicações › SIGA › Permissões › Câmara › Permitir.`
+    : `Chrome: toca no ícone à esquerda do endereço (${host}) › Permissões › Câmara › Permitir. Ou: menu ⋮ › Definições › Definições de sites › Câmara › ${host} › Permitir.`;
+  return `No browser: ícone à esquerda do endereço (${host}) › Permissões do site › Câmara › Permitir.`;
+}
 async function pontoQrAbrirLeitor() {
   if (!activeUser) return;
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -67187,10 +67211,42 @@ async function pontoQrAbrirLeitor() {
   const estado = h('p', { class: 'ponto-leitor-estado' }, 'A abrir a câmara…');
   // Quando a câmara/leitor falha: nunca fica sem saída — pede à Direção para registar, ou testa o telemóvel.
   const ajudaEl = h('div', { class: 'ponto-leitor-ajuda', hidden: 'hidden' });
+  // 2026-11-04 (Hugo: câmara bloqueada no Samsung Internet): «Tirar fotografia ao QR code» usa a app Câmara do
+  // telemóvel através de um campo de ficheiro — não precisa da autorização da câmara para o site — e lê o código da foto.
+  const fotoInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', style: 'display:none;' });
+  fotoInput.addEventListener('change', async () => {
+    const ficheiro = fotoInput.files && fotoInput.files[0];
+    fotoInput.value = '';
+    if (!ficheiro) return;
+    estado.classList.remove('erro'); estado.textContent = 'A ler o QR code da fotografia…';
+    let texto = null;
+    try {
+      const bmp = await createImageBitmap(ficheiro);
+      if ('BarcodeDetector' in window) {
+        try { const r = await new window.BarcodeDetector({ formats: ['qr_code'] }).detect(bmp); texto = r && r[0] ? r[0].rawValue : null; } catch (e) { texto = null; }
+      }
+      if (!texto) {
+        const jsQR = await pontoCarregarJsQR();
+        const escala = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+        const cv = document.createElement('canvas'); cv.width = Math.round(bmp.width * escala); cv.height = Math.round(bmp.height * escala);
+        const cx = cv.getContext('2d'); cx.drawImage(bmp, 0, 0, cv.width, cv.height);
+        const img = cx.getImageData(0, 0, cv.width, cv.height);
+        const r = jsQR(img.data, img.width, img.height, { inversionAttempts: 'attemptBoth' });
+        texto = r ? r.data : null;
+      }
+    } catch (e) { texto = null; }
+    const codigo = texto ? pontoQrCodigoDoTexto(texto) : null;
+    if (!codigo) { estado.classList.add('erro'); estado.textContent = texto ? 'Esse QR code não é o do ponto da farmácia.' : 'Não consegui ler o QR code nessa fotografia — tira outra mais perto e com o código todo.'; return; }
+    fechar();
+    if (!temCredencialServidor()) { showToast('Para picar o ponto, termina a sessão e volta a entrar com o teu PIN.', 'error'); return; }
+    pontoQrProcessar(codigo);
+  });
   const mostrarAjuda = (problema) => {
     clear(ajudaEl);
     ajudaEl.removeAttribute('hidden');
-    ajudaEl.appendChild(h('button', { class: 'btn btn-primary', type: 'button', onClick: () => { fechar(); pontoPedirRegistoManual(problema); } }, 'Pedir à Direção para registar a hora'));
+    ajudaEl.appendChild(fotoInput);
+    ajudaEl.appendChild(h('button', { class: 'btn btn-primary', type: 'button', onClick: () => fotoInput.click() }, '📷 Tirar fotografia ao QR code'));
+    ajudaEl.appendChild(h('button', { class: 'btn btn-secondary', type: 'button', onClick: () => { fechar(); pontoPedirRegistoManual(problema); } }, 'Já saí / não estou na farmácia — pedir à Direção'));
     ajudaEl.appendChild(h('button', { class: 'btn btn-secondary', type: 'button', onClick: () => { fechar(); pontoTestarAparelho(); } }, 'Testar este telemóvel'));
   };
   const cancelarBtn = h('button', { class: 'btn btn-secondary', type: 'button' }, 'Cancelar');
@@ -67218,11 +67274,7 @@ async function pontoQrAbrirLeitor() {
   } catch (e) {
     const negado = e && (e.name === 'NotAllowedError' || e.name === 'SecurityError');
     estado.textContent = negado
-      ? (/SamsungBrowser/i.test(navigator.userAgent)
-        ? 'O browser não tem autorização para usar a câmara. No Samsung Internet: toca no cadeado à esquerda do endereço › Permissões › Câmara › Permitir. Ou lê o QR code com a app Câmara do telemóvel.'
-        : /iPhone|iPad/i.test(navigator.userAgent)
-        ? 'O browser não tem autorização para usar a câmara. No iPhone: Definições › Safari (ou Chrome) › Câmara › Permitir. Ou lê o QR code com a app Câmara.'
-        : 'O browser não tem autorização para usar a câmara. No Chrome: toca no ícone à esquerda do endereço › Permissões › Câmara › Permitir. Ou lê o QR code com a app Câmara do telemóvel.')
+      ? `O SIGA não tem autorização para usar a câmara. ${pontoInstrucoesCamara()} Enquanto isso, usa «Tirar fotografia ao QR code».`
       : `Não foi possível abrir a câmara${e && e.name ? ` (${e.name})` : ''}. Lê o QR code com a câmara do telemóvel.`;
     estado.classList.add('erro');
     mostrarAjuda(negado ? 'sem autorização para a câmara' : `câmara não abre${e && e.name ? ` — ${e.name}` : ''}`);
@@ -67764,6 +67816,11 @@ async function pontoChamarRpcComResposta(nome, params) {
 // do browser, histórico…) registava a SAÍDA sem a pessoa querer. Pelo QR code a saída passa SEMPRE a pedir um toque de
 // confirmação — «Vais sair agora?» —, por isso nunca fica registada sozinha.
 function pontoConfirmarSaidaPorQr(seguir) {
+  // Já pediu à Direção a saída de hoje (ex.: «Já saí — 21:00»)? Abrir a app pelo endereço do QR não volta a perguntar.
+  try {
+    const jj = pontoJornadaAtual(activeUser.id);
+    if (jj && jj.data && pontoSaidaJaPedida(activeUser.id, jj.data)) { showToast('A tua saída de hoje já foi pedida à Direção — não é preciso picar.', 'info'); return; }
+  } catch (e) { /* segue para a pergunta */ }
   const agora = new Date();
   const hh = `${String(agora.getHours()).padStart(2, '0')}:${String(agora.getMinutes()).padStart(2, '0')}`;
   const overlay = h('div', { class: 'modal-overlay' });
@@ -75040,7 +75097,7 @@ async function pontoTestarAparelho() {
   else {
     let perm = null;
     try { if (navigator.permissions && navigator.permissions.query) perm = (await navigator.permissions.query({ name: 'camera' })).state; } catch (e) { perm = null; }
-    if (perm === 'denied') cam('erro', 'A câmara está bloqueada para a app. Autoriza nas definições do browser (Site › Câmara › Permitir).');
+    if (perm === 'denied') cam('erro', `A câmara está bloqueada para o SIGA (${location.host}). ${pontoInstrucoesCamara()}`);
     else if (perm === 'granted') cam('ok', 'Autorizada.');
     else cam('aviso', 'Vai pedir autorização da primeira vez que leres o QR code — carrega em «Permitir».');
   }
