@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-04 21:50" />
+<meta name="siga-versao" content="2026-11-04 22:05" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -67217,7 +67217,11 @@ async function pontoQrAbrirLeitor() {
   } catch (e) {
     const negado = e && (e.name === 'NotAllowedError' || e.name === 'SecurityError');
     estado.textContent = negado
-      ? 'Sem autorização para usar a câmara. Autoriza nas definições do browser/telemóvel, ou lê o QR code com a câmara do telemóvel.'
+      ? (/SamsungBrowser/i.test(navigator.userAgent)
+        ? 'O browser não tem autorização para usar a câmara. No Samsung Internet: toca no cadeado à esquerda do endereço › Permissões › Câmara › Permitir. Ou lê o QR code com a app Câmara do telemóvel.'
+        : /iPhone|iPad/i.test(navigator.userAgent)
+        ? 'O browser não tem autorização para usar a câmara. No iPhone: Definições › Safari (ou Chrome) › Câmara › Permitir. Ou lê o QR code com a app Câmara.'
+        : 'O browser não tem autorização para usar a câmara. No Chrome: toca no ícone à esquerda do endereço › Permissões › Câmara › Permitir. Ou lê o QR code com a app Câmara do telemóvel.')
       : `Não foi possível abrir a câmara${e && e.name ? ` (${e.name})` : ''}. Lê o QR code com a câmara do telemóvel.`;
     estado.classList.add('erro');
     mostrarAjuda(negado ? 'sem autorização para a câmara' : `câmara não abre${e && e.name ? ` — ${e.name}` : ''}`);
@@ -74935,14 +74939,14 @@ function pontoLembreteMarcarPedido(chave) {
 // entrada deste dia (marcado pela referência, ou pelo texto nos pedidos antigos), não pergunta outra vez.
 // ---- Quando a picagem não funciona (2026-10-30) ----
 // A pessoa diz a que horas entrou/saiu e a Direção regista na Validação de Horários («Picagens em falta»).
-function pontoPedirRegistoManual(problema) {
+function pontoPedirRegistoManual(problema, opcoes) {
   if (!activeUser) return;
   const j = pontoJornadaAtual(activeUser.id);
   const tipo = j.entrada && !j.saida ? 'saida' : 'entrada';
   const data = j.data || todayISO();
   const tipoTxt = tipo === 'entrada' ? 'entrada' : 'saída';
   const agora = new Date();
-  const inp = h('input', { class: 'input', type: 'time', value: `${pad2(agora.getHours())}:${pad2(agora.getMinutes())}`, style: 'max-width:130px;' });
+  const inp = h('input', { class: 'input', type: 'time', value: (opcoes && opcoes.horaSugerida) || `${pad2(agora.getHours())}:${pad2(agora.getMinutes())}`, style: 'max-width:130px;' });
   const erroEl = h('p', { class: 'form-error', style: 'display:none;margin:6px 0 0;' });
   const overlay = h('div', { class: 'modal-overlay' });
   const fechar = () => overlay.remove();
@@ -74952,18 +74956,31 @@ function pontoPedirRegistoManual(problema) {
     if (!/^\d{2}:\d{2}$/.test(hora)) { erroEl.textContent = 'Indica a hora.'; erroEl.style.display = ''; return; }
     const chave = `${activeUser.id}:${data}:${tipo}`;
     const ja = (STATE.gavetaRecados || []).some(r => String(r.remetenteId) === String(activeUser.id) && r.referenciaTabela === 'ponto_falha' && String(r.referenciaId) === chave && !r.tratado);
-    if (ja) { fechar(); showToast(`Já tinhas pedido à Direção para registar esta ${tipoTxt}.`, 'info'); return; }
+    // 2026-11-04 (Hugo: «diz que já tinha pedido»): em vez de bloquear, o pedido anterior é substituído pela hora nova
+    // (a Direção fica só com o último, e a mensagem diz que é uma correção).
+    const anteriores = (STATE.gavetaRecados || []).filter(r => String(r.remetenteId) === String(activeUser.id) && r.referenciaTabela === 'ponto_falha' && String(r.referenciaId) === chave && !r.tratado);
+    if (anteriores.length) {
+      const feitos = await Promise.all(anteriores.map(r => dbMarcarRecadoTratado(r.id)));
+      feitos.forEach(u => { if (u) STATE.gavetaRecados = STATE.gavetaRecados.map(x => x.id === u.id ? u : x); });
+    }
+    const correcao = ja ? ' (corrige o pedido anterior)' : '';
     enviar.setAttribute('disabled', 'disabled');
     const nome = activeUser.nomeCompleto || activeUser.username;
-    const ok = await pontoPedirRegistoDirecao(`${nome} não conseguiu picar a ${tipoTxt} de ${formatDate(data)} — diz que ${tipo === 'entrada' ? 'entrou' : 'saiu'} às ${hora}.${problema ? ` Problema: ${problema}.` : ''} Aparelho: ${pontoDescricaoAparelho()}.`,
+    const ok = await pontoPedirRegistoDirecao(`${nome} não conseguiu picar a ${tipoTxt} de ${formatDate(data)} — diz que ${tipo === 'entrada' ? 'entrou' : 'saiu'} às ${hora}${correcao}.${problema ? ` Problema: ${problema}.` : ''} Aparelho: ${pontoDescricaoAparelho()}.`,
       { referenciaTabela: 'ponto_falha', referenciaId: chave });
     if (!ok) { enviar.removeAttribute('disabled'); erroEl.textContent = 'Não foi possível enviar — tenta de novo.'; erroEl.style.display = ''; return; }
     fechar();
-    showToast(`Pronto — a Direção vai registar a tua ${tipoTxt} às ${hora}.`, 'success');
+    showToast(ja ? `Pedido corrigido — a Direção vai registar a tua ${tipoTxt} às ${hora}.` : `Pronto — a Direção vai registar a tua ${tipoTxt} às ${hora}.`, 'success');
   }));
+  const chavePedido = `${activeUser.id}:${data}:${tipo}`;
+  const pedidoAntes = (STATE.gavetaRecados || []).find(r => String(r.remetenteId) === String(activeUser.id) && r.referenciaTabela === 'ponto_falha' && String(r.referenciaId) === chavePedido && !r.tratado);
+  const horaAntes = pedidoAntes ? ((String(pedidoAntes.mensagem || '').match(/(?:entrou|saiu) às (\d{2}:\d{2})/) || [])[1] || '') : '';
+  if (horaAntes) inp.value = horaAntes;
+  if (pedidoAntes) enviar.textContent = 'Corrigir o pedido';
   overlay.appendChild(h('div', { class: 'modal-panel confirm-panel' }, [
-    h('p', { class: 'confirm-message', style: 'font-weight:700;' }, `Pedir à Direção para registar a ${tipoTxt}`),
-    h('p', { class: 'ponto-declarar-nota', style: 'margin:0 0 10px;' }, `A picagem não funcionou${problema ? ` (${problema})` : ''}. Diz a que horas ${tipo === 'entrada' ? 'entraste' : 'saíste'} em ${formatDate(data)} — a Direção regista-a na Validação de Horários.`),
+    h('p', { class: 'confirm-message', style: 'font-weight:700;' }, pedidoAntes ? `Já pediste à Direção para registar a ${tipoTxt}` : `Pedir à Direção para registar a ${tipoTxt}`),
+    pedidoAntes ? h('p', { class: 'ponto-declarar-nota', style: 'margin:0 0 8px;color:#166534;' }, `✓ Pedido enviado${horaAntes ? ` com a hora ${horaAntes}` : ''}. Se a hora estiver errada, corrige-a aqui — a Direção fica só com a nova.`) : null,
+    h('p', { class: 'ponto-declarar-nota', style: 'margin:0 0 10px;' }, `${opcoes && opcoes.horaSugerida ? '' : `A picagem não funcionou${problema ? ` (${problema})` : ''}. `}Diz a que horas ${tipo === 'entrada' ? 'entraste' : 'saíste'} em ${formatDate(data)} — a Direção regista-a na Validação de Horários.`),
     h('label', { style: 'display:flex;align-items:center;gap:8px;font-size:14px;' }, [`${tipo === 'entrada' ? 'Entrei' : 'Saí'} às`, inp]),
     erroEl,
     h('div', { class: 'form-actions', style: 'margin-top:12px;' }, [enviar, h('button', { class: 'btn btn-secondary', type: 'button', onClick: fechar }, 'Cancelar')]),
@@ -75205,7 +75222,9 @@ function mostrarLembretePonto(s) {
     linhas.push(s.data === todayISO() ? `Entraste às ${s.entrada.horaReal} e o teu turno acabava às ${s.turno.saida}.` : `Entraste ${pontoDataExtenso(s.data)} às ${s.entrada.horaReal} e o turno acabava às ${s.turno.saida}.`);
     if (telemovel) {
       acoes.push(h('button', { type: 'button', class: 'btn btn-primary ponto-lembrete-saida', onclick: () => { fechar(); requireAuth(pontoAbrirPicagem); } }, [Icon('arrowleft', { size: 16, strokeWidth: 2.6 }), h('span', {}, 'Picar a saída agora')]));
-      linhas.push('Se já saíste há algum tempo, a picagem pergunta-te a hora certa.');
+      // 2026-11-04 (Hugo, em casa às 21:58): quem já saiu não tem o QR code à mão — indica logo a hora a que saiu.
+      acoes.push(h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => { fechar(); requireAuth(() => pontoPedirRegistoManual('esqueceu-se de picar a saída', { horaSugerida: String(s.turno.saida || '').replace('24:00', '00:00') })); } }, '🏠 Já saí — indicar a hora'));
+      linhas.push('Ainda estás na farmácia? Pica com o QR code. Já saíste? Indica a hora a que saíste e a Direção regista-a.');
     } else {
       linhas.push(`Pica a saída no teu telemóvel antes de ires embora (dá até ${new Date(pontoLimiteSaidaJornada(s.entrada)).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })}).`);
       acoes.push(h('button', { type: 'button', class: 'btn btn-primary', onclick: () => adiar(15) }, 'Vou picar já no telemóvel'));
