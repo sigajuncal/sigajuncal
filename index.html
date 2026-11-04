@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-04 21:10" />
+<meta name="siga-versao" content="2026-11-04 21:40" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -6427,7 +6427,9 @@
   .escala-eu-titulo{display:inline-flex;flex-direction:column;align-items:center;gap:2px;}
   .escala-eu-codigo{font-size:10.5px;font-weight:800;line-height:12px;color:#1d4ed8;opacity:0;transform:translateY(4px);transition:opacity .15s ease,transform .15s ease;}
   .escala-vertical-coluna-titulo.com-eu:hover .escala-eu-codigo,.escala-vertical-coluna-titulo.com-eu:focus-within .escala-eu-codigo,.escala-vertical-coluna-titulo.com-eu.mostra-codigo .escala-eu-codigo{opacity:1;transform:none;}
-  .escala-vertical-coluna-eu .escala-vertical-bloco{box-shadow:inset 0 0 0 2px rgba(255,255,255,.95),0 0 0 1.5px #1d4ed8,0 3px 8px rgba(29,78,216,.35);}
+  /* Contorno da barra própria: branco por dentro + azul-noite por fora — contrasta com TODAS as cores de grupo (rosa F,
+     azul A, roxo P, azul-escuro B) e com o fundo claro, sem se confundir com o tracejado laranja das tarefas. */
+  .escala-vertical-coluna-eu .escala-vertical-bloco{box-shadow:inset 0 0 0 2px #fff,0 0 0 2px #172554,0 4px 10px rgba(23,37,84,.35);}
   .escala-vertical-coluna-eu .escala-vertical-coluna-rodape{color:#1d4ed8;font-weight:800;}
   tr.escala-linha-eu > td{background:#eff6ff !important;}
   tr.escala-linha-eu > td:first-child{box-shadow:inset 3px 0 0 #2563eb;}
@@ -34683,14 +34685,17 @@ function ecraTvCamarasCfg() {
     : [{ nome: 'Farmácia', src: 'farmacia', seg: 20 }, { nome: 'Parque 1', src: 'parque1', seg: 10 }, { nome: 'Parque 2', src: 'parque2', seg: 10 }];
   return {
     ativo: !!c.ativo,
+    modo: c.modo === 'go2rtc' ? 'go2rtc' : 'janela',
     base: String(c.base || 'http://localhost:1984').trim().replace(/\/+$/, ''),
     vistas: vistas.map(v => ({ nome: String(v.nome || '').trim() || 'Câmara', src: String(v.src || '').trim(), seg: Math.max(10, Math.round((Number(v.seg) || 10) / 10) * 10) })).filter(v => v.src),
   };
 }
-function ecraTvCamarasAtivas() { const c = ecraTvCamarasCfg(); return c.ativo && c.vistas.length > 0; }
+function ecraTvCamarasAtivas() { const c = ecraTvCamarasCfg(); return c.ativo && (c.modo === 'janela' || c.vistas.length > 0); }
 function ecraTvCamaras(palco, corpo) {
   if (!palco) return;
   const cfg = ecraTvCamarasCfg();
+  if (cfg.ativo && cfg.modo === 'janela') { if (ECRA_TV.camCamada) { ECRA_TV.camCamada.remove(); ECRA_TV.camCamada = null; } ecraTvJanelaCam(palco, corpo); return; }
+  ecraTvJanelaCamFechar();
   const lugar = corpo && corpo.querySelector('.tv-cam-lugar');
   let camada = ECRA_TV.camCamada;
   const deNoite = !!palco.closest('.tv-modo-noite');
@@ -34753,12 +34758,44 @@ function ecraTvCamaras(palco, corpo) {
     barra.style.animation = `tvCamBarra ${passos[idx] * 10}s linear ${-p * 10}s forwards`;
   }
 }
+// 2026-11-04 (Hugo: «a ação de abrir o modo TV abre logo também a janela das câmaras no sítio certo»): modo «janela do
+// gravador» — o SIGA não mostra vídeo; reserva o espaço (preto) e pede ao programa SigaCamaras deste PC (endereço
+// sigacam:, instalado com INSTALAR-JANELA-CAMARAS.bat) para abrir a página do gravador recortada, por cima, exatamente
+// nesse espaço. Ao sair do modo TV (ou de noite) pede para fechar.
+function ecraTvJanelaCamEnviar(url) {
+  try { window.location.href = url; } catch (e) { /* sem o programa instalado: nada acontece */ }
+}
+function ecraTvJanelaCamFechar() {
+  if (!ECRA_TV.janelaCamChave) return;
+  ECRA_TV.janelaCamChave = null;
+  ecraTvJanelaCamEnviar('sigacam:fechar');
+}
+function ecraTvJanelaCam(palco, corpo) {
+  const lugar = corpo && corpo.querySelector('.tv-cam-lugar');
+  if (!lugar || palco.closest('.tv-modo-noite')) { ecraTvJanelaCamFechar(); return; }
+  const r = lugar.getBoundingClientRect();
+  if (r.width < 50 || r.height < 50) return;
+  const dpr = window.devicePixelRatio || 1;
+  const bx = Math.max(0, (window.outerWidth - window.innerWidth) / 2), by = Math.max(0, window.outerHeight - window.innerHeight - bx);
+  const x = Math.round((window.screenX + bx + r.left) * dpr), y = Math.round((window.screenY + by + r.top) * dpr);
+  const w = Math.round(r.width * dpr), hh = Math.round(r.height * dpr);
+  const chave = `${x},${y},${w},${hh}`;
+  if (ECRA_TV.janelaCamChave === chave) return;
+  // o espaço mexeu pouco (animação de entrada)? espera que assente antes de pedir.
+  clearTimeout(ECRA_TV.janelaCamTimer);
+  ECRA_TV.janelaCamTimer = setTimeout(() => {
+    if (!lugar.isConnected) return;
+    ECRA_TV.janelaCamChave = chave;
+    ecraTvJanelaCamEnviar(`sigacam:abrir?x=${x}&y=${y}&w=${w}&h=${hh}`);
+  }, 1500);
+}
 function ecraTvCamarasConfigurar() {
   if (!ECRA_TV.overlay) return;
   const cfg = ecraTvCamarasCfg();
   const fundo = h('div', { class: 'tv-cam-cfg' });
   const cb = h('input', { type: 'checkbox', checked: cfg.ativo ? 'checked' : undefined });
   const base = h('input', { type: 'text', value: cfg.base, style: 'flex:1;' });
+  const modo = h('select', {}, [h('option', { value: 'janela', selected: cfg.modo === 'janela' ? 'selected' : undefined }, 'Janela do gravador (Internet Explorer, recortada no sítio)'), h('option', { value: 'go2rtc', selected: cfg.modo === 'go2rtc' ? 'selected' : undefined }, 'Dentro do SIGA (programa go2rtc)')]);
   const vistas = (cfg.vistas.length ? cfg.vistas : [{ nome: 'Farmácia', src: 'farmacia', seg: 20 }]).concat([]);
   while (vistas.length < 3) vistas.push({ nome: '', src: '', seg: 10 });
   const linhas = vistas.slice(0, 4).map(v => {
@@ -34770,7 +34807,9 @@ function ecraTvCamarasConfigurar() {
   const fechar = () => fundo.remove();
   const guardar = () => {
     if (cb.checked) { try { fetch((base.value.trim() || 'http://localhost:1984').replace(/\/+$/, '') + '/api/streams', { mode: 'no-cors', cache: 'no-store' }).catch(() => {}); } catch (e) { /* ignora */ } }
-    const novo = { ativo: cb.checked, base: base.value.trim() || 'http://localhost:1984', vistas: linhas.map(l => ({ nome: l.nome.value.trim(), src: l.src.value.trim(), seg: Number(l.seg.value) || 10 })).filter(v => v.src) };
+    if (modo.value === 'janela' && !cb.checked) { try { ecraTvJanelaCamFechar(); } catch (e) { /* ignora */ } }
+    ECRA_TV.janelaCamChave = null;
+    const novo = { ativo: cb.checked, modo: modo.value, base: base.value.trim() || 'http://localhost:1984', vistas: linhas.map(l => ({ nome: l.nome.value.trim(), src: l.src.value.trim(), seg: Number(l.seg.value) || 10 })).filter(v => v.src) };
     try { localStorage.setItem(ECRA_TV_CAM_CHAVE, JSON.stringify(novo)); } catch (e) { /* ignora */ }
     fechar();
     if (ECRA_TV.camCamada) { ECRA_TV.camCamada.remove(); ECRA_TV.camCamada = null; }
@@ -34782,6 +34821,8 @@ function ecraTvCamarasConfigurar() {
     h('h3', {}, 'Câmaras neste ecrã'),
     h('p', {}, 'Fica guardado só neste computador. Precisa do programa das câmaras (go2rtc) a correr aqui. As vistas rodam ao ritmo do ecrã (de 10 em 10 s), pela ordem da lista.'),
     h('label', {}, [cb, h('span', {}, 'Mostrar as câmaras no canto inferior direito')]),
+    h('label', {}, [h('span', { style: 'white-space:nowrap;' }, 'Como'), modo]),
+    h('p', { style: 'margin:0;font-size:.85em;opacity:.8;' }, 'Janela do gravador: precisa do INSTALAR-JANELA-CAMARAS.bat (pasta SIGA-Camaras) corrido uma vez neste PC. Na 1.ª vez o Chrome pergunta se pode abrir o «SIGA Camaras» — marca «Permitir sempre». As opções abaixo só contam para o go2rtc.'),
     h('label', {}, [h('span', { style: 'white-space:nowrap;' }, 'Endereço'), base]),
     h('div', { class: 'tv-cam-cfg-cab' }, [h('span', {}, 'Nome no ecrã'), h('span', {}, 'Câmara no go2rtc'), h('span', {}, 'Tempo')]),
     ...linhas.map(l => l.el),
@@ -36482,6 +36523,7 @@ function ecraTvConstruirExtra() {
   ]);
 }
 function ecraTvFechar(goTo, terminarSessao) {
+  try { ecraTvJanelaCamFechar(); } catch (e) { /* ignora */ }
   clearInterval(ECRA_TV.relogio); clearInterval(ECRA_TV.ciclo);
   ECRA_TV.relogio = ECRA_TV.ciclo = null; ECRA_TV.desenhar = null; ECRA_TV.aTrocarPagina = false;
   try { if (ECRA_TV.wake) ECRA_TV.wake.release(); } catch (e) { /* ignora */ }
@@ -60131,6 +60173,23 @@ function buildHorariosPage(container, goTo) {
         titulo.addEventListener('click', () => { titulo.classList.add('mostra-codigo'); clearTimeout(titulo.__euT); titulo.__euT = setTimeout(() => titulo.classList.remove('mostra-codigo'), 2500); });
       }
       const colunaEl = h('div', { class: 'escala-vertical-coluna' + (emDestaque ? ' escala-vertical-coluna-destaque' : '') + (colunaSouEu ? ' escala-vertical-coluna-eu' : '') }, [titulo, trilho, buildRodapeHorasDia(horasTrabalhadasDia, tooltipHorasDia)]);
+      // 2026-11-04 (Hugo: «a barra própria logo centrada no ecrã, desktop e telemóvel»): ao abrir a Timeline (ou mudar
+      // de dia/semana) a própria coluna fica ao centro da área com scroll lateral — uma vez por dia mostrado, para não
+      // contrariar quem depois desliza à mão.
+      if (colunaSouEu && !emDestaque) {
+        const chaveEu = `${semana.id}|${diaKey}`;
+        if (window.__escalaEuCentrado !== chaveEu) {
+          window.__escalaEuCentrado = chaveEu;
+          setTimeout(() => {
+            if (!colunaEl.isConnected) return;
+            let el = colunaEl.parentElement;
+            while (el && el !== document.body && !(el.scrollWidth > el.clientWidth + 2 && /(auto|scroll)/.test(getComputedStyle(el).overflowX))) el = el.parentElement;
+            if (!el || el === document.body) return;
+            const r = colunaEl.getBoundingClientRect(), c = el.getBoundingClientRect();
+            el.scrollLeft = Math.max(0, el.scrollLeft + (r.left + r.width / 2) - (c.left + c.width / 2));
+          }, 120);
+        }
+      }
       if (emDestaque && !destaqueEscala.jaPosicionado) {
         destaqueEscala.jaPosicionado = true;
         // Depois de a Timeline estar no ecrã: traz a coluna (e a faixa da tarefa) para o meio do ecrã.
@@ -67678,14 +67737,34 @@ async function pontoChamarRpcComResposta(nome, params) {
 }
 // Saída muito antes do fim do turno (ex.: ao ir almoçar) — pede confirmação, porque as pausas não se picam e uma
 // saída fecha o dia.
-function pontoConfirmarSaidaAntecipada(jornada, seguir) {
-  if (!jornada || !jornada.entrada || jornada.saida) { seguir(); return; }
+// 2026-11-04 (Hugo: «não piquei a saída e já aparece»): abrir a app por um endereço com o código do QR (atalho, sugestão
+// do browser, histórico…) registava a SAÍDA sem a pessoa querer. Pelo QR code a saída passa SEMPRE a pedir um toque de
+// confirmação — «Vais sair agora?» —, por isso nunca fica registada sozinha.
+function pontoConfirmarSaidaPorQr(seguir) {
+  const agora = new Date();
+  const hh = `${String(agora.getHours()).padStart(2, '0')}:${String(agora.getMinutes()).padStart(2, '0')}`;
+  const overlay = h('div', { class: 'modal-overlay' });
+  const fechar = () => overlay.remove();
+  overlay.appendChild(h('div', { class: 'modal-panel confirm-panel' }, [
+    h('p', { class: 'confirm-message', style: 'font-weight:800;font-size:17px;' }, 'Vais sair agora?'),
+    h('p', { class: 'ponto-declarar-nota', style: 'margin:0 0 12px;' }, 'A saída fecha o teu dia de hoje.'),
+    h('div', { class: 'ponto-escolha-pausa' }, [
+      h('button', { class: 'btn btn-primary', type: 'button', style: 'background:#b91c1c;border-color:#b91c1c;', onClick: () => { fechar(); seguir(); } }, `🏠 Sim, picar a saída (${hh})`),
+      h('button', { class: 'btn btn-secondary', type: 'button', onClick: fechar }, 'Não — abri sem querer (não regista nada)'),
+    ]),
+  ]));
+  document.body.appendChild(overlay);
+}
+function pontoConfirmarSaidaAntecipada(jornada, seguir, opts) {
+  opts = opts || {};
+  const semAviso = opts.porQr ? () => pontoConfirmarSaidaPorQr(seguir) : seguir;
+  if (!jornada || !jornada.entrada || jornada.saida) { semAviso(); return; }
   const turno = pontoTurnoPlaneado(activeUser.id, jornada.data);
-  if (!turno) { seguir(); return; }
+  if (!turno) { semAviso(); return; }
   const [ja, jm, jd] = jornada.data.split('-').map(Number);
   const fimTurno = new Date(ja, jm - 1, jd, 0, escalaMinutosAbsolutos(turno.saida, true)).getTime(); // certo na mudança de hora (AUDITORIA 2026-09-29)
   const faltaMin = Math.round((fimTurno - Date.now()) / 60000);
-  if (faltaMin <= 45) { seguir(); return; }
+  if (faltaMin <= 45) { semAviso(); return; }
   const pausaTxt = turno.pausaInicio && turno.pausaFim ? ` e tens pausa das ${turno.pausaInicio} às ${turno.pausaFim}` : '';
   const msg = pontoPausasAtivas() && ((jornada.pausas || []).length || !(turno.pausaInicio && turno.pausaFim))
     ? `O teu turno de hoje só acaba às ${turno.saida}. A Saída fecha o dia e não dá para voltar a picar a Entrada. Vais mesmo sair agora (ex: saída antecipada)?`
@@ -67907,7 +67986,7 @@ async function pontoQrProcessar(codigo) {
     pontoPerguntarPausaOuSaida(pausaPlaneada, turno, () => enviar('', false, 'pausa'), () => pontoConfirmarSaidaAntecipada(jornada, seguir));
     return;
   }
-  if (tipoPrevisto === 'saida') pontoConfirmarSaidaAntecipada(jornada, seguir); else seguir();
+  if (tipoPrevisto === 'saida') pontoConfirmarSaidaAntecipada(jornada, seguir, { porQr: codigo !== 'livre' }); else seguir();
 }
 // "Vais para a pausa ou é o fim do dia?" — botões grandes, fáceis de carregar à porta.
 function pontoPerguntarPausaOuSaida(pausa, turno, aoPausa, aoSaida) {
