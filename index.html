@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-05 16:20" />
+<meta name="siga-versao" content="2026-11-05 20:30" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -35644,14 +35644,14 @@ function ecraTvChegadasSaidas() {
         marcar(kIn);
         // 2026-11-04 (Hugo: «Ana e Mariana não ouvem o seu cumprimento por voz após a picagem»): quem abre a farmácia
         // também é cumprimentado pelo nome (a mensagem de abertura é geral, não diz o nome de ninguém).
-        if (recente(pt.entrada.hora)) entram.push({ nome });
+        if (recente(pt.entrada.hora)) entram.push({ nome, pausa: ecraTvPausa(p.uid, agora, -1) });
       } else if (pt && pt.comEntrada) marcar(kIn);
       else if (agoraMin >= p.ini + 5 && agoraMin <= p.ini + 30 && p.estado !== 'saiu' && !ja(`lin|${p.uid}`)) { marcar(`lin|${p.uid}`); faltaEntrada.push({ nome }); }
     }
     if (!ja(kOut)) {
       if (pt && pt.saida && ecraTvMin(pt.saida.hora) >= p.fim - 90) {
         marcar(kOut);
-        if (recente(pt.saida.hora)) saem.push({ nome, proximo: ecraTvProximoDiaTrabalho(p.uid, agora) }); // também quem fecha
+        if (recente(pt.saida.hora)) saem.push({ nome, proximo: ecraTvProximoDiaTrabalho(p.uid, agora), pausa: ecraTvPausa(p.uid, agora, 1) }); // também quem fecha
       } else if (pt && pt.comSaida) marcar(kOut);
       else if (agoraMin >= p.fim + 5 && agoraMin <= p.fim + 30 && p.fim !== fecha && !ja(`lout|${p.uid}`)) { marcar(`lout|${p.uid}`); faltaSaida.push({ nome }); }
     }
@@ -35666,9 +35666,9 @@ function ecraTvChegadasSaidas() {
       const nome = avisoPrimeiroNome(u.nomeCompleto || u.username);
       const pt = ecraTvPontoDe(uid);
       if (!nome || !pt) return;
-      if (!ja(`in|${uid}`) && pt.entrada) { marcar(`in|${uid}`); if (recente(pt.entrada.hora)) entram.push({ nome }); }
+      if (!ja(`in|${uid}`) && pt.entrada) { marcar(`in|${uid}`); if (recente(pt.entrada.hora)) entram.push({ nome, pausa: ecraTvPausa(uid, agora, -1) }); }
       const ultimaEntrada = (ECRA_TV_PONTO.registos || []).filter(r => String(r.utilizadorId) === uid && r.tipo === 'entrada').slice(-1)[0];
-      if (!ja(`out|${uid}`) && pt.saida && (!ultimaEntrada || ecraTvMin(pt.saida.hora) >= ecraTvMin(ultimaEntrada.hora))) { marcar(`out|${uid}`); if (recente(pt.saida.hora)) saem.push({ nome, proximo: ecraTvProximoDiaTrabalho(uid, agora) }); }
+      if (!ja(`out|${uid}`) && pt.saida && (!ultimaEntrada || ecraTvMin(pt.saida.hora) >= ecraTvMin(ultimaEntrada.hora))) { marcar(`out|${uid}`); if (recente(pt.saida.hora)) saem.push({ nome, proximo: ecraTvProximoDiaTrabalho(uid, agora), pausa: ecraTvPausa(uid, agora, 1) }); }
     });
   } catch (e) { /* ignora */ }
   try { localStorage.setItem('siga_tv_cumprimentos', JSON.stringify(guardados)); } catch (e) { /* ignora */ }
@@ -35678,6 +35678,41 @@ function ecraTvChegadasSaidas() {
   // Cumprimentos de quem acabou de picar: à frente na fila (logo a seguir ao que estiver no ecrã).
   [['sai', saem], ['entra', entram]].forEach(([modo, l]) => { if (l.length) ECRA_TV.fila.unshift({ tipo: 'pessoas', modo, pessoas: l, em: Date.now() }); });
   if (entram.length || saem.length || faltaEntrada.length || faltaSaida.length) ecraTvFila();
+}
+// De onde vem (sentido -1) ou para onde vai (sentido 1) a pessoa: os dias seguidos SEM turno antes de hoje / depois de
+// hoje (2026-11-05, Hugo: «quando a pessoa pica e está a vir de folga ou fim de semana, perceber o caso: à entrada
+// "espero que tenha corrido bem" e bom trabalho; à saída, boa folga / bom fim de semana e até ao próximo dia»).
+// Devolve 'fim-de-semana' | 'domingo' | 'folga' | 'folgas' | 'ferias' | 'feriado' | 'regresso' | '' (dia normal ou sem horário).
+// Baixa, falta e outras ausências nunca são ditas em voz alta — só «bom regresso», sem dizer porquê.
+function ecraTvPausa(uid, hoje, sentido) {
+  try {
+    const dias = [];
+    for (let k = 1; k <= 31; k++) {
+      const d = new Date(hoje); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() + k * sentido);
+      const iso = dateToISO(d);
+      const semana = escalaSemanaPorInicio(escalaSegundaFeiraDaSemanaDeISO(iso));
+      if (!semana || semana.eliminado || !semana.dados) return ''; // horário por publicar: não se adivinha
+      const t = escalaTurnoEfetivoDoUtilizadorNaData(uid, iso);
+      if (t && t.entrada) break;
+      dias.push({ iso, dow: d.getDay(), aus: escalaAusenciaDoDia(uid, iso) });
+    }
+    if (!dias.length || dias.length > 30) return '';
+    const tipos = dias.map(x => x.aus && x.aus.tipo).filter(Boolean);
+    if (tipos.some(t => ['baixa', 'falta', 'outras', 'indisponivel'].includes(t))) return sentido < 0 ? 'regresso' : '';
+    if (tipos.some(t => t === 'ferias' || t === 'extra')) return 'ferias';
+    if (dias.length === 1 && dias[0].dow === 0) return 'domingo';
+    if (dias.every(x => x.dow === 0 || x.dow === 6) && dias.some(x => x.dow === 6) && dias.some(x => x.dow === 0)) return 'fim-de-semana';
+    if (dias.length === 1 && typeof escalaEhFeriado === 'function' && escalaEhFeriado(dias[0].iso)) return 'feriado';
+    return dias.length === 1 ? 'folga' : 'folgas';
+  } catch (e) { return ''; }
+}
+function ecraTvVotoEntrada(pausa) {
+  return ({ 'fim-de-semana': 'Espero que o fim de semana tenha corrido bem.', folga: 'Espero que a folga tenha corrido bem.',
+    folgas: 'Espero que os dias de folga tenham corrido bem.', ferias: 'Bom regresso de férias! Espero que tenham corrido bem.',
+    feriado: 'Espero que o feriado tenha corrido bem.', domingo: 'Espero que o domingo tenha corrido bem.', regresso: 'Bom regresso!' })[pausa] || '';
+}
+function ecraTvVotoSaida(pausa) {
+  return ({ 'fim-de-semana': 'Bom fim de semana!', folga: 'Boa folga!', folgas: 'Bons dias de folga!', ferias: 'Boas férias!', feriado: 'Bom feriado!', domingo: 'Bom domingo!' })[pausa] || '';
 }
 // Próximo dia em que a pessoa trabalha (até 14 dias): «amanhã», «terça», «dia 12».
 function ecraTvProximoDiaTrabalho(uid, desde) {
@@ -35693,6 +35728,7 @@ function ecraTvProximoDiaTrabalho(uid, desde) {
 function ecraTvMostrarPessoas(item) {
   const overlay = ECRA_TV.overlay;
   const juntar = (l) => l.length <= 1 ? (l[0] || '') : `${l.slice(0, -1).join(', ')} e ${l[l.length - 1]}`;
+  const minusc = (t) => t ? t.charAt(0).toLowerCase() + t.slice(1) : t;
   const nomes = item.pessoas.map(p => p.nome);
   const varios = item.pessoas.length > 1;
   const hh = new Date().getHours();
@@ -35700,16 +35736,25 @@ function ecraTvMostrarPessoas(item) {
   if (item.modo === 'entra') {
     classe = 'entra'; rot = 'Entrada';
     titulo = `${ecraTvSaudacaoHora()}, ${juntar(nomes)}! 👋`;
-    linhas = ['Bom trabalho!'];
-    fala = `${ecraTvSaudacaoHora()}, ${juntar(nomes)}. Bom trabalho.`;
+    // Quem volta de folga, fim de semana ou férias: «Espero que o fim de semana tenha corrido bem. Bom trabalho!»
+    const votos = [...new Set(item.pessoas.map(p => ecraTvVotoEntrada(p.pausa)))];
+    if (votos.length === 1) {
+      linhas = [votos[0], 'Bom trabalho!'].filter(Boolean);
+      fala = `${ecraTvSaudacaoHora()}, ${juntar(nomes)}. ${votos[0] ? votos[0] + ' ' : ''}Bom trabalho.`;
+    } else {
+      linhas = item.pessoas.filter(p => ecraTvVotoEntrada(p.pausa)).map(p => `${p.nome}: ${ecraTvVotoEntrada(p.pausa)}`).concat(['Bom trabalho!']);
+      fala = `${ecraTvSaudacaoHora()}, ${juntar(nomes)}. ${item.pessoas.filter(p => ecraTvVotoEntrada(p.pausa)).map(p => `${p.nome}, ${minusc(ecraTvVotoEntrada(p.pausa).replace(/!/g, '.'))}`).join(' ')} Bom trabalho a toda a equipa.`;
+    }
   } else if (item.modo === 'sai') {
     classe = 'sai'; rot = 'Saída';
     const votos = hh >= 19 ? 'Boa noite' : 'Bom resto de dia';
     titulo = `Obrigado, ${juntar(nomes)}! ${votos}.`;
     // «Até amanhã» / «Até terça» — por pessoa quando não coincidem.
-    const ates = [...new Set(item.pessoas.map(p => p.proximo || ''))];
-    linhas = ates.length === 1 ? [ates[0] ? `Até ${ates[0]}!` : 'Bom descanso!'] : item.pessoas.map(p => `${p.nome}: ${p.proximo ? `até ${p.proximo}` : 'bom descanso'}`);
-    fala = `Obrigado, ${juntar(nomes)}. ${votos}. ${ates.length === 1 ? (ates[0] ? `Até ${ates[0]}.` : 'Bom descanso.') : ''}`;
+    // Antes de uma folga, do fim de semana ou de férias: «Bom fim de semana! Até segunda.»
+    const despedida = (p) => { const v = ecraTvVotoSaida(p.pausa); return `${v ? v + ' ' : ''}${p.proximo ? `Até ${p.proximo}!` : (v ? '' : 'Bom descanso!')}`.trim(); };
+    const ates = [...new Set(item.pessoas.map(despedida))];
+    linhas = ates.length === 1 ? [ates[0]] : item.pessoas.map(p => `${p.nome}: ${despedida(p)}`);
+    fala = `Obrigado, ${juntar(nomes)}. ${votos}. ${ates.length === 1 ? ates[0].replace(/!/g, '.') : item.pessoas.map(p => `${p.nome}, ${minusc(despedida(p).replace(/!/g, '.'))}`).join(' ')}`;
   } else {
     const ent = item.modo === 'falta-entrada';
     classe = 'lembrar'; rot = 'Lembrete';
