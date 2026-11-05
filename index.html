@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-05 15:20" />
+<meta name="siga-versao" content="2026-11-05 16:20" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -8810,7 +8810,7 @@ const manipuladosSchema = [
   { name: 'manipulado', label: 'Manipulado', type: 'text', col: 2 },
   // Receita (2026-10-17): nº da receita (19 algarismos), código de acesso/dispensa (6) e código de direito de opção (4).
   // Só aparecem quando o servidor da farmácia já tem estas colunas (ver servidorTem('receita')).
-  { name: 'receitaNumero', label: 'Nº da Receita', type: 'text', size: 'sm', maxLength: 19, inputmode: 'numeric', pattern: '[0-9]{19}', digitsOnly: true, placeholder: '19 algarismos' },
+  { name: 'receitaNumero', label: 'Nº da Receita', type: 'text', size: 'sm', maxLength: 19, pattern: '[0-9]{18}[0-9X]', digitsOnly: true, ultimoX: true, placeholder: '19 algarismos (o último pode ser X)' },
   { name: 'receitaCodigoAcesso', label: 'Código de Acesso', type: 'text', size: 'xs', maxLength: 6, inputmode: 'numeric', pattern: '[0-9]{6}', digitsOnly: true, placeholder: '6 algarismos' },
   { name: 'receitaCodigoOpcao', label: 'Código de Opção', type: 'text', size: 'xs', maxLength: 4, inputmode: 'numeric', pattern: '[0-9]{4}', digitsOnly: true, placeholder: '4 algarismos' },
   { name: 'estado', label: 'Estado', type: 'select', options: ESTADOS, size: 'sm' },
@@ -17552,14 +17552,16 @@ function checkRequiredFields(draft, schema) {
 function checkFieldFormats(draft, schema) {
   for (const f of schema) {
     if (!f.pattern) continue;
-    const v = String(draft[f.name] || '').trim();
+    let v = String(draft[f.name] || '').trim();
     if (!v) continue;
+    if (f.ultimoX) v = v.toUpperCase();
     const re = new RegExp('^' + f.pattern + '$');
     if (!re.test(v)) {
       // Contacto/Telefone: mensagem dedicada — f.maxLength (11) conta os
       // espaços do formato exibido "xxx xxx xxx", não os dígitos reais (9),
       // por isso não pode ser usado aqui para dizer quantos dígitos faltam.
       if (f.phone) return '⚠️ O contacto deve conter exatamente 9 dígitos (ex: 912345678).';
+      if (f.ultimoX) return `${f.label} inválido — deve ter 19 caracteres: algarismos, e o último pode ser X.`;
       return `${f.label} inválido — deve ter exatamente ${f.maxLength || 'o número certo de'} dígitos.`;
     }
   }
@@ -18491,6 +18493,16 @@ function formatarCampoMantendoCursor(input, funcaoFormatar, contaCaracter) {
   return novo;
 }
 const ehAlgarismo = (c) => /\d/.test(c);
+// Nº da Receita (2026-11-05, Hugo: «receitas podem terminar com x»): só algarismos, mas o 19.º carácter pode ser X
+// (dígito de controlo). Fica sempre em maiúscula.
+const ehAlgarismoOuX = (c) => /[\dXx]/.test(c);
+function soAlgarismosComXFinal(x, max) {
+  const t = String(x || '').replace(/[^0-9Xx]/g, '').toUpperCase();
+  const d = t.replace(/X/g, '');
+  const n = Number(max) || 19;
+  if (/X$/.test(t) && d.length === n - 1) return d + 'X';
+  return d.slice(0, n);
+}
 // Reações a um campo (onChange que redesenha o formulário) sem roubar o foco (2026-10-12): o 'change' de um campo de
 // texto/número dispara quando se SAI dele — se a reação redesenhar logo o formulário, o campo para onde se acabou de
 // clicar (ou de ir com Tab) é recriado e perde o foco: era preciso clicar duas vezes. Agora a reação corre logo a
@@ -18700,7 +18712,9 @@ function buildField(field, draft) {
         if (control.__validarTelefoneInline) control.__validarTelefoneInline(true);
         return;
       }
-      if (field.digitsOnly) {
+      if (field.digitsOnly && field.ultimoX) {
+        v = formatarCampoMantendoCursor(control, (x) => soAlgarismosComXFinal(x, field.maxLength), ehAlgarismoOuX);
+      } else if (field.digitsOnly) {
         v = formatarCampoMantendoCursor(control, (x) => x.replace(/\D/g, ''), ehAlgarismo);
       }
       // Força maiúsculas em tempo real (ex: Nº do Documento / Código de
@@ -33347,7 +33361,8 @@ function buildAfaFichaCampo(f, draft, rerenderForm) {
     control.value = draft[f.name] || '';
     control.addEventListener('input', () => {
       let v = control.value;
-      if (f.digitsOnly) { v = formatarCampoMantendoCursor(control, (x) => x.replace(/\D/g, '').slice(0, f.maxLength ? Number(f.maxLength) : undefined), ehAlgarismo); }
+      if (f.digitsOnly && f.ultimoX) { v = formatarCampoMantendoCursor(control, (x) => soAlgarismosComXFinal(x, f.maxLength), ehAlgarismoOuX); }
+      else if (f.digitsOnly) { v = formatarCampoMantendoCursor(control, (x) => x.replace(/\D/g, '').slice(0, f.maxLength ? Number(f.maxLength) : undefined), ehAlgarismo); }
       draft[f.name] = v;
     });
   }
