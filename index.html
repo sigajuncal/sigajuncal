@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-05 21:00" />
+<meta name="siga-versao" content="2026-11-05 22:00" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -73977,13 +73977,23 @@ function agendarVerificacaoRenderPendente() {
 // Ponto único a chamar depois de qualquer atualização de STATE vinda do
 // Realtime: os dados já ficaram atualizados em memória (segundo plano);
 // isto só decide QUANDO é seguro redesenhar o ecrã.
+// Desempenho (2026-11-05, Hugo: "página inicial demorada a abrir depois de colocar as credenciais"): depois do login
+// chegam dezenas de tabelas em segundo plano e cada uma pedia um redesenho completo da página (~23 em 3 s; no
+// telemóvel ~100 ms cada). Agora os pedidos que chegam juntos são agrupados num só redesenho (no máximo ~5 por
+// segundo). Os dados ficam em memória na hora; só o desenho espera uma fração de segundo. Um render() direto
+// (clique, navegação) faz logo o desenho e cancela o agrupado.
+let RENDER_BG_TEMPORIZADOR = 0;
 function renderOuAdiarSeOcupado() {
-  if (uiEstaOcupada()) {
-    realtimeRenderPendente = true;
-    agendarVerificacaoRenderPendente();
-    return;
-  }
-  render();
+  if (RENDER_BG_TEMPORIZADOR) return;
+  RENDER_BG_TEMPORIZADOR = setTimeout(() => {
+    RENDER_BG_TEMPORIZADOR = 0;
+    if (uiEstaOcupada()) {
+      realtimeRenderPendente = true;
+      agendarVerificacaoRenderPendente();
+      return;
+    }
+    render();
+  }, 200);
 }
 
 // Só a página REALMENTE mudou de módulo é que conta como "transição" (com
@@ -73998,6 +74008,7 @@ let ultimaPaginaRenderizada = null;
 let ultimoUtilizadorRenderizado = undefined; // undefined = ainda não houve nenhum render
 let jaFezPrimeiraRenderizacao = false;
 function render() {
+  if (RENDER_BG_TEMPORIZADOR) { clearTimeout(RENDER_BG_TEMPORIZADOR); RENDER_BG_TEMPORIZADOR = 0; }
   // Login a preparar a sessão (2026-10-18): nada se redesenha por trás da janela "A preparar a sessão…" — antes, um
   // redesenho a meio (tempo real, menu personalizado…) mostrava já a página da pessoa por trás, e depois a animação
   // de entrada fazia-a desaparecer e reaparecer (o "piscar" no telemóvel). O desenho final é feito pelo próprio login.
@@ -78479,7 +78490,16 @@ function webauthnSuportado() {
 // o Username+PIN. Combina User Agent (mais fiável para distinguir iPad de
 // MacBook, já que ambos têm suporte a touch) com um teste de largura de
 // ecrã como rede de segurança adicional.
+// Desempenho (2026-11-05): chamada centenas de vezes por desenho e a leitura de window.innerWidth obrigava o browser
+// a recalcular o layout a meio da construção da página (~0,8 s no telemóvel após o login). O resultado fica guardado
+// e só é recalculado quando a janela muda de tamanho ou de orientação.
+let EH_MOVEL_CACHE = null;
+try { window.addEventListener('resize', () => { EH_MOVEL_CACHE = null; }, { passive: true }); window.addEventListener('orientationchange', () => { EH_MOVEL_CACHE = null; }, { passive: true }); } catch (e) { /* ignora */ }
 function ehDispositivoMobileOuTablet() {
+  if (EH_MOVEL_CACHE === null) EH_MOVEL_CACHE = ehDispositivoMobileOuTabletCalcular();
+  return EH_MOVEL_CACHE;
+}
+function ehDispositivoMobileOuTabletCalcular() {
   const ua = navigator.userAgent || '';
   const ehIOS = /iPhone|iPad|iPod/.test(ua) || (ua.includes('Macintosh') && navigator.maxTouchPoints > 1); // iPadOS finge ser "Macintosh"
   const ehAndroid = /Android/.test(ua);
