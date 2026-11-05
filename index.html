@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-05 20:30" />
+<meta name="siga-versao" content="2026-11-05 21:00" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -34743,7 +34743,7 @@ function ecraTvCamarasCfg() {
     : [{ nome: 'Farmácia', src: 'farmacia', seg: 20 }, { nome: 'Parque 1', src: 'parque1', seg: 10 }, { nome: 'Parque 2', src: 'parque2', seg: 10 }];
   return {
     ativo: !!c.ativo,
-    modo: c.modo === 'go2rtc' ? 'go2rtc' : 'janela',
+    modo: 'janela', // 2026-11-05: o go2rtc foi abandonado (o vídeo aparecia cinzento) — só a janela do gravador
     base: String(c.base || 'http://localhost:1984').trim().replace(/\/+$/, ''),
     vistas: vistas.map(v => ({ nome: String(v.nome || '').trim() || 'Câmara', src: String(v.src || '').trim(), seg: Math.max(10, Math.round((Number(v.seg) || 10) / 10) * 10) })).filter(v => v.src),
   };
@@ -34852,38 +34852,30 @@ function ecraTvCamarasConfigurar() {
   const cfg = ecraTvCamarasCfg();
   const fundo = h('div', { class: 'tv-cam-cfg' });
   const cb = h('input', { type: 'checkbox', checked: cfg.ativo ? 'checked' : undefined });
-  const base = h('input', { type: 'text', value: cfg.base, style: 'flex:1;' });
-  const modo = h('select', {}, [h('option', { value: 'janela', selected: cfg.modo === 'janela' ? 'selected' : undefined }, 'Janela do gravador (Internet Explorer, recortada no sítio)'), h('option', { value: 'go2rtc', selected: cfg.modo === 'go2rtc' ? 'selected' : undefined }, 'Dentro do SIGA (programa go2rtc)')]);
-  const vistas = (cfg.vistas.length ? cfg.vistas : [{ nome: 'Farmácia', src: 'farmacia', seg: 20 }]).concat([]);
-  while (vistas.length < 3) vistas.push({ nome: '', src: '', seg: 10 });
-  const linhas = vistas.slice(0, 4).map(v => {
-    const nome = h('input', { type: 'text', value: v.nome, placeholder: 'Nome (ex.: Parque 1)' });
-    const src = h('input', { type: 'text', value: v.src, placeholder: 'Nome no go2rtc' });
-    const seg = h('select', {}, [10, 20, 30, 40, 60].map(s => h('option', { value: String(s), selected: s === v.seg ? 'selected' : undefined }, `${s} s`)));
-    return { el: h('div', { class: 'tv-cam-cfg-linha' }, [nome, src, seg]), nome, src, seg };
-  });
   const fechar = () => fundo.remove();
   const guardar = () => {
-    if (cb.checked) { try { fetch((base.value.trim() || 'http://localhost:1984').replace(/\/+$/, '') + '/api/streams', { mode: 'no-cors', cache: 'no-store' }).catch(() => {}); } catch (e) { /* ignora */ } }
-    if (modo.value === 'janela' && !cb.checked) { try { ecraTvJanelaCamFechar(); } catch (e) { /* ignora */ } }
+    if (!cb.checked) { try { ecraTvJanelaCamFechar(); } catch (e) { /* ignora */ } }
     ECRA_TV.janelaCamChave = null;
-    const novo = { ativo: cb.checked, modo: modo.value, base: base.value.trim() || 'http://localhost:1984', vistas: linhas.map(l => ({ nome: l.nome.value.trim(), src: l.src.value.trim(), seg: Number(l.seg.value) || 10 })).filter(v => v.src) };
+    const novo = Object.assign({}, cfg, { ativo: cb.checked, modo: 'janela' });
     try { localStorage.setItem(ECRA_TV_CAM_CHAVE, JSON.stringify(novo)); } catch (e) { /* ignora */ }
+    document.querySelectorAll('.tv-btn-cam').forEach(b => { b.textContent = cb.checked ? '📹 Câmaras: sim' : '📹 Câmaras: não'; });
     fechar();
     if (ECRA_TV.camCamada) { ECRA_TV.camCamada.remove(); ECRA_TV.camCamada = null; }
     const corpo = ECRA_TV.overlay && ECRA_TV.overlay.querySelector('.tv-corpo');
     if (corpo) { corpo.dataset.pagina = ''; clear(corpo); }
     try { if (typeof ECRA_TV.desenhar === 'function') ECRA_TV.desenhar(); } catch (e) { /* ignora */ }
   };
+  // 2026-11-05 (Hugo: «quando chegar o novo PC da TV, que seja um processo simples… gosto do botão que permite ter as
+  // câmaras ou manter o painel do modo TV sem câmaras»): só um interruptor e as instruções de instalação.
   fundo.appendChild(h('div', { class: 'tv-cam-cfg-caixa' }, [
     h('h3', {}, 'Câmaras neste ecrã'),
-    h('p', {}, 'Fica guardado só neste computador. Precisa do programa das câmaras (go2rtc) a correr aqui. As vistas rodam ao ritmo do ecrã (de 10 em 10 s), pela ordem da lista.'),
-    h('label', {}, [cb, h('span', {}, 'Mostrar as câmaras no canto inferior direito')]),
-    h('label', {}, [h('span', { style: 'white-space:nowrap;' }, 'Como'), modo]),
-    h('p', { style: 'margin:0;font-size:.85em;opacity:.8;' }, 'Janela do gravador: precisa do INSTALAR-JANELA-CAMARAS.bat (pasta SIGA-Camaras) corrido uma vez neste PC. Na 1.ª vez o Chrome pergunta se pode abrir o «SIGA Camaras» — marca «Permitir sempre». As opções abaixo só contam para o go2rtc.'),
-    h('label', {}, [h('span', { style: 'white-space:nowrap;' }, 'Endereço'), base]),
-    h('div', { class: 'tv-cam-cfg-cab' }, [h('span', {}, 'Nome no ecrã'), h('span', {}, 'Câmara no go2rtc'), h('span', {}, 'Tempo')]),
-    ...linhas.map(l => l.el),
+    h('label', {}, [cb, h('span', {}, 'Mostrar as câmaras (canto inferior direito)')]),
+    h('p', { style: 'margin:0;' }, 'Desligado, o modo TV mostra só o painel, sem o espaço das câmaras. Fica guardado só neste computador.'),
+    h('p', { style: 'margin:0;font-size:.85em;opacity:.85;line-height:1.45;' }, [
+      h('strong', {}, 'Num computador novo (uma vez): '),
+      'copia a pasta SIGA-Camaras para C:\\SigaFarmacia\\SIGA-Camaras, abre INSTALAR-CAMARAS-NESTE-PC e escreve o utilizador e a palavra-passe do gravador quando pedir. ',
+      'Se o browser perguntar se pode abrir o «SIGA Camaras», marca «Permitir sempre».',
+    ]),
     h('div', { class: 'tv-cam-cfg-botoes' }, [h('button', { type: 'button', class: 'tv-btn', onclick: fechar }, 'Cancelar'), h('button', { type: 'button', class: 'tv-btn', onclick: guardar }, 'Guardar')]),
   ]));
   fundo.addEventListener('click', (ev) => { if (ev.target === fundo) fechar(); });
@@ -36749,7 +36741,7 @@ function buildEcraBackofficePage(container, goTo) {
   });
   btnSair.addEventListener('click', () => ecraTvFechar(goTo, !pessoal));
   const controlos = h('div', { class: 'tv-controlos', 'data-sem-icones': '1' }, [
-    h('label', { class: 'tv-arranque' }, [cbArranque, h('span', {}, 'Abrir sempre em modo TV neste computador')]), btnInteiro, h('button', { type: 'button', class: 'tv-btn', title: 'Ligar ou configurar as câmaras neste ecrã', onclick: () => ecraTvCamarasConfigurar() }, '📹 Câmaras'), h('button', { type: 'button', class: 'tv-btn', title: 'Mostrar e ouvir agora a mensagem de bom dia', onclick: () => ecraTvTestarBomDia() }, '☀️ Ouvir o bom dia'), btnDesativar, btnSair,
+    h('label', { class: 'tv-arranque' }, [cbArranque, h('span', {}, 'Abrir sempre em modo TV neste computador')]), btnInteiro, h('button', { type: 'button', class: 'tv-btn tv-btn-cam', title: 'Mostrar ou esconder as câmaras neste ecrã', onclick: () => ecraTvCamarasConfigurar() }, ecraTvCamarasAtivas() ? '📹 Câmaras: sim' : '📹 Câmaras: não'), h('button', { type: 'button', class: 'tv-btn', title: 'Mostrar e ouvir agora a mensagem de bom dia', onclick: () => ecraTvTestarBomDia() }, '☀️ Ouvir o bom dia'), btnDesativar, btnSair,
   ]);
   const topo = h('header', { class: 'tv-topo' }, [
     h('div', { class: 'tv-marca' }, [h('span', { class: 'tv-marca-nome' }, nomeFarmaciaAtual()), h('span', { class: 'tv-marca-sub' }, 'Backoffice')]),
