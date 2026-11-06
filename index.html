@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-06 13:30" />
+<meta name="siga-versao" content="2026-11-06 21:00" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -3762,6 +3762,14 @@
   .pd-res-empate{margin:8px 0 0;font-size:12px;font-weight:700;color:#7c3aed;}
   .pd-aviso-instalar{margin:14px 0;padding:10px 14px;border-radius:12px;background:#fffbeb;border:1px solid #fde68a;color:#92400e;font-size:12.5px;}
   .pd-modal{max-width:560px;}
+  .home-coluna > .pd-card .pd-corpo{grid-template-columns:minmax(0,1fr);gap:12px;}
+  .pd-popup{max-width:480px;width:calc(100% - 32px);padding:20px;}
+  .pd-popup .pd-pergunta{font-size:20px;}
+  .pd-popup .pd-opcao .pd-doodle{width:84px;height:84px;}
+  .pd-popup-acoes{display:flex;justify-content:flex-end;margin-top:14px;}
+  .pd-ontem-topo{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;}
+  .pd-quis{padding-top:12px;border-top:1.5px dashed #e9d5ff;}
+  .pd-quis .pd-res-vazio{margin:0;}
   .pd-modal-topo{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;}
   .pd-modal-topo h3{margin:0;font-size:17px;color:var(--pharm-800);}
   .pd-modal-lista{display:flex;flex-direction:column;gap:10px;}
@@ -6529,7 +6537,7 @@
   @media (max-width:899px){
     .home-colunas{display:flex;flex-direction:column;}
     .home-coluna{display:contents;}
-    .home-ordem-1{order:1;} .home-ordem-2{order:2;} .home-ordem-3{order:3;} .home-ordem-4{order:4;}
+    .home-ordem-1{order:1;} .home-ordem-2{order:2;} .home-ordem-3{order:3;} .home-ordem-4{order:4;} .home-ordem-5{order:5;}
     .home-colunas > *, .home-colunas .home-coluna > *{width:100%;max-width:100%;}
   }
   /* ===== Topo da página inicial (2026-09-26): relógio do turno | Em Curso + Tarefas da Equipa | Produtos a escoar ===== */
@@ -26278,7 +26286,8 @@ const PERGUNTA_DIA_BANCO = [
   ["pao-com-manteiga-antes-da-refeicao-comes", "Pão com manteiga antes da refeição: comes tudo?", "🧈", "Tudo", "🙅", "Não toco"],
 ];
 
-const PERGUNTA_DIA_INICIO = '2026-11-06';
+// 2026-11-06 (Hugo): a primeira pergunta (Montar móveis IKEA) sai a 07/11/2026.
+const PERGUNTA_DIA_INICIO = '2026-11-07';
 const PERGUNTA_DIA_JANELA_DIAS = 60;
 function perguntaDiaIndice(iso) { return Math.round((new Date(iso + 'T12:00:00') - new Date(PERGUNTA_DIA_INICIO + 'T12:00:00')) / 86400000); }
 // Pergunta de um dia (null antes do início ou se o banco já acabou — nunca se repete).
@@ -26328,6 +26337,9 @@ async function perguntaDiaGarantirDados() {
   } catch (e) { STATE.perguntaDiaEstado = 'erro'; }
   PERGUNTA_DIA_A_CARREGAR = false;
   if (STATE.perguntaDiaEstado === 'erro') setTimeout(() => { if (STATE.perguntaDiaEstado === 'erro') { STATE.perguntaDiaEstado = ''; if (STATE.page === 'home') renderOuAdiarSeOcupado(); } }, 60000);
+  // 2026-11-06: tabela ainda não ativa no servidor — volta a verificar de 5 em 5 minutos (aparece sozinha, sem F5,
+  // assim que o servidor for reiniciado com as regras novas).
+  if (STATE.perguntaDiaEstado === 'indisponivel') setTimeout(() => { if (STATE.perguntaDiaEstado === 'indisponivel') { STATE.perguntaDiaEstado = ''; if (STATE.page === 'home') renderOuAdiarSeOcupado(); } }, 300000);
   if (STATE.page === 'home') renderOuAdiarSeOcupado();
 }
 let PERGUNTA_DIA_A_GRAVAR = false;
@@ -26433,7 +26445,7 @@ function perguntaDiaResultadoEl(iso, opts) {
 }
 function perguntaDiaAbrirAnteriores() {
   const hoje = todayISO();
-  const dias = [...new Set((STATE.perguntaDiaRespostas || []).filter(r => r && !r.eliminado && r.data && r.data < hoje).map(r => r.data))].sort().reverse().slice(0, 30);
+  const dias = [...new Set((STATE.perguntaDiaRespostas || []).filter(r => r && !r.eliminado && r.data && r.data < hoje && r.data >= PERGUNTA_DIA_INICIO).map(r => r.data))].sort().reverse().slice(0, 30);
   const overlay = h('div', { class: 'modal-overlay' });
   const fechar = () => { document.removeEventListener('keydown', tecla); overlay.remove(); };
   const tecla = (e) => { if (e.key === 'Escape') fechar(); };
@@ -26447,18 +26459,83 @@ function perguntaDiaAbrirAnteriores() {
   ]));
   document.body.appendChild(overlay);
 }
+// Pop-up do dia (2026-11-06, Hugo: «mal a pessoa faz login naquele dia surge pop up para responder à questão, pode
+// responder mais tarde e fica disponível na página principal»). Aparece uma vez por pessoa e por dia, só a quem ainda não
+// respondeu; espera que não haja outra janela aberta (nunca se põe por cima de outra).
+const PERGUNTA_DIA_POPUP_VISTO = new Set();
+let PERGUNTA_DIA_POPUP_TEMPORIZADOR = null;
+function perguntaDiaPopupChave() { return activeUser ? `siga-pd-popup-${activeUser.id}` : ''; }
+function perguntaDiaPopupJaVisto(hoje) {
+  const k = perguntaDiaPopupChave();
+  if (!k) return true;
+  if (PERGUNTA_DIA_POPUP_VISTO.has(k + '|' + hoje)) return true;
+  try { return localStorage.getItem(k) === hoje; } catch (e) { return false; }
+}
+function perguntaDiaPopupMarcarVisto(hoje) {
+  const k = perguntaDiaPopupChave();
+  if (!k) return;
+  PERGUNTA_DIA_POPUP_VISTO.add(k + '|' + hoje);
+  try { localStorage.setItem(k, hoje); } catch (e) { /* fica só em memória */ }
+}
+function perguntaDiaAgendarPopup(p, tentativa) {
+  const hoje = todayISO();
+  if (PERGUNTA_DIA_POPUP_TEMPORIZADOR || perguntaDiaPopupJaVisto(hoje)) return;
+  PERGUNTA_DIA_POPUP_TEMPORIZADOR = setTimeout(() => {
+    PERGUNTA_DIA_POPUP_TEMPORIZADOR = null;
+    if (STATE.page !== 'home' || !activeUser || !perguntaDiaParticipa(activeUser) || todayISO() !== hoje || perguntaDiaPopupJaVisto(hoje)) return;
+    if (perguntaDiaRespostasDoDia(hoje).some(r => String(r.utilizadorId) === String(activeUser.id))) return;
+    // outra janela aberta (aviso, troca, ponto…): volta a tentar daqui a pouco, até ~2 minutos
+    if (document.querySelector('.modal-overlay') || document.querySelector('.login-overlay, .lock-screen')) {
+      if ((tentativa || 0) < 30) perguntaDiaAgendarPopup(p, (tentativa || 0) + 1);
+      return;
+    }
+    perguntaDiaPopupMarcarVisto(hoje);
+    perguntaDiaAbrirPopup(p);
+  }, tentativa ? 4000 : 900);
+}
+function perguntaDiaAbrirPopup(p) {
+  const overlay = h('div', { class: 'modal-overlay pd-popup-overlay' });
+  const fechar = () => { document.removeEventListener('keydown', tecla); overlay.remove(); };
+  const tecla = (e) => { if (e.key === 'Escape') fechar(); };
+  document.addEventListener('keydown', tecla);
+  const botao = (k) => {
+    const op = p[k];
+    const b = h('button', { type: 'button', class: 'pd-opcao pd-' + k }, [perguntaDiaDoodle(op.emoji, k), h('span', { class: 'pd-opcao-txt' }, op.texto)]);
+    b.addEventListener('click', () => requireAuth(async () => {
+      fechar();
+      await perguntaDiaResponder(p, k);
+      if (perguntaDiaRespostasDoDia(todayISO()).some(r => String(r.utilizadorId) === String(activeUser && activeUser.id))) showToast(`Resposta guardada: «${op.texto}». Amanhã vês o que a equipa escolheu.`, 'success');
+    }));
+    return b;
+  };
+  const depoisBtn = h('button', { type: 'button', class: 'btn btn-secondary pd-popup-depois' }, 'Responder mais tarde');
+  depoisBtn.addEventListener('click', () => { fechar(); showToast('Fica na Página Inicial para responderes quando quiseres.', 'info'); });
+  overlay.appendChild(h('div', { class: 'modal-panel pd-modal pd-popup', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'O Paulo quer saber' }, [
+    h('div', { class: 'pd-quem' }, [
+      pauloDoodleEl(),
+      h('div', { class: 'pd-balao' }, [
+        h('span', { class: 'pd-etiqueta' }, 'O Paulo quer saber'),
+        h('p', { class: 'pd-pergunta' }, p.texto),
+      ]),
+    ]),
+    h('div', { class: 'pd-opcoes' }, [botao('a'), h('span', { class: 'pd-ou', 'aria-hidden': 'true' }, 'ou'), botao('b')]),
+    h('p', { class: 'pd-estado' }, 'Ninguém sabe o que escolheste até amanhã. Podes mudar durante o dia, na Página Inicial.'),
+    h('div', { class: 'pd-popup-acoes' }, [depoisBtn]),
+  ]));
+  document.body.appendChild(overlay);
+}
 function buildPerguntaDiaCard() {
   if (!activeUser || !perguntaDiaParticipa(activeUser)) return null;
   perguntaDiaGarantirDados();
   if (STATE.perguntaDiaEstado === 'indisponivel') {
-    return isAdministrador() ? h('div', { class: 'pd-aviso-instalar home-largura-calendario' }, '💭 O Paulo quer saber: falta instalar a tabela no servidor (INSTALAR-PERGUNTA-DO-DIA.bat no PC do servidor). Só a Direção vê este aviso.') : null;
+    return isAdministrador() ? h('div', { class: 'pd-aviso-instalar' }, '💭 O Paulo quer saber: falta instalar a tabela no servidor (INSTALAR-PERGUNTA-DO-DIA.bat no PC do servidor). Só a Direção vê este aviso.') : null;
   }
   if (STATE.perguntaDiaEstado !== 'ok') return null;
   const hoje = todayISO();
   const p = perguntaDiaDoDia(hoje);
   if (!p) {
     // banco esgotado: nunca repete — a Direção é avisada para se acrescentarem perguntas
-    return isAdministrador() ? h('div', { class: 'pd-aviso-instalar home-largura-calendario' }, '💭 O Paulo quer saber: as perguntas do banco acabaram (nunca se repetem). É preciso acrescentar perguntas novas. Só a Direção vê este aviso.') : null;
+    return isAdministrador() ? h('div', { class: 'pd-aviso-instalar' }, '💭 O Paulo quer saber: as perguntas do banco acabaram (nunca se repetem). É preciso acrescentar perguntas novas. Só a Direção vê este aviso.') : null;
   }
   const respHoje = perguntaDiaRespostasDoDia(hoje).filter(r => !r.perguntaId || r.perguntaId === p.id);
   const minha = respHoje.find(r => String(r.utilizadorId) === String(activeUser.id));
@@ -26478,7 +26555,16 @@ function buildPerguntaDiaCard() {
   const ontem = (() => { const d = new Date(); d.setDate(d.getDate() - 1); return dateToISO(d); })();
   const anterioresBtn = h('button', { type: 'button', class: 'btn-link pd-anteriores' }, 'Ver anteriores');
   anterioresBtn.addEventListener('click', perguntaDiaAbrirAnteriores);
-  return h('section', { class: 'pd-card home-largura-calendario', 'aria-label': 'O Paulo quer saber — pergunta do dia' }, [
+  if (!minha) perguntaDiaAgendarPopup(p);
+  // antes do 1.º dia não há «ontem» (nunca mostra respostas de testes anteriores ao arranque)
+  const ontemEl = ontem >= PERGUNTA_DIA_INICIO ? perguntaDiaResultadoEl(ontem, { titulo: 'Ontem' }) : null;
+  // 2026-11-06 (Hugo: «junta tudo do paulo quer saber num único cartão, incluindo o paulo quis saber»): o resultado de
+  // ontem e o botão das anteriores ficam sempre dentro do mesmo cartão.
+  const quisSaberEl = h('div', { class: 'pd-quis' }, [
+    h('div', { class: 'pd-ontem-topo' }, [h('span', { class: 'pd-etiqueta' }, 'O Paulo quis saber'), anterioresBtn]),
+    ontemEl || h('p', { class: 'pd-res-vazio' }, 'O resultado de cada pergunta aparece aqui no dia seguinte.'),
+  ]);
+  const card = h('section', { class: 'pd-card', 'aria-label': 'O Paulo quer saber — pergunta do dia' }, [
     h('div', { class: 'pd-corpo' }, [
       h('div', { class: 'pd-hoje' }, [
         h('div', { class: 'pd-quem' }, [
@@ -26489,11 +26575,12 @@ function buildPerguntaDiaCard() {
           ]),
         ]),
         h('div', { class: 'pd-opcoes' }, [botao('a'), h('span', { class: 'pd-ou', 'aria-hidden': 'true' }, 'ou'), botao('b')]),
-        h('p', { class: 'pd-estado' }, [estado, ' ', anterioresBtn]),
+        h('p', { class: 'pd-estado' }, estado),
       ]),
-      perguntaDiaResultadoEl(ontem, { titulo: 'Ontem' }),
+      quisSaberEl,
     ]),
   ]);
+  return card;
 }
 function buildHomepage(container, goTo) {
   clear(container);
@@ -26657,9 +26744,6 @@ function buildHomepage(container, goTo) {
   // Resumo pessoal e do mês (2026-10-13) — ver buildHomeResumoLinha.
   const resumoLinhaHome = buildHomeResumoLinha(goTo);
   if (resumoLinhaHome) wrap.appendChild(resumoLinhaHome);
-  // Pergunta do Dia (2026-11-06) — só colaboradores do Quadro.
-  const perguntaDiaCard = buildPerguntaDiaCard();
-  if (perguntaDiaCard) wrap.appendChild(perguntaDiaCard);
 
   const itensEventoFinal = homeItensEventoFinal();
   const vagasSpans = {};
@@ -26805,12 +26889,15 @@ function buildHomepage(container, goTo) {
   const sasuCard = buildSasuEspinhoCard();
   const metasCard = buildMetasAtivasCard(() => buildHomepage(container, goTo), () => goTo('objetivos'));
   const posologiaCard = buildPosologiaInfantilCard();
-  [[avisoEquipa, 'home-elastico home-ordem-1'], [sasuCard, 'home-elastico home-ordem-2'], [metasCard, 'home-ordem-3'], [posologiaCard, 'home-ordem-4']]
+  // «O Paulo quer saber» (2026-11-06, Hugo: «coloca na página principal, por baixo de objetivos ativos») — só Quadro.
+  const perguntaDiaCard = buildPerguntaDiaCard();
+  [[avisoEquipa, 'home-elastico home-ordem-1'], [sasuCard, 'home-elastico home-ordem-2'], [metasCard, 'home-ordem-3'], [perguntaDiaCard, 'home-ordem-4'], [posologiaCard, 'home-ordem-5']]
     .forEach(([el, cls]) => { if (el) cls.split(' ').forEach(c => el.classList.add(c)); });
-  wrap.appendChild(h('div', { class: 'home-colunas home-largura-calendario' }, [
-    h('div', { class: 'home-coluna' }, [avisoEquipa, metasCard].filter(Boolean)),
+  const colunasHome = h('div', { class: 'home-colunas home-largura-calendario' }, [
+    h('div', { class: 'home-coluna' }, [avisoEquipa, metasCard, perguntaDiaCard].filter(Boolean)),
     h('div', { class: 'home-coluna' }, [sasuCard, posologiaCard].filter(Boolean)),
-  ]));
+  ]);
+  wrap.appendChild(colunasHome);
 
   // Módulo retrátil no fundo da página, por baixo de tudo — Calculadora de
   // Doses Pediátricas por patologia (antibioterapia, corticoides, etc.),
@@ -47047,6 +47134,28 @@ function escalaVagasGrupoOrdenadas(grupo) {
     .sort((a, b) => (a.ordem || 0) - (b.ordem || 0) || String(a.codigo || '').localeCompare(String(b.codigo || '')));
 }
 function escalaTodasVagasOrdenadas() { return ESCALA_GRUPOS.flatMap(g => escalaVagasGrupoOrdenadas(g.key)); }
+// 2026-11-06 (Hugo: «eliminei a posição P6, porque subi a Sara para P5 — mostra-a devidamente quando ela era P6»):
+// as vistas de uma semana (Vista em Tabela, Timeline, PDF) desenhavam só as posições ATIVAS — uma posição eliminada
+// (ou inativa) fazia desaparecer quem lá estava nas semanas já feitas, mesmo com o horário intacto em semana.dados.
+// Agora cada semana mostra também as posições que ela própria guarda e que já não existem, no fim do seu grupo.
+function escalaLinhaSemanaTemConteudo(linha) {
+  if (!linha) return false;
+  if (linha.colaboradorId || linha.colaboradorNome) return true;
+  return Object.values(linha.dias || {}).some(d => d && ((d.tipo && d.tipo !== 'folga') || d.colaboradorId));
+}
+function escalaVagasDaSemanaGrupo(semana, grupo) {
+  const ativas = escalaVagasGrupoOrdenadas(grupo);
+  const dados = (semana && semana.dados) || {};
+  const codigosAtivos = new Set(ativas.map(v => v.codigo));
+  const antigas = Object.keys(dados)
+    .filter(cod => !codigosAtivos.has(cod) && escalaGrupoDoCodigo(cod) === grupo && escalaLinhaSemanaTemConteudo(dados[cod]))
+    .sort((a, b) => a.localeCompare(b, 'pt', { numeric: true }))
+    .map(cod => {
+      const registo = (STATE.escalaVagas || []).find(v => v.codigo === cod && v.grupo === grupo);
+      return Object.assign({}, registo || {}, { id: registo ? registo.id : `posicao-antiga-${cod}`, codigo: cod, grupo, ativo: false, posicaoAntiga: true });
+    });
+  return ativas.concat(antigas);
+}
 // BUG CORRIGIDO (2026-08-17): ao criar manualmente o 1º turno de uma
 // Posição diretamente na grelha (célula ainda sem entrada em
 // semana.dados), a linha nascia sempre com colaboradorId:null — mesmo
@@ -47226,9 +47335,17 @@ function buildAvisoPosicoesComBuraco(rerender) {
     ]);
   }));
 }
-function escalaColaboradorFixoDaVaga(codigoVaga) {
+function escalaLinhaTemPessoa(linha, uid) {
+  if (!linha || !uid) return false;
+  if (String(linha.colaboradorId || '') === String(uid)) return true;
+  return Object.values(linha.dias || {}).some(d => d && String(d.colaboradorId || '') === String(uid) && !d.trocaId);
+}
+function escalaColaboradorFixoDaVaga(codigoVaga, semana) {
   const vaga = escalaTodasVagasOrdenadas().find(v => v.codigo === codigoVaga);
   if (!vaga || (vaga.grupo !== 'F' && vaga.grupo !== 'P') || !vaga.utilizadorId) return null;
+  // 2026-11-06: numa semana em que a pessoa ainda estava noutra posição (ex.: a Sara no P6 antes de subir para o P5),
+  // a posição nova não lhe é atribuída — senão a Sara aparecia duas vezes, uma delas com a semana toda indisponível.
+  if (semana && semana.dados && Object.keys(semana.dados).some(cod => cod !== codigoVaga && escalaLinhaTemPessoa(semana.dados[cod], vaga.utilizadorId))) return null;
   const utilizador = (STATE.usuarios || []).find(u => u.id === vaga.utilizadorId);
   if (!utilizador) return null;
   return { colaboradorId: utilizador.id, colaboradorNome: utilizador.nomeCompleto || utilizador.username };
@@ -51406,7 +51523,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       // logo o colaborador fixo de "Gerir Posições" (Grupos F/P) para
       // este 1º turno já nascer "atribuído" e aparecer de imediato em
       // "A Minha Semana" — ver escalaColaboradorFixoDaVaga acima.
-      const fixo = escalaColaboradorFixoDaVaga(codigoVaga);
+      const fixo = escalaColaboradorFixoDaVaga(codigoVaga, semana);
       novoDados[codigoVaga] = fixo ? { colaboradorId: fixo.colaboradorId, colaboradorNome: fixo.colaboradorNome, dias: {} } : { colaboradorId: null, colaboradorNome: '', dias: {} };
     } else if (!novoDados[codigoVaga].colaboradorNome) {
       // MESMO bug, variante mais comum na prática (2026-08-17, pedido
@@ -51418,7 +51535,7 @@ function abrirEditorCelulaEscala(semana, codigoVaga, diaKey, onSaved) {
       // acima só corre quando a linha nem existe), deixando a Posição
       // sem nome na legenda/tooltip da Timeline e em "A Minha Semana"
       // para sempre, mesmo já tendo dono definido em "Gerir Posições".
-      const fixo = escalaColaboradorFixoDaVaga(codigoVaga);
+      const fixo = escalaColaboradorFixoDaVaga(codigoVaga, semana);
       if (fixo) { novoDados[codigoVaga].colaboradorId = fixo.colaboradorId; novoDados[codigoVaga].colaboradorNome = fixo.colaboradorNome; }
     }
     // Campos singulares (tarefaTipo/tarefaOutro/tarefaInicio/tarefaFim)
@@ -54659,7 +54776,7 @@ function buildHorariosPage(container, goTo) {
     const thead = h('thead', {}, h('tr', {}, ['Posição', 'Colaborador', ...ESCALA_DIAS.map(d => `${d.label.slice(0, 3)} ${diasDoMes[d.key]}`), 'Total'].map(t => h('th', {}, t))));
     const bodyRows = [];
     ESCALA_GRUPOS.forEach(g => {
-      const vagas = escalaVagasGrupoOrdenadas(g.key);
+      const vagas = escalaVagasDaSemanaGrupo(semana, g.key);
       if (!vagas.length) return;
       bodyRows.push(h('tr', {}, [h('td', { colspan: String(3 + ESCALA_DIAS.length), class: 'escala-grupo-header' }, g.label)]));
       vagas.forEach(v => {
@@ -54688,7 +54805,7 @@ function buildHorariosPage(container, goTo) {
         // era Prestador, e mostrava "Folga" (rótulo genérico) em vez de
         // "Indisponibilidade". Calculado UMA VEZ por posição (não por dia),
         // reaproveitado tanto nas células como na coluna "Colaborador".
-        const fixoDaVagaLiveLinha = !linha.colaboradorNome ? escalaColaboradorFixoDaVaga(v.codigo) : null;
+        const fixoDaVagaLiveLinha = !linha.colaboradorNome ? escalaColaboradorFixoDaVaga(v.codigo, semana) : null;
         const cells = ESCALA_DIAS.map(d => {
           const dia = linha.dias[d.key] || { tipo: 'folga' };
           const colaboradorIdDoDia = escalaIdNoDia(linha, dia, linha.colaboradorId || (fixoDaVagaLiveLinha && fixoDaVagaLiveLinha.colaboradorId) || null);
@@ -54781,7 +54898,7 @@ function buildHorariosPage(container, goTo) {
           }, 160);
         }
         bodyRows.push(trEu = h('tr', { class: linhaSouEu ? 'escala-linha-eu' : '' }, [
-          h('td', { class: 'cell-strong' }, escalaBadgePosicao(v.codigo, v.grupo)),
+          h('td', { class: 'cell-strong', title: v.posicaoAntiga ? `A posição ${v.codigo} já não existe — aparece aqui porque fazia parte desta semana.` : null }, escalaBadgePosicao(v.codigo, v.grupo)),
           h('td', {}, colaboradorLabel ? [colaboradorLabel, linhaSouEu ? h('span', { class: 'escala-eu-chip escala-eu-chip-inline' }, 'TU') : null] : h('span', { class: 'cell-muted' }, 'Posição por preencher')),
           ...cells,
           h('td', { class: 'cell-strong' }, escalaFormatarHoras(escalaTotalHorasLinha(linha, semana.id))),
@@ -62305,7 +62422,7 @@ function buildHorariosPage(container, goTo) {
     // semana") ao verificar se algum turno fica sobreposto por uma
     // ausência (ver escalaAusenciaDoDia mais abaixo).
     const dataDoDiaSelecionado = escalaDataDoDia(semana.semanaInicio, diaKey);
-    const posicoes = ESCALA_GRUPOS.flatMap(g => escalaVagasGrupoOrdenadas(g.key));
+    const posicoes = ESCALA_GRUPOS.flatMap(g => escalaVagasDaSemanaGrupo(semana, g.key));
     if (!posicoes.length) return h('div', {}, [diaTabs, bannerDisponibilidadeSemana, EmptyState('Sem posições configuradas.')]);
     // Converte "HH:MM" em minutos desde HORA_INICIO, recortado ao
     // intervalo visível [HORA_INICIO, HORA_FIM] — um turno que começa
@@ -62363,7 +62480,7 @@ function buildHorariosPage(container, goTo) {
       // Posições" — agora aparece de imediato, sem precisar de nenhum
       // desses passos extra). Nunca reescreve `dia`/`linha`, é só uma
       // leitura de apoio para exibição.
-      const fixoDaVagaLive = !(escalaDiaTemPessoa(dia) || (dia && dia.colaboradorNome) || linha.colaboradorNome) ? escalaColaboradorFixoDaVaga(v.codigo) : null;
+      const fixoDaVagaLive = !(escalaDiaTemPessoa(dia) || (dia && dia.colaboradorNome) || linha.colaboradorNome) ? escalaColaboradorFixoDaVaga(v.codigo, semana) : null;
       // Nome do colaborador, já passado pelo formatador inteligente de
       // nomes (nomeCurtoDesambiguado — mesmo usado no indicador Online e
       // no "Visto por"), para o tooltip flutuante de hover.
@@ -67763,7 +67880,7 @@ function buildHorarioSemanaGridPDFDoc(semana) {
     return conteudo;
   };
   ESCALA_GRUPOS.forEach(g => {
-    const vagas = escalaVagasGrupoOrdenadas(g.key);
+    const vagas = escalaVagasDaSemanaGrupo(semana, g.key);
     if (!vagas.length) return;
     bodyRows.push(h('tr', {}, [h('td', { colspan: String(3 + ESCALA_DIAS.length), class: 'doc-horario-grelha-grupo' }, g.label)]));
     if (g.key === 'B') {
@@ -67819,7 +67936,7 @@ function buildHorarioSemanaGridPDFDoc(semana) {
       // colaborador é Prestador, e só consegue isso com um colaboradorId
       // válido — numa semana sem NENHUM dia preenchido para essa posição,
       // tanto dia.colaboradorId como linha.colaboradorId ficam vazios.
-      const fixoDaVagaLivePdf = !linha.colaboradorNome ? escalaColaboradorFixoDaVaga(v.codigo) : null;
+      const fixoDaVagaLivePdf = !linha.colaboradorNome ? escalaColaboradorFixoDaVaga(v.codigo, semana) : null;
       const cells = ESCALA_DIAS.map(d => {
         const dia = linha.dias[d.key] || { tipo: 'folga' };
         const colaboradorIdDoDia = escalaIdNoDia(linha, dia, linha.colaboradorId || (fixoDaVagaLivePdf && fixoDaVagaLivePdf.colaboradorId) || null);
