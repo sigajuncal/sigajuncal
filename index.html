@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-07 19:45" />
+<meta name="siga-versao" content="2026-11-07 22:15" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -8250,6 +8250,10 @@ body.tem-barra-inferior .topbar-mobile > .hamburger:first-child{display:none;}
       só legíveis por função segura (ex.: picagens) leem-se pela própria função, como as picagens.
    4. DADOS — TABLES (nome real da tabela), LAZY_TABLE_KEYS/PAGINA_TABELAS_LAZY se for de um módulo, Realtime
       (subscreverTabelaRealtime) e cópia local (cache por diferença / IndexedDB das tabelas lazy) a funcionar.
+   4b. HORÁRIO — qualquer mudança automática ao horário (trocas, pedidos aprovados, recálculos, ausências) nunca pode
+      deixar alguém a desaparecer do dia: cada pessoa envolvida tem de continuar numa posição (a trabalhar, de folga ou
+      ausente), em todas as vistas (Timeline, Vista em Tabela, O Meu Horário). Alterar também a cópia publicada quando
+      a mudança já é oficial (dadosPublicados), para a republicação não avisar de mudanças que não houve.
    5. CLIQUES E REDESENHOS — estado que tem de sobreviver a redesenhos vive em STATE; módulos com muito estado local em
       PAGINAS_NUNCA_RECONSTROI_EM_FUNDO; nada de redesenhar a meio de um clique (render() já espera — ver cliqueAMeio).
    6. SERVIDOR LOCAL (migração para PocketBase) — tabela ou coluna nova também tem de entrar no pacote do servidor
@@ -38125,11 +38129,29 @@ function ecraTvChegadasSaidas() {
   const ja = (k) => ECRA_TV.cumprimentados.has(k) || guardados.chaves.includes(k);
   const marcar = (k) => { ECRA_TV.cumprimentados.add(k); guardados.chaves.push(k); };
   const recente = (hhmm) => { const m = ecraTvMin(hhmm); return m !== null && agoraMin - m >= -2 && agoraMin - m <= 15; };
-  const entram = [], saem = [], faltaEntrada = [], faltaSaida = [];
+  const entram = [], saem = [], faltaEntrada = [], faltaSaida = [], vaoSair = [], vaoEntrar = [];
+  // 2026-11-07 (Hugo: «avisa com 5 minutos de antecedência para os colegas picarem antes de saírem, e avisa os colegas
+  // que já estão na farmácia quem vai entrar, com 10 minutos de antecedência»).
+  const haAlguemNaFarmacia = eq.pessoas.some(x => x.estado === 'trabalha' || x.estado === 'pausa')
+    || (ECRA_TV_PONTO.registos || []).some(r => r.tipo === 'entrada');
   eq.pessoas.forEach(p => {
     let pt = null;
     try { pt = ecraTvPontoDe(p.uid); } catch (e) { pt = null; }
     const nome = avisoPrimeiroNome(p.nome);
+    const jaPicouSaida = !!(pt && ((pt.saida && ecraTvMin(pt.saida.hora) >= p.fim - 90) || pt.comSaida));
+    // 5 min antes da saída (quem ainda não picou a saída): «Ana, sais às 20:00 — não te esqueças de picar a saída».
+    const kPreOut = `pre-out|${p.uid}|${p.fim}`;
+    if (!ja(kPreOut) && agoraMin >= p.fim - 5 && agoraMin < p.fim) {
+      marcar(kPreOut);
+      if (!jaPicouSaida && (p.estado === 'trabalha' || p.estado === 'pausa')) vaoSair.push({ nome, hora: p.saida });
+    }
+    // 10 min antes da entrada, para quem já está na farmácia: «Mariana entra às 14:00, daqui a 10 minutos».
+    // Quem abre a farmácia não é anunciado (ainda não está lá ninguém para ouvir).
+    const kPreIn = `pre-in|${p.uid}|${p.ini}`;
+    if (!ja(kPreIn) && agoraMin >= p.ini - 10 && agoraMin <= p.ini - 7) {
+      marcar(kPreIn);
+      if (haAlguemNaFarmacia && !(pt && pt.entrada)) vaoEntrar.push({ nome, hora: p.entrada });
+    }
     const kIn = `in|${p.uid}`, kOut = `out|${p.uid}`;
     if (!ja(kIn)) {
       if (pt && pt.entrada) {
@@ -38167,9 +38189,15 @@ function ecraTvChegadasSaidas() {
   ECRA_TV.fila = ECRA_TV.fila || [];
   const por = (modo, l) => { if (l.length) ECRA_TV.fila.push({ tipo: 'pessoas', modo, pessoas: l, em: Date.now() }); };
   por('falta-entrada', faltaEntrada); por('falta-saida', faltaSaida);
+  // Avisos antecipados: um por hora (quem sai/entra à mesma hora vai junto).
+  const porHora = (modo, l) => {
+    const g = new Map(); l.forEach(x => { if (!g.has(x.hora)) g.set(x.hora, []); g.get(x.hora).push(x); });
+    g.forEach((pessoas, hora) => ECRA_TV.fila.push({ tipo: 'pessoas', modo, pessoas, hora, em: Date.now() }));
+  };
+  porHora('vai-sair', vaoSair); porHora('vai-entrar', vaoEntrar);
   // Cumprimentos de quem acabou de picar: à frente na fila (logo a seguir ao que estiver no ecrã).
   [['sai', saem], ['entra', entram]].forEach(([modo, l]) => { if (l.length) ECRA_TV.fila.unshift({ tipo: 'pessoas', modo, pessoas: l, em: Date.now() }); });
-  if (entram.length || saem.length || faltaEntrada.length || faltaSaida.length) ecraTvFila();
+  if (entram.length || saem.length || faltaEntrada.length || faltaSaida.length || vaoSair.length || vaoEntrar.length) ecraTvFila();
 }
 // De onde vem (sentido -1) ou para onde vai (sentido 1) a pessoa: os dias seguidos SEM turno antes de hoje / depois de
 // hoje (2026-11-05, Hugo: «quando a pessoa pica e está a vir de folga ou fim de semana, perceber o caso: à entrada
@@ -38247,6 +38275,16 @@ function ecraTvMostrarPessoas(item) {
     const ates = [...new Set(item.pessoas.map(despedida))];
     linhas = ates.length === 1 ? [ates[0]] : item.pessoas.map(p => `${p.nome}: ${despedida(p)}`);
     fala = `Obrigado, ${juntar(nomes)}. ${votos}. ${ates.length === 1 ? ates[0].replace(/!/g, '.') : item.pessoas.map(p => `${p.nome}, ${minusc(despedida(p).replace(/!/g, '.'))}`).join(' ')}`;
+  } else if (item.modo === 'vai-sair') {
+    classe = 'lembrar'; rot = 'Saída daqui a 5 minutos';
+    titulo = `${juntar(nomes)}, ${varios ? 'saem' : 'sais'} às ${item.hora}`;
+    linhas = [`${varios ? 'Não se esqueçam' : 'Não te esqueças'} de picar a saída antes de ${varios ? 'saírem' : 'saíres'}.`];
+    fala = ecraTvTextoFalado(`${juntar(nomes)}, ${varios ? 'saem' : 'sais'} às ${item.hora}. ${linhas[0]}`);
+  } else if (item.modo === 'vai-entrar') {
+    classe = 'entra'; rot = 'Entra daqui a 10 minutos';
+    titulo = `${juntar(nomes)} ${varios ? 'entram' : 'entra'} às ${item.hora}`;
+    linhas = ['Daqui a 10 minutos.'];
+    fala = ecraTvTextoFalado(`Daqui a dez minutos ${varios ? 'entram' : 'entra'} ${juntar(nomes)}, às ${item.hora}.`);
   } else {
     const ent = item.modo === 'falta-entrada';
     classe = 'lembrar'; rot = 'Lembrete';
@@ -52785,6 +52823,59 @@ async function trocaAplicarAjustadaNoHorario(t, opts) {
   STATE.escalaSemanas = STATE.escalaSemanas.map(x => x.id === updated.id ? updated : x);
   return { ok: true, ajustes };
 }
+// Posição que quem RECEBE um turno deixou livre numa troca: quem CEDEU o turno fica lá de folga (só se a posição era
+// de folga — noutro tipo de dia fica vazia, como antes).
+function trocaQuemFicaDeFolga(dia, quemCede) {
+  const tipo = dia && dia.tipo;
+  if (quemCede && (!tipo || tipo === 'folga')) return { id: quemCede, nome: nomeUtilizadorOuVazio(quemCede) || trocasNomeUtilizador(quemCede) || '' };
+  return { id: null, nome: '' };
+}
+// Trocas validadas ANTES de 2026-11-07 21:45 deixaram essa posição vazia (colaboradorId null): ao abrir Horários, a
+// Direção repõe lá quem cedeu o turno, de folga — no horário e na cópia publicada (a mesma correção nos dois, para a
+// republicação não avisar ninguém de uma mudança que não houve). Semanas passadas não se mexem (histórico congelado).
+let TROCAS_FOLGA_REPARADAS = false;
+async function trocaRepararFolgasDeQuemCedeu() {
+  if (TROCAS_FOLGA_REPARADAS || typeof souDirecaoHorariosGlobal !== 'function' || !souDirecaoHorariosGlobal()) return false;
+  TROCAS_FOLGA_REPARADAS = true;
+  const hojeSeg = escalaSegundaFeiraDaSemanaDeISO(todayISO());
+  const trocas = new Map((STATE.escalaTrocas || []).filter(t => t && !t.eliminado && t.estado === 'validada').map(t => [String(t.id), t]));
+  if (!trocas.size) return false;
+  let algum = false;
+  for (const sem of (STATE.escalaSemanas || []).slice()) {
+    if (!sem || !sem.dados || !sem.semanaInicio || sem.semanaInicio < hojeSeg) continue;
+    const reparar = (dados) => {
+      let mexeu = false;
+      Object.keys(dados || {}).forEach(cod => {
+        const dias = (dados[cod] && dados[cod].dias) || {};
+        Object.keys(dias).forEach(dk => {
+          const d = dias[dk];
+          if (!d || d.trocaId === undefined || d.trocaId === null || (d.colaboradorId !== null && d.colaboradorId !== undefined && d.colaboradorId !== '')) return;
+          if (d.colaboradorIdAntesTroca === null || d.colaboradorIdAntesTroca === undefined) return;
+          const t = trocas.get(String(d.trocaId));
+          if (!t || trocaEhAjustada(t)) return;
+          const dataISO = escalaDataDoDia(sem.semanaInicio, dk);
+          const parte = trocaPartesParaHorario(t).find(x => x.dia === dataISO && String(x.para) === String(d.colaboradorIdAntesTroca));
+          if (!parte) return;
+          const fica = trocaQuemFicaDeFolga(d, parte.de);
+          if (!fica.id) return;
+          dias[dk] = Object.assign({}, d, { colaboradorId: fica.id, colaboradorNome: fica.nome });
+          mexeu = true;
+        });
+      });
+      return mexeu;
+    };
+    const dados = JSON.parse(JSON.stringify(sem.dados));
+    if (!reparar(dados)) continue;
+    const campos = { dados };
+    if (sem.dadosPublicados && typeof sem.dadosPublicados === 'object') {
+      const pub = JSON.parse(JSON.stringify(sem.dadosPublicados));
+      if (reparar(pub)) campos.dadosPublicados = pub;
+    }
+    const upd = await dbUpdate('escalaSemanas', sem.id, campos, { base: sem });
+    if (upd) { STATE.escalaSemanas = STATE.escalaSemanas.map(x => x.id === upd.id ? upd : x); algum = true; }
+  }
+  return algum;
+}
 async function trocaAplicarNoHorario(t, opts) {
   if (trocaEhAjustada(t)) return trocaAplicarAjustadaNoHorario(t, opts);
   // opts.soDatas: [ini, fim] — aplica só as partes dessas datas (semana regenerada; AUDITORIA 2026-09-29: uma troca
@@ -52824,8 +52915,13 @@ async function trocaAplicarNoHorario(t, opts) {
       const propria = escalaCelulaColaboradorNoDia(Object.assign({}, sem, { dados: w.dados }), info.diaKey, p.para);
       if (propria && propria.codigo !== info.codigo) {
         const dp = w.dados[propria.codigo].dias[info.diaKey];
+        // 2026-11-07 (Hugo: «troca entre a Joana e a Inês: o horário da Joana desaparece e a Inês assume o dela, mas
+        // devia surgir na mesma a Joana, desta feita de folga»): quem CEDE o turno fica nessa posição, de folga — cada
+        // uma passa para o lugar da outra. Antes a posição ficava vazia e a Joana desaparecia do dia (Timeline,
+        // Vista em Tabela, O Meu Horário). Só numa posição de folga; noutro tipo de dia fica vazia, como antes.
+        const fica = trocaQuemFicaDeFolga(dp, p.de);
         w.dados[propria.codigo].dias[info.diaKey] = Object.assign({}, dp, {
-          colaboradorId: null, colaboradorNome: '', trocaId: t.id,
+          colaboradorId: fica.id, colaboradorNome: fica.nome, trocaId: t.id,
           colaboradorIdAntesTroca: dp.colaboradorId === undefined ? null : dp.colaboradorId,
           colaboradorNomeAntesTroca: dp.colaboradorNome === undefined ? null : dp.colaboradorNome,
         });
@@ -54027,6 +54123,7 @@ function buildHorariosPage(container, goTo) {
   ESCALA_FN_SALDO_BANCO = escalaCalcularSaldoBancoHoras; // saldo de Banco de Horas visível ao pedido do botão "Propor"
   // Picagens de ponto (vêm por função segura, não por tempo real): ao abrir Horários pede só o que mudou.
   pontoSincronizar().then(mudou => { if (mudou) renderOuAdiarSeOcupado(); });
+  try { trocaRepararFolgasDeQuemCedeu().then(mudou => { if (mudou) renderOuAdiarSeOcupado(); }).catch(() => {}); } catch (e) { /* ignora */ }
   // Reset a cada entrada no módulo (ver comentário acima) — nunca
   // reaproveita o que ficou de uma visita anterior nesta sessão.
   horariosContextoMemorizado = { activeTab: 'pessoal', semanaSelecionadaData: null, viewModeGerador: 'vertical', viewModeEquipa: 'vertical', viewModePessoal: 'semana', mesPessoalData: null, colaboradorValidacaoId: null, mesValidacaoData: null };
