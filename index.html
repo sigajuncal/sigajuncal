@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-07 22:50" />
+<meta name="siga-versao" content="2026-11-07 23:10" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -3303,6 +3303,13 @@
      quase invisível; identificação (Folga + colaborador) só aparece via
      tooltip nativo (title) ao passar o cursor. */
   .escala-vertical-bloco-folga{background:rgba(0,0,0,.04)!important;box-shadow:none;}
+  /* Folga de quem cedeu o turno numa troca (2026-11-07): visível, com o nome — riscas suaves e contorno tracejado. */
+  .escala-vertical-bloco-folga.escala-vertical-bloco-folga-troca{background:repeating-linear-gradient(45deg,rgba(100,116,139,.07),rgba(100,116,139,.07) 8px,rgba(100,116,139,.15) 8px,rgba(100,116,139,.15) 16px)!important;border:1.5px dashed #94a3b8;}
+  .escala-folga-troca-rotulo{position:sticky;top:6px;display:flex;flex-direction:column;align-items:center;gap:1px;padding:8px 2px;text-align:center;color:#475569;line-height:1.15;}
+  .escala-folga-troca-rotulo strong{font-size:12px;font-weight:800;color:#334155;word-break:keep-all;}
+  .escala-folga-troca-rotulo span{font-size:11px;font-weight:700;}
+  .escala-folga-troca-rotulo em{font-style:normal;font-size:10px;color:#64748b;}
+  .escala-folga-troca-ic{font-size:15px;font-weight:800;color:#64748b;}
   /* Horas Extra reivindicadas (pedido explícito 2026-08-10) — amarelo,
      cor exclusiva desta camada (nunca usada por mais nada na Timeline),
      para nunca se confundir com o turno base por baixo. Texto escuro
@@ -52839,6 +52846,21 @@ function trocaQuemFicaDeFolga(dia, quemCede) {
   if (quemCede && (!tipo || tipo === 'folga')) return { id: quemCede, nome: nomeUtilizadorOuVazio(quemCede) || trocasNomeUtilizador(quemCede) || '' };
   return { id: null, nome: '' };
 }
+// Folga que resulta de uma troca: quem lá está de folga (quem cedeu o turno) e com quem trocou. Também serve as trocas
+// antigas, em que a posição ficou vazia (colaboradorId null) — o nome vem da própria troca. null = folga normal.
+function escalaFolgaDeTroca(dia, dataISO) {
+  if (!dia || dia.trocaId === undefined || dia.trocaId === null) return null;
+  const t = (STATE.escalaTrocas || []).find(x => String(x.id) === String(dia.trocaId));
+  if (!t || t.eliminado || t.estado !== 'validada') return null;
+  let quem = (dia.colaboradorId !== null && dia.colaboradorId !== undefined && dia.colaboradorId !== '') ? dia.colaboradorId : null;
+  if (!quem && dia.colaboradorIdAntesTroca !== null && dia.colaboradorIdAntesTroca !== undefined) {
+    const parte = trocaPartesParaHorario(t).find(x => x.dia === dataISO && String(x.para) === String(dia.colaboradorIdAntesTroca));
+    if (parte) quem = parte.de;
+  }
+  if (!quem) return null;
+  const outro = String(t.autorId) === String(quem) ? t.colegaId : (String(t.colegaId) === String(quem) ? t.autorId : null);
+  return { id: quem, nome: nomeUtilizadorOuVazio(quem) || trocasNomeUtilizador(quem), com: outro ? (nomeUtilizadorOuVazio(outro) || trocasNomeUtilizador(outro)) : '' };
+}
 // Trocas validadas ANTES de 2026-11-07 21:45 deixaram essa posição vazia (colaboradorId null): ao abrir Horários, a
 // Direção repõe lá quem cedeu o turno, de folga — no horário e na cópia publicada (a mesma correção nos dois, para a
 // republicação não avisar ninguém de uma mudança que não houve). Semanas passadas não se mexem (histórico congelado).
@@ -62947,10 +62969,20 @@ function buildHorariosPage(container, goTo) {
         // mudança de momentos antes: as riscas + etiqueta ficavam
         // desnecessárias — o pedido é mesmo o visual transparente da
         // Folga, igual ao dos colaboradores do Quadro).
+        // 2026-11-07 (Hugo: «a Joana devia aparecer no A3, apesar de o A5 ser a letra dela nesta semana»): folga que
+        // resulta de uma troca (quem cedeu o turno fica de folga na posição do colega) aparece com o nome e «folga ·
+        // troca com X», em vez da folga quase invisível — vê-se logo onde está cada uma das pessoas da troca.
+        const folgaTroca = tipoEfetivoDia === 'folga' ? escalaFolgaDeTroca(dia, dataDoDiaSelecionado) : null;
         const blocoFolga = h('div', {
-          class: 'escala-vertical-bloco escala-vertical-bloco-folga' + (editavel ? ' escala-vertical-bloco-clicavel' : ''),
+          class: 'escala-vertical-bloco escala-vertical-bloco-folga' + (folgaTroca ? ' escala-vertical-bloco-folga-troca' : '') + (editavel ? ' escala-vertical-bloco-clicavel' : ''),
           style: 'top:0%;height:100%;',
-        });
+        }, folgaTroca ? h('div', { class: 'escala-folga-troca-rotulo' }, [
+          h('span', { class: 'escala-folga-troca-ic', 'aria-hidden': 'true' }, '⇄'),
+          h('strong', {}, avisoPrimeiroNome(folgaTroca.nome)),
+          h('span', {}, 'folga'),
+          folgaTroca.com ? h('em', {}, `troca com ${avisoPrimeiroNome(folgaTroca.com)}`) : null,
+        ].filter(Boolean)) : null);
+        if (folgaTroca) instalarTooltipContaHoras(blocoFolga, `${folgaTroca.nome} — Folga (troca${folgaTroca.com ? ` com ${folgaTroca.com}` : ''})`);
         if (editavel) blocoFolga.addEventListener('dblclick', aoClicarPosicao);
         blocos = [blocoFolga];
       } else if ((tipoEfetivoDia && tipoEfetivoDia !== 'normal') || ausenciaSobreposta) {
