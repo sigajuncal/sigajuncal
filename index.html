@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-07 23:10" />
+<meta name="siga-versao" content="2026-11-07 23:20" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -52050,12 +52050,28 @@ function nomeUtilizadorOuVazio(id) { const u = (STATE.usuarios || []).find(x => 
 // gravava) também: a Escala da Equipa mostrava as pessoas trocadas e algumas contas contavam a mesma pessoa duas vezes.
 // Regra única: se o dia diz quem lá está (mesmo null), é isso que vale; o nome vem sempre do utilizador.
 function escalaDiaTemPessoa(dia) { return !!dia && dia.colaboradorId !== undefined; }
+// 2026-11-07 (Hugo: «falta o nome da Joana ao passar o rato no A3 e na legenda»): posição deixada livre numa troca
+// (colaboradorId null, trocas validadas antes de 07/11 21:45) — quem lá está, de folga, é quem cedeu o turno ao colega.
+// Assim a Timeline, a legenda, a Vista em Tabela e o resto da app mostram sempre o nome certo.
+function escalaQuemCedeuNaCelula(dia) {
+  if (!dia || dia.colaboradorId !== null || dia.trocaId === undefined || dia.trocaId === null) return null;
+  if (dia.tipo && dia.tipo !== 'folga') return null;
+  if (dia.colaboradorIdAntesTroca === null || dia.colaboradorIdAntesTroca === undefined) return null;
+  const t = (STATE.escalaTrocas || []).find(x => String(x.id) === String(dia.trocaId));
+  if (!t || t.eliminado || t.estado !== 'validada' || (typeof trocaEhAjustada === 'function' && trocaEhAjustada(t))) return null;
+  const partes = trocaPartesParaHorario(t).filter(x => String(x.para) === String(dia.colaboradorIdAntesTroca));
+  const quem = [...new Set(partes.map(x => String(x.de)))];
+  return quem.length === 1 ? partes[0].de : null;
+}
 function escalaIdNoDia(linha, dia, recurso) {
-  if (escalaDiaTemPessoa(dia)) return dia.colaboradorId;
+  if (escalaDiaTemPessoa(dia)) { const c = escalaQuemCedeuNaCelula(dia); return c !== null ? c : dia.colaboradorId; }
   return recurso !== undefined ? recurso : (linha ? linha.colaboradorId : null);
 }
 function escalaNomeNoDia(linha, dia, recurso) {
-  if (escalaDiaTemPessoa(dia)) return dia.colaboradorId === null ? '' : (nomeUtilizadorOuVazio(dia.colaboradorId) || dia.colaboradorNome || '');
+  if (escalaDiaTemPessoa(dia)) {
+    if (dia.colaboradorId === null) { const c = escalaQuemCedeuNaCelula(dia); return c !== null ? (nomeUtilizadorOuVazio(c) || trocasNomeUtilizador(c) || '') : ''; }
+    return nomeUtilizadorOuVazio(dia.colaboradorId) || dia.colaboradorNome || '';
+  }
   return (dia && dia.colaboradorNome) || (recurso !== undefined ? recurso : (linha && linha.colaboradorNome)) || '';
 }
 function trocasNomeUtilizador(id) {
