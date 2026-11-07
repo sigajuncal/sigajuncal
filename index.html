@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-07 23:20" />
+<meta name="siga-versao" content="2026-11-07 23:40" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -12650,7 +12650,10 @@ function buildCalendarioCarrossel(onDayClick, prestadorKey, calendarioGoTo, rest
       parMeses,
       nextBtn,
     ]));
-    if (expandirDesktop) instalarAberturaMesCalendario(parMeses);
+    // 2026-11-07 (Hugo: «para o aumento dos meses quando se faz hover com o rato; mantém o mês atual maior»): o mês
+    // por onde o rato passa já não cresce — o mês atual fica sempre em destaque. (instalarAberturaMesCalendario fica
+    // no ficheiro, sem uso, caso se queira voltar atrás.)
+    void instalarAberturaMesCalendario;
   }
 
   render();
@@ -52053,23 +52056,28 @@ function escalaDiaTemPessoa(dia) { return !!dia && dia.colaboradorId !== undefin
 // 2026-11-07 (Hugo: «falta o nome da Joana ao passar o rato no A3 e na legenda»): posição deixada livre numa troca
 // (colaboradorId null, trocas validadas antes de 07/11 21:45) — quem lá está, de folga, é quem cedeu o turno ao colega.
 // Assim a Timeline, a legenda, a Vista em Tabela e o resto da app mostram sempre o nome certo.
-function escalaQuemCedeuNaCelula(dia) {
+// 2026-11-07 23:40 (Hugo, vídeo: continuava sem nome): nas posições dos Grupos rotativos (A, B) a pessoa da semana está
+// na linha (linha.colaboradorId), não em cada dia — a troca guardou «quem estava antes» vazio. Nesse caso o dono da
+// posição nessa semana é quem recebeu o turno.
+function escalaQuemCedeuNaCelula(dia, linha) {
   if (!dia || dia.colaboradorId !== null || dia.trocaId === undefined || dia.trocaId === null) return null;
   if (dia.tipo && dia.tipo !== 'folga') return null;
-  if (dia.colaboradorIdAntesTroca === null || dia.colaboradorIdAntesTroca === undefined) return null;
+  let antes = (dia.colaboradorIdAntesTroca === null || dia.colaboradorIdAntesTroca === undefined) ? null : dia.colaboradorIdAntesTroca;
+  if (antes === null && linha && linha.colaboradorId !== null && linha.colaboradorId !== undefined && linha.colaboradorId !== '') antes = linha.colaboradorId;
   const t = (STATE.escalaTrocas || []).find(x => String(x.id) === String(dia.trocaId));
   if (!t || t.eliminado || t.estado !== 'validada' || (typeof trocaEhAjustada === 'function' && trocaEhAjustada(t))) return null;
-  const partes = trocaPartesParaHorario(t).filter(x => String(x.para) === String(dia.colaboradorIdAntesTroca));
+  const todas = trocaPartesParaHorario(t);
+  const partes = antes !== null ? todas.filter(x => String(x.para) === String(antes)) : (todas.length === 1 ? todas : []);
   const quem = [...new Set(partes.map(x => String(x.de)))];
   return quem.length === 1 ? partes[0].de : null;
 }
 function escalaIdNoDia(linha, dia, recurso) {
-  if (escalaDiaTemPessoa(dia)) { const c = escalaQuemCedeuNaCelula(dia); return c !== null ? c : dia.colaboradorId; }
+  if (escalaDiaTemPessoa(dia)) { const c = escalaQuemCedeuNaCelula(dia, linha); return c !== null ? c : dia.colaboradorId; }
   return recurso !== undefined ? recurso : (linha ? linha.colaboradorId : null);
 }
 function escalaNomeNoDia(linha, dia, recurso) {
   if (escalaDiaTemPessoa(dia)) {
-    if (dia.colaboradorId === null) { const c = escalaQuemCedeuNaCelula(dia); return c !== null ? (nomeUtilizadorOuVazio(c) || trocasNomeUtilizador(c) || '') : ''; }
+    if (dia.colaboradorId === null) { const c = escalaQuemCedeuNaCelula(dia, linha); return c !== null ? (nomeUtilizadorOuVazio(c) || trocasNomeUtilizador(c) || '') : ''; }
     return nomeUtilizadorOuVazio(dia.colaboradorId) || dia.colaboradorNome || '';
   }
   return (dia && dia.colaboradorNome) || (recurso !== undefined ? recurso : (linha && linha.colaboradorNome)) || '';
@@ -52864,7 +52872,7 @@ function trocaQuemFicaDeFolga(dia, quemCede) {
 }
 // Folga que resulta de uma troca: quem lá está de folga (quem cedeu o turno) e com quem trocou. Também serve as trocas
 // antigas, em que a posição ficou vazia (colaboradorId null) — o nome vem da própria troca. null = folga normal.
-function escalaFolgaDeTroca(dia, dataISO) {
+function escalaFolgaDeTroca(dia, dataISO, linha) {
   if (!dia || dia.trocaId === undefined || dia.trocaId === null) return null;
   const t = (STATE.escalaTrocas || []).find(x => String(x.id) === String(dia.trocaId));
   if (!t || t.eliminado || t.estado !== 'validada') return null;
@@ -52873,6 +52881,7 @@ function escalaFolgaDeTroca(dia, dataISO) {
     const parte = trocaPartesParaHorario(t).find(x => x.dia === dataISO && String(x.para) === String(dia.colaboradorIdAntesTroca));
     if (parte) quem = parte.de;
   }
+  if (!quem) quem = escalaQuemCedeuNaCelula(dia, linha);
   if (!quem) return null;
   const outro = String(t.autorId) === String(quem) ? t.colegaId : (String(t.colegaId) === String(quem) ? t.autorId : null);
   return { id: quem, nome: nomeUtilizadorOuVazio(quem) || trocasNomeUtilizador(quem), com: outro ? (nomeUtilizadorOuVazio(outro) || trocasNomeUtilizador(outro)) : '' };
@@ -52897,11 +52906,12 @@ async function trocaRepararFolgasDeQuemCedeu() {
         Object.keys(dias).forEach(dk => {
           const d = dias[dk];
           if (!d || d.trocaId === undefined || d.trocaId === null || (d.colaboradorId !== null && d.colaboradorId !== undefined && d.colaboradorId !== '')) return;
-          if (d.colaboradorIdAntesTroca === null || d.colaboradorIdAntesTroca === undefined) return;
+          const antes = (d.colaboradorIdAntesTroca === null || d.colaboradorIdAntesTroca === undefined) ? (dados[cod] && dados[cod].colaboradorId) : d.colaboradorIdAntesTroca;
+          if (antes === null || antes === undefined || antes === '') return;
           const t = trocas.get(String(d.trocaId));
           if (!t || trocaEhAjustada(t)) return;
           const dataISO = escalaDataDoDia(sem.semanaInicio, dk);
-          const parte = trocaPartesParaHorario(t).find(x => x.dia === dataISO && String(x.para) === String(d.colaboradorIdAntesTroca));
+          const parte = trocaPartesParaHorario(t).find(x => x.dia === dataISO && String(x.para) === String(antes));
           if (!parte) return;
           const fica = trocaQuemFicaDeFolga(d, parte.de);
           if (!fica.id) return;
@@ -62988,7 +62998,7 @@ function buildHorariosPage(container, goTo) {
         // 2026-11-07 (Hugo: «a Joana devia aparecer no A3, apesar de o A5 ser a letra dela nesta semana»): folga que
         // resulta de uma troca (quem cedeu o turno fica de folga na posição do colega) aparece com o nome e «folga ·
         // troca com X», em vez da folga quase invisível — vê-se logo onde está cada uma das pessoas da troca.
-        const folgaTroca = tipoEfetivoDia === 'folga' ? escalaFolgaDeTroca(dia, dataDoDiaSelecionado) : null;
+        const folgaTroca = tipoEfetivoDia === 'folga' ? escalaFolgaDeTroca(dia, dataDoDiaSelecionado, linha) : null;
         const blocoFolga = h('div', {
           class: 'escala-vertical-bloco escala-vertical-bloco-folga' + (folgaTroca ? ' escala-vertical-bloco-folga-troca' : '') + (editavel ? ' escala-vertical-bloco-clicavel' : ''),
           style: 'top:0%;height:100%;',
