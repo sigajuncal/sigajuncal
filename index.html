@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-07 23:40" />
+<meta name="siga-versao" content="2026-11-08 00:55" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -37245,7 +37245,7 @@ function ecraTvCamaras(palco, corpo) {
   ecraTvJanelaCamFechar();
   const lugar = ecraTvLugarCamaras(palco, corpo);
   let camada = ECRA_TV.camCamada;
-  const deNoite = !!palco.closest('.tv-modo-noite');
+  const deNoite = false; // 2026-11-08 (Hugo): as câmaras ficam sempre ligadas, também de noite
   if (!cfg.ativo || !cfg.vistas.length || !lugar || deNoite) {
     // De noite (ecrã só com a hora) as câmaras desligam-se — não ficam a gastar rede e processador sem ninguém ver.
     if (camada && (deNoite || !cfg.ativo)) { camada.remove(); ECRA_TV.camCamada = null; }
@@ -37324,7 +37324,10 @@ function ecraTvLugarCamaras(palco, corpo) {
 function ecraTvRetrato() { return window.innerHeight > window.innerWidth * 1.15; }
 function ecraTvJanelaCam(palco, corpo) {
   const lugar = ecraTvLugarCamaras(palco, corpo);
-  if (!lugar || palco.closest('.tv-modo-noite')) { ecraTvJanelaCamFechar(); return; }
+  // 2026-11-08 (Hugo: «quero que [as câmaras] fiquem sempre ligadas»): de noite (ecrã preto) a janela das câmaras
+  // fica aberta onde está — só fecha ao sair do modo TV ou ao desligar «Mostrar as câmaras».
+  if (palco.closest('.tv-modo-noite')) return;
+  if (!lugar) { ecraTvJanelaCamFechar(); return; }
   const r = lugar.getBoundingClientRect();
   if (r.width < 50 || r.height < 50) return;
   const dpr = window.devicePixelRatio || 1;
@@ -37476,7 +37479,10 @@ function ecraTvPontoAtualizar() {
       const regs = (r.registos || []).map(x => ({ utilizadorId: x.utilizador_id, tipo: x.tipo, hora: String(x.hora_real || '').slice(0, 5), estado: x.estado || '' }));
       const coms = (r.comunicacoes || []).map(x => ({ utilizadorId: x.utilizador_id, tipo: x.tipo, hora: x.hora || '', tratado: !!x.tratado }));
       const mudou = JSON.stringify([regs, coms]) !== JSON.stringify([ECRA_TV_PONTO.registos, ECRA_TV_PONTO.comunicacoes]);
-      ECRA_TV_PONTO.registos = regs; ECRA_TV_PONTO.comunicacoes = coms; ECRA_TV_PONTO.data = r.data || todayISO(); ECRA_TV_PONTO.em = Date.now();
+      // Muda o dia (meia-noite): guarda as picagens do dia anterior — quem fecha à meia-noite pica a saída já no dia seguinte.
+      const novaData = r.data || todayISO();
+      if (ECRA_TV_PONTO.data && ECRA_TV_PONTO.data !== novaData && ECRA_TV_PONTO.registos) ECRA_TV_PONTO.anteriores = { data: ECRA_TV_PONTO.data, registos: ECRA_TV_PONTO.registos };
+      ECRA_TV_PONTO.registos = regs; ECRA_TV_PONTO.comunicacoes = coms; ECRA_TV_PONTO.data = novaData; ECRA_TV_PONTO.em = Date.now();
       if (mudou && typeof ECRA_TV.desenhar === 'function') ECRA_TV.desenhar();
       if (mudou) { try { ecraTvChegadasSaidas(); } catch (e) { /* ignora */ } } // cumprimenta logo, sem esperar pela volta seguinte
     } else if (r && r.semServidor) { ECRA_TV_PONTO.registos = null; }
@@ -38132,8 +38138,12 @@ function ecraTvChegadasSaidas() {
   //  - só se NÃO picar: 5 min depois da hora de entrada/saída aparece o lembrete «Ana, falta picar a entrada/saída».
   //  Quem abre e quem fecha a farmácia também é cumprimentado pelo nome (2026-11-04).
   if (!ECRA_TV.overlay || !ECRA_TV.overlay.isConnected) return;
+  if (new Date().getHours() >= 12) ecraTvGuardarFecho();
+  try { ecraTvDespedirFecho(); } catch (e) { /* ignora */ }
   try { if (ecraTvModoNoite()) return; } catch (e) { /* segue */ }
   const agora = new Date(), hoje = dateToISO(agora), agoraMin = agora.getHours() * 60 + agora.getMinutes();
+  // A memória de quem já foi cumprimentado é de cada dia (antes ficava para sempre enquanto a TV não reiniciasse).
+  if (ECRA_TV.cumprimentadosDia !== hoje) { ECRA_TV.cumprimentados = new Set(); ECRA_TV.cumprimentadosDia = hoje; }
   let eq;
   try { eq = ecraTvEquipaHoje(); } catch (e) { eq = null; }
   // 2026-11-05 (Hugo: «a Ana continua a dizer que o modo TV não a cumprimenta»): quem pica é sempre cumprimentado,
@@ -38217,6 +38227,28 @@ function ecraTvChegadasSaidas() {
   // Cumprimentos de quem acabou de picar: à frente na fila (logo a seguir ao que estiver no ecrã).
   [['sai', saem], ['entra', entram]].forEach(([modo, l]) => { if (l.length) ECRA_TV.fila.unshift({ tipo: 'pessoas', modo, pessoas: l, em: Date.now() }); });
   if (entram.length || saem.length || faltaEntrada.length || faltaSaida.length || vaoSair.length || vaoEntrar.length) ecraTvFila();
+}
+// Quem fecha e pica a saída depois da meia-noite (a picagem já é do dia seguinte): também é despedido pelo nome.
+function ecraTvDespedirFecho() {
+  const f = ecraTvFechoPendente();
+  if (!f) return;
+  let guard = {};
+  try { guard = JSON.parse(localStorage.getItem('siga_tv_desp_fecho') || '{}') || {}; } catch (e) { guard = {}; }
+  if (guard.dia !== f.info.data) guard = { dia: f.info.data, uids: [] };
+  const ontem = new Date(f.info.data + 'T12:00:00');
+  const saem = [];
+  f.info.fechos.forEach(p => {
+    const r = f.saidas.get(String(p.uid));
+    if (!r || guard.uids.includes(String(p.uid))) return;
+    guard.uids.push(String(p.uid));
+    if (ecraTvMin(r.hora) >= 120) return; // picou antes da meia-noite: já foi despedido nessa altura
+    saem.push({ nome: p.nome, proximo: ecraTvProximoDiaTrabalho(p.uid, ontem), pausa: ecraTvPausa(p.uid, ontem, 1) });
+  });
+  try { localStorage.setItem('siga_tv_desp_fecho', JSON.stringify(guard)); } catch (e) { /* ignora */ }
+  if (!saem.length) return;
+  ECRA_TV.fila = ECRA_TV.fila || [];
+  ECRA_TV.fila.unshift({ tipo: 'pessoas', modo: 'sai', pessoas: saem, em: Date.now() });
+  ecraTvFila();
 }
 // De onde vem (sentido -1) ou para onde vai (sentido 1) a pessoa: os dias seguidos SEM turno antes de hoje / depois de
 // hoje (2026-11-05, Hugo: «quando a pessoa pica e está a vir de folga ou fim de semana, perceber o caso: à entrada
@@ -38495,9 +38527,46 @@ const ECRA_TV_DESLOCAMENTOS = [[0, 0], [3, 2], [-2, 3], [-3, -2], [2, -3], [4, 0
 // Ecrã preto só com a farmácia fechada (2026-10-30, Hugo: "a farmácia só fecha à meia-noite"): aberta das 8h à
 // meia-noite (como a cruz verde) → ecrã normal; da meia-noite às 8h → preto, a não ser que alguém esteja de turno ou
 // entre dentro de 1 hora (aí acorda sozinho antes de a equipa chegar).
+// 2026-11-08 (Hugo: «passa para ecrã negro à meia-noite e nem cumprimenta nem se despede de ninguém; devia ativar só
+// depois de as duas últimas pessoas picarem, ou 15 minutos depois da meia-noite, o que chegar primeiro»): depois da hora
+// de fecho, o ecrã preto espera que todos os que fecham piquem a saída (e sejam despedidos), no máximo 15 minutos.
+const ECRA_TV_FECHO_ESPERA_MIN = 15;
+// Quem fecha a farmácia hoje (as últimas saídas do dia) — guardado durante o dia, para ainda se saber depois da meia-noite.
+function ecraTvGuardarFecho() {
+  try {
+    const hoje = todayISO();
+    const eq = ecraTvEquipaHoje();
+    if (!eq || eq.semHorario || !eq.pessoas.length) return;
+    const fecha = Math.max(...eq.pessoas.map(p => p.fim));
+    ECRA_TV.fechoInfo = { data: hoje, fecha, fechos: eq.pessoas.filter(p => p.fim === fecha).map(p => ({ uid: p.uid, nome: avisoPrimeiroNome(p.nome) })) };
+    try { localStorage.setItem('siga_tv_fecho', JSON.stringify(ECRA_TV.fechoInfo)); } catch (e) { /* ignora */ } // TV reiniciada depois da meia-noite
+  } catch (e) { /* ignora */ }
+}
+// Depois da hora de fecho (até 15 min): quem fecha e a picagem de saída de cada um (null = ainda não picou).
+function ecraTvFechoPendente() {
+  let f = ECRA_TV.fechoInfo;
+  if (!f) { try { f = JSON.parse(localStorage.getItem('siga_tv_fecho') || 'null'); } catch (e) { f = null; } }
+  if (!f || !f.fechos || !f.fechos.length) return null;
+  const inicio = new Date(f.data + 'T00:00:00'); inicio.setMinutes(f.fecha);
+  const passou = (Date.now() - inicio.getTime()) / 60000;
+  if (passou < 0 || passou >= ECRA_TV_FECHO_ESPERA_MIN) return null;
+  const regs = [].concat(ECRA_TV_PONTO.registos || [], (ECRA_TV_PONTO.anteriores && ECRA_TV_PONTO.anteriores.registos) || []);
+  const saidas = new Map();
+  f.fechos.forEach(p => {
+    const r = regs.filter(x => String(x.utilizadorId) === String(p.uid) && x.tipo === 'saida').find(x => { const m = ecraTvMin(x.hora); return m !== null && (m >= f.fecha - 90 || m < 120); });
+    if (r) saidas.set(String(p.uid), r);
+  });
+  return { info: f, saidas, todosPicaram: f.fechos.every(p => saidas.has(String(p.uid))) };
+}
 function ecraTvModoNoite() {
   const d = new Date(), hh = d.getHours();
   if (hh >= 8) return false;
+  try {
+    const f = ecraTvFechoPendente();
+    if (f && !f.todosPicaram) return false;
+    // Já picaram todos: o ecrã só escurece depois de a despedida (e qualquer outro aviso de pessoas) passar.
+    if (f && (ECRA_TV.anuncioAtual || (ECRA_TV.fila || []).some(x => x.tipo === 'pessoas'))) return false;
+  } catch (e) { /* segue */ }
   try {
     const agoraMin = hh * 60 + d.getMinutes();
     const eq = ecraTvEquipaHoje();
