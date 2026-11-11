@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-11 14:30" />
+<meta name="siga-versao" content="2026-11-11 15:00" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -11482,6 +11482,12 @@ function buildAgendaDiaModal(prestadorKey, dateISO, onSaved) {
       }
     }
     const duracaoMin = agendaDuracaoPorTipo(prestadorKey, formDraft.tipoConsulta, formDraft.duracaoManual);
+    // Fora do horário da farmácia / perto da abertura ou do fecho → pergunta primeiro (só quando a hora é nova ou mudou).
+    {
+      const antes = formDraft.editId ? STATE.agendaMarcacoes.find(m => String(m.id) === String(formDraft.editId)) : null;
+      const mesmaHora = !!antes && antes.data === dateISO && normalizarHora(antes.hora) === normalizarHora(formDraft.hora) && (antes.duracaoMin || 0) >= duracaoMin;
+      if (!mesmaHora && !(await marcacaoConfirmarHorarioFarmacia(formDraft, dateISO, normalizarHora(formDraft.hora), duracaoMin))) return;
+    }
     // Dois colegas ao mesmo tempo (2026-09-28): antes das regras de
     // conflito abaixo, relê do servidor as marcações DESTE dia desta agenda
     // (poucas linhas) — apanha o que um colega gravou há segundos e ainda
@@ -19579,6 +19585,42 @@ function showDbErrorToast(acao) {
   showToast(`${acao}. ${lastDbError || 'Verifica a ligação e tenta novamente.'}`, 'error');
 }
 
+// 2026-11-11 (pedido do Hugo): marcação fora do horário da farmácia, ou muito perto da abertura/fecho, pede sempre
+// confirmação a quem está a marcar («é mesmo para marcar a esta hora?»). Nunca bloqueia — só pergunta — e não volta a
+// perguntar pela mesma hora no mesmo formulário. Vale para as Agendas, os Eventos e a Vacinação.
+const FARMACIA_ABRE_MIN = 8 * 60, FARMACIA_FECHA_MIN = 24 * 60, FARMACIA_MARGEM_MARCACAO_MIN = 20;
+function marcacaoAvisoHorarioFarmacia(dataISO, hora, duracaoMin) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hora || '').trim());
+  if (!m) return null;
+  const ini = Number(m[1]) * 60 + Number(m[2]);
+  const fim = ini + Math.max(0, Number(duracaoMin) || 0);
+  const hhmm = (x) => `${pad2(Math.floor(x / 60) % 24)}:${pad2(x % 60)}`;
+  const abre = hhmm(FARMACIA_ABRE_MIN), fecha = hhmm(FARMACIA_FECHA_MIN);
+  const quando = dataISO ? ` (${formatDate(dataISO)})` : '';
+  if (dataISO && typeof escalaFarmaciaFechadaNoDia === 'function' && escalaFarmaciaFechadaNoDia(dataISO)) {
+    return `A farmácia está fechada neste dia${quando}.`;
+  }
+  if (ini < FARMACIA_ABRE_MIN) return `As ${hhmm(ini)} são antes da abertura da farmácia (${abre}).`;
+  if (fim > FARMACIA_FECHA_MIN) return `Esta marcação começa às ${hhmm(ini)} e só termina depois do fecho da farmácia (${fecha}).`;
+  if (ini === FARMACIA_ABRE_MIN) return `As ${hhmm(ini)} são mesmo à hora de abertura da farmácia.`;
+  if (ini < FARMACIA_ABRE_MIN + FARMACIA_MARGEM_MARCACAO_MIN) return `As ${hhmm(ini)} são logo a seguir à abertura da farmácia (${abre}).`;
+  if (Math.max(ini, fim) > FARMACIA_FECHA_MIN - FARMACIA_MARGEM_MARCACAO_MIN) return `As ${hhmm(ini)} são mesmo em cima do fecho da farmácia (${fecha}).`;
+  const especial = dataISO && typeof escalaDataOperacionalEspecial === 'function' ? escalaDataOperacionalEspecial(dataISO) : null;
+  if (especial && /Natal|Ano Novo/.test(especial.motivo || '')) return `Neste dia${quando} a farmácia tem horário reduzido.`;
+  return null;
+}
+// Devolve true se pode gravar (hora normal, já confirmada antes, ou a pessoa respondeu «Sim»).
+const MARCACAO_HORARIO_CONFIRMADO = new WeakMap(); // fica fora do rascunho — o rascunho é gravado tal e qual
+function marcacaoConfirmarHorarioFarmacia(draft, dataISO, hora, duracaoMin) {
+  const aviso = marcacaoAvisoHorarioFarmacia(dataISO, hora, duracaoMin);
+  const chave = `${dataISO || ''}|${hora || ''}|${duracaoMin || 0}`;
+  if (!aviso || (draft && MARCACAO_HORARIO_CONFIRMADO.get(draft) === chave)) return Promise.resolve(true);
+  return new Promise(resolve => {
+    confirmDialog(`${aviso}\n\nÉ mesmo para marcar a esta hora?`,
+      () => { if (draft) MARCACAO_HORARIO_CONFIRMADO.set(draft, chave); resolve(true); },
+      { confirmLabel: 'Sim, marcar a esta hora', onCancel: () => resolve(false) });
+  });
+}
 function confirmDialog(message, onConfirm, opts) {
   opts = opts || {};
   const overlay = h('div', { class: 'modal-overlay' + (opts.overlayClass ? ' ' + opts.overlayClass : '') });
@@ -35194,6 +35236,11 @@ function buildEventoDiaModal(tipo, dateISO, evento, onSaved) {
       formDraft.hora = normalizarHora(formDraft.hora);
       if (!horaFormatoValido(formDraft.hora)) { formError = 'Indica a hora no formato HH:MM (ex: 14:10).'; render(); return; }
       hora = formDraft.hora;
+    }
+    // Fora do horário da farmácia / perto da abertura ou do fecho → pergunta primeiro (só quando a hora é nova ou mudou).
+    {
+      const mesmaHora = !!(showForm.editar && showForm.base && normalizarHora(showForm.base.hora) === normalizarHora(hora));
+      if (!mesmaHora && !(await marcacaoConfirmarHorarioFarmacia(formDraft, currentEvento.data || '', normalizarHora(hora), Number(currentEvento.intervaloMin) || 0))) return;
     }
     // Dois colegas ao mesmo tempo (2026-09-28): relê as vagas deste dia do
     // servidor ANTES de gravar (só as deste evento — poucas linhas).
@@ -65605,6 +65652,12 @@ function buildVacinacaoPage(container, goTo) {
       marcacaoFormError = `O dia ${formatDate(marcacaoDraft.data)} ainda está por abrir — não é possível marcar. Abre primeiro o dia na Agenda (botão «Abrir Dia») ou escolhe um dia já aberto.`;
       rerender();
       return;
+    }
+    // Fora do horário da farmácia / perto da abertura ou do fecho → pergunta primeiro (só quando o dia/hora é novo ou mudou).
+    {
+      const antes = marcacaoEditId ? STATE.vacinacaoMarcacoes.find(m => m.id === marcacaoEditId) : null;
+      const mesmaHora = !!antes && antes.data === marcacaoDraft.data && antes.hora === marcacaoDraft.hora;
+      if (!mesmaHora && !(await marcacaoConfirmarHorarioFarmacia(marcacaoDraft, marcacaoDraft.data, normalizarHora(marcacaoDraft.hora), 10))) return;
     }
     // Cadeado COVID do dia (2026-09-29): confirma primeiro no servidor o estado do dia (um colega pode tê-lo
     // ativado há segundos noutro posto) — 1 linha, só quando a marcação leva COVID.
