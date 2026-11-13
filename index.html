@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-13 16:50" />
+<meta name="siga-versao" content="2026-11-13 18:30" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -5438,6 +5438,27 @@
   .gaveta-tarefa-card .gaveta-bolha-hora{display:block;margin-top:2px;}
   .gaveta-tarefa-card-acoes{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;align-items:center;}
   /* Botões de decisão uniformes (2026-09-26): mesma altura, forma e tamanho de letra; a cor diz o significado. */
+  /* Notificações dos Lembretes (2026-11-13) */
+  .notif-lista{display:flex;flex-direction:column;gap:16px;}
+  .notif-bloco{padding:6px 0;overflow:hidden;}
+  .notif-bloco-titulo{display:flex;align-items:center;gap:8px;padding:10px 18px 8px;font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--pharm-500);}
+  .notif-linha{display:flex;align-items:center;gap:12px;padding:10px 18px;border-top:1px solid var(--pharm-100,#e8eef3);}
+  .notif-linha.por-tratar{background:linear-gradient(90deg,rgba(251,146,60,.08),transparent 60%);box-shadow:inset 3px 0 0 #fb923c;}
+  .notif-avatar{flex:0 0 34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:var(--pharm-700);background:var(--pharm-100,#e8eef3);}
+  .notif-texto{flex:1;min-width:0;}
+  .notif-topo{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;color:var(--pharm-800);}
+  .notif-estado{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;}
+  .notif-estado.verde{background:#dcfce7;color:#166534;} .notif-estado.vermelho{background:#fee2e2;color:#991b1b;}
+  .notif-estado.laranja{background:#ffedd5;color:#9a3412;} .notif-estado.azul{background:#dbeafe;color:#1e40af;}
+  .notif-estado.cinza{background:#f1f5f9;color:#64748b;}
+  .notif-msg{margin:2px 0 0;font-size:13px;color:var(--pharm-700);line-height:1.45;}
+  .notif-quem{margin:2px 0 0;font-size:11.5px;color:var(--pharm-500);}
+  .notif-lado{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0;}
+  .notif-data{font-size:11.5px;color:var(--pharm-500);white-space:nowrap;}
+  .notif-acao{display:inline-flex;align-items:center;gap:6px;}
+  .notif-vazio{margin:0;padding:8px 18px 12px;font-size:13px;color:var(--pharm-500);}
+  .notif-mais{display:block;width:100%;padding:10px;border:0;border-top:1px solid var(--pharm-100,#e8eef3);background:none;font-weight:700;font-size:13px;color:var(--pharm-600,#2c6e8f);cursor:pointer;}
+  @media (max-width:640px){.notif-linha{flex-wrap:wrap;padding:10px 14px;} .notif-lado{flex-direction:row;width:100%;justify-content:space-between;padding-left:46px;}}
   .gaveta-acao-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 14px;
     border-radius:8px;border:1.5px solid transparent;font-size:12.5px;font-weight:700;line-height:1;cursor:pointer;
     white-space:nowrap;transition:background .15s ease,border-color .15s ease,color .15s ease;font-family:inherit;}
@@ -17312,6 +17333,8 @@ async function dbFetchChat() {
 // (nunca vão para o Lixo) — chamada uma vez a cada arranque da app.
 async function dbCleanupOldChatMessages() {
   if (!sb) return;
+  // 2026-11-13: o Ecrã do Backoffice (modo TV) só pode ler — a limpeza fica para os postos com sessão pessoal.
+  if (window.__sigaEcraAtivo) return;
   try {
     const seteDiasAtras = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     const { error } = await sb.from('mensagens_chat').delete().lt('created_at', seteDiasAtras);
@@ -34774,23 +34797,82 @@ function buildLembretesPage(container, goTo, embedded) {
     // pronto de notificarDirecaoHorasExtra.
     return { utilizador: nomeUtilizadorNotificacao(r.remetenteId), resultado: r.mensagem, validadoPor: null, validadoEm: null };
   }
+  // 2026-11-13 (Hugo: «estas notificações ainda não permitem ação directa aqui… melhora o aspecto e simplifica»):
+  // lista compacta em duas partes — «Por tratar» (com o botão que resolve: abre a Gaveta já nesse pedido, onde
+  // estão Aprovar/Rejeitar e Validar/Invalidar, ou vai a O Meu Horário para reivindicar) e «Anteriores», só para
+  // consulta, recolhidas a partir de 15. Cada linha: quem, o quê, estado (etiqueta de cor) e quando.
+  function estadoNotificacao(r) {
+    const direcao = souDirecaoHorariosGlobal();
+    if (r.referenciaTabela === 'escala_notas_semana') {
+      const nota = (STATE.escalaNotasSemana || []).find(n => n.id === r.referenciaId);
+      if (!nota) return { cls: 'cinza', txt: 'Removida' };
+      if (nota.validadoDirecao) return { cls: 'verde', txt: 'Validada' };
+      if (nota.rejeitado) return { cls: 'vermelho', txt: 'Rejeitada' };
+      return { cls: 'laranja', txt: 'Por validar', acao: direcao && !r.tratado ? 'gaveta' : null };
+    }
+    if (r.referenciaTabela === 'escala_horas_extra_reivindicacoes') {
+      const rv = (STATE.escalaHorasExtraReivindicacoes || []).find(x => String(x.id) === String(r.referenciaId));
+      const est = rv ? (rv.estado || 'pendente') : 'removida';
+      if (est === 'validado') return { cls: 'verde', txt: 'Validada' };
+      if (est === 'invalidado') return { cls: 'vermelho', txt: 'Invalidada' };
+      if (est === 'pendente') return { cls: 'laranja', txt: 'Por validar', acao: direcao && !r.tratado ? 'gaveta' : null };
+      return { cls: 'cinza', txt: 'Removida' };
+    }
+    if (r.referenciaTabela === 'escala_horas_extra') {
+      const bloco = (STATE.escalaHorasExtra || []).find(b => String(b.id) === String(r.referenciaId) && !b.eliminado);
+      const chave = bloco ? horasExtraEstadoBloco(bloco).chave : 'removido';
+      if ((chave === 'livre' || chave === 'parcial') && !r.tratado) return { cls: 'azul', txt: 'Disponível', acao: 'horario' };
+      return { cls: 'cinza', txt: chave === 'livre' || chave === 'parcial' ? 'Arquivada' : 'Fechada' };
+    }
+    return { cls: 'cinza', txt: 'Aviso' };
+  }
   function buildNotificacaoCartao(r) {
     const d = detalhesNotificacao(r);
-    return h('div', { class: 'card card-pad', style: 'margin-bottom:10px;' }, [
-      h('div', { style: 'display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap;' }, [
-        h('div', {}, [
-          h('p', { style: 'margin:0 0 3px;font-size:12px;font-weight:600;color:var(--pharm-500);' }, d.utilizador),
-          h('p', { style: 'margin:0;font-size:13px;color:var(--pharm-800);line-height:1.5;' }, d.resultado),
-          d.validadoPor ? h('p', { class: 'field-helper-text', style: 'margin:4px 0 0;' }, `Validado por ${d.validadoPor}${d.validadoEm ? ` em ${formatDateTime(d.validadoEm)}` : ''}`) : null,
-        ]),
-        h('p', { class: 'field-helper-text', style: 'margin:0;flex-shrink:0;white-space:nowrap;' }, formatDateTime(r.createdAt)),
+    const est = estadoNotificacao(r);
+    const iniciais = String(d.utilizador || '?').split(/\s+/).filter(Boolean).map(p => p[0]).slice(0, 2).join('').toUpperCase();
+    let botao = null;
+    if (est.acao === 'gaveta') {
+      botao = h('button', { type: 'button', class: 'btn btn-primary btn-sm notif-acao' }, [Icon('check', { size: 14, strokeWidth: 2.6 }), h('span', {}, 'Tratar')]);
+      botao.addEventListener('click', () => abrirModalGaveta(r.remetenteId, { focoRecadoId: r.id }));
+    } else if (est.acao === 'horario') {
+      botao = h('button', { type: 'button', class: 'btn btn-secondary btn-sm notif-acao' }, [Icon('clock', { size: 14 }), h('span', {}, 'Reivindicar')]);
+      botao.addEventListener('click', () => { STATE.navFrom = STATE.page; STATE.page = 'horarios'; STATE.sidebarOpen = false; render(); });
+    }
+    const quem = d.validadoPor ? `${est.txt === 'Validada' ? 'Validada' : 'Decidida'} por ${d.validadoPor}${d.validadoEm ? ' · ' + formatDateTime(d.validadoEm) : ''}` : '';
+    return h('div', { class: 'notif-linha' + (est.acao ? ' por-tratar' : '') }, [
+      h('span', { class: 'notif-avatar', 'aria-hidden': 'true' }, iniciais),
+      h('div', { class: 'notif-texto' }, [
+        h('div', { class: 'notif-topo' }, [h('strong', {}, d.utilizador), h('span', { class: 'notif-estado ' + est.cls }, est.txt)]),
+        h('p', { class: 'notif-msg' }, r.referenciaTabela === 'escala_notas_semana' && r.mensagem ? String(r.mensagem).split('\n')[0].slice(0, 220) : d.resultado),
+        quem ? h('p', { class: 'notif-quem' }, quem) : null,
       ]),
+      h('div', { class: 'notif-lado' }, [h('span', { class: 'notif-data', title: formatDateTime(r.createdAt) }, tempoRelativoCompacto(r.createdAt) || formatDateTime(r.createdAt)), botao]),
     ]);
   }
+  let notifMostrarTodas = false;
   function buildListaNotificacoes() {
     const lista = minhasNotificacoes();
-    if (!lista.length) return EmptyState('Sem notificações — Horas Extra e notas de "Escala da Equipa" aparecem aqui, para consulta (as ações continuam na Gaveta de Recados).');
-    return h('div', {}, lista.map(buildNotificacaoCartao));
+    if (!lista.length) return EmptyState('Sem notificações. Aqui aparecem as Horas Extra e os pedidos de «Escala da Equipa».');
+    const porTratar = lista.filter(r => estadoNotificacao(r).acao);
+    const anteriores = lista.filter(r => !estadoNotificacao(r).acao);
+    const LIMITE = 15;
+    const vis = notifMostrarTodas ? anteriores : anteriores.slice(0, LIMITE);
+    const bloco = (titulo, itens, vazio) => h('div', { class: 'card notif-bloco' }, [
+      h('div', { class: 'notif-bloco-titulo' }, [h('span', {}, titulo), h('span', { class: 'tab-count' }, String(itens.length))]),
+      itens.length ? h('div', {}, itens.map(buildNotificacaoCartao)) : h('p', { class: 'notif-vazio' }, vazio),
+    ]);
+    const kids = [bloco('Por tratar', porTratar, 'Nada por tratar.')];
+    if (anteriores.length) {
+      const b = bloco('Anteriores', vis, '');
+      b.querySelector('.tab-count').textContent = String(anteriores.length);
+      if (anteriores.length > LIMITE) {
+        const mais = h('button', { type: 'button', class: 'notif-mais' }, notifMostrarTodas ? 'Mostrar menos' : `Mostrar todas (${anteriores.length})`);
+        mais.addEventListener('click', () => { notifMostrarTodas = !notifMostrarTodas; rerender(); });
+        b.appendChild(mais);
+      }
+      kids.push(b);
+    }
+    return h('div', { class: 'notif-lista' }, kids);
   }
 
   function build() {
