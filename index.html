@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-13 18:30" />
+<meta name="siga-versao" content="2026-11-13 19:55" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -38492,8 +38492,13 @@ const ecraTvMin = (hhmm) => { const m = /^(\d{1,2}):(\d{2})/.exec(String(hhmm ||
 // Colaborador inativo (Utilizadores › inativar) — fica fora de todos os quadros do ecrã TV.
 function ecraTvUtilizadorInativo(uid) {
   if (uid === null || uid === undefined || uid === '') return false;
-  const u = (STATE.usuarios || []).find(x => String(x.id) === String(uid));
-  return !!u && (u.ativo === false || !!u.eliminado);
+  const lista = STATE.usuarios || [];
+  const u = lista.find(x => String(x.id) === String(uid));
+  // 2026-11-13 (Hugo: «Simão continua a aparecer nos horários dos dias seguintes mesmo já desativado»): um utilizador
+  // desativado deixa de vir na lista do ecrã — não o encontrar também conta como inativo (as indisponibilidades e
+  // férias que ficaram marcadas deixam de o pôr na tabela).
+  if (!u) return lista.length > 0;
+  return u.ativo === false || !!u.eliminado;
 }
 function ecraTvEquipaHoje(dataRef) {
   const agora = dataRef ? new Date(dataRef) : new Date();
@@ -38503,6 +38508,7 @@ function ecraTvEquipaHoje(dataRef) {
   const tiposAus = {}, tiposAusEq = {};
   (STATE.escalaFerias || []).filter(f => !f.eliminado && f.dataInicio <= hojeISO && hojeISO <= f.dataFim).forEach(f => {
     if (ecraTvUtilizadorInativo(f.utilizadorId)) return; // 2026-11-11: inativos (ex.: Simão) não aparecem no ecrã
+    if (!f.utilizadorId && f.utilizadorNome && (STATE.usuarios || []).length && !(STATE.usuarios || []).some(u => u.ativo !== false && !u.eliminado && normalizarTexto(u.nomeCompleto || u.username || '') === normalizarTexto(f.utilizadorNome))) return; // só com nome: tem de ser alguém ativo
     const nome = nomeUtilizadorOuVazio(f.utilizadorId) || f.utilizadorNome;
     if (!nome) return;
     const rot = (ESCALA_TIPOS_DIA.find(t => t.key === f.tipo) || {}).label || 'Ausente';
@@ -39015,7 +39021,28 @@ function ecraTvCamarasConfigurar() {
   ECRA_TV.overlay.appendChild(fundo);
 }
 window.addEventListener('resize', () => { try { if (ECRA_TV.overlay && ECRA_TV.overlay.isConnected && typeof ECRA_TV.desenhar === 'function') ECRA_TV.desenhar(); } catch (e) { /* ignora */ } });
+// 2026-11-13 (Hugo: «verifica se este género de cortes está corrigido sempre e em todos os casos» — a última tarefa
+// cortada a meio): cada cartão ajusta-se a partir do tamanho que tem nesse instante; se outro cartão da mesma coluna
+// mudar de altura depois (letra de outro cartão ajustada, uma imagem que chega), o primeiro ficava cortado. Agora,
+// depois de ajustar tudo, confirma-se se algum cartão ficou a transbordar e ajusta-se outra vez (e de novo 1,5 s depois).
+function ecraTvTransborda(raiz) {
+  return Array.from(raiz.querySelectorAll('.tv-painel')).some(painel => {
+    if (painel.classList.contains('tv-cena-painel')) return false;
+    const corpo = painel.querySelector('.tv-painel-corpo');
+    if (!corpo || !corpo.clientHeight) return false;
+    if (corpo.scrollHeight > corpo.clientHeight + 1) return true;
+    const pr = painel.getBoundingClientRect();
+    const fundo = pr.bottom - (parseFloat(getComputedStyle(painel).paddingBottom) || 0) * 0.5;
+    return Array.from(corpo.children).some(x => x.offsetParent !== null && x.getBoundingClientRect().bottom > fundo + 1);
+  });
+}
 function ecraTvPaginar(raiz) {
+  ecraTvPaginarUmaVez(raiz);
+  for (let k = 0; k < 2 && ecraTvTransborda(raiz); k++) ecraTvPaginarUmaVez(raiz);
+  clearTimeout(ECRA_TV.paginarDepois);
+  ECRA_TV.paginarDepois = setTimeout(() => { try { if (raiz.isConnected && ecraTvTransborda(raiz)) ecraTvPaginarUmaVez(raiz); } catch (e) { } }, 1500);
+}
+function ecraTvPaginarUmaVez(raiz) {
   // 2026-11-04 (Hugo: «carrossel deveria ser aplicável somente a produtos a escoar e campanhas… mostrar toda a informação
   // ao mesmo tempo, sem carrossel»): nenhum cartão passa a páginas. Cada cartão mostra tudo e, se não couber, a letra
   // desse cartão diminui até caber (até metade). Só se nem assim couber (muito raro) ficam os mais importantes, com
@@ -39056,10 +39083,14 @@ function ecraTvPaginar(raiz) {
     if (cabe()) {
       // 2026-11-11 (Hugo: «há imenso espaço em branco na equipa… tornando tudo maior… sempre que possível»): se sobra
       // espaço, a letra do cartão cresce até o preencher (até +50%), sem nunca deixar de caber.
+      // 2026-11-13 (Hugo: «corrige truncagens»): ao crescer conta também cada texto lá dentro — uma palavra que já não
+      // cabe na sua linha («constipações», «daqui a 38 dias», um nome cortado com «…») trava o crescimento.
+      const semCortes = () => cabe() && Array.from(corpo.querySelectorAll('*')).every(x => !x.clientWidth || x.scrollWidth <= x.clientWidth + 1);
+      if (!semCortes()) return;
       let lo = 1, hi = 1.5;
       corpo.style.zoom = String(hi);
-      if (cabe()) return;
-      for (let k = 0; k < 7; k++) { const m = (lo + hi) / 2; corpo.style.zoom = m.toFixed(3); if (cabe()) lo = m; else hi = m; }
+      if (semCortes()) return;
+      for (let k = 0; k < 7; k++) { const m = (lo + hi) / 2; corpo.style.zoom = m.toFixed(3); if (semCortes()) lo = m; else hi = m; }
       corpo.style.zoom = lo > 1.02 ? lo.toFixed(3) : '';
       return;
     }
@@ -39942,7 +39973,7 @@ function ecraTvChegadasSaidas() {
   const ja = (k) => ECRA_TV.cumprimentados.has(k) || guardados.chaves.includes(k);
   const marcar = (k) => { ECRA_TV.cumprimentados.add(k); guardados.chaves.push(k); };
   const recente = (hhmm) => { const m = ecraTvMin(hhmm); return m !== null && agoraMin - m >= -2 && agoraMin - m <= 15; };
-  const entram = [], saem = [], faltaEntrada = [], faltaSaida = [], vaoSair = [], vaoEntrar = [];
+  const entram = [], saem = [], faltaEntrada = [], faltaSaida = [], vaoSair = [], vaoEntrar = [], pausas = [], regressos = [], faltaPausa = [];
   // 2026-11-07 (Hugo: «avisa com 5 minutos de antecedência para os colegas picarem antes de saírem, e avisa os colegas
   // que já estão na farmácia quem vai entrar, com 10 minutos de antecedência»).
   const haAlguemNaFarmacia = eq.pessoas.some(x => x.estado === 'trabalha' || x.estado === 'pausa')
@@ -39965,6 +39996,54 @@ function ecraTvChegadasSaidas() {
       marcar(kPreIn);
       if (haAlguemNaFarmacia && !(pt && pt.entrada)) vaoEntrar.push({ nome, hora: p.entrada });
     }
+    // 2026-11-13 (Hugo: «Emanuel tem agora pausa das 19h às 20h, não foi anunciado… bom apetite nos intervalos do
+    // almoço; nas pausas noutros momentos do dia, só boa pausa»): à hora da pausa do horário, quem está na farmácia.
+    // Pausa (2026-11-13): anunciada quando se pica o início da pausa (ou, à hora marcada, se ainda não picou — com o
+    // lembrete para picar); se passar da hora sem picar o início ou o fim da pausa, lembra como nas entradas e saídas.
+    const piMin = ecraTvMin(p.pausaInicio), pfMin = ecraTvMin(p.pausaFim);
+    if (piMin !== null && pfMin !== null && pfMin > piMin) {
+      const regsPa = (ECRA_TV_PONTO.registos || []).filter(r => String(r.utilizadorId) === String(p.uid));
+      const perto = (r) => { const m = ecraTvMin(r.hora); return m !== null && m >= piMin - 45 && m <= pfMin; };
+      const picouIni = regsPa.filter(r => r.tipo === 'pausa_inicio' && perto(r)).slice(-1)[0]
+        || regsPa.filter(r => r.tipo === 'saida' && perto(r) && ecraTvMin(r.hora) < p.fim - 90).slice(-1)[0] || null;
+      const mIni = picouIni ? ecraTvMin(picouIni.hora) : piMin;
+      const picouFim = regsPa.find(r => (r.tipo === 'pausa_fim' || r.tipo === 'entrada') && ecraTvMin(r.hora) > mIni && ecraTvMin(r.hora) <= pfMin + 120) || null;
+      const naFarmacia = ((pt && pt.entrada) || p.estado === 'pausa' || p.estado === 'trabalha') && !jaPicouSaida;
+      const refeicao = (piMin >= 11 * 60 + 30 && piMin < 15 * 60 + 30) || (piMin >= 18 * 60 + 30 && piMin < 21 * 60 + 30);
+      const kPausa = `pausa|${p.uid}|${piMin}`;
+      if (!ja(kPausa)) {
+        if (picouIni && recente(picouIni.hora)) { marcar(kPausa); if (naFarmacia || picouIni.tipo === 'saida') pausas.push({ nome, hora: p.pausaInicio, ate: p.pausaFim, almoco: refeicao, lembrar: false }); }
+        else if (!picouIni && agoraMin >= piMin && agoraMin <= piMin + 3) { marcar(kPausa); if (naFarmacia) pausas.push({ nome, hora: p.pausaInicio, ate: p.pausaFim, almoco: refeicao, lembrar: true }); }
+        else if (agoraMin > piMin + 3) marcar(kPausa);
+      }
+      const kLpi = `lpi|${p.uid}|${piMin}`;
+      if (!ja(kLpi) && !picouIni && !picouFim && agoraMin >= piMin + 10 && agoraMin <= piMin + 30) { marcar(kLpi); if (naFarmacia) faltaPausa.push({ nome, qual: 'ini', hora: p.pausaInicio }); }
+      const kLpf = `lpf|${p.uid}|${pfMin}`;
+      if (!ja(kLpf) && picouIni && !picouFim && agoraMin >= pfMin + 5 && agoraMin <= pfMin + 30) { marcar(kLpf); if (!jaPicouSaida) faltaPausa.push({ nome, qual: 'fim', hora: p.pausaFim }); }
+    }
+    // 2026-11-13 (Hugo: «quando pica para entrar depois da refeição também cumprimentar de forma adequada»): fim da
+    // pausa picado (ou uma 2.ª entrada depois de uma saída a meio do dia) → «Bom regresso… espero que o almoço tenha
+    // sabido bem».
+    try {
+      const regsP = (ECRA_TV_PONTO.registos || []).filter(r => String(r.utilizadorId) === String(p.uid));
+      let volta = null, foi = null;
+      if (pt && pt.pausaFim) { volta = pt.pausaFim; foi = pt.pausaIni; }
+      else {
+        const ents = regsP.filter(r => r.tipo === 'entrada');
+        const ult = ents.length > 1 ? ents[ents.length - 1] : null;
+        const saiAntes = ult ? regsP.filter(r => r.tipo === 'saida' && ecraTvMin(r.hora) <= ecraTvMin(ult.hora)).slice(-1)[0] : null;
+        if (ult && saiAntes) { volta = ult; foi = saiAntes; }
+      }
+      const kVolta = volta ? `volta|${p.uid}|${volta.hora}` : '';
+      if (volta && !ja(kVolta)) {
+        marcar(kVolta);
+        if (recente(volta.hora)) {
+          const ini = ecraTvMin((foi && foi.hora) || p.pausaInicio);
+          const refeicao = ini === null ? '' : (ini >= 11 * 60 + 30 && ini < 15 * 60 + 30) ? 'almoço' : (ini >= 18 * 60 + 30 && ini < 21 * 60 + 30) ? 'jantar' : '';
+          regressos.push({ nome, refeicao });
+        }
+      }
+    } catch (e) { /* ignora */ }
     const kIn = `in|${p.uid}`, kOut = `out|${p.uid}`;
     if (!ja(kIn)) {
       if (pt && pt.entrada) {
@@ -40002,15 +40081,21 @@ function ecraTvChegadasSaidas() {
   ECRA_TV.fila = ECRA_TV.fila || [];
   const por = (modo, l) => { if (l.length) ECRA_TV.fila.push({ tipo: 'pessoas', modo, pessoas: l, em: Date.now() }); };
   por('falta-entrada', faltaEntrada); por('falta-saida', faltaSaida);
+  ['ini', 'fim'].forEach(qual => { const l = faltaPausa.filter(x => x.qual === qual); if (l.length) ECRA_TV.fila.push({ tipo: 'pessoas', modo: 'falta-pausa', qual, pessoas: l, hora: l[0].hora, em: Date.now() }); });
   // Avisos antecipados: um por hora (quem sai/entra à mesma hora vai junto).
   const porHora = (modo, l) => {
     const g = new Map(); l.forEach(x => { if (!g.has(x.hora)) g.set(x.hora, []); g.get(x.hora).push(x); });
     g.forEach((pessoas, hora) => ECRA_TV.fila.push({ tipo: 'pessoas', modo, pessoas, hora, em: Date.now() }));
   };
   porHora('vai-sair', vaoSair); porHora('vai-entrar', vaoEntrar);
+  [true, false].forEach(almoco => {
+    const g = new Map(); pausas.filter(x => x.almoco === almoco).forEach(x => { const k = x.ate + '|' + (x.lembrar ? 1 : 0); if (!g.has(k)) g.set(k, []); g.get(k).push(x); });
+    g.forEach((pessoas) => ECRA_TV.fila.push({ tipo: 'pessoas', modo: 'pausa', almoco, lembrar: pessoas[0].lembrar, pessoas, hora: pessoas[0].hora, ate: pessoas[0].ate, em: Date.now() }));
+  });
   // Cumprimentos de quem acabou de picar: à frente na fila (logo a seguir ao que estiver no ecrã).
+  ['almoço', 'jantar', ''].forEach(refeicao => { const l = regressos.filter(x => x.refeicao === refeicao); if (l.length) ECRA_TV.fila.unshift({ tipo: 'pessoas', modo: 'regresso', refeicao, pessoas: l, em: Date.now() }); });
   [['sai', saem], ['entra', entram]].forEach(([modo, l]) => { if (l.length) ECRA_TV.fila.unshift({ tipo: 'pessoas', modo, pessoas: l, em: Date.now() }); });
-  if (entram.length || saem.length || faltaEntrada.length || faltaSaida.length || vaoSair.length || vaoEntrar.length) ecraTvFila();
+  if (entram.length || saem.length || faltaEntrada.length || faltaSaida.length || vaoSair.length || vaoEntrar.length || pausas.length || regressos.length || faltaPausa.length) ecraTvFila();
 }
 // Quem fecha e pica a saída depois da meia-noite (a picagem já é do dia seguinte): também é despedido pelo nome.
 function ecraTvDespedirFecho() {
@@ -40096,10 +40181,10 @@ function ecraTvMostrarPessoas(item) {
     const votos = [...new Set(item.pessoas.map(p => ecraTvVotoEntrada(p.pausa)))];
     if (votos.length === 1) {
       linhas = [votos[0], 'Bom trabalho!'].filter(Boolean);
-      fala = `${ecraTvSaudacaoHora()}, ${juntar(nomes)}. ${votos[0] ? votos[0] + ' ' : ''}Bom trabalho.`;
+      fala = `${ecraTvSaudacaoHora()}, ${juntar(nomes)}! ${votos[0] ? votos[0] + ' ' : ''}${varios ? 'Bom trabalho para vocês.' : 'Bom trabalho.'}`;
     } else {
       linhas = item.pessoas.filter(p => ecraTvVotoEntrada(p.pausa)).map(p => `${p.nome}: ${ecraTvVotoEntrada(p.pausa)}`).concat(['Bom trabalho!']);
-      fala = `${ecraTvSaudacaoHora()}, ${juntar(nomes)}. ${item.pessoas.filter(p => ecraTvVotoEntrada(p.pausa)).map(p => `${p.nome}, ${minusc(ecraTvVotoEntrada(p.pausa).replace(/!/g, '.'))}`).join(' ')} Bom trabalho a toda a equipa.`;
+      fala = `${ecraTvSaudacaoHora()}, ${juntar(nomes)}. ${item.pessoas.filter(p => ecraTvVotoEntrada(p.pausa)).map(p => `${p.nome}, ${minusc(ecraTvVotoEntrada(p.pausa).replace(/!/g, '.'))}`).join(' ')} Bom trabalho a todos.`;
     }
   } else if (item.modo === 'sai') {
     classe = 'sai'; rot = 'Saída';
@@ -40113,22 +40198,41 @@ function ecraTvMostrarPessoas(item) {
     fala = `Obrigada, ${juntar(nomes)}. ${votos}. ${ates.length === 1 ? ates[0].replace(/!/g, '.') : item.pessoas.map(p => `${p.nome}, ${minusc(despedida(p).replace(/!/g, '.'))}`).join(' ')}`;
   } else if (item.modo === 'vai-sair') {
     classe = 'lembrar'; rot = 'Saída daqui a 5 minutos';
-    titulo = `${juntar(nomes)}, ${varios ? 'saem' : 'sais'} às ${item.hora}`;
-    linhas = [`${varios ? 'Não se esqueçam' : 'Não te esqueças'} de picar a saída antes de ${varios ? 'saírem' : 'saíres'}.`];
-    fala = ecraTvTextoFalado(`${juntar(nomes)}, ${varios ? 'saem' : 'sais'} às ${item.hora}. ${linhas[0]}`);
-    picar = { msg: `${varios ? 'Não se esqueçam' : 'Não te esqueças'} de picar a saída`, info: `${varios ? 'Saem' : 'Sais'} às ${item.hora} — daqui a 5 minutos` };
+    titulo = `${juntar(nomes)}, ${varios ? 'o vosso turno termina' : 'o teu turno termina'} às ${item.hora}`;
+    linhas = [`Antes de ${varios ? 'saírem, não se esqueçam' : 'saíres, não te esqueças'} de picar o ponto.`];
+    fala = ecraTvTextoFalado(`${juntar(nomes)}, ${varios ? 'o vosso turno termina' : 'o teu turno termina'} daqui a cinco minutos, às ${item.hora}. ${linhas[0]} Obrigada!`);
+    picar = { msg: `${varios ? 'Não se esqueçam' : 'Não te esqueças'} de picar o ponto`, info: `${varios ? 'O vosso turno termina' : 'O teu turno termina'} às ${item.hora} — daqui a 5 minutos` };
+  } else if (item.modo === 'falta-pausa') {
+    const ini = item.qual === 'ini';
+    classe = 'lembrar'; rot = 'Lembrete';
+    titulo = `${juntar(nomes)}, falta picar ${ini ? 'o início' : 'o fim'} da pausa`;
+    fala = ecraTvTextoFalado(`${juntar(nomes)}, ainda falta picar ${ini ? 'o início' : 'o fim'} da pausa. ${varios ? 'Podem picar' : 'Podes picar'} agora, por favor? Obrigada!`);
+    picar = { msg: `Falta picar ${ini ? 'o início' : 'o fim'} da pausa`, info: `A pausa ${ini ? 'começava' : 'terminava'} às ${item.hora} — ${varios ? 'podem picar' : 'podes picar'} agora, por favor` };
+  } else if (item.modo === 'regresso') {
+    classe = 'entra'; rot = 'Regresso da pausa';
+    titulo = `Bom regresso, ${juntar(nomes)}! ${item.refeicao ? '🍽️' : '☕'}`;
+    const votoR = item.refeicao ? `Espero que o ${item.refeicao} tenha sabido bem.` : 'Espero que a pausa tenha sabido bem.';
+    linhas = [votoR, 'Bom trabalho!'];
+    fala = `Bom regresso, ${juntar(nomes)}. ${votoR} Bom trabalho!`;
+  } else if (item.modo === 'pausa') {
+    classe = 'sai'; rot = item.almoco ? (ecraTvMin(item.hora) >= 17 * 60 ? '🍽️ Pausa para jantar' : '🍽️ Pausa para almoço') : '☕ Pausa';
+    const voto = item.almoco ? 'bom apetite' : 'boa pausa';
+    titulo = `${juntar(nomes)}, ${voto}!`;
+    const lembrarP = item.lembrar ? `${varios ? 'Não se esqueçam' : 'Não te esqueças'} de picar a pausa.` : '';
+    linhas = [`Até já — a pausa termina às ${item.ate}.`, lembrarP].filter(Boolean);
+    fala = ecraTvTextoFalado(`${juntar(nomes)}, ${voto}! ${lembrarP ? lembrarP + ' ' : ''}Até já, às ${item.ate}.`);
   } else if (item.modo === 'vai-entrar') {
     classe = 'entra'; rot = 'Entra daqui a 10 minutos';
-    titulo = `${juntar(nomes)} ${varios ? 'entram' : 'entra'} às ${item.hora}`;
-    linhas = ['Daqui a 10 minutos.'];
-    fala = ecraTvTextoFalado(`Daqui a dez minutos ${varios ? 'entram' : 'entra'} ${juntar(nomes)}, às ${item.hora}.`);
+    titulo = `${varios ? 'Estão' : 'Está'} quase a chegar: ${juntar(nomes)}`;
+    linhas = [`${varios ? 'Entram' : 'Entra'} às ${item.hora}, daqui a 10 minutos.`];
+    fala = ecraTvTextoFalado(`Daqui a dez minutos ${varios ? 'chegam' : 'chega'} ${juntar(nomes)}, às ${item.hora}.`);
   } else {
     const ent = item.modo === 'falta-entrada';
     classe = 'lembrar'; rot = 'Lembrete';
     titulo = `${juntar(nomes)}, falta picar a ${ent ? 'entrada' : 'saída'}`;
-    fala = `${juntar(nomes)}, ${varios ? 'não se esqueçam' : 'não te esqueças'} de picar a ${ent ? 'entrada' : 'saída'}.`;
+    fala = `${juntar(nomes)}, ainda falta picar a ${ent ? 'entrada' : 'saída'}. ${varios ? 'Podem picar' : 'Podes picar'} agora, por favor? Obrigada!`;
     picar = { msg: `Falta picar a ${ent ? 'entrada' : 'saída'}`,
-      info: item.hora ? `${ent ? (varios ? 'Entravam' : 'Entravas') : (varios ? 'Saíam' : 'Saías')} às ${item.hora} — ${varios ? 'piquem' : 'pica'} já, por favor` : `${varios ? 'Piquem' : 'Pica'} já, por favor` };
+      info: item.hora ? `${ent ? (varios ? 'Entravam' : 'Entravas') : (varios ? 'Saíam' : 'Saías')} às ${item.hora} — ${varios ? 'podem picar' : 'podes picar'} agora, por favor` : `${varios ? 'Podem picar' : 'Podes picar'} agora, por favor` };
   }
   // 2026-11-10 (Hugo: «avisos como o "não te esqueças de picar" devem surgir em grande no monitor, com o nome em grande
   // destaque e a informação por baixo, para não passar despercebido»): os lembretes de picagem ocupam o centro do ecrã,
