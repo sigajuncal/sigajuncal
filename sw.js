@@ -138,20 +138,34 @@ self.addEventListener('push', (event) => {
 
 /* Clique na notificação (2026-10-09): volta SEMPRE à janela da app que já existe, em vez de abrir outra — uma
    janela nova começa sem sessão. Dá preferência à janela da app instalada / já visível, e só abre uma nova se
-   não houver nenhuma. */
+   não houver nenhuma.
+   2026-11-13 (Hugo: «da notificação não consigo tomar ação»): a notificação pode trazer botões (ex.: lembrete →
+   «Concluir» / «Amanhã») e dados sobre o que abrir. O SW passa à janela da app o botão tocado e os dados
+   ({ tipo: 'notifClique', acao, dados }); a app faz o resto (concluir, adiar, abrir a janela certa).
+   Se não houver janela aberta, abre a app com ?notif=… para ela tratar ao arrancar. */
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
+  const dados = event.notification.data || {};
+  const acao = event.action || '';
+  const msg = { tipo: 'notifClique', acao, dados };
   event.waitUntil((async () => {
     const janelas = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     const daApp = janelas.filter((j) => j.url && j.url.startsWith(self.registration.scope));
     const candidatas = daApp.length ? daApp : janelas;
     candidatas.sort((a, b) => (Number(b.focused) - Number(a.focused)) || (Number(b.visibilityState === 'visible') - Number(a.visibilityState === 'visible')));
     for (const j of candidatas) {
+      try { j.postMessage(msg); } catch (e) { /* ignora */ }
       if ('focus' in j) {
         try { return await j.focus(); } catch (e) { /* tenta a seguinte */ }
       }
     }
-    if (self.clients.openWindow) return self.clients.openWindow(self.registration.scope);
+    if (self.clients.openWindow) {
+      let url = self.registration.scope;
+      if (dados && dados.tipo) {
+        try { url += (url.indexOf('?') >= 0 ? '&' : '?') + 'notif=' + encodeURIComponent(JSON.stringify(msg)); } catch (e) { /* ignora */ }
+      }
+      return self.clients.openWindow(url);
+    }
   })());
 });
 
