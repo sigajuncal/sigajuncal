@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-14 15:30" />
+<meta name="siga-versao" content="2026-11-14 15:40" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -38844,15 +38844,45 @@ function ecraTvEquipaHoje(dataRef) {
     if (uid === null || uid === undefined || vistos.has(String(uid))) return;
     if (ecraTvUtilizadorInativo(uid)) return;
     if (escalaAusenciaDoDia(uid, hojeISO)) return;
+    if (dia.tipo === 'banco') { // «Banco de Horas (Dia Completo)»: não é folga — diz-se que está de banco de horas
+      vistos.add(String(uid));
+      const nomeB = ecraTvNomeCurto(nomeUtilizadorOuVazio(uid) || dia.colaboradorNome || linha.colaboradorNome || codigo);
+      const a = out.ausentes.find(x => x.rotulo === 'Banco de horas'); if (a) a.nomes.push(nomeB); else out.ausentes.push({ rotulo: 'Banco de horas', nomes: [nomeB] });
+      const b2 = (out.ausentesEquipa || []).find(x => x.rotulo === 'Banco de horas'); if (b2) b2.nomes.push(nomeB); else (out.ausentesEquipa = out.ausentesEquipa || []).push({ rotulo: 'Banco de horas', nomes: [nomeB] });
+      return;
+    }
     const turno = escalaTurnoComReivindicacoes(dia.tipo === 'normal' ? dia : null, semana.id, diaKey, uid);
     if (!turno || !turno.entrada || !turno.saida) return;
     vistos.add(String(uid));
-    const ini = ecraTvMin(turno.entrada), fim = ecraTvMin(turno.saida) === 0 ? 1440 : ecraTvMin(turno.saida);
-    const pi = ecraTvMin(turno.pausaInicio), pf = ecraTvMin(turno.pausaFim);
+    let ini = ecraTvMin(turno.entrada), fim = ecraTvMin(turno.saida) === 0 ? 1440 : ecraTvMin(turno.saida);
+    let pi = ecraTvMin(turno.pausaInicio), pf = ecraTvMin(turno.pausaFim);
+    let entrada = turno.entrada, saida = turno.saida, pausaInicio = turno.pausaInicio, pausaFim = turno.pausaFim, bh = '';
+    const nomeP = ecraTvNomeCurto(nomeUtilizadorOuVazio(uid) || dia.colaboradorNome || linha.colaboradorNome || codigo);
+    // 2026-11-14 (Hugo: «a Lúcia tirou 1h de banco de horas e no modo TV não está a comunicar»): as horas de Banco de
+    // Horas saem do turno — a hora de entrada/saída mostrada, a voz («às 16:00 entra…»), o aviso «ainda não picou» e o
+    // estado passam a usar só o tempo em que a pessoa está mesmo cá. O dia todo em Banco de Horas conta como ausência.
+    const bhIv = (turno.bancoHorasIntervalos || []).filter(iv => iv && iv.inicio && iv.fim);
+    if (bhIv.length) {
+      let segs = [];
+      try { segs = escalaSegmentosPresencaAbsolutos(turno) || []; } catch (e) { segs = []; }
+      const hm = (m) => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+      bh = bhIv.map(iv => `${iv.inicio}–${iv.fim}`).join(', ');
+      if (!segs.length) {
+        const a = out.ausentes.find(x => x.rotulo === 'Banco de horas'); if (a) a.nomes.push(nomeP); else out.ausentes.push({ rotulo: 'Banco de horas', nomes: [nomeP] });
+        const b = (out.ausentesEquipa || []).find(x => x.rotulo === 'Banco de horas'); if (b) b.nomes.push(nomeP); else (out.ausentesEquipa = out.ausentesEquipa || []).push({ rotulo: 'Banco de horas', nomes: [nomeP] });
+        return;
+      }
+      ini = segs[0].inicioMin; fim = segs[segs.length - 1].fimMin;
+      entrada = hm(ini); saida = hm(fim);
+      // Banco de Horas a meio do turno: nesse intervalo a pessoa está «fora» (mostra-se como pausa, até à hora de voltar).
+      for (let k = 0; k < segs.length - 1; k++) {
+        if (agoraMin >= segs[k].fimMin && agoraMin < segs[k + 1].inicioMin) { pi = segs[k].fimMin; pf = segs[k + 1].inicioMin; pausaInicio = hm(pi); pausaFim = hm(pf); }
+      }
+    }
     let estado = 'entra';
     if (agoraMin >= fim) estado = 'saiu';
     else if (agoraMin >= ini) estado = (pi !== null && pf !== null && agoraMin >= pi && agoraMin < pf) ? 'pausa' : 'trabalha';
-    out.pessoas.push({ turno, uid, nome: ecraTvNomeCurto(nomeUtilizadorOuVazio(uid) || dia.colaboradorNome || linha.colaboradorNome || codigo), codigo, entrada: turno.entrada, saida: turno.saida, pausaInicio: turno.pausaInicio, pausaFim: turno.pausaFim, ini, fim, estado });
+    out.pessoas.push({ turno, uid, nome: nomeP, codigo, entrada, saida, pausaInicio, pausaFim, ini, fim, estado, bh });
   });
   out.pessoas.sort((a, b) => a.ini - b.ini || a.nome.localeCompare(b.nome));
   // De folga hoje (2026-10-30, Hugo: "gostei que apresentas quem está de férias e de folga"): colegas do horário que
@@ -39653,7 +39683,7 @@ function ecraTvPontoLinha(p, agoraMin) {
   const pt = ecraTvPontoDe(p.uid);
   const temPausa = /^\d{1,2}:\d{2}$/.test(String(p.pausaInicio || '')) && /^\d{1,2}:\d{2}$/.test(String(p.pausaFim || ''));
   // 2026-10-31 (Hugo): em pausa, a pausa já está à direita («em pausa até…») — não se repete aqui.
-  const plano = `${p.entrada}–${p.saida}${temPausa && p.estado !== 'pausa' ? ` · pausa ${p.pausaInicio}–${p.pausaFim}` : ''}`;
+  const plano = `${p.entrada}–${p.saida}${temPausa && p.estado !== 'pausa' ? ` · pausa ${p.pausaInicio}–${p.pausaFim}` : ''}${p.bh ? ` · banco de horas ${p.bh}` : ''}`;
   if (!pt) return { texto: plano, aviso: '' };
   // 2026-10-31 (Hugo: "basta pôr a hora e um check, ou uma ampulheta a aguardar, sem cor; esquecimento um símbolo de
   // proibido"): ✓ picagem validada · ⧗ por validar · ⊘ esquecida, comunicada à Direção (legenda no fundo do painel).
@@ -40287,7 +40317,7 @@ function ecraTvMostrarMensagemTarde(item) {
   if (proximos.length) F.push(ecraTvProximosDiasFala(proximos));
   if (fecho && fecho.nomes.length) F.push(`Fecha${fecho.nomes.length > 1 ? 'm' : ''} a farmácia às ${fecho.hora}: ${juntar(fecho.nomes)}.`);
   if (sairam.length) F.push(`Já ${sairam.length > 1 ? 'saíram' : 'saiu'} ${juntar(sairam)}.`);
-  fora.forEach(a => F.push(`${({ 'Folga': 'De folga', 'Férias': 'De férias', 'Folga extra': 'De folga extra', 'Aniversário': 'De folga de aniversário' })[a.rotulo] || a.rotulo}: ${juntar(a.nomes)}.`));
+  fora.forEach(a => F.push(`${({ 'Folga': 'De folga', 'Banco de horas': 'De banco de horas', 'Férias': 'De férias', 'Folga extra': 'De folga extra', 'Aniversário': 'De folga de aniversário' })[a.rotulo] || a.rotulo}: ${juntar(a.nomes)}.`));
   F.push('Boa tarde de trabalho!');
   const caracteres = F.map(ecraTvTextoFalado).join(' ').length;
   const duracaoMs = Math.min(150000, Math.max(ECRA_TV_MSG_DIA_MS, 2200 + caracteres * 80 + 8000));
@@ -40394,7 +40424,7 @@ function ecraTvMostrarMensagemDia(item) {
         if (grupos.size) frasesFaladas.push(Array.from(grupos.entries()).map(([hh, n]) => `Às ${hh} ${n.length > 1 ? 'entram' : 'entra'} ${juntar(n)}.`).join(' '));
       }
       // 2026-11-12 (Hugo): quem está de férias, folga ou ausente também se diz no bom dia (sem prestadores)
-      const rotFala = (r) => ({ 'Folga': 'De folga', 'Férias': 'De férias', 'Dia de Folga Extra (FE)': 'De folga extra', 'Dia de Aniversário': 'De folga de aniversário', 'Outras Ausências/Licenças': 'Ausente' })[r] || r;
+      const rotFala = (r) => ({ 'Folga': 'De folga', 'Banco de horas': 'De banco de horas', 'Férias': 'De férias', 'Dia de Folga Extra (FE)': 'De folga extra', 'Dia de Aniversário': 'De folga de aniversário', 'Outras Ausências/Licenças': 'Ausente' })[r] || r;
       (eqH.ausentesEquipa || []).filter(a => a.nomes.length).forEach(a => frasesFaladas.push(`${rotFala(a.rotulo)}: ${juntar(a.nomes.map(avisoPrimeiroNome))}.`));
     } catch (e) { /* ignora */ }
     try { const p = ecraTvParabensHoje(); if (p) frasesFaladas.push(`${p.replace(/^🎂\s*/, '')}!`); } catch (e) { /* ignora */ }
@@ -85934,6 +85964,18 @@ function quiosqueSenhaRecebida(p) {
     return;
   }
   if ((p.tipo || 'senha') === 'senha' && !p.semPapel) quiosqueMarcarSenhaBoa();
+  // 2026-11-14 (Hugo: «senha tirada está a apitar o toque crescente duas vezes»): a mesma senha pode chegar por dois
+  // caminhos — o sinal do quiosque e a lista da base de dados (de reserva). Cada senha só é anunciada (janela + som)
+  // UMA vez, venha por onde vier e chegue pela ordem que chegar.
+  if ((p.tipo || 'senha') === 'senha' && !p.semPapel) {
+    const lidaJa = quiosqueLerSenha(p.senha);
+    if (lidaJa) {
+      const hojeK = todayISO();
+      if (QUIOSQUE.mostradasDia !== hojeK) { QUIOSQUE.mostradasDia = hojeK; QUIOSQUE.mostradas = new Set(); }
+      if (QUIOSQUE.mostradas.has(lidaJa.codigo)) { if (p.origem !== 'espera') quiosqueGuardarLocal(p); return; }
+      QUIOSQUE.mostradas.add(lidaJa.codigo);
+    }
+  }
   if ((p.tipo || 'senha') === 'senha' && !p.semPapel && p.origem !== 'espera') {
     const lida = quiosqueLerSenha(p.senha);
     if (lida) { if (!QUIOSQUE.anunciadasPeloQuiosque) QUIOSQUE.anunciadasPeloQuiosque = new Set(); QUIOSQUE.anunciadasPeloQuiosque.add(lida.codigo); quiosqueMarcarAnunciada(lida.codigo); }
@@ -86476,7 +86518,6 @@ function quiosqueEsperaNovasSenhas(lista) {
       if (QUIOSQUE.anunciadasPeloQuiosque && QUIOSQUE.anunciadasPeloQuiosque.has(codigo)) return;
       const E = QUIOSQUE.espera;
       if (!E || !Array.isArray(E.senhas) || !E.senhas.includes(codigo)) return; // já foi chamada entretanto
-      QUIOSQUE.ultimoSom = 0;
       quiosqueSenhaRecebida({ id: `espera-${todayISO()}-${codigo}`, senha: codigo, tipo: 'senha', em: new Date().toISOString(), origem: 'espera' });
     }, espera);
   });
