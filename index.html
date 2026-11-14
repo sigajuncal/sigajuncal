@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-14 14:00" />
+<meta name="siga-versao" content="2026-11-14 14:20" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -40001,7 +40001,7 @@ function ecraTvProximosEventos(max) {
 }
 function ecraTvProximosDiasFala(prox) {
   const juntar = (n) => n.length > 1 ? `${n.slice(0, -1).join(', ')} e ${n[n.length - 1]}` : (n[0] || '');
-  return prox.length ? `Nos próximos dias: ${prox.map(x => `${x.falado}, ${juntar(x.itens.map(t => t.charAt(0).toLowerCase() + t.slice(1)))}`).join('; ')}.` : '';
+  return prox.length ? `Para os próximos dias: ${prox.map(x => `${x.falado}, ${juntar(x.itens.map(t => t.charAt(0).toLowerCase() + t.slice(1)))}`).join('; ')}.` : '';
 }
 function ecraTvBomDiaMeteo(m) {
   if (!m) return null;
@@ -40128,9 +40128,14 @@ function ecraTvHoraCerta() {
   }
   vozEnfileirar({ toque: cfg.toque, frases });
 }
-function ecraTvFalarFrases(frases, atrasoMs) {
+// opts.cumprimento: a 1.ª frase (o «Bom dia, equipa!» / «Boa tarde, equipa!») vai a 100% e o resto a 75% do volume
+// (2026-11-14, Hugo: «o resto da informação coloca um pouco mais baixo… senão ouve-se tudo no atendimento»).
+const VOZ_VOLUME_RESUMO = 0.75;
+function ecraTvFalarFrases(frases, atrasoMs, opts) {
   if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') return;
-  setTimeout(() => vozEnfileirar({ frases: frases.map(ecraTvTextoFalado).filter(Boolean) }), atrasoMs || 0);
+  const lista = frases.map(ecraTvTextoFalado).filter(Boolean);
+  const volumes = opts && opts.cumprimento ? lista.map((_, i) => (i === 0 ? 1 : VOZ_VOLUME_RESUMO)) : null;
+  setTimeout(() => vozEnfileirar({ frases: lista, volumes }), atrasoMs || 0);
 }
 function ecraTvTestarBomDia() {
   ECRA_TV.fila = ECRA_TV.fila || [];
@@ -40204,7 +40209,7 @@ function ecraTvMostrarMensagemTarde(item) {
   const titulo = 'Boa tarde, equipa!';
   const sub = `Resumo para o resto do dia${naFarmacia ? ` · ${naFarmacia} na farmácia agora` : ''}.`;
   // Fala
-  const F = [`${titulo} Fica o resumo para o resto do dia.`];
+  const F = [titulo, 'Fica o resumo para o resto do dia.'];
   if (entram.length) F.push(entram.map(([hh, n]) => `Às ${hh} ${n.length > 1 ? 'entram' : 'entra'} ${juntar(n)}.`).join(' '));
   else F.push('Já entrou toda a equipa de hoje.');
   if (especiais.length) F.push(`Ainda hoje: ${especiais.map(x => x[1]).join('; ')}.`);
@@ -40228,9 +40233,10 @@ function ecraTvMostrarMensagemTarde(item) {
     h('div', { class: 'tv-msg-tempo', 'aria-hidden': 'true' }, h('i', { style: `animation-duration:${duracaoMs}ms;` })),
   ]);
   ECRA_TV.anuncioAtual = { caixa, item };
+  caixa.__inicio = Date.now();
   overlay.appendChild(caixa);
   ecraTvEncolherParaCaber(caixa);
-  ecraTvSomBomDia(); ecraTvFalarFrases(F, 2200);
+  if (!item.semFala) { ecraTvSomBomDia(); ecraTvFalarFrases(F, 2200, { cumprimento: true }); }
   caixa.__fim = setTimeout(() => {
     caixa.classList.add('a-sair');
     setTimeout(() => { caixa.remove(); if (ECRA_TV.anuncioAtual && ECRA_TV.anuncioAtual.caixa === caixa) ECRA_TV.anuncioAtual = null; ecraTvFila(); }, 700);
@@ -40306,7 +40312,7 @@ function ecraTvMostrarMensagemDia(item) {
   // Bom dia falado (só na abertura): saudação, dia especial, tarefas, agenda, tempo, quem entra depois, aniversários.
   const frasesFaladas = [];
   if (abertura) {
-    frasesFaladas.push(`${titulo} Hoje é ${diaTxt(d)}.`);
+    frasesFaladas.push(titulo, `Hoje é ${diaTxt(d)}.`);
     const especiaisFalados = especiais.filter(x => !x[2]); // as campanhas nunca são faladas
     if (especiaisFalados.length) frasesFaladas.push(`Hoje é dia de ${especiaisFalados.map(x => x[1]).join('; ')}.`);
     if (tarefasHoje.length) frasesFaladas.push(`Tarefas: ${tarefasHoje.map(t => `${t.txt.replace(/^[^\p{L}\p{N}]+/u, '').toLowerCase()}${t.nomes.length ? `, ${juntar(t.nomes)}` : ''}${t.agora ? '' : `, às ${t.ini}`}`).join('; ')}.`);
@@ -40342,9 +40348,10 @@ function ecraTvMostrarMensagemDia(item) {
     h('div', { class: 'tv-msg-tempo', 'aria-hidden': 'true' }, h('i', { style: `animation-duration:${duracaoMs}ms;` })),
   ]);
   ECRA_TV.anuncioAtual = { caixa, item };
+  caixa.__inicio = Date.now();
   overlay.appendChild(caixa);
   ecraTvEncolherParaCaber(caixa);
-  if (abertura && frasesFaladas.length) { ecraTvSomBomDia(); ecraTvFalarFrases(frasesFaladas, 2200); }
+  if (abertura && frasesFaladas.length && !item.semFala) { ecraTvSomBomDia(); ecraTvFalarFrases(frasesFaladas, 2200, { cumprimento: true }); }
   caixa.__fim = setTimeout(() => {
     caixa.classList.add('a-sair');
     setTimeout(() => { caixa.remove(); if (ECRA_TV.anuncioAtual && ECRA_TV.anuncioAtual.caixa === caixa) ECRA_TV.anuncioAtual = null; ecraTvFila(); }, 700);
@@ -40704,6 +40711,15 @@ function ecraTvPausarAnuncio() {
   clearTimeout(a.caixa.__fim); a.caixa.remove();
   ECRA_TV.anuncioAtual = null;
   ECRA_TV.fila = ECRA_TV.fila || [];
+  // 2026-11-14 (Hugo: «no aviso da tarde às 14h repetiu duas vezes»): um cliente no quiosque (ou uma chamada) interrompia
+  // o bom dia / boa tarde e ele voltava a começar do início — no ecrã e na voz. Agora: se já esteve 12 s ou mais no ecrã,
+  // dá-se por visto (a voz continua até ao fim, não recomeça); se foi interrompido logo no início, volta a aparecer
+  // depois, mas calado (a voz já está a ler).
+  if (a.item && a.item.tipo === 'dia') {
+    if (Date.now() - (a.caixa.__inicio || 0) >= 12000) return;
+    ECRA_TV.fila.unshift(Object.assign({}, a.item, { semFala: true }));
+    return;
+  }
   ECRA_TV.fila.unshift(a.item);
 }
 // Aviso à equipa no rodapé (2026-10-30, Hugo: "verifica o que acontece quando surge um novo, como aparecem ali em
@@ -85559,7 +85575,7 @@ function vozToqueHora() {
   VOZ_ULTIMO_SOM = Date.now();
   return 2100;
 }
-function vozFalarUma(t) {
+function vozFalarUma(t, volume) {
   return new Promise(res => {
     // A voz é de senhora: agradece no feminino («Obrigada»), seja qual for o texto (2026-11-10).
     // 2026-11-12 (Hugo: «22:00 deve dizer vinte E duas e não cortar o e»): TODAS as falas passam a converter as horas
@@ -85581,13 +85597,13 @@ function vozFalarUma(t) {
       const voz = avisoVoz();
       if (voz) { u.voice = voz; u.lang = voz.lang; } else u.lang = 'pt-PT';
       // As vozes naturais já falam com calma e articulam bem os números — não precisam de ser abrandadas tanto.
-      u.rate = VOZ_VELOCIDADE; u.pitch = 1; u.volume = 1;
+      u.rate = VOZ_VELOCIDADE; u.pitch = 1; u.volume = (typeof volume === 'number' && volume > 0 && volume <= 1) ? volume : 1;
       u.onend = fim;
       u.onerror = (ev) => {
         // Voz online sem internet: volta a dizer a frase com a voz local (uma vez) em vez de ficar calado.
         if (voz && voz.localService === false && !feito && !(ev && ev.error === 'interrupted') && !(ev && ev.error === 'canceled')) {
           VOZ_ONLINE_FALHOU_EM = Date.now();
-          try { const u2 = new SpeechSynthesisUtterance(txt); const v2 = avisoVoz(); if (v2) { u2.voice = v2; u2.lang = v2.lang; } else u2.lang = 'pt-PT'; u2.rate = VOZ_VELOCIDADE; u2.onend = fim; u2.onerror = fim; speechSynthesis.speak(u2); return; } catch (e) { /* ignora */ }
+          try { const u2 = new SpeechSynthesisUtterance(txt); const v2 = avisoVoz(); if (v2) { u2.voice = v2; u2.lang = v2.lang; } else u2.lang = 'pt-PT'; u2.rate = VOZ_VELOCIDADE; u2.volume = u.volume; u2.onend = fim; u2.onerror = fim; speechSynthesis.speak(u2); return; } catch (e) { /* ignora */ }
         }
         fim();
       };
@@ -85604,7 +85620,8 @@ async function vozProcessar() {
   try {
     if (item.toque) { await vozEspera(vozToqueHora() + 250); }
     else if (Date.now() - VOZ_ULTIMO_SOM > 4000) { vozAcordarSom(); await vozEspera(350); }
-    for (const f of (item.frases || [])) { await vozFalarUma(f); await vozEspera(180); }
+    const fr = item.frases || [];
+    for (let i = 0; i < fr.length; i++) { await vozFalarUma(fr[i], item.volumes ? item.volumes[i] : 1); await vozEspera(180); }
   } catch (e) { /* segue */ }
   VOZ_A_FALAR = false;
   setTimeout(vozProcessar, 700);
