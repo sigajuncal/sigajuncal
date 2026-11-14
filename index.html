@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-14 09:20" />
+<meta name="siga-versao" content="2026-11-14 10:50" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -6213,6 +6213,7 @@
   .tv-overlay .quiosque-banner.a-sair{opacity:0;transition:opacity .55s ease;}
   .tv-overlay .quiosque-ic{display:inline-flex;animation:campainhaAbana 1s ease-in-out infinite;}
   .tv-overlay .quiosque-ic svg{width:7vw;height:7vw;}
+  .tv-overlay .quiosque-senha{flex:0 0 auto;background:#fff;color:#0f172a;border-radius:1.4vw;padding:1vw 2vw;font-size:7vw;font-weight:900;line-height:1;letter-spacing:.02em;font-variant-numeric:tabular-nums;}
   .tv-overlay .quiosque-txt{display:flex;flex-direction:column;gap:.4vw;min-width:0;}
   .tv-overlay .quiosque-txt strong{font-size:5vw;font-weight:900;line-height:1.1;}
   .tv-overlay .quiosque-o-que{font-size:2.5vw;font-weight:700;line-height:1.2;}
@@ -85641,6 +85642,21 @@ function campainhaRecebida(p) {
 // um pedido de ajuda de um colega tem prioridade (aí só toca o som). Sem papel: aviso laranja que fica no topo até sair
 // uma senha com sucesso (ou 30 minutos).
 const QUIOSQUE = { banner: null, faixa: null, vistos: new Set(), ultimoSom: 0, semPapelDesde: null };
+// Filas do quiosque (14/11/2026, fotografia do Hugo ao ecrã do Qmagine): a letra da senha diz o que o cliente quer.
+// O vigia envia o nome do trabalho de impressão, que é o número da senha (ex.: «A043»).
+const QUIOSQUE_FILAS = {
+  A: { nome: 'Atendimento geral', cor: '#0f766e' },
+  B: { nome: 'Atendimento prioritário', cor: '#7c3aed' },
+  C: { nome: 'Serviços', cor: '#1d4ed8' },
+  D: { nome: 'Levantamento de reservas pagas', cor: '#0e7490' },
+  E: { nome: 'Pagamento de serviços', cor: '#475569' },
+};
+function quiosqueLerSenha(txt) {
+  const m = /^\s*([A-Za-z])\s*0*(\d{1,4})\s*$/.exec(String(txt || ''));
+  if (!m) return null;
+  const letra = m[1].toUpperCase();
+  return { letra, codigo: letra + String(m[2]).padStart(3, '0'), fila: QUIOSQUE_FILAS[letra] || null };
+}
 function quiosqueEmDestaque() { return !!(QUIOSQUE.banner && QUIOSQUE.banner.isConnected); }
 function quiosqueSom(semPapel) {
   if (Date.now() - QUIOSQUE.ultimoSom < 2500) return;
@@ -85692,11 +85708,13 @@ function quiosqueSenhaRecebida(p) {
   if (QUIOSQUE.banner) QUIOSQUE.banner.remove();
   if (QUIOSQUE.faixa) { QUIOSQUE.faixa.remove(); QUIOSQUE.faixa = null; }
   const hora = new Date(p.em || Date.now()).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' });
-  const banner = h('div', { class: 'quiosque-banner' + (semPapel ? ' sem-papel' : ''), role: 'alert', 'data-sem-icones': '1' }, [
-    h('span', { class: 'quiosque-ic' }, Icon(semPapel ? 'printer' : 'bell', { size: 30, strokeWidth: 2.2 })),
+  const senha = quiosqueLerSenha(p.senha);
+  const fila = senha && senha.fila;
+  const banner = h('div', { class: 'quiosque-banner' + (semPapel ? ' sem-papel' : ''), role: 'alert', 'data-sem-icones': '1', style: !semPapel && fila ? `background:${fila.cor};` : null }, [
+    senha ? h('span', { class: 'quiosque-senha' }, senha.codigo) : h('span', { class: 'quiosque-ic' }, Icon(semPapel ? 'printer' : 'bell', { size: 30, strokeWidth: 2.2 })),
     h('div', { class: 'quiosque-txt' }, [
       h('strong', {}, semPapel ? 'Cliente no quiosque' : 'Cliente a entrar'),
-      h('span', { class: 'quiosque-o-que' }, semPapel ? 'A impressora das senhas está sem papel' : 'Tirou senha no quiosque'),
+      h('span', { class: 'quiosque-o-que' }, semPapel ? `A impressora das senhas está sem papel${fila ? ' · ' + fila.nome : ''}` : (fila ? fila.nome : 'Tirou senha no quiosque')),
       h('span', { class: 'quiosque-hora' }, hora),
     ]),
   ]);
@@ -85706,7 +85724,8 @@ function quiosqueSenhaRecebida(p) {
   setTimeout(() => { if (QUIOSQUE.banner === banner) { banner.classList.add('a-sair'); setTimeout(() => { if (QUIOSQUE.banner === banner) { quiosqueFecharBanner(); quiosqueFaixaAtualizar(); } }, 600); } }, dura);
 }
 function quiosqueTestar(semPapel) {
-  const payload = { id: `teste-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, semPapel: !!semPapel, teste: true, em: new Date().toISOString() };
+  const letras = Object.keys(QUIOSQUE_FILAS);
+  const payload = { id: `teste-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, senha: letras[Math.floor(Math.random() * letras.length)] + String(1 + Math.floor(Math.random() * 60)).padStart(3, '0'), semPapel: !!semPapel, teste: true, em: new Date().toISOString() };
   const enviado = campainhaEnviar('senha', payload);
   quiosqueSenhaRecebida(payload);
   showToast(enviado ? 'Aviso de teste enviado para o modo TV.' : 'Não foi possível enviar — sem ligação ao servidor da farmácia.', enviado ? 'success' : 'error');
