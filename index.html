@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-14 15:40" />
+<meta name="siga-versao" content="2026-11-14 16:00" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -40329,7 +40329,7 @@ function ecraTvMostrarMensagemTarde(item) {
     ]),
     h('div', { class: 'tv-msg-tempo', 'aria-hidden': 'true' }, h('i', { style: `animation-duration:${duracaoMs}ms;` })),
   ]);
-  ECRA_TV.anuncioAtual = { caixa, item };
+  ECRA_TV.anuncioAtual = { caixa, item }; caixa.__inicio = caixa.__inicio || Date.now();
   caixa.__inicio = Date.now();
   overlay.appendChild(caixa);
   ecraTvEncolherParaCaber(caixa);
@@ -40444,7 +40444,7 @@ function ecraTvMostrarMensagemDia(item) {
     ].filter(Boolean)),
     h('div', { class: 'tv-msg-tempo', 'aria-hidden': 'true' }, h('i', { style: `animation-duration:${duracaoMs}ms;` })),
   ]);
-  ECRA_TV.anuncioAtual = { caixa, item };
+  ECRA_TV.anuncioAtual = { caixa, item }; caixa.__inicio = caixa.__inicio || Date.now();
   caixa.__inicio = Date.now();
   overlay.appendChild(caixa);
   ecraTvEncolherParaCaber(caixa);
@@ -40769,11 +40769,13 @@ function ecraTvMostrarPessoas(item) {
       h('p', { class: 'tv-anuncio-texto' }, titulo),
       ...linhas.map(l => h('div', { class: 'tv-anuncio-linha' }, [h('span', {}, l)])),
     ]);
-  ECRA_TV.anuncioAtual = { caixa, item };
+  ECRA_TV.anuncioAtual = { caixa, item }; caixa.__inicio = caixa.__inicio || Date.now();
   overlay.appendChild(caixa);
   ecraTvEncolherParaCaber(caixa);
-  try { campainhaTocarSom(1); } catch (e) { /* sem som */ }
-  avisoFalar(fala, 1300);
+  // Rede de segurança: a mesma frase de entrada/saída nunca é dita duas vezes em 10 minutos, venha de onde vier.
+  ECRA_TV.faladas = ECRA_TV.faladas || new Map();
+  const jaDita = ECRA_TV.faladas.has(fala) && Date.now() - ECRA_TV.faladas.get(fala) < 10 * 60000;
+  if (!item.semFala && !jaDita) { ECRA_TV.faladas.set(fala, Date.now()); try { campainhaTocarSom(1); } catch (e) { /* sem som */ } avisoFalar(fala, 1300); }
   caixa.__fim = setTimeout(() => { caixa.remove(); if (ECRA_TV.anuncioAtual && ECRA_TV.anuncioAtual.caixa === caixa) ECRA_TV.anuncioAtual = null; ecraTvFila(); }, picar ? 20000 : 12000);
 }
 function ecraTvFila() {
@@ -40789,12 +40791,12 @@ function ecraTvFila() {
     h('span', { class: 'tv-anuncio-rot' }, 'Começa agora'),
     ...item.novas.map(a => h('div', { class: 'tv-anuncio-linha' }, [h('strong', {}, escalaTarefaTextoItem(a.tarefa)), h('span', {}, `${ecraTvNomeCurto(a.colaboradorNome)} · ${a.tarefa.inicio}–${a.tarefa.fim}`)])),
   ]);
-  ECRA_TV.anuncioAtual = { caixa, item };
+  ECRA_TV.anuncioAtual = { caixa, item }; caixa.__inicio = caixa.__inicio || Date.now();
   overlay.appendChild(caixa);
   ecraTvEncolherParaCaber(caixa);
   try { const ctx = campainhaAudio(); if (ctx) { const o = ctx.createOscillator(), g = ctx.createGain(); o.type = 'sine'; o.frequency.value = 660; g.gain.setValueAtTime(0.0001, ctx.currentTime); g.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.6); o.connect(g); g.connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.65); } } catch (e) { /* sem som */ }
   // Falado: «Lúcia inicia encomenda da manhã» (a fala do browser já é sequencial — nunca duas vozes ao mesmo tempo).
-  item.novas.forEach((a, i) => {
+  if (!item.semFala) item.novas.forEach((a, i) => {
     const info = escalaTarefaInfo(a.tarefa.tipo);
     const tarefa = (a.tarefa.tipo === 'outro' && a.tarefa.outro) ? a.tarefa.outro : ((info && escalaTarefaLabel(a.tarefa, info)) || 'uma tarefa');
     avisoFalar(`${avisoPrimeiroNome(a.colaboradorNome) || 'Agora'}${avisoPrimeiroNome(a.colaboradorNome) ? ' começa agora' : ' começa'}: ${String(tarefa).toLowerCase()}.`, 900 + i * 300); // «Lúcia começa agora: encomenda da manhã.»
@@ -40817,7 +40819,11 @@ function ecraTvPausarAnuncio() {
     ECRA_TV.fila.unshift(Object.assign({}, a.item, { semFala: true }));
     return;
   }
-  ECRA_TV.fila.unshift(a.item);
+  // 2026-11-14 (Hugo: «aviso de entrada da Lúcia e da Sofia também disse em duplicado — corrige de vez»): o mesmo para
+  // todos os anúncios (entradas/saídas, tarefas, aviso à equipa): interrompido por um cliente no quiosque ou uma
+  // chamada, nunca volta a falar nem a tocar. Se já esteve 5 s no ecrã dá-se por visto; senão volta depois, calado.
+  if (Date.now() - (a.caixa.__inicio || 0) >= 5000) return;
+  ECRA_TV.fila.unshift(Object.assign({}, a.item, { semFala: true }));
 }
 // Aviso à equipa no rodapé (2026-10-30, Hugo: "verifica o que acontece quando surge um novo, como aparecem ali em
 // baixo, o tempo que ficam a passar, quando não há aviso o que diz lá"):
@@ -40941,11 +40947,10 @@ function ecraTvMostrarAvisoNovo(item) {
     h('span', { class: 'tv-anuncio-rot' }, [Icon('message', { size: 18, strokeWidth: 2.4 }), ' Novo aviso à equipa', item.meta ? h('em', {}, ` · ${item.meta}`) : null].filter(Boolean)),
     h('p', { class: 'tv-anuncio-texto' }, item.texto),
   ]);
-  ECRA_TV.anuncioAtual = { caixa, item };
+  ECRA_TV.anuncioAtual = { caixa, item }; caixa.__inicio = caixa.__inicio || Date.now();
   overlay.appendChild(caixa);
   ecraTvEncolherParaCaber(caixa);
-  try { campainhaTocarSom(1); } catch (e) { /* sem som */ }
-  avisoFalar('Novo aviso à equipa', 1400);
+  if (!item.semFala) { try { campainhaTocarSom(1); } catch (e) { /* sem som */ } avisoFalar('Novo aviso à equipa', 1400); }
   // Tempo para ler: ~0,4 s por palavra, entre 12 e 25 s.
   const dur = Math.max(12000, Math.min(25000, item.texto.split(/\s+/).length * 400));
   caixa.__fim = setTimeout(() => { caixa.remove(); if (ECRA_TV.anuncioAtual && ECRA_TV.anuncioAtual.caixa === caixa) ECRA_TV.anuncioAtual = null; ecraTvFila(); }, dur);
@@ -85964,6 +85969,13 @@ function quiosqueSenhaRecebida(p) {
     return;
   }
   if ((p.tipo || 'senha') === 'senha' && !p.semPapel) quiosqueMarcarSenhaBoa();
+  if ((p.tipo || 'senha') === 'senha' && !p.semPapel && p.origem !== 'espera' && (QUIOSQUE.semPapelDesde || (QUIOSQUE.estadoImp && QUIOSQUE.estadoImp.estado && QUIOSQUE.estadoImp.estado !== 'Idle'))) {
+    // Saiu uma senha impressa: a impressora voltou ao normal (tampa fechada / papel trocado).
+    QUIOSQUE.semPapelDesde = null; QUIOSQUE.aviso = '';
+    QUIOSQUE.estadoImp = { estado: 'Idle', em: p.em || new Date().toISOString() };
+    if (QUIOSQUE.faixa) { QUIOSQUE.faixa.remove(); QUIOSQUE.faixa = null; }
+    if (QUIOSQUE.mini && QUIOSQUE.mini.classList.contains('mau')) { QUIOSQUE.mini.remove(); QUIOSQUE.mini = null; }
+  }
   // 2026-11-14 (Hugo: «senha tirada está a apitar o toque crescente duas vezes»): a mesma senha pode chegar por dois
   // caminhos — o sinal do quiosque e a lista da base de dados (de reserva). Cada senha só é anunciada (janela + som)
   // UMA vez, venha por onde vier e chegue pela ordem que chegar.
@@ -86102,6 +86114,14 @@ function quiosqueAvisoPosto(p) {
   setTimeout(tirar, mau || imp ? 14000 : 7000);
 }
 // Registo das senhas de hoje neste aparelho (para a página Senhas mostrar logo o que chega, mesmo antes de gravar no servidor).
+// 2026-11-14 (Hugo: «tampa já não está aberta, só fomos trocar o papel»): o quiosque avisa quando a tampa abre ou o papel
+// acaba, mas nem sempre avisa quando volta ao normal. Uma senha impressa depois desse aviso prova que a impressora já
+// funciona: o aviso desaparece (página Senhas, faixa da TV e aviso nos postos).
+function quiosqueImprimiuDepois(emISO) {
+  const t = Date.parse(emISO || '');
+  if (!t) return false;
+  return (STATE.quiosqueSenhas || []).some(r => r.tipo === 'senha' && !r.semPapel && !/^(qm-|espera-)/.test(String(r.id || '')) && Date.parse(r.em) > t + 5000);
+}
 function quiosqueGuardarLocal(p) {
   if (p.teste) return;
   if (p.tipo === 'impressora') { QUIOSQUE.estadoImp = { estado: String(p.estado || ''), em: p.em || new Date().toISOString() }; }
@@ -86341,7 +86361,7 @@ function buildSenhasPage(container, goTo) {
     const nDias = V.periodo === 'hoje' || V.periodo === 'ontem' ? 1 : Math.max(1, new Set(senhas.map(diaDe)).size);
 
     const imp = QUIOSQUE.estadoImp;
-    const mauImp = imp && imp.estado && imp.estado !== 'Idle';
+    const mauImp = imp && imp.estado && imp.estado !== 'Idle' && !quiosqueImprimiuDepois(imp.em);
     const ultima = [...todos].reverse().find(r => r.tipo === 'senha');
     const horaDe = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' }); };
     const estadoTxt = mauImp ? (imp.estado === 'PaperNearEnd' ? 'Papel quase a acabar' : /door/i.test(imp.estado) ? 'Tampa da impressora aberta' : 'Sem papel') : 'A funcionar';
