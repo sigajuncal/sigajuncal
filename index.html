@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-14 14:20" />
+<meta name="siga-versao" content="2026-11-14 15:00" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -6264,6 +6264,11 @@
   .quiosque-mini-x{flex:0 0 auto;margin-left:4px;width:28px;height:28px;border-radius:999px;border:0;background:rgba(255,255,255,.2);color:#fff;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;}
   @keyframes quiosqueMini{from{opacity:0;transform:translateY(-8px);}to{opacity:1;transform:none;}}
   .senhas-espera-wrap{width:100%;max-width:780px;margin-top:10px;}
+  .senhas-espera-wrap.no-cabecalho{order:3;flex:1 1 100%;margin-top:4px;}
+  @media (min-width: 900px){
+    .senhas-espera-wrap.no-cabecalho{order:0;flex:0 1 440px;width:auto;min-width:300px;margin:6px auto 0;align-self:flex-start;}
+    .senhas-espera-wrap.no-cabecalho .senhas-espera-card{padding:10px 16px;gap:14px;}
+  }
   .senhas-espera-card{display:flex;align-items:center;gap:16px;padding:14px 18px;border-radius:18px;border:1.5px solid #cbd5e1;background:#fff;box-shadow:0 2px 10px rgba(15,23,42,.05);}
   .senhas-espera-card[role=button]{cursor:pointer;}
   .senhas-espera-card.tem{border-color:#0f766e;background:#f0fdfa;}
@@ -6287,7 +6292,14 @@
   .senhas-nota{margin-top:12px;padding:12px 14px;display:flex;gap:10px;align-items:flex-start;font-size:13.5px;color:var(--pharm-700);background:#f8fafc;}
   .senhas-nota svg{flex:0 0 auto;margin-top:2px;}
   .senhas-periodos{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 12px;}
-  .senhas-numeros{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;}
+  .senhas-numeros{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;}
+  .senhas-cabeca{display:grid;grid-template-columns:1fr;gap:12px;}
+  .senhas-cabeca > .senhas-topo{margin:0;}
+  .senhas-cabeca-espera .senhas-espera-card{height:100%;box-sizing:border-box;}
+  @media (min-width: 900px){
+    .senhas-cabeca{grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:stretch;}
+    .card .senhas-lista{display:grid;grid-template-columns:1fr 1fr;column-gap:28px;}
+  }
   .senhas-num{padding:14px;display:flex;flex-direction:column;gap:4px;line-height:1.25;}
   .senhas-num strong{font-size:28px;font-weight:800;color:var(--pharm-800);font-variant-numeric:tabular-nums;}
   .senhas-num span{font-size:12.5px;color:var(--pharm-600);}
@@ -28400,11 +28412,14 @@ function buildHomepage(container, goTo) {
       ]),
       h('p', { class: 'welcome-sub mensagem-motivadora-dashboard' }, activeUser ? mensagemMotivadoraJuncal(activeUser) : 'O teu espaço central de trabalho e gestão na Farmácia Juncal.'),
       h('p', { class: 'dados-atualizados-indicador', id: 'dados-atualizados-indicador', 'data-volatil': '1' }, textoDadosAtualizados()),
-      senhasEsperaWidget,
       ultimaNotifWidget,
     ]),
+    // 2026-11-14 (Hugo: «aproveitar o espaço entre o boa tarde e o online para colocar o card das senhas, pelo menos na
+    // vista desktop, estorvava menos»): no computador fica no cabeçalho, ao centro; no telemóvel desce para baixo da
+    // saudação (largura toda).
+    senhasEsperaWidget ? (senhasEsperaWidget.classList.add('no-cabecalho'), senhasEsperaWidget) : null,
     presencaBadgeHome,
-  ]));
+  ].filter(Boolean)));
 
   // Sinalização em tempo real de Tarefas/Cargos Especiais em curso agora
   // (Chefe de Turno, Encomenda, Conferência, Reunião, Outro) + cartão
@@ -86036,8 +86051,19 @@ function buildSenhasPage(container, goTo) {
     const senhas = noPeriodo.filter(r => r.tipo === 'senha');
     // Uma falha seguida de uma senha boa em menos de 20 s foi só uma 2.ª tentativa do cliente: não conta.
     const boas = noPeriodo.filter(r => r.tipo === 'senha' && !r.semPapel).map(r => Date.parse(r.em));
-    const repetida = (r) => { if (r.tipo !== 'falhou') return false; const t = Date.parse(r.em); return boas.some(b => b >= t - 3000 && b - t <= 20000); };
-    const falhas = noPeriodo.filter(r => (r.tipo !== 'senha' || r.semPapel) && !repetida(r));
+    // 2026-11-14 (Hugo: «de facto não foram 17 as vezes que a senha não imprimiu»): no registo do Qmagine todas as falhas
+    // de hoje eram toques a dobrar — a senha boa saiu meio segundo ANTES ou DEPOIS da falha (o quiosque e o SIGA nem
+    // sempre recebem os dois avisos pela ordem certa, e os relógios dos PCs diferem uns segundos). Agora: uma falha com
+    // uma senha boa 20 s antes ou até 30 s depois não conta; várias falhas seguidas (menos de 30 s entre elas) contam
+    // como uma só. O que sobra é um cliente que ficou mesmo sem senha.
+    const repetida = (r) => {
+      if (r.tipo === 'senha' && !r.semPapel) return false;
+      const t = Date.parse(r.em);
+      return boas.some(b => b >= t - 20000 && b - t <= 30000);
+    };
+    const falhasTodas = noPeriodo.filter(r => (r.tipo !== 'senha' || r.semPapel) && !repetida(r)).sort((x, y) => Date.parse(x.em) - Date.parse(y.em));
+    const falhas = falhasTodas.filter((r, i) => i === 0 || Date.parse(r.em) - Date.parse(falhasTodas[i - 1].em) > 30000);
+    const toquesDobrar = noPeriodo.filter(r => (r.tipo !== 'senha' || r.semPapel) && repetida(r)).length;
     const nDias = V.periodo === 'hoje' || V.periodo === 'ontem' ? 1 : Math.max(1, new Set(senhas.map(diaDe)).size);
 
     const imp = QUIOSQUE.estadoImp;
@@ -86045,7 +86071,7 @@ function buildSenhasPage(container, goTo) {
     const ultima = [...todos].reverse().find(r => r.tipo === 'senha');
     const horaDe = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' }); };
     const estadoTxt = mauImp ? (imp.estado === 'PaperNearEnd' ? 'Papel quase a acabar' : /door/i.test(imp.estado) ? 'Tampa da impressora aberta' : 'Sem papel') : 'A funcionar';
-    wrap.appendChild(h('div', { class: 'card senhas-topo' }, [
+    const topoEl = (h('div', { class: 'card senhas-topo' }, [
       h('div', { class: 'senhas-estado' + (mauImp ? ' mau' : '') }, [
         h('span', { class: 'senhas-estado-ic' }, Icon(mauImp ? 'printer' : 'checkcircle', { size: 22, strokeWidth: 2.2 })),
         h('div', {}, [h('span', { class: 'senhas-rot' }, 'Quiosque'), h('strong', {}, estadoTxt), mauImp && imp.em ? h('span', { class: 'senhas-sub' }, `desde as ${horaDe(imp.em)}`) : null].filter(Boolean)),
@@ -86055,7 +86081,8 @@ function buildSenhasPage(container, goTo) {
         ultima ? h('strong', {}, `${(quiosqueLerSenha(ultima.senha) || { codigo: ultima.senha }).codigo} · ${horaDe(ultima.em)}${diaDe(ultima) !== hojeISO ? ' (' + formatDate(diaDe(ultima)) + ')' : ''}`) : h('strong', { class: 'vazio' }, 'Ainda nenhuma'),
       ]),
     ]));
-    wrap.appendChild(h('div', { style: 'margin-top:12px;' }, [buildSenhasEsperaCartao(false)]));
+    // 2026-11-14 (Hugo: «consegues aproveitar melhor o espaço»): no computador, estado do quiosque e senhas em espera lado a lado.
+    wrap.appendChild(h('div', { class: 'senhas-cabeca' }, [topoEl, h('div', { class: 'senhas-cabeca-espera' }, [buildSenhasEsperaCartao(false)])]));
     if (V.semServidor) wrap.appendChild(h('div', { class: 'card senhas-nota' }, [Icon('info', { size: 16 }), h('span', {}, 'O servidor ainda não está a guardar o histórico das senhas. Para já, esta página mostra só as que chegaram a este computador desde que a app foi aberta.')]));
 
     const seletor = h('div', { class: 'senhas-periodos', role: 'tablist', 'aria-label': 'Período' }, PERIODOS.map(([k, rot]) => {
@@ -86075,14 +86102,17 @@ function buildSenhasPage(container, goTo) {
         h('strong', {}, String(porFila[l] || 0)),
         h('span', {}, (QUIOSQUE_FILAS[l] || { nome: 'Outra fila' }).nome),
       ])),
-      falhas.length ? h('div', { class: 'card senhas-num mau' }, [h('strong', {}, String(falhas.length)), h('span', {}, falhas.length === 1 ? 'vez em que a senha não saiu' : 'vezes em que a senha não saiu')]) : null,
+      falhas.length ? h('div', { class: 'card senhas-num mau', title: toquesDobrar ? `Fora destas, ${toquesDobrar} toque${toquesDobrar === 1 ? '' : 's'} a dobrar em que a senha saiu na mesma (não contam).` : null }, [h('strong', {}, String(falhas.length)), h('span', {}, (falhas.length === 1 ? 'cliente ficou sem senha' : 'clientes ficaram sem senha') + (toquesDobrar ? ` · ${toquesDobrar} toque${toquesDobrar === 1 ? '' : 's'} a dobrar não conta${toquesDobrar === 1 ? '' : 'm'}` : ''))])
+        : (toquesDobrar ? h('div', { class: 'card senhas-num' }, [h('strong', {}, '0'), h('span', {}, `clientes sem senha · ${toquesDobrar} toque${toquesDobrar === 1 ? '' : 's'} a dobrar (a senha saiu)`)]) : null),
     ].filter(Boolean)));
 
     const porHora = new Array(24).fill(0);
     senhas.forEach(r => { const d = new Date(r.em); if (!isNaN(d)) porHora[d.getHours()]++; });
     let h0 = porHora.findIndex(n => n > 0), h1 = 23 - [...porHora].reverse().findIndex(n => n > 0);
-    if (h0 < 0) { h0 = 9; h1 = 19; }
-    h0 = Math.min(h0, 9); h1 = Math.max(h1, 19);
+    // 2026-11-14 (Hugo: «tendo em conta o horário da farmácia, das 8 até à meia-noite»): o gráfico mostra sempre das 8h
+    // às 23h (a última barra é 23h–24h); senhas fora dessa janela (raras) alargam-na.
+    if (h0 < 0) { h0 = 8; h1 = 23; }
+    h0 = Math.min(h0, 8); h1 = Math.max(h1, 23);
     const maxH = Math.max(1, ...porHora);
     const pico = porHora.indexOf(Math.max(...porHora));
     const barras = [];
@@ -86117,7 +86147,7 @@ function buildSenhasPage(container, goTo) {
       ]));
     }
 
-    const ultimas = noPeriodo.filter(r => !repetida(r)).reverse().slice(0, 40);
+    const ultimas = noPeriodo.filter(r => (r.tipo === 'senha' && !r.semPapel) || falhas.includes(r)).reverse().slice(0, 40);
     wrap.appendChild(h('div', { class: 'card', style: 'margin-top:14px;padding:16px 18px;' }, [
       h('h3', { style: 'margin:0 0 10px;font-size:16px;' }, ultimas.length < noPeriodo.length ? `Últimas ${ultimas.length} de ${noPeriodo.length}` : 'Senhas do período'),
       ultimas.length ? h('div', { class: 'senhas-lista' }, ultimas.map(r => {
