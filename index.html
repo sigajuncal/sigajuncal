@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-14 17:30" />
+<meta name="siga-versao" content="2026-11-14 18:40" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -6271,7 +6271,7 @@
   .senhas-espera-wrap{width:100%;max-width:780px;margin-top:10px;}
   .senhas-espera-wrap.no-cabecalho{order:3;flex:1 1 100%;margin-top:4px;}
   @media (min-width: 900px){
-    .senhas-espera-wrap.no-cabecalho{order:0;flex:0 1 440px;width:auto;min-width:300px;margin:6px auto 0;align-self:flex-start;}
+    .senhas-espera-wrap.no-cabecalho{display:none;} /* no computador as senhas estão na barra de cima (Hugo, 14/11 18:34) */
     .senhas-espera-wrap.no-cabecalho .senhas-espera-card{padding:10px 16px;gap:14px;}
   }
   .senhas-espera-card{display:flex;align-items:center;gap:16px;padding:14px 18px;border-radius:18px;border:1.5px solid #cbd5e1;background:#fff;box-shadow:0 2px 10px rgba(15,23,42,.05);}
@@ -6283,10 +6283,12 @@
     cursor:pointer;font:inherit;white-space:nowrap;overflow:hidden;}
   .senhas-flutuante > svg{flex:0 0 auto;}
   .senhas-flutuante .chips{display:inline-flex;gap:5px;min-width:0;overflow:hidden;}
-  @media (max-width:1760px){ .senhas-flutuante .min{display:none;} }
-  @media (max-width:1640px){ .senhas-flutuante .txt{display:none;} .senhas-flutuante .chips > :nth-child(n+3){display:none;} }
-  @media (max-width:1480px){ .senhas-flutuante .chips > :nth-child(n+2){display:none;} }
-  @media (max-width:1180px){ .senhas-flutuante .senhas-flutuante-chip{display:none;} }
+  /* O mais relevante primeiro: o número; depois as senhas; com espera longa, o tempo de espera passa à frente das senhas. */
+  @media (max-width:1760px){ .senhas-flutuante:not(.demora) .min{display:none;} .senhas-flutuante.demora .txt{display:none;} }
+  @media (max-width:1640px){ .senhas-flutuante .txt{display:none;} .senhas-flutuante .chips > :nth-child(n+3){display:none;} .senhas-flutuante.demora .chips{display:none;} }
+  @media (max-width:1480px){ .senhas-flutuante .chips > :nth-child(n+2){display:none;} .senhas-flutuante.demora .min{font-size:0;} .senhas-flutuante.demora .min::after{content:attr(data-curto);font-size:12.5px;} }
+  @media (max-width:1180px){ .senhas-flutuante .senhas-flutuante-chip{display:none;} .senhas-flutuante.demora .min::after{content:attr(data-min);} }
+  .senhas-flutuante.tem.demora .min{color:#9a3412;font-weight:700;}
   .senhas-flutuante strong{font-size:18px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--pharm-800);}
   .senhas-flutuante .txt{font-size:13px;font-weight:600;}
   .senhas-flutuante .min{font-size:12px;color:#64748b;}
@@ -86639,7 +86641,7 @@ function quiosqueFlutuanteAtualizar() {
   let ver = false;
   try {
     ver = quiosqueEsperaVisivelAqui() && !ehDispositivoMobileOuTablet() && !(typeof ECRA_TV !== 'undefined' && ECRA_TV.overlay && ECRA_TV.overlay.isConnected)
-      && !document.querySelector('.login-gate:not(.lock-mode)') && STATE.page !== 'home' && STATE.page !== 'senhas' && !document.body.classList.contains('modo-consulta');
+      && !document.querySelector('.login-gate:not(.lock-mode)') && !document.body.classList.contains('modo-consulta');
   } catch (e) { ver = false; }
   let el = QUIOSQUE.flutuante;
   const barra = ver ? document.querySelector('.topbar-desktop-esq') : null;
@@ -86663,7 +86665,14 @@ function quiosqueFlutuanteAtualizar() {
   el.appendChild(h('strong', {}, semSinal ? '—' : String(total)));
   el.appendChild(h('span', { class: 'txt' }, semSinal ? 'senhas: sem sinal' : total === 1 ? 'senha em espera' : 'senhas em espera'));
   if (!semSinal && total) el.appendChild(h('span', { class: 'chips' }, quiosqueEsperaChips(E, 3, 'senhas-flutuante-chip')));
-  if (!semSinal && total && minAnt >= 1) el.appendChild(h('span', { class: 'min' }, `há ${Math.floor(minAnt)} min`));
+  if (!semSinal && total && minAnt >= 1) { const dem = minAnt >= QUIOSQUE_ESPERA_DEMORA_MIN, ant = (E.senhas && E.senhas[0]) || ''; el.appendChild(h('span', { class: 'min', 'data-min': `${Math.floor(minAnt)} min`, 'data-curto': dem && ant ? `${ant} · ${Math.floor(minAnt)} min` : `${Math.floor(minAnt)} min` }, dem && ant ? `${ant} espera há ${Math.floor(minAnt)} min` : `espera há ${Math.floor(minAnt)} min`)); }
+  // 2026-11-14 (Hugo: «deve piscar e avisar se senha em espera por mais dos tais minutos»): quando a mais antiga passa os
+  // 3 min, além de ficar laranja a piscar, toca uma vez o som baixinho nos PCs do backoffice (uma vez por senha).
+  const antiga = E && E.senhas && E.senhas[0];
+  if (!semSinal && total && minAnt >= QUIOSQUE_ESPERA_DEMORA_MIN && antiga && QUIOSQUE.demoraAvisada !== antiga) {
+    QUIOSQUE.demoraAvisada = antiga;
+    try { if (quiosqueAvisaNestePosto()) { QUIOSQUE.ultimoSom = 0; quiosqueSomBaixo(true); } } catch (e) { /* ignora */ }
+  }
 }
 setInterval(() => { try { quiosqueFlutuanteAtualizar(); } catch (e) { /* ignora */ } }, 1500);
 function quiosqueEsperaAtualizarCartoes() {
