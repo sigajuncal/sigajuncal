@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-14 16:00" />
+<meta name="siga-versao" content="2026-11-14 17:30" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -6278,6 +6278,26 @@
   .senhas-espera-card[role=button]{cursor:pointer;}
   .senhas-espera-card.tem{border-color:#0f766e;background:#f0fdfa;}
   .senhas-espera-card.sem-sinal{border-style:dashed;}
+  .senhas-flutuante{flex:0 0 auto;height:38px;box-sizing:border-box;display:inline-flex;align-items:center;gap:7px;
+    padding:0 12px;border-radius:10px;border:1.5px solid var(--n-200,#e2e8f0);background:#fff;color:var(--pharm-700);
+    cursor:pointer;font:inherit;white-space:nowrap;overflow:hidden;}
+  .senhas-flutuante > svg{flex:0 0 auto;}
+  .senhas-flutuante .chips{display:inline-flex;gap:5px;min-width:0;overflow:hidden;}
+  @media (max-width:1760px){ .senhas-flutuante .min{display:none;} }
+  @media (max-width:1640px){ .senhas-flutuante .txt{display:none;} .senhas-flutuante .chips > :nth-child(n+3){display:none;} }
+  @media (max-width:1480px){ .senhas-flutuante .chips > :nth-child(n+2){display:none;} }
+  @media (max-width:1180px){ .senhas-flutuante .senhas-flutuante-chip{display:none;} }
+  .senhas-flutuante strong{font-size:18px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--pharm-800);}
+  .senhas-flutuante .txt{font-size:13px;font-weight:600;}
+  .senhas-flutuante .min{font-size:12px;color:#64748b;}
+  .senhas-flutuante-chip{display:inline-flex;align-items:center;padding:2px 9px;border-radius:999px;color:#fff;font-size:12.5px;font-weight:800;}
+  .senhas-flutuante-chip.mais{background:rgba(148,163,184,.55) !important;color:#0f172a;}
+  .senhas-flutuante.tem{border-color:#0d9488;background:#f0fdfa;animation:senhasPulso 1.8s ease-in-out infinite;}
+  .senhas-flutuante.tem strong{color:#0f766e;animation:senhasNumPisca 1.8s ease-in-out infinite;}
+  .senhas-flutuante.tem.demora{border-color:#ea580c;background:#fff7ed;animation-name:senhasPulsoDemora;animation-duration:1.1s;}
+  .senhas-flutuante.tem.demora strong{color:#c2410c;animation-duration:1.1s;}
+  .senhas-flutuante.sem-sinal{border-style:dashed;opacity:.8;}
+  @media print{ .senhas-flutuante{display:none !important;} }
   /* 2026-11-14 (Hugo: «senha em espera deve sinalizar… alguma coisa que pisque ou que chame a atenção, aqui e no modo
      TV»): com gente à espera o cartão pulsa (verde); se a mais antiga espera há 3 min ou mais, fica laranja e pulsa mais
      depressa. Sem ninguém à espera fica parado. */
@@ -86487,7 +86507,9 @@ function buildSenhasPage(container, goTo) {
 // ao SIGA quantas estão por chamar em cada fila sempre que muda (e de minuto a minuto, como sinal de vida). Sem sinal
 // há mais de 3 minutos o cartão diz isso mesmo, em vez de mostrar uma contagem parada como se fosse atual.
 function quiosqueEsperaVisivelAqui() {
-  if (!activeUser) return false;
+  // 2026-11-14 (Hugo: «mesmo com sessão por iniciar o programa sabe que é PC do backoffice… devia contar as senhas em
+  // espera na mesma»): sem ninguém com sessão, os PCs marcados como Backoffice (com o acesso geral da farmácia) também.
+  if (!activeUser) { try { return !ehDispositivoMobileOuTablet() && acessoGeralValidado() && postoTipoDesteComputador() === 'escritorio'; } catch (e) { return false; } }
   if (isAdministrador() || ['Diretor Técnico', 'Diretora Técnica'].includes(activeUser.categoriaProfissional)) return true;
   return !ehDispositivoMobileOuTablet() && postoTipoDesteComputador() === 'escritorio';
 }
@@ -86608,8 +86630,45 @@ function quiosqueEsperaTvAtualizar() {
   if (!semSinal && E.total) quiosqueEsperaChips(E, 3, 'tv-senhas-espera-fila').forEach(x => el.appendChild(x));
 }
 const QUIOSQUE_ESPERA_DEMORA_MIN = 3; // a mais antiga à espera há 3 min ou mais: cartão laranja (pulsa mais depressa)
+// Janelinha das senhas sempre visível (2026-11-14, Hugo: «manter uma janela das senhas nos PCs do backoffice, do Paulo e
+// do Hugo, sempre visível em todas as janelas; telemóvel não é preciso, basta a Página Inicial»): no computador, em
+// todas as páginas do SIGA menos a Página Inicial e a página Senhas (que já têm o cartão grande) e o modo TV. Fica na barra
+// de cima, a seguir a «+ Novo» (espaço que estava vazio) — assim nunca tapa conteúdo, botões de baixo, avisos (toasts)
+// nem o «Chamar colega». Pulsa com gente à espera (laranja se a mais antiga espera há 3 min ou mais); clicar abre Senhas.
+function quiosqueFlutuanteAtualizar() {
+  let ver = false;
+  try {
+    ver = quiosqueEsperaVisivelAqui() && !ehDispositivoMobileOuTablet() && !(typeof ECRA_TV !== 'undefined' && ECRA_TV.overlay && ECRA_TV.overlay.isConnected)
+      && !document.querySelector('.login-gate:not(.lock-mode)') && STATE.page !== 'home' && STATE.page !== 'senhas' && !document.body.classList.contains('modo-consulta');
+  } catch (e) { ver = false; }
+  let el = QUIOSQUE.flutuante;
+  const barra = ver ? document.querySelector('.topbar-desktop-esq') : null;
+  if (!ver || !barra) { if (el) { el.remove(); QUIOSQUE.flutuante = null; } return; }
+  if (!el) {
+    el = h('button', { type: 'button', class: 'senhas-flutuante', title: 'Senhas em espera — abrir a página Senhas', onclick: () => navegarParaPagina('senhas') });
+    QUIOSQUE.flutuante = el;
+    quiosqueEsperaCarregar();
+  }
+  if (el.parentNode !== barra) { barra.appendChild(el); el.__assin = ''; }
+  const E = QUIOSQUE.espera;
+  const semSinal = !E || Date.now() - (E.recebido || 0) > 3 * 60000;
+  const total = E && !semSinal ? (E.total || 0) : 0;
+  const minAnt = E && total && E.maisAntiga ? (Date.now() - Date.parse(E.maisAntiga)) / 60000 : 0;
+  const assin = [semSinal, total, (E && E.senhas || []).join(','), Math.floor(minAnt)].join('|');
+  if (el.__assin === assin) return;
+  el.__assin = assin;
+  el.className = 'senhas-flutuante' + (semSinal ? ' sem-sinal' : total ? ' tem' + (minAnt >= QUIOSQUE_ESPERA_DEMORA_MIN ? ' demora' : '') : '');
+  clear(el);
+  el.appendChild(Icon('ticket', { size: 18, strokeWidth: 2.2 }));
+  el.appendChild(h('strong', {}, semSinal ? '—' : String(total)));
+  el.appendChild(h('span', { class: 'txt' }, semSinal ? 'senhas: sem sinal' : total === 1 ? 'senha em espera' : 'senhas em espera'));
+  if (!semSinal && total) el.appendChild(h('span', { class: 'chips' }, quiosqueEsperaChips(E, 3, 'senhas-flutuante-chip')));
+  if (!semSinal && total && minAnt >= 1) el.appendChild(h('span', { class: 'min' }, `há ${Math.floor(minAnt)} min`));
+}
+setInterval(() => { try { quiosqueFlutuanteAtualizar(); } catch (e) { /* ignora */ } }, 1500);
 function quiosqueEsperaAtualizarCartoes() {
   quiosqueEsperaTvAtualizar();
+  try { quiosqueFlutuanteAtualizar(); } catch (e) { /* ignora */ }
   document.querySelectorAll('.senhas-espera-card').forEach(c => {
     const E = QUIOSQUE.espera;
     const semSinal = !E || Date.now() - (E.recebido || 0) > 3 * 60000;
