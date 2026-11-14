@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-14 13:40" />
+<meta name="siga-versao" content="2026-11-14 14:00" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -85768,35 +85768,27 @@ function quiosqueSom(semPapel) {
   QUIOSQUE.ultimoSom = Date.now();
   const ctx = campainhaAudio();
   if (!ctx) return;
-  // 2026-11-14 (Hugo: "o som gostava que fosse mais alto e mais forte… mas a lembrar na mesma entrada de cliente"):
-  // a mesma melodia, mas cada nota tem três camadas (corpo uma oitava abaixo + nota + brilho uma oitava acima), passa
-  // por um compressor que a torna mais cheia sem distorcer, e toca duas vezes seguidas.
+  // 2026-11-14 (Hugo: "toque de senha mais simples, de apenas 3 notas, crescente como no aeroporto mas não repete…
+  // assim é menos irritante"): Dó–Mi–Sol, tom de sino (nota + harmónico suave), a última a ecoar; toca uma só vez.
+  // Continua forte: passa por um compressor que lhe dá volume sem distorcer.
   let saida = ctx.destination;
   try {
     const comp = ctx.createDynamicsCompressor();
-    comp.threshold.value = -18; comp.knee.value = 6; comp.ratio.value = 5; comp.attack.value = 0.003; comp.release.value = 0.2;
-    const mestre = ctx.createGain(); mestre.gain.value = 1.8;
+    comp.threshold.value = -18; comp.knee.value = 6; comp.ratio.value = 4; comp.attack.value = 0.003; comp.release.value = 0.25;
+    const mestre = ctx.createGain(); mestre.gain.value = 1.6;
     comp.connect(mestre); mestre.connect(ctx.destination); saida = comp;
   } catch (e) { /* browser antigo: sem compressor */ }
   const camada = (tipo, freq, ini, dur, vol) => {
     const o = ctx.createOscillator(), g = ctx.createGain();
     o.type = tipo; o.frequency.value = freq;
     g.gain.setValueAtTime(0.0001, ctx.currentTime + ini);
-    g.gain.exponentialRampToValueAtTime(vol, ctx.currentTime + ini + 0.015);
+    g.gain.exponentialRampToValueAtTime(vol, ctx.currentTime + ini + 0.012);
     g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + ini + dur);
     o.connect(g); g.connect(saida); o.start(ctx.currentTime + ini); o.stop(ctx.currentTime + ini + dur + 0.05);
   };
-  const nota = (freq, ini, dur) => {
-    camada('triangle', freq, ini, dur, 0.85);
-    camada('square', freq / 2, ini, dur * 0.8, 0.12);
-    camada('sine', freq * 2, ini, dur * 0.6, 0.18);
-  };
-  const melodia = (t0) => {
-    if (semPapel) { nota(659, t0, 0.3); nota(523, t0 + 0.32, 0.3); nota(659, t0 + 0.64, 0.3); nota(523, t0 + 0.96, 0.5); }
-    else { nota(1047, t0, 0.38); nota(1319, t0 + 0.22, 0.38); nota(1568, t0 + 0.44, 0.75); }
-  };
-  melodia(0);
-  melodia(semPapel ? 1.6 : 1.25);
+  const sino = (freq, ini, dur) => { camada('sine', freq, ini, dur, 0.9); camada('triangle', freq * 2, ini, dur * 0.45, 0.14); };
+  if (semPapel) { sino(659, 0, 0.45); sino(523, 0.42, 0.9); }       // descendente (dois tons): algo correu mal
+  else { sino(523, 0, 0.7); sino(659, 0.38, 0.7); sino(784, 0.76, 1.5); } // Dó–Mi–Sol crescente, uma vez
 }
 // 2026-11-14 (fotografia do Hugo, TV ao alto: o aviso «Cliente no quiosque» saía do ecrã dos dois lados): com a TV ao
 // alto o ecrã do backoffice é desenhado ampliado, e as medidas em «vw» do aviso ficavam maiores do que o ecrã real.
@@ -85847,11 +85839,17 @@ function quiosqueSenhaRecebida(p) {
   // 2026-11-14 (Hugo, na TV: «Tocou no ecrã mas a senha não saiu»… «nesse caso a senha chegou a sair bem»): o Qmagine
   // regista uma falha quando a 1.ª tentativa não cria a senha, mas o cliente toca outra vez e ela sai. O aviso de falha
   // espera 12 segundos; se entretanto chegar uma senha boa, não é mostrado nem conta como falha.
+  // 2026-11-14 (Hugo: "aviso cliente no quiosque apita várias vezes sem necessidade"): quase todas as «falhas» são
+  // toques a dobrar — o 1.º toque cria e imprime a senha, o 2.º (meio segundo depois) dá falha porque o quiosque ainda
+  // está ocupado. A senha boa pode chegar antes ou depois da falha. Agora a falha é ignorada se houver uma senha boa
+  // 20 s antes ou até 12 s depois (vinda do quiosque ou da lista da base de dados do Qmagine).
+  if (p.tipo === 'falhou' && quiosqueHouveSenhaBoa(20000)) return;
   if (p.tipo === 'falhou' && !p.confirmada) {
     const t = setTimeout(() => { QUIOSQUE.falhasPendentes.delete(p.id); QUIOSQUE.vistos.delete(p.id); quiosqueSenhaRecebida(Object.assign({}, p, { confirmada: true })); }, 12000);
     QUIOSQUE.falhasPendentes.set(p.id, t);
     return;
   }
+  if ((p.tipo || 'senha') === 'senha' && !p.semPapel) quiosqueMarcarSenhaBoa();
   if ((p.tipo || 'senha') === 'senha' && !p.semPapel && p.origem !== 'espera') {
     const lida = quiosqueLerSenha(p.senha);
     if (lida) { if (!QUIOSQUE.anunciadasPeloQuiosque) QUIOSQUE.anunciadasPeloQuiosque = new Set(); QUIOSQUE.anunciadasPeloQuiosque.add(lida.codigo); quiosqueMarcarAnunciada(lida.codigo); }
@@ -85874,8 +85872,9 @@ function quiosqueSenhaRecebida(p) {
   }
   const semPapel = !!p.semPapel;
   const falhou = p.tipo === 'falhou';
-  if (semPapel && QUIOSQUE.aviso === 'quase') QUIOSQUE.aviso = 'sem';
-  if (semPapel) { if (!QUIOSQUE.semPapelDesde) QUIOSQUE.semPapelDesde = Date.now(); }
+  // Uma senha que não saiu não quer dizer falta de papel: a faixa «sem papel» fica só para o papel/impressora.
+  if (semPapel && !falhou && QUIOSQUE.aviso === 'quase') QUIOSQUE.aviso = 'sem';
+  if (semPapel && !falhou) { if (!QUIOSQUE.semPapelDesde) QUIOSQUE.semPapelDesde = Date.now(); }
   else if (QUIOSQUE.aviso !== 'quase') QUIOSQUE.semPapelDesde = null;
   quiosqueSom(semPapel);
   if (campainhaEmDestaque()) { quiosqueFaixaAtualizar(); return; }
@@ -86174,6 +86173,8 @@ function quiosqueEsperaChips(E, max, classe) {
 // «Cliente a entrar» vinha só do sinal do quiosque, e esse às vezes não chega. Agora a lista de senhas em espera (lida da
 // base de dados do Qmagine pelo vigia, de 2 em 2 s) também avisa: uma senha nova que apareça na lista e que o quiosque
 // não tenha anunciado em 4 segundos é anunciada na mesma (janela grande + som). Nunca a mesma senha duas vezes no dia.
+function quiosqueMarcarSenhaBoa() { QUIOSQUE.ultimaBoa = Date.now(); if (QUIOSQUE.falhasPendentes && QUIOSQUE.falhasPendentes.size) { QUIOSQUE.falhasPendentes.forEach(t => clearTimeout(t)); QUIOSQUE.falhasPendentes.clear(); } }
+function quiosqueHouveSenhaBoa(ms) { return !!QUIOSQUE.ultimaBoa && Date.now() - QUIOSQUE.ultimaBoa <= ms; }
 function quiosqueSenhaJaAnunciada(codigo) {
   const hoje = todayISO();
   if (QUIOSQUE.anunciadasDia !== hoje) { QUIOSQUE.anunciadasDia = hoje; QUIOSQUE.anunciadas = new Set(); }
@@ -86188,6 +86189,7 @@ function quiosqueEsperaNovasSenhas(lista) {
   lista.forEach(codigo => {
     if (quiosqueSenhaJaAnunciada(codigo)) return;
     quiosqueMarcarAnunciada(codigo);
+    quiosqueMarcarSenhaBoa(); // uma senha nova na base de dados: um toque «falhado» à volta desta hora foi a dobrar
     // Várias senhas novas de uma vez: uma de cada vez, com 4 s entre elas (cada aviso fica no ecrã até à seguinte).
     const espera = 4000 + (k++) * 4000;
     setTimeout(() => {
