@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-15 13:25" />
+<meta name="siga-versao" content="2026-11-15 15:00" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -6510,6 +6510,14 @@
   .temp-legenda{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:13px;color:#334155;margin-top:6px;}
   .temp-legenda i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px;}
   .temp-legenda > span{display:inline-flex;align-items:center;}
+  .temp-grafico-wrap{position:relative;}
+  .temp-grafico-wrap svg.temp-grafico{cursor:crosshair;touch-action:pan-y;}
+  .temp-dica{position:absolute;top:6px;z-index:5;pointer-events:none;background:#fff;color:#0f172a;border:1px solid #cbd5e1;border-radius:10px;padding:8px 11px;font-size:12.5px;box-shadow:0 10px 24px rgba(15,23,42,.18);min-width:170px;}
+  .temp-dica-hora{font-weight:700;margin-bottom:4px;color:#475569;white-space:nowrap;}
+  .temp-dica-linha{display:flex;align-items:center;gap:6px;white-space:nowrap;line-height:1.6;}
+  .temp-dica-linha span{flex:1;}
+  .temp-dica-linha strong{font-variant-numeric:tabular-nums;}
+  .temp-dica-linha.fora strong{color:#b91c1c;}
   .temp-diario-tabela{overflow-x:auto;}
   .temp-diario-tabela table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums;}
   .temp-diario-tabela th,.temp-diario-tabela td{padding:7px 10px;border-bottom:1px solid #e2e8f0;text-align:left;white-space:nowrap;}
@@ -7911,7 +7919,15 @@ body.protecao-ecra-ativa .toast-stack,body.protecao-ecra-ativa .versao-nova-barr
 .home-fin-barra{position:relative;height:10px;border-radius:999px;background:var(--n-200);overflow:visible;}
 .home-fin-barra-cheia{height:100%;border-radius:999px;background:#e0913a;}
 .home-fin-barra-cheia.ok{background:var(--pharm-600);}
-.home-fin-barra-marca{position:absolute;top:-4px;width:2px;height:18px;background:var(--n-700);border-radius:1px;transform:translateX(-1px);}
+.home-fin-barra-marca{position:absolute;top:-4px;width:3px;height:20px;background:#0f172a;border-radius:1px;transform:translateX(-1px);}
+.home-fin-marca-rot{position:absolute;top:22px;left:50%;transform:translateX(-50%);white-space:nowrap;font-size:11px;font-weight:700;color:#0f172a;background:rgba(255,255,255,.9);border-radius:6px;padding:1px 6px;}
+.home-fin-barra-wrap .home-fin-barra{cursor:help;}
+.home-fin-estado{font-weight:800;}
+.home-fin-barra-explica{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:12px;color:var(--n-600,#475569);}
+.home-fin-barra-explica span{display:inline-flex;align-items:center;gap:6px;white-space:normal;}
+.home-fin-am-barra{display:inline-block;width:18px;height:8px;border-radius:4px;background:#e0913a;flex:0 0 auto;}
+.home-fin-am-barra.ok{background:var(--pharm-600);}
+.home-fin-am-traco{display:inline-block;width:3px;height:14px;background:#0f172a;border-radius:1px;flex:0 0 auto;}
 .home-meus-resumo{margin:3px 0 0;font-size:12.5px;color:var(--n-500);}
 .tom-atencao{color:#b2490c;}
 .home-meus-lista{display:flex;flex-direction:column;gap:6px;}
@@ -22681,7 +22697,9 @@ function objetivoRitmo(o) {
     titulo += `\n${tom === 'no-ritmo' ? 'No ritmo' : 'Abaixo do ritmo'}: ${feitoPct}% vendido com ${esperadoPct}% do prazo decorrido`;
   }
   if (cumpridos.total > 1) titulo += `\n${cumpridos.feitos} de ${cumpridos.total} produtos já cumpriram a sua meta — cada produto só conta até à sua própria meta`;
-  return { tom, texto: `Faltam ${faltam} un. · ${ritmoTxt}${partesProdutos}`, titulo };
+  // 2026-11-15: diz por extenso se está à frente ou atrás do ritmo (antes só no balão).
+  const estadoTxt = tom === 'no-ritmo' ? 'À frente do ritmo · ' : (tom === 'atrasado' ? 'Atrás do ritmo · ' : '');
+  return { tom, texto: `${estadoTxt}Faltam ${faltam} un. · ${ritmoTxt}${partesProdutos}`, titulo };
 }
 function objetivoAnel(o, pctReal, cor) {
   const r = 20.5, circ = 2 * Math.PI * r; // traço mais fino e anel maior: a % respira dentro do círculo
@@ -26195,14 +26213,22 @@ function buildHomeFarmaciaMesCard(goTo) {
     h('span', { class: 'home-fin-tile-val' + (tom ? ' tom-' + tom : '') }, valor),
     sub ? h('span', { class: 'home-fin-tile-sub' }, sub) : null,
   ].filter(Boolean));
+  // 2026-11-15 (Hugo: "colega perguntou o que significa a barra e o tracinho, não sabia se estávamos atrás do objetivo ou
+  // à frente. Tornas isto totalmente claro?"): a legenda diz por extenso o que é a barra (faturado até hoje), o que é o
+  // traço (onde devíamos estar hoje para cumprir) e se estamos À FRENTE ou ATRÁS — em euros e em pontos.
+  const esperadoEuro = meta ? meta * diaMes / financeiroDiasDoMes(ano, mes) : 0;
+  const difEuro = acumulado - esperadoEuro;
+  const aFrente = difEuro >= 0;
   const barra = meta ? h('div', { class: 'home-fin-barra-wrap' }, [
     h('div', { class: 'home-fin-barra-legenda' }, [
       h('span', {}, [h('strong', {}, `${pctMeta}%`), ` do objetivo de ${euro(meta)}`]),
-      pctProj !== null ? h('span', { class: pctProj >= 100 ? 'tom-ok' : 'tom-atencao' }, pctProj >= 100 ? `a caminho de cumprir (${pctProj}%)` : `ao ritmo atual fecha em ${pctProj}%`) : null,
-    ].filter(Boolean)),
-    h('div', { class: 'home-fin-barra', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': String(Math.min(100, pctMeta)), 'aria-label': 'Objetivo do mês' }, [
-      h('div', { class: 'home-fin-barra-cheia' + (pctMeta >= (pctEsperado || 0) ? ' ok' : ''), style: `width:${Math.min(100, pctMeta)}%;` }),
-      pctEsperado !== null ? h('div', { class: 'home-fin-barra-marca', style: `left:${Math.min(100, pctEsperado)}%;`, title: `Onde devíamos estar ao dia ${diaMes}: ${pctEsperado}%` }) : null,
+      h('span', { class: 'home-fin-estado ' + (aFrente ? 'tom-ok' : 'tom-atencao'), title: `Barra = faturado até ${dataCurta(ultimo.data)}: ${euro(acumulado)}\nTraço = onde devíamos estar nesse dia para cumprir: ${euro(esperadoEuro)} (${pctEsperado}%)${pctProj !== null ? `\nAo ritmo atual, o mês fecha em ~${euro(proj)} (${pctProj}% do objetivo)` : ''}` }, aFrente
+        ? `▲ À frente: +${euro(difEuro)}`
+        : `▼ Atrás: −${euro(-difEuro)}`),
+    ]),
+    h('div', { class: 'home-fin-barra', title: `Barra = faturado até ${dataCurta(ultimo.data)}: ${euro(acumulado)} (${pctMeta}%)\nTraço = onde devíamos estar nesse dia para cumprir: ${euro(esperadoEuro)} (${pctEsperado}%)\nBarra a passar o traço = à frente do objetivo`, role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': String(Math.min(100, pctMeta)), 'aria-label': 'Objetivo do mês' }, [
+      h('div', { class: 'home-fin-barra-cheia' + (aFrente ? ' ok' : ''), style: `width:${Math.min(100, pctMeta)}%;` }),
+      pctEsperado !== null ? h('div', { class: 'home-fin-barra-marca', style: `left:${Math.min(100, pctEsperado)}%;`, title: `Onde devíamos estar a ${dataCurta(ultimo.data)} para cumprir: ${pctEsperado}% (${euro(esperadoEuro)})` }) : null,
     ].filter(Boolean)),
   ]) : null;
   return h('div', { class: 'card card-pad home-fin-card' }, [
@@ -45248,7 +45274,8 @@ const PLANO_MED_MOMENTOS = [
   { k: 'deitar', rot: 'Ao deitar', sub: '', hora: '23:00' },
 ];
 const PLANO_MED_UNIDADES = ['Comprimido', 'Cápsula', 'Saqueta', 'Gotas', 'ml', 'Colher', 'Inalação', 'Aplicação', 'Supositório', 'Adesivo', 'Injeção', 'Unidade'];
-const PLANO_MED_DOSES = ['¼', '½', '¾', '1', '1 ½', '2', '2 ½', '3', '4'];
+// 2026-11-15 (Hugo): + ⅓ e ⅔ (ex.: Triticum).
+const PLANO_MED_DOSES = ['¼', '⅓', '½', '⅔', '¾', '1', '1 ½', '2', '2 ½', '3', '4'];
 // Frequência de cada medicamento: diária (por omissão) ou só em certos dias — fica destacada na folha.
 const PLANO_MED_FREQ_TIPOS = [
   ['diaria', 'Todos os dias'], ['alternados', 'Dia sim, dia não'], ['semanal', 'Semanal (dias da semana)'],
@@ -45284,11 +45311,11 @@ function planoMedMostrarUnidade(l) {
 function planoMedNormalizarDose(v) {
   let t = String(v || '').replace(/\s+/g, ' ').trim();
   if (!t) return '';
-  const fr = { '1/2': '½', '1/4': '¼', '3/4': '¾' };
-  t = t.replace(/^(\d+)\s*(?:e|\+)?\s*(1\/2|1\/4|3\/4)$/i, (_, n, q) => `${n} ${fr[q]}`).replace(/^(1\/2|1\/4|3\/4)$/, (q) => fr[q]);
+  const fr = { '1/2': '½', '1/4': '¼', '3/4': '¾', '1/3': '⅓', '2/3': '⅔' };
+  t = t.replace(/^(\d+)\s*(?:e|\+)?\s*(1\/2|1\/4|3\/4|1\/3|2\/3)$/i, (_, n, q) => `${n} ${fr[q]}`).replace(/^(1\/2|1\/4|3\/4|1\/3|2\/3)$/, (q) => fr[q]);
   const dec = t.match(/^(\d+)[.,](5|25|75)0?$/);
   if (dec) { const q = { '5': '½', '25': '¼', '75': '¾' }[dec[2]]; t = dec[1] === '0' ? q : `${dec[1]} ${q}`; }
-  t = t.replace(/^(\d+)([¼½¾])$/, '$1 $2');
+  t = t.replace(/^(\d+)([¼½¾⅓⅔])$/, '$1 $2');
   return t;
 }
 function planoMedProblemaLinha(l) {
@@ -88237,7 +88264,55 @@ function buildTempGrafico(H, grupo) {
     const vs = pts.map(p => p[1]);
     legenda.appendChild(h('span', {}, [tempLegendaAmostra(i), `${nome} · mín ${tempNum(Math.min(...vs))} · máx ${tempNum(Math.max(...vs))}${grupo === 'hum' ? ' %' : ' °C'}`]));
   });
-  return h('div', {}, [svg, legenda]);
+  // Leituras ao passar o rato (2026-11-15, Hugo: "não dá nos termohigrómetros ter função hover também para ver leituras
+  // específicas, principalmente nos gráficos de períodos mais curtos?"): uma linha vertical segue o rato (ou o dedo) e
+  // a caixa mostra a hora e a leitura de cada sonda nesse momento (a mais próxima de cada uma).
+  const nomesOrd = Object.keys(series).sort();
+  const un = grupo === 'hum' ? ' %' : ' °C';
+  const cruz = el('line', { x1: 0, x2: 0, y1: pt, y2: Ht - pb, stroke: '#0f172a', 'stroke-width': 1, 'stroke-dasharray': '4 3', visibility: 'hidden' });
+  const bolas = nomesOrd.map((n, i) => el('circle', { r: 5, fill: tempSerieEstilo(i).cor, stroke: '#fff', 'stroke-width': 2, visibility: 'hidden' }));
+  svg.appendChild(cruz); bolas.forEach(b => svg.appendChild(b));
+  const caixa = h('div', { class: 'temp-dica', style: 'display:none;' });
+  const wrap = h('div', { class: 'temp-grafico-wrap' }, [svg, caixa]);
+  const tol = Math.max(40 * 60000, (t1 - t0) * 0.02);
+  const maisProximo = (pts, t) => {
+    let a = 0, b = pts.length - 1;
+    if (b < 0) return null;
+    while (b - a > 1) { const m = (a + b) >> 1; if (pts[m][0] < t) a = m; else b = m; }
+    const p = Math.abs(pts[a][0] - t) <= Math.abs(pts[b][0] - t) ? pts[a] : pts[b];
+    return Math.abs(p[0] - t) <= tol ? p : null;
+  };
+  const pad = (n) => String(n).padStart(2, '0');
+  const quando = (t) => { const d = new Date(t); return `${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${pad(d.getHours())}:${pad(d.getMinutes())}${H.tipo === 'horas' ? ' (média da hora)' : ''}`; };
+  const esconder = () => { caixa.style.display = 'none'; cruz.setAttribute('visibility', 'hidden'); bolas.forEach(b => b.setAttribute('visibility', 'hidden')); };
+  const mostrar = (ev) => {
+    const r = svg.getBoundingClientRect();
+    if (!r.width) return;
+    const sx = (ev.clientX - r.left) / r.width * W;
+    if (sx < pe || sx > W - pd) { esconder(); return; }
+    const t = t0 + (sx - pe) / (W - pe - pd) * (t1 - t0);
+    const achados = nomesOrd.map((n, i) => ({ n, i, p: maisProximo(series[n], t) }));
+    const comLeitura = achados.filter(a => a.p);
+    if (!comLeitura.length) { esconder(); return; }
+    const ref = comLeitura.reduce((x, y) => (Math.abs(y.p[0] - t) < Math.abs(x.p[0] - t) ? y : x));
+    const xr = X(ref.p[0]);
+    cruz.setAttribute('x1', xr); cruz.setAttribute('x2', xr); cruz.setAttribute('visibility', 'visible');
+    achados.forEach(a => { const b = bolas[a.i]; if (a.p) { b.setAttribute('cx', X(a.p[0])); b.setAttribute('cy', Y(a.p[1])); b.setAttribute('visibility', 'visible'); } else b.setAttribute('visibility', 'hidden'); });
+    clear(caixa);
+    caixa.appendChild(h('div', { class: 'temp-dica-hora' }, quando(ref.p[0])));
+    achados.forEach(a => {
+      const fora = a.p && ((lim[0] !== null && a.p[1] < lim[0]) || (lim[1] !== null && a.p[1] > lim[1]));
+      caixa.appendChild(h('div', { class: 'temp-dica-linha' + (fora ? ' fora' : '') }, [tempLegendaAmostra(a.i), h('span', {}, a.n), h('strong', {}, a.p ? `${tempNum(a.p[1])}${un}` : '—')]));
+    });
+    caixa.style.display = '';
+    const wr = wrap.getBoundingClientRect();
+    const x = ev.clientX - wr.left, larg = caixa.offsetWidth;
+    caixa.style.left = Math.max(0, x + 16 + larg > wr.width ? x - 16 - larg : x + 16) + 'px';
+  };
+  svg.addEventListener('pointermove', mostrar);
+  svg.addEventListener('pointerdown', mostrar);
+  svg.addEventListener('pointerleave', esconder);
+  return h('div', {}, [wrap, legenda]);
 }
 function buildTempDiario(D) {
   if (!D.em) return h('p', { class: 'field-helper-text' }, 'A carregar…');
