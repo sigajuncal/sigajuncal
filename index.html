@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-15 17:45" />
+<meta name="siga-versao" content="2026-11-15 18:05" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -41203,6 +41203,7 @@ function ecraTvHoraFalada(hh, mm) {
 function ecraTvSomBomDia() {
   try {
     const ctx = campainhaAudio(); if (!ctx) return false;
+    VOZ_ULTIMO_SOM = Date.now() + 2500;
     [[523.25, 0], [659.25, 0.22], [783.99, 0.44], [1046.5, 0.66]].forEach(([f, ini]) => {
       const o = ctx.createOscillator(), g = ctx.createGain();
       o.type = 'sine'; o.frequency.value = f;
@@ -86849,6 +86850,25 @@ function vozToqueHora() {
   VOZ_ULTIMO_SOM = Date.now();
   return 2100;
 }
+// 2026-11-15 (Hugo: «qualquer outro anúncio precedido por um toque feliz de poucas notas»): quatro notas rápidas a
+// subir (Sol–Si–Ré–Sol), alegre e curto — diferente do toque da hora certa e do «bom dia».
+function vozToqueAnuncio() {
+  const ctx = campainhaAudio();
+  if (!ctx) return 0;
+  [[783.99, 0, 0.22], [987.77, 0.12, 0.22], [1174.66, 0.24, 0.22], [1567.98, 0.36, 0.75]].forEach(([f, ini, dur]) => {
+    [[1, 0.34], [2, 0.07]].forEach(([mult, v]) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = 'sine'; o.frequency.value = f * mult;
+      const t0 = ctx.currentTime + ini;
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(v, t0 + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      o.connect(g); g.connect(ctx.destination); o.start(t0); o.stop(t0 + dur + 0.05);
+    });
+  });
+  VOZ_ULTIMO_SOM = Date.now();
+  return 1150;
+}
 function vozFalarUma(t, volume) {
   return new Promise(res => {
     // A voz é de senhora: agradece no feminino («Obrigada»), seja qual for o texto (2026-11-10).
@@ -86862,7 +86882,12 @@ function vozFalarUma(t, volume) {
       .replace(/\b([Vv]inte) e (?=\p{L})/gu, '$1 i ')
       // 2026-11-13 (Hugo: «a voz do Windows lê backoffice com a sílaba tónica no fi»): só para a voz, a palavra vai
       // separada em duas («back office»), que é como a voz a lê bem. No ecrã continua «backoffice».
-      .replace(/\bback[\s-]?office\b/gi, (m) => (m[0] === 'B' ? 'Back' : 'back') + ' office');
+      .replace(/\bback[\s-]?office\b/gi, (m) => (m[0] === 'B' ? 'Back' : 'back') + ' office')
+      // 2026-11-15 (Hugo: «corrige a forma como ela diz amanhã, parece que diz "a manhã"»): no início de uma frase a voz
+      // separa o «A» de «manhã». Só para a voz: ligado à palavra de antes («Para amanhã,»), sai seguido; a meio da
+      // frase vai sem a pausa que a voz fazia depois de «amanhã».
+      .replace(/(^|[.!?:;—–-]\s*)Amanhã(?!\p{L})\s*[,—–-]?\s*/gu, (m, a) => `${a}Para amanhã, `)
+      .replace(/(?<!\p{L})amanhã\s*[—–-]\s*/gu, 'amanhã, ');
     if (!txt || !window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') { res(); return; }
     let feito = false;
     const fim = () => { if (!feito) { feito = true; VOZ_ULTIMO_SOM = Date.now(); res(); } };
@@ -86893,7 +86918,13 @@ async function vozProcessar() {
   VOZ_A_FALAR = true;
   try {
     if (item.toque) { await vozEspera(vozToqueHora() + 250); }
-    else if (Date.now() - VOZ_ULTIMO_SOM > 4000) { vozAcordarSom(); await vozEspera(350); }
+    else if (item.semToque) { if (Date.now() - VOZ_ULTIMO_SOM > 4000) { vozAcordarSom(); await vozEspera(350); } }
+    else {
+      // Toque feliz antes de cada anúncio — não se já tocou outro som há pouco (campainha, senha, «bom dia»).
+      const recente = Math.max(VOZ_ULTIMO_SOM, (typeof CAMPAINHA !== 'undefined' && CAMPAINHA.ultimoSom) || 0, (typeof QUIOSQUE !== 'undefined' && QUIOSQUE.ultimoSom) || 0);
+      if (Date.now() - recente > 4000) await vozEspera(vozToqueAnuncio() + 150);
+      else if (Date.now() - VOZ_ULTIMO_SOM > 4000) { vozAcordarSom(); await vozEspera(350); }
+    }
     const fr = item.frases || [];
     for (let i = 0; i < fr.length; i++) { await vozFalarUma(fr[i], item.volumes ? item.volumes[i] : 1); await vozEspera(180); }
   } catch (e) { /* segue */ }
@@ -87067,7 +87098,7 @@ function quiosqueSom(semPapel) {
   try {
     const comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -18; comp.knee.value = 6; comp.ratio.value = 4; comp.attack.value = 0.003; comp.release.value = 0.25;
-    const mestre = ctx.createGain(); mestre.gain.value = 1.6;
+    const mestre = ctx.createGain(); mestre.gain.value = semPapel ? 1.6 : 2.2;
     comp.connect(mestre); mestre.connect(ctx.destination); saida = comp;
   } catch (e) { /* browser antigo: sem compressor */ }
   const camada = (tipo, freq, ini, dur, vol) => {
@@ -87079,8 +87110,16 @@ function quiosqueSom(semPapel) {
     o.connect(g); g.connect(saida); o.start(ctx.currentTime + ini); o.stop(ctx.currentTime + ini + dur + 0.05);
   };
   const sino = (freq, ini, dur) => { camada('sine', freq, ini, dur, 0.9); camada('triangle', freq * 2, ini, dur * 0.45, 0.14); };
-  if (semPapel) { sino(659, 0, 0.45); sino(523, 0.42, 0.9); }       // descendente (dois tons): algo correu mal
-  else { sino(523, 0, 0.7); sino(659, 0.38, 0.7); sino(784, 0.76, 1.5); } // Dó–Mi–Sol crescente, uma vez
+  if (semPapel) { sino(659, 0, 0.45); sino(523, 0.42, 0.9); return; } // descendente (dois tons): algo correu mal
+  // 2026-11-15 (Hugo: «muda o som de cliente a entrar por um ding dong mais clássico, alto e perceptível»): campainha
+  // de porta clássica — «ding» (Mi) e «dong» (Dó), cada um com os harmónicos de um sino de metal e eco longo.
+  const campainha = (freq, ini, dur) => {
+    camada('sine', freq, ini, dur, 1.0);
+    camada('sine', freq * 2, ini, dur * 0.55, 0.32);
+    camada('sine', freq * 3, ini, dur * 0.3, 0.12);
+    camada('triangle', freq * 4.2, ini, 0.18, 0.06);
+  };
+  campainha(659.25, 0, 1.6); campainha(523.25, 0.62, 2.4);
 }
 // 2026-11-14 (fotografia do Hugo, TV ao alto: o aviso «Cliente no quiosque» saía do ecrã dos dois lados): com a TV ao
 // alto o ecrã do backoffice é desenhado ampliado, e as medidas em «vw» do aviso ficavam maiores do que o ecrã real.
