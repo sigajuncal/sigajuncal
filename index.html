@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-16 13:10" />
+<meta name="siga-versao" content="2026-11-16 14:45" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -9279,6 +9279,10 @@ body.tem-barra-inferior .topbar-mobile > .hamburger:first-child{display:none;}
   .home-coluna > .pd-card .pd-resultado{padding:9px 12px;}
   .home-coluna > .pd-card .pd-res-pergunta{margin:2px 0 6px;font-size:13.5px;}
   .home-coluna > .pd-card .pd-res-barra{height:6px;margin:3px 0 4px;}
+  .msg-rapida-tvmodo{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:2px 0 8px;}
+  .msg-rapida-tvmodo .rot{display:inline-flex;align-items:center;gap:4px;font-size:12.5px;font-weight:700;color:#475569;}
+  .msg-rapida-tvmodo-op{border:1.5px solid #cbd5e1;background:#fff;border-radius:999px;padding:5px 12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;color:#334155;}
+  .msg-rapida-tvmodo-op.sel{border-color:#2563eb;background:#eff6ff;color:#1d4ed8;}
   /* Anexos (Gaveta e mensagens rápidas) — 2026-11-12 */
   .nota-anexos-chip{all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:2px;padding:1px 8px;border-radius:999px;background:#eff6ff;color:#1d4ed8;font-size:11.5px;font-weight:800;}
   .nota-anexos-chip:hover,.nota-anexos-chip.aberto{background:#dbeafe;}
@@ -89665,7 +89669,7 @@ function postosMsgDestinos() {
 }
 function postosMsgRotulo(d) { return d.pessoa ? `${d.pessoa} (${d.nome})` : d.nome; }
 function postosMsgListaMudou() { if (POSTOS_MSG.caixa && POSTOS_MSG.caixa.redesenhar) POSTOS_MSG.caixa.redesenhar(); }
-function postosMsgEnviar(destinos, texto, anexo, idFixo) {
+function postosMsgEnviar(destinos, texto, anexo, idFixo, opcoes) {
   const eu = postosMsgIdentidade();
   if (!eu || eu.tipo === 'tv') return 'sem-permissao';
   texto = String(texto || '').replace(/\s+/g, ' ').trim().slice(0, 160);
@@ -89678,7 +89682,9 @@ function postosMsgEnviar(destinos, texto, anexo, idFixo) {
   if (!POSTOS_MSG.canal || !POSTOS_MSG.pronto) return 'erro';
   const payload = { id: idFixo || `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, para: validos.flatMap(d => d.ids), de: { id: eu.id, nome: eu.nome, tipo: eu.tipo, recebe: !!eu.recebe },
     pessoa: activeUser ? (activeUser.nomeCompleto || activeUser.username || '') : '', texto, em: new Date().toISOString(),
-    anexo: anexo ? { id: anexo.id, nome: anexo.nome, tipo_mime: anexo.tipo_mime, tamanho: anexo.tamanho } : undefined };
+    anexo: anexo ? { id: anexo.id, nome: anexo.nome, tipo_mime: anexo.tipo_mime, tamanho: anexo.tamanho } : undefined,
+    // 2026-11-16: na TV, «Ler em voz alta» (como sempre foi) ou «Só texto» (aparece sem voz, com um toque discreto).
+    voz: !(opcoes && opcoes.voz === false) };
   const falha = () => { POSTOS_MSG.enviadas.delete(payload.id); showToast('A mensagem não seguiu — sem ligação ao servidor da farmácia. Tenta outra vez.', 'error'); };
   try {
     Promise.resolve(POSTOS_MSG.canal.send({ type: 'broadcast', event: 'msg', payload })).then((r) => { if (r !== 'ok') falha(); }).catch(falha);
@@ -89739,13 +89745,17 @@ function postosMsgTvSeguinte() {
   const prox = (POSTOS_MSG.filaTv || []).shift();
   if (!prox) { POSTOS_MSG.tv = null; try { ecraTvFila(); } catch (e) { /* ignora */ } return; }
   const [p, texto] = prox;
-  const tocou = campainhaTocarSom(1);
-  try { vozLimparFila(); if (window.speechSynthesis) speechSynthesis.cancel(); } catch (e) { /* ignora */ }
-  const quem = p.pessoa ? avisoPrimeiroNome(p.pessoa) : ((p.de && p.de.nome) || '');
-  const semEmoji = String(texto).replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}]/gu, '').replace(/\s+/g, ' ').trim();
-  const frase = `Mensagem${quem ? ` de ${quem}` : ''}. ${semEmoji}`;
-  avisoFalar(frase, 1500);
-  avisoFalar(frase, 1500 + 3500 + frase.length * 75);
+  const comVoz = p.voz !== false;
+  let tocou = true;
+  if (comVoz) {
+    tocou = campainhaTocarSom(1);
+    try { vozLimparFila(); if (window.speechSynthesis) speechSynthesis.cancel(); } catch (e) { /* ignora */ }
+    const quem = p.pessoa ? avisoPrimeiroNome(p.pessoa) : ((p.de && p.de.nome) || '');
+    const semEmoji = String(texto).replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}]/gu, '').replace(/\s+/g, ' ').trim();
+    const frase = `Mensagem${quem ? ` de ${quem}` : ''}. ${semEmoji}`;
+    avisoFalar(frase, 1500);
+    avisoFalar(frase, 1500 + 3500 + frase.length * 75);
+  } else { try { postosMsgSom(); } catch (e) { /* ignora */ } }
   try { ecraTvPausarAnuncio(); } catch (e) { /* ignora */ }
   const alvo = document.querySelector('.tv-overlay') || document.body;
   const hora = new Date(p.em || Date.now()).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' });
@@ -89860,6 +89870,7 @@ function postosMsgAbrir(preDestinoId, original) {
   let rascunho = '';
   let vista = 'enviar'; // 'enviar' | 'recentes' (2026-11-12)
   let anexoPendente = null; // File escolhido para a mensagem
+  let tvVoz = (() => { try { return localStorage.getItem('siga_msg_tv_voz') !== '0'; } catch (e) { return true; } })();
   const fundo = h('div', { class: 'msg-rapida-fundo' });
   const caixa = h('div', { class: 'msg-rapida-caixa', role: 'dialog', 'aria-label': 'Mensagem rápida' });
   fundo.appendChild(caixa);
@@ -89961,10 +89972,10 @@ function postosMsgAbrir(preDestinoId, original) {
         try { anexo = await sb.ficheiros.carregarPosto(anexoPendente, { msg_id: idMsg, de: (postosMsgIdentidade() || {}).nome || '' }); }
         catch (e) { aEnviar = false; showToast(`O anexo não seguiu. ${e.message || ''}`, 'error'); desenhar(); return; }
       }
-      const r = postosMsgEnviar(escolhidos, texto.value, anexo, idMsg);
+      const r = postosMsgEnviar(escolhidos, texto.value, anexo, idMsg, { voz: tvVoz });
       aEnviar = false;
       if (r && r.ok) anexoPendente = null;
-      if (r && r.ok) { showToast(`💬 Enviada para ${r.nomes.join(', ')}.${r.perdidos ? ' (Algum posto fechou o SIGA entretanto.)' : ''}`, 'success'); fechar(); }
+      if (r && r.ok) { showToast(`💬 Enviada para ${r.nomes.join(', ')}${escolhidos.some(d => d.tipo === 'tv') ? (tvVoz ? ' · na TV: lida em voz alta' : ' · na TV: só texto') : ''}.${r.perdidos ? ' (Algum posto fechou o SIGA entretanto.)' : ''}`, 'success'); fechar(); }
       else if (r === 'desligado') { showToast(`${nomes} já não ${escolhidos.length === 1 ? 'tem' : 'têm'} o SIGA aberto — escolhe outro posto.`, 'error'); escolhidos = null; desenhar(); }
       else if (r === 'espera') showToast('Aguarda um instante antes de enviar outra.', 'info');
       else if (r === 'vazio') texto.focus();
@@ -89997,10 +90008,21 @@ function postosMsgAbrir(preDestinoId, original) {
     btnEmoji.addEventListener('click', () => { const abrir = paletaEmoji.hidden; paletaEmoji.hidden = !abrir; btnEmoji.setAttribute('aria-expanded', abrir ? 'true' : 'false'); btnEmoji.classList.toggle('aberto', abrir); texto.focus(); });
     atualizar();
     setTimeout(() => { texto.focus(); texto.setSelectionRange(texto.value.length, texto.value.length); }, 30);
+    // Com a TV entre os destinos: escolher se a mensagem é lida nos altifalantes ou só aparece no ecrã (fica memorizado).
+    const vaiTv = escolhidos.some(d => d.tipo === 'tv');
+    const opcaoTv = vaiTv ? h('div', { class: 'msg-rapida-tvmodo', role: 'radiogroup', 'aria-label': 'Na TV' }, [
+      h('span', { class: 'rot' }, [Icon('monitor', { size: 14 }), ' Na TV:']),
+      ...[[true, '🔊 Ler em voz alta'], [false, '📝 Só texto']].map(([v, txt]) => {
+        const b = h('button', { type: 'button', role: 'radio', 'aria-checked': tvVoz === v ? 'true' : 'false', class: 'msg-rapida-tvmodo-op' + (tvVoz === v ? ' sel' : '') }, txt);
+        b.addEventListener('mousedown', (ev) => ev.preventDefault());
+        b.addEventListener('click', () => { tvVoz = v; try { localStorage.setItem('siga_msg_tv_voz', v ? '1' : '0'); } catch (e) { } [...b.parentElement.querySelectorAll('.msg-rapida-tvmodo-op')].forEach(x => { const on = x === b; x.classList.toggle('sel', on); x.setAttribute('aria-checked', on ? 'true' : 'false'); }); texto.focus(); });
+        return b;
+      }),
+    ]) : null;
     return [
       h('div', { class: 'msg-rapida-topo' }, [voltar, h('span', { class: 'para', title: nomes }, `${original ? 'Responder a' : 'Para'}: ${nomes}`), btnFechar()]),
       original ? h('div', { class: 'msg-rapida-original' }, `«${original}»`) : null,
-      frases, texto, anexoSel ? anexoSel.chips : null, paletaEmoji,
+      frases, opcaoTv, texto, anexoSel ? anexoSel.chips : null, paletaEmoji,
       h('div', { class: 'msg-rapida-rodape' }, [btnEmoji, anexoSel ? anexoSel.botao : null, conta, enviar]),
     ];
   };
