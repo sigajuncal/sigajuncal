@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-16 21:45" />
+<meta name="siga-versao" content="2026-11-16 21:55" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -6501,6 +6501,8 @@
   .obj-card .obj-card-sub{white-space:normal;overflow:visible;text-overflow:clip;}
   .obj-premio{display:flex;flex-direction:column;gap:1px;font-size:12.5px;color:#5b21b6;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:6px 9px;}
   .obj-premio strong{font-size:13px;}
+  .obj-premio-ops{display:flex;flex-direction:column;gap:1px;font-size:12.5px;color:#334155;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:6px 9px;}
+  .obj-premio-ops b{color:#0f172a;}
   .obj-auto-toggle{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1.5px solid var(--n-200,#e2e8f0);border-radius:12px;margin:0 0 10px;cursor:pointer;background:#fff;}
   .obj-auto-toggle.on{border-color:#86efac;background:#f0fdf4;}
   .obj-auto-toggle input{margin-top:3px;width:18px;height:18px;flex:0 0 auto;}
@@ -43578,6 +43580,20 @@ function buildObjetivoAutoAvisos(o) {
       P.ganhos ? h('span', {}, valores.map((v, i) => `${i + 1}.º ${eur(v)}`).join(' · ')) : null,
       h('span', {}, `Faltam ${P.faltam} un. para o ${P.ganhos + 1}.º prémio`),
     ].filter(Boolean)));
+    // Por colaborador (2026-11-16): quem já atingiu prémio com as suas próprias vendas e quem está perto.
+    const ops = Array.isArray(P.operadores) ? P.operadores.filter(x => x.op && x.op !== '?') : [];
+    if (ops.length) {
+      const nome = (op) => operador4dNome(op);
+      const atingiram = ops.filter(x => x.ganhos > 0);
+      const perto = ops.filter(x => !x.ganhos && x.faltam <= Math.max(2, Math.ceil(P.cada / 4))).slice(0, 3);
+      el.appendChild(h('div', { class: 'obj-premio-ops', title: ops.map(x => `${nome(x.op)}: ${x.unidades} un.${x.ganhos ? ` — ${x.ganhos} prémio${x.ganhos === 1 ? '' : 's'} (${x.valores.map(eur).join(' + ')})` : ''} · faltam ${x.faltam} para o próximo`).join('\n') }, [
+        h('strong', {}, '🏅 Por colaborador'),
+        atingiram.length
+          ? h('span', {}, ['Atingiram: ', ...atingiram.map((x, i) => [i ? ', ' : '', h('b', {}, nome(x.op)), ` (${x.ganhos}${x.ganhos > 1 || P.modo !== 'media' ? ` · ${x.valores.map(eur).join(' + ')}` : ''})`]).flat()])
+          : h('span', {}, 'Ainda ninguém chegou sozinho a um prémio.'),
+        perto.length ? h('span', {}, `Quase: ${perto.map(x => `${nome(x.op)} (falta${x.faltam === 1 ? '' : 'm'} ${x.faltam})`).join(', ')}`) : null,
+      ].filter(Boolean)));
+    }
   }
   if (I.faltam) el.appendChild(h('span', { class: 'obj-auto-alerta' }, `⚠️ Faltam as vendas de ${I.faltam} dia${I.faltam === 1 ? '' : 's'} do período — a contagem pode estar abaixo do real.`));
   if (I.fora.length) {
@@ -43588,6 +43604,16 @@ function buildObjetivoAutoAvisos(o) {
     ]));
   }
   return el;
+}
+// Operador do 4Digital (ex.: «Ine», «Ema» — as primeiras letras do nome) → nome da pessoa no SIGA, quando só há um
+// colaborador ativo cujo primeiro nome começa assim. Se houver dúvida, mostra o código tal como vem do 4Digital.
+function operador4dNome(op) {
+  const sem = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  const c = sem(op);
+  if (!c) return 'Sem operador';
+  const cand = (STATE.usuarios || []).filter(u => u && !u.eliminado && u.ativo !== false && sem(String(u.nomeCompleto || u.username || '').split(/\s+/)[0]).startsWith(c));
+  const nomes = [...new Set(cand.map(u => String(u.nomeCompleto || u.username).split(/\s+/)[0]))];
+  return nomes.length === 1 ? nomes[0] : op;
 }
 function objetivoJuntarForaDaLista(o) {
   const produtos = objetivoProdutos(o).map(p => {
