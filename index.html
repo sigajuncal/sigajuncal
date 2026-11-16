@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-16 11:50" />
+<meta name="siga-versao" content="2026-11-16 13:10" />
 <script>
 /* MUDANÇA PARA O SERVIDOR DA FARMÁCIA (2.0, 16/10/2026): a app passou a viver em https://juncal.sigafarmacia.pt.
    Quem abrir o endereço antigo do GitHub (favorito, app antiga instalada, folhas do QR do ponto) é levado para lá
@@ -4756,7 +4756,18 @@
   .home-section{margin-bottom:36px;}
   .home-section-title{font-weight:800;color:var(--pharm-800);font-size:15px;margin-bottom:14px;}
   .cal-aviso-pendente-icon{font-size:16px;line-height:1;animation:calAvisoPulse 1.6s ease-in-out infinite;}
-  .cal-aviso-pendente-texto{font-size:12.5px;color:#64748b;font-weight:600;}
+  .cal-aviso-pendente-texto{font-size:12.5px;color:#64748b;font-weight:600;background:none;border:0;padding:2px 4px;border-radius:6px;cursor:pointer;text-align:left;font-family:inherit;text-decoration:underline dotted;text-underline-offset:3px;}
+  .cal-aviso-pendente-texto:hover{background:#fef3c7;color:#92400e;}
+  .upa-lista{display:flex;flex-direction:column;gap:8px;max-height:65vh;overflow:auto;}
+  .upa-linha{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--n-200,#e2e8f0);border-radius:12px;background:#fff;}
+  .upa-info{flex:1;min-width:0;}
+  .upa-quando{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;color:#0f172a;}
+  .upa-prest{font-size:11.5px;font-weight:700;padding:1px 8px;border-radius:999px;background:color-mix(in srgb,var(--upa-cor,#64748b) 14%,#fff);color:color-mix(in srgb,var(--upa-cor,#64748b) 80%,#000);}
+  .upa-nome{font-weight:700;font-size:14.5px;margin-top:2px;overflow-wrap:anywhere;}
+  .upa-sub{font-size:12px;color:#64748b;}
+  .upa-acoes{display:flex;flex-direction:column;gap:6px;align-items:stretch;flex-shrink:0;}
+  .upa-vazio{margin:8px 0;font-weight:600;color:#166534;}
+  @media (max-width:520px){.upa-linha{flex-direction:column;align-items:stretch;}.upa-acoes{flex-direction:row;}.upa-acoes>*{flex:1;justify-content:center;}}
   @keyframes calAvisoPulse{0%,100%{opacity:1;}50%{opacity:.55;}}
   .dash-col{display:flex;flex-direction:column;height:100%;}
   .dash-card-title{font-weight:800;color:var(--pharm-800);font-size:15px;margin-bottom:14px;}
@@ -14804,10 +14815,118 @@ function marcacoesComAvisoPendenteProximosDias() {
   const limiteDate = new Date(hojeISO + 'T12:00:00');
   limiteDate.setDate(limiteDate.getDate() + 2);
   const limiteISO = dateToISO(limiteDate);
+  // 2026-11-16: as de hoje cuja hora já passou deixam de contar (já não há nada a avisar), e a lista vem por ordem.
+  const agora = new Date(); const agoraHM = `${pad2(agora.getHours())}:${pad2(agora.getMinutes())}`;
   return (STATE.agendaMarcacoes || []).filter(m =>
-    m.tipoLinha === 'vaga' && m.estado !== 'cancelada' && m.estado !== 'faltou' && m.estado !== 'cancelado' && String(m.nomeCliente || '').trim()
+    m.tipoLinha === 'vaga' && !agendaMarcacaoAnulada(m) && !['concluida', 'concluído', 'concluido', 'concluída'].includes(String(m.estado || '').toLowerCase()) && String(m.nomeCliente || '').trim()
     && m.data >= hojeISO && m.data <= limiteISO && !m.aviso
-  );
+    && !(m.data === hojeISO && normalizarHora(m.hora || '') && normalizarHora(m.hora || '') <= agoraHM)
+  ).sort((a, b) => `${a.data} ${normalizarHora(a.hora || '')}`.localeCompare(`${b.data} ${normalizarHora(b.hora || '')}`));
+}
+// ---- Aviso ativo «utentes por avisar» (2026-11-16) ----
+// Hugo: «verifica avisos para envio de mensagens das agendas… aviso semelhante aos outros… estuda a regra atual mas
+// melhora». A regra continua a mesma (avisar com 2 dias de antecedência; conta como feito qualquer meio), mas até aqui
+// só havia o ⚠️ na Página Inicial. Agora:
+//   • Aviso no SIGA (e notificação do Windows/telemóvel, se a janela não estiver à frente) a partir das 9h30, uma vez
+//     por dia, por pessoa e aparelho — e de novo às 15h00 se ainda houver utentes de AMANHÃ por avisar (última
+//     oportunidade; depois disso o utente já só seria avisado no próprio dia).
+//   • Não avisa por marcações feitas há menos de 24 h (o utente acabou de marcar, sabe a data), nem pelas de hoje cuja
+//     hora já passou. Elas continuam na lista, com a indicação, para quem quiser avisar na mesma.
+//   • «Ver» abre a lista com o botão «Avisar» de cada uma (WhatsApp / telefone / SMS / balcão), sem ir agenda a agenda.
+//   • Prestadores de serviço não recebem; ecrã da TV nunca mostra nomes de utentes.
+const AGENDA_AVISOS_CHAVE = 'siga_agenda_avisos_notificados';
+function agendaMarcacaoRecente(m) {
+  const t = m && m.createdAt ? Date.parse(m.createdAt) : NaN;
+  return !isNaN(t) && Date.now() - t < 24 * 3600 * 1000;
+}
+function agendaAvisoPrestador(m) { return PRESTADORES_AGENDA.find(x => x.key === m.prestadorKey) || null; }
+function agendaAvisoQuando(m) {
+  const hoje = todayISO();
+  const am = (() => { const d = new Date(hoje + 'T12:00:00'); d.setDate(d.getDate() + 1); return dateToISO(d); })();
+  const dia = m.data === hoje ? 'Hoje' : (m.data === am ? 'Amanhã' : formatDate(m.data).slice(0, 5));
+  return `${dia}${normalizarHora(m.hora || '') ? ' ' + normalizarHora(m.hora || '') : ''}`;
+}
+function agendaAvisosVerificar() {
+  try {
+    if (!activeUser || !Array.isArray(STATE.agendaMarcacoes)) return;
+    if (typeof isPrestadorServico === 'function' && isPrestadorServico()) return;
+    if (window.__sigaEcraAtivo) return;
+    const agora = new Date(); const min = agora.getHours() * 60 + agora.getMinutes();
+    if (min < 9 * 60 + 30 || min >= 20 * 60) return;
+    const hoje = todayISO();
+    const am = (() => { const d = new Date(hoje + 'T12:00:00'); d.setDate(d.getDate() + 1); return dateToISO(d); })();
+    const pendentes = marcacoesComAvisoPendenteProximosDias().filter(m => !agendaMarcacaoRecente(m));
+    if (!pendentes.length) return;
+    const tarde = min >= 15 * 60;
+    const deAmanha = pendentes.filter(m => m.data <= am);
+    let reg = {}; try { reg = JSON.parse(localStorage.getItem(AGENDA_AVISOS_CHAVE) || '{}') || {}; } catch (e) { reg = {}; }
+    const chave = `${activeUser.id}|${hoje}|${tarde && deAmanha.length ? 'tarde' : 'manha'}`;
+    if (reg[chave]) return;
+    if (tarde && !deAmanha.length && reg[`${activeUser.id}|${hoje}|manha`]) return;
+    Object.keys(reg).forEach(k => { if (!k.includes(`|${hoje}|`)) delete reg[k]; });
+    reg[chave] = 1;
+    if (tarde && deAmanha.length) reg[`${activeUser.id}|${hoje}|manha`] = 1;
+    try { localStorage.setItem(AGENDA_AVISOS_CHAVE, JSON.stringify(reg)); } catch (e) { /* ignora */ }
+    const lista = tarde && deAmanha.length ? deAmanha : pendentes;
+    const n = lista.length;
+    const titulo = tarde && deAmanha.length ? `📲 Ainda por avisar para amanhã: ${n} utente${n === 1 ? '' : 's'}` : `📲 Utentes por avisar: ${n}`;
+    const corpo = lista.slice(0, 6).map(m => { const p = agendaAvisoPrestador(m); return `${agendaAvisoQuando(m)} · ${m.nomeCliente}${p ? ` (${p.especialidade || p.nome})` : ''}`; }).join('\n') + (n > 6 ? `\n… e mais ${n - 6}` : '');
+    if ('Notification' in window && Notification.permission === 'granted' && document.visibilityState !== 'visible') {
+      try {
+        const nt = new Notification(titulo, { body: corpo, tag: 'agenda-avisos-' + chave, requireInteraction: true, icon: 'icon-512.png' });
+        nt.onclick = () => { try { window.focus(); } catch (e) { } abrirModalUtentesPorAvisar(); try { nt.close(); } catch (e) { } };
+      } catch (e) { try { dispararNotificacaoNativa(titulo, corpo); } catch (e2) { } }
+    }
+    showToast(`${titulo.replace('📲 ', '')} — WhatsApp, telefone ou SMS.`, 'info', { duracao: 20000, acao: { rotulo: 'Ver', fn: () => abrirModalUtentesPorAvisar() } });
+  } catch (e) { console.warn('[agenda] aviso falhou', e); }
+}
+setInterval(agendaAvisosVerificar, 60 * 1000);
+setTimeout(agendaAvisosVerificar, 12000);
+function abrirModalUtentesPorAvisar() {
+  requireAuth(() => {
+    const overlay = h('div', { class: 'modal-overlay' });
+    const fechar = () => { document.removeEventListener('keydown', esc); overlay.remove(); if (STATE.page === 'home') { try { render(); } catch (e) { } } };
+    const esc = (e) => { if (e.key === 'Escape') fechar(); };
+    document.addEventListener('keydown', esc);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay && cliqueComecouEm(overlay)) fechar(); });
+    const corpo = h('div', { class: 'upa-lista' });
+    const desenhar = () => {
+      corpo.innerHTML = '';
+      const lista = marcacoesComAvisoPendenteProximosDias();
+      if (!lista.length) { corpo.appendChild(h('p', { class: 'upa-vazio' }, '✅ Todos os utentes dos próximos 2 dias já estão avisados.')); return; }
+      lista.forEach(m => {
+        const p = agendaAvisoPrestador(m);
+        const ctx = {
+          nome: m.nomeCliente, contacto: m.contacto,
+          mensagem: () => mensagemMarcacaoCliente(m.nomeCliente, p ? p.especialidade : 'consulta', m.data, m.hora),
+          gravar: async (patch) => {
+            const u = await dbUpdate('agendaMarcacoes', m.id, patch);
+            if (u) { STATE.agendaMarcacoes = STATE.agendaMarcacoes.map(x => x.id === m.id ? u : x); setTimeout(desenhar, 0); }
+            return u;
+          },
+        };
+        corpo.appendChild(h('div', { class: 'upa-linha' }, [
+          h('div', { class: 'upa-info' }, [
+            h('div', { class: 'upa-quando' }, [h('strong', {}, agendaAvisoQuando(m)), p ? h('span', { class: 'upa-prest', style: p.cor ? `--upa-cor:${p.cor};` : '' }, p.especialidade || p.nome) : null].filter(Boolean)),
+            h('div', { class: 'upa-nome' }, m.nomeCliente),
+            h('div', { class: 'upa-sub' }, [m.contacto ? formatarTelefonePT(m.contacto) : 'Sem contacto', agendaMarcacaoRecente(m) ? 'marcou há menos de 24 h' : ''].filter(Boolean).join(' · ')),
+          ]),
+          h('div', { class: 'upa-acoes' }, [
+            buildAvisoClienteControlo(m, ctx),
+            h('button', { type: 'button', class: 'btn btn-secondary btn-sm', title: 'Abrir o dia na agenda', onclick: () => { fechar(); document.body.appendChild(buildAgendaDiaModal(m.prestadorKey, m.data, () => { })); } }, [Icon('calendar', { size: 14 }), ' Agenda']),
+          ]),
+        ]));
+      });
+    };
+    desenhar();
+    overlay.appendChild(h('div', { class: 'modal-panel', style: 'max-width:560px;' }, [
+      h('div', { class: 'modal-title-row' }, [h('div', {}, [h('p', { class: 'modal-tag' }, 'Agendas'), h('p', { class: 'modal-title' }, 'Utentes por avisar')]),
+        h('button', { type: 'button', class: 'close-btn', title: 'Fechar', 'aria-label': 'Fechar', onclick: fechar }, Icon('x', { size: 18 }))]),
+      h('p', { class: 'field-helper-text', style: 'margin:0 0 10px;' }, 'Marcações de hoje até daqui a 2 dias ainda sem aviso. Conta como avisado qualquer meio: WhatsApp, telefone, SMS, balcão ou o utente ligou.'),
+      corpo,
+    ]));
+    document.body.appendChild(overlay);
+  });
 }
 // Mede o limite direito do último mês do calendário (sem a seta seguinte),
 // relativamente à esquerda da Página Inicial, e publica-o em
@@ -14860,7 +14979,7 @@ function buildCalendarioSection(goTo) {
       h('span', { class: 'cal-aviso-pendente-icon', 'aria-hidden': 'true' }, '⚠️'),
       // 2026-10-18: o aviso conta como feito seja qual for o meio (WhatsApp, telefone, SMS, balcão, cliente ligou) —
       // todos gravam aviso=true; ao desmarcar, a marcação volta a contar aqui.
-      h('span', { class: 'cal-aviso-pendente-texto', title: pendentesProximos.slice(0, 15).map(m => `${m.nomeCliente} — ${formatDate(m.data).slice(0, 5)} ${normalizarHora(m.hora || '')}`).join('\n') + (pendentesProximos.length > 15 ? `\n… e mais ${pendentesProximos.length - 15}` : '') },
+      h('button', { type: 'button', class: 'cal-aviso-pendente-texto', onclick: () => abrirModalUtentesPorAvisar(), title: pendentesProximos.slice(0, 15).map(m => `${m.nomeCliente} — ${formatDate(m.data).slice(0, 5)} ${normalizarHora(m.hora || '')}`).join('\n') + (pendentesProximos.length > 15 ? `\n… e mais ${pendentesProximos.length - 15}` : '') },
         `Utentes por avisar nos próximos 2 dias (${pendentesProximos.length}) — WhatsApp, telefone ou SMS`),
     );
   }
@@ -36586,6 +36705,10 @@ const EVENTO_TIPOS_HUB_EXCLUIDOS = ['AFA'];
 const SUBTIPOS_RASTREIO = ['Auditivo', 'Cardiovascular', 'Glicémia', 'Outro'];
 const INTERVALOS_VAGA_MIN = [10, 15, 20, 30, 45, 60];
 
+// Dias especiais (2026-11-16, Hugo: «Magusto está a ser anunciado como se fosse eu a tratar disso, mas fui eu que criei o
+// evento apenas»). O campo «responsavel» destes eventos sempre foi preenchido sozinho com quem os criou — não quer
+// dizer quem trata. Agora «quem trata» é um campo à parte (responsavel_dia, opcional); o «responsavel» fica como autor.
+function diaEspecialQuemTrata(ev) { return String((ev && ev.responsavelDia) || '').trim(); }
 function eventoLabel(ev) {
   if (ev.tipoEvento === 'Rastreio') return `Rastreio · ${ev.subtipoRastreio || '—'}`;
   if (ev.tipoEvento === 'Conselheira') return `Conselheira · ${ev.marcaConselheira || '—'}`;
@@ -37051,7 +37174,7 @@ function buildDiaEspecialViewModal(dateISO, evento, onSaved) {
       h('p', { class: 'page-eyebrow', style: 'margin:0 0 4px;font-size:11.5px;' }, 'Descrição / Informação de Balcão'),
       descricaoNode,
     ]),
-    evento.responsavel ? h('p', { style: 'margin:0 0 14px;font-size:13px;color:var(--pharm-600);' }, [h('strong', {}, 'Responsável: '), evento.responsavel]) : null,
+    diaEspecialQuemTrata(evento) ? h('p', { style: 'margin:0 0 14px;font-size:13px;color:var(--pharm-600);' }, [h('strong', {}, 'Quem trata: '), diaEspecialQuemTrata(evento)]) : null,
     buildLinhaAutoria(evento),
     h('div', { class: 'form-actions' }, [editarBtn, abrirLinkBtn, fecharBtn].filter(Boolean)),
   ].filter(Boolean));
@@ -37077,8 +37200,8 @@ function buildDiaEspecialModal(dateISO, evento, onSaved) {
   document.addEventListener('keydown', onKeydown);
 
   const draft = evento
-    ? { titulo: evento.titulo || '', data: evento.dataEvento || dateISO, notas: evento.notas || '', responsavel: evento.responsavel || currentUserName(), link: evento.link || '' }
-    : { titulo: '', data: dateISO, notas: '', responsavel: currentUserName(), link: '' };
+    ? { titulo: evento.titulo || '', data: evento.dataEvento || dateISO, notas: evento.notas || '', responsavel: diaEspecialQuemTrata(evento), link: evento.link || '' }
+    : { titulo: '', data: dateISO, notas: '', responsavel: '', link: '' };
 
   const tituloInput = h('input', { class: 'input', placeholder: 'Ex: Oferta de Guarda-chuvas, Dia da Marca...', maxlength: '150' });
   tituloInput.value = draft.titulo;
@@ -37118,7 +37241,7 @@ function buildDiaEspecialModal(dateISO, evento, onSaved) {
     h('div', { class: 'field span2' }, [h('label', {}, 'Título da Iniciativa'), tituloInput]),
     h('div', { class: 'field field-sm' }, [h('label', {}, 'Data'), melhorarInputData(dataInput)]),
     h('div', { class: 'field span2' }, [h('label', {}, 'Descrição / Informação de Balcão'), descInput]),
-    h('div', { class: 'field field-sm' }, [h('label', {}, 'Responsável'), respInput]),
+    h('div', { class: 'field field-sm' }, [h('label', {}, 'Quem trata (opcional)'), respInput]),
     h('div', { class: 'field span2' }, [h('label', {}, 'Link (opcional — ex: página de inscrições)'), linkRow]),
   ]);
   attachFormEnterNavigation(grid, () => requireAuth(submit));
@@ -37137,7 +37260,8 @@ function buildDiaEspecialModal(dateISO, evento, onSaved) {
     try {
       const payload = {
         tipoEvento: 'DiaEspecial', titulo: draft.titulo, dataEvento: draft.data,
-        notas: draft.notas, responsavel: draft.responsavel || currentUserName(),
+        // «responsavel» continua a ser o autor (como sempre foi); «quem trata» vai para responsavel_dia, só se escrito.
+        notas: draft.notas, responsavel: evento ? (evento.responsavel || currentUserName()) : currentUserName(), responsavelDia: String(draft.responsavel || '').trim(),
         link: String(draft.link || '').trim() ? normalizarUrlExterna(draft.link) : '',
       };
       const resultado = evento ? await dbUpdate('eventos', evento.id, payload) : await dbInsert('eventos', payload);
@@ -40890,7 +41014,9 @@ function ecraTvConstruir() {
     const fim = ecraTvMin(ev.horaFinal);
     if (fim !== null && fim <= agoraMin) return;
     const ini = ecraTvMin(ev.horaInicial);
-    servicos.push({ hora: ev.horaInicial || 'Todo o dia', titulo: ev.tipoEvento || 'Evento', sub: [ev.titulo || ev.nome || ev.marca || '', ev.horaFinal ? `até ${ev.horaFinal}` : ''].filter(Boolean).join(' · '), agora: ini === null || ini <= agoraMin, cor: '#a78bfa' });
+    // 2026-11-16: nome legível («Dia especial», não «DiaEspecial»); num dia especial só aparece quem trata, se houver.
+    const tituloEv = ev.tipoEvento === 'DiaEspecial' ? 'Dia especial' : (ev.tipoEvento === 'AFA' ? 'Análise facial' : (ev.tipoEvento || 'Evento'));
+    servicos.push({ hora: ev.horaInicial || 'Todo o dia', titulo: tituloEv, sub: [ev.tipoEvento === 'DiaEspecial' ? (ev.titulo || '') : (ev.titulo || ev.nome || ev.marca || ''), ev.tipoEvento === 'DiaEspecial' && diaEspecialQuemTrata(ev) ? avisoPrimeiroNome(diaEspecialQuemTrata(ev)) : '', ev.horaFinal ? `até ${ev.horaFinal}` : ''].filter(Boolean).join(' · '), agora: ini === null || ini <= agoraMin, cor: '#a78bfa' });
   });
   servicos.sort((a, b) => String(a.hora).localeCompare(String(b.hora)));
   const painelServicos = ecraTvPainel('calendar', 'Serviços de hoje', servicos.length ? `${servicos.length}` : '', servicos.length ? [h('div', { class: 'tv-servicos', 'data-paginar': 'servicos' }, servicos.map(sv => h('div', { class: 'tv-servico' + (sv.agora ? ' agora' : '') }, [
@@ -41099,7 +41225,7 @@ function ecraTvDiaEspecial(dataISO) {
       if (ev.tipoEvento === 'Conselheira') L.push(['💄', `Conselheira ${String(ev.marcaConselheira || '').trim()}${ev.campanha ? ` — ${ev.campanha}` : ''}${ev.miniFaciais ? ' · mini-faciais' : ''}${horas}`]);
       else if (ev.tipoEvento === 'Rastreio') L.push(['🩺', `Rastreio${ev.subtipoRastreio ? ` ${String(ev.subtipoRastreio).toLowerCase()}` : ''}${horas}`]);
       else if (ev.tipoEvento === 'AFA') L.push(['✨', `Análise Facial (AFA)${horas}`]);
-      else if (ev.tipoEvento === 'DiaEspecial') L.push(['⭐', `${ev.titulo || 'Dia especial'}${ev.responsavel ? ` · ${avisoPrimeiroNome(ev.responsavel)}` : ''}`]);
+      else if (ev.tipoEvento === 'DiaEspecial') L.push(['⭐', `${ev.titulo || 'Dia especial'}${diaEspecialQuemTrata(ev) ? ` · ${avisoPrimeiroNome(diaEspecialQuemTrata(ev))}` : ''}`]);
       else L.push(['📌', `${eventoLabel(ev)}${horas}`]);
     });
   // 2026-11-01 (Hugo: "não quero que o modo TV diga em voz alta as campanhas em vigor"): as campanhas que começam ou
