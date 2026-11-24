@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-24 19:45" />
+<meta name="siga-versao" content="2026-11-24 21:10" />
 <style id="siga-tema-base">html[data-tema="escuro"]{background:#161618;color-scheme:dark;}</style>
 <script>try{var sigaTemaP=localStorage.getItem('siga-tema')||'claro';if(!/[?&](ecra|quiosque|tv)=/.test(location.search)&&(sigaTemaP==='escuro'||(sigaTemaP==='auto'&&window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches)))document.documentElement.setAttribute('data-tema','escuro');}catch(e){}</script>
 <script>
@@ -52220,8 +52220,47 @@ function sigaEhAppSafari() {
     return safari && standalone;
   } catch (e) { return false; }
 }
+// 2026-11-24 (Hugo: «no telemóvel acho que não dá»): no iPhone/iPad todos os browsers são Safari por dentro (WebKit),
+// por isso levam o mesmo tratamento do Safari. E na app do ecrã principal (atalho do SIGA no iPhone) o iOS não
+// tem impressão nenhuma — window.print() não faz nada. Aí gera-se o PDF e abre-se o menu Partilhar do iPhone, que
+// tem «Imprimir» (AirPrint), além de Guardar em Ficheiros, Mail, etc.
+function sigaEhIOS() {
+  try { const ua = navigator.userAgent || ''; return /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1); } catch (e) { return false; }
+}
+function sigaEmModoApp() {
+  try { return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true; } catch (e) { return false; }
+}
+async function imprimirNoTelemovelPorPdf(conteudoNode, opcoes) {
+  const nome = `${String(opcoes.titulo || 'documento').replace(/[^\w\-.]+/g, '_')}.pdf`;
+  const aviso = h('div', { class: 'doc-previa-overlay', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Imprimir no telemóvel', style: 'display:flex;align-items:center;justify-content:center;padding:20px;' });
+  const caixa = h('div', { class: 'modal-panel', style: 'max-width:360px;width:100%;text-align:center;padding:22px 20px;' }, [h('p', { class: 'modal-title', style: 'margin:0 0 6px;' }, 'A preparar o documento…'), h('p', { class: 'field-helper-text', style: 'margin:0;' }, 'Só um instante.')]);
+  aviso.appendChild(caixa); document.body.appendChild(aviso);
+  const fechar = () => { aviso.remove(); };
+  let blob = null;
+  try { blob = await baixarPdfDocumento(conteudoNode, nome, { orientacao: opcoes.orientacao, comoBlob: true }); } catch (e) { blob = null; }
+  if (!blob) { fechar(); showToast('Não foi possível preparar o documento para imprimir. Tenta «Descarregar PDF».', 'error'); return; }
+  const ficheiro = (() => { try { return new File([blob], nome, { type: 'application/pdf' }); } catch (e) { return null; } })();
+  const podePartilhar = !!(ficheiro && navigator.canShare && navigator.canShare({ files: [ficheiro] }));
+  const depois = () => { if (typeof opcoes.depois === 'function') { try { opcoes.depois(); } catch (e) { /* ignora */ } } };
+  // O menu Partilhar só abre a partir de um toque: por isso o PDF prepara-se primeiro e o toque é neste botão.
+  const btn = h('button', { type: 'button', class: 'btn btn-primary', style: 'width:100%;margin-top:14px;' }, iconeTexto('printer', 'Imprimir…'));
+  btn.addEventListener('click', async () => {
+    if (podePartilhar) {
+      try { await navigator.share({ files: [ficheiro], title: nome }); depois(); fechar(); } catch (e) { if (e && e.name === 'AbortError') return; abrirPdf(); }
+    } else abrirPdf();
+  });
+  const abrirPdf = () => { const url = URL.createObjectURL(blob); window.open(url, '_blank'); setTimeout(() => URL.revokeObjectURL(url), 120000); depois(); fechar(); };
+  caixa.innerHTML = '';
+  caixa.append(
+    h('p', { class: 'modal-title', style: 'margin:0 0 6px;' }, 'Documento pronto'),
+    h('p', { class: 'field-helper-text', style: 'margin:0;' }, podePartilhar ? 'Carrega em «Imprimir…» e escolhe «Imprimir» no menu que abre.' : 'Carrega em «Imprimir…»: o PDF abre e imprimes pelo botão Partilhar › Imprimir.'),
+    btn,
+    h('button', { type: 'button', class: 'btn btn-secondary', style: 'width:100%;margin-top:8px;', onclick: fechar }, 'Cancelar'),
+  );
+}
 function imprimirDocumento(conteudoNode, opcoes) {
   opcoes = opcoes || {};
+  if (sigaEhIOS() && sigaEmModoApp()) { imprimirNoTelemovelPorPdf(conteudoNode, opcoes); return; }
   // 2026-11-24 (Hugo: «continua tudo terrível no que diz respeito à impressão em toda a app, piorou»): volta EXATAMENTE
   // ao mecanismo de 22/11, que sempre funcionou (prepara a área e chama window.print() 60 ms depois). Sai a pausa do
   // tempo real e a pergunta «a janela não abriu» (no Safari aparecia por cima de impressões que estavam a abrir).
@@ -52263,12 +52302,13 @@ function imprimirDocumento(conteudoNode, opcoes) {
     imprimir();
   } else setTimeout(imprimir, 60);
   setTimeout(() => {
-    if (abriu || feito) return;
+    if (abriu || feito || sigaEhIOS()) return;
     log('a janela de imprimir não abriu');
     try { showToast(`Se a janela de imprimir não abriu, carrega ${/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? '⌘P' : 'Ctrl+P'} — o documento está pronto.`, 'info'); } catch (e) { /* ignora */ }
   }, 1500);
 }
 function sigaEhSafari() {
+  if (sigaEhIOS()) return true;
   try { const ua = navigator.userAgent || ''; return /Safari/.test(ua) && !/Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS/.test(ua); } catch (e) { return false; }
 }
 function pdfIgnorarElemento(el) {
@@ -52303,7 +52343,7 @@ async function baixarPdfDocumento(conteudoNode, nomeFicheiro, opcoes) {
       .map(el => { el.style.height = `calc(${alturaA4} - 2px)`; return el; });
     try {
       window.scrollTo(0, 0);
-      await window.html2pdf().set({
+      const trabalho = window.html2pdf().set({
         margin: 0,
         filename: nomeFicheiro,
         image: { type: 'jpeg', quality: 0.98 },
@@ -52311,9 +52351,11 @@ async function baixarPdfDocumento(conteudoNode, nomeFicheiro, opcoes) {
         // os estilos e a folha (5× mais rápido; o PDF sai igual).
         html2canvas: { scale: 2, useCORS: true, scrollX: 0, scrollY: 0, ignoreElements: pdfIgnorarElemento },
         jsPDF: { unit: 'mm', format: 'a4', orientation: orientacao },
-      }).from(folha).save();
+      });
+      // opcoes.comoBlob (impressão no telemóvel): devolve o PDF em vez de o descarregar.
+      const blob = opcoes.comoBlob ? await trabalho.from(folha).outputPdf('blob') : (await trabalho.from(folha).save(), null);
       area.innerHTML = ''; // isolamento rígido também depois de gerar o PDF (não passa por window.print/afterprint)
-      return;
+      return blob;
     } catch (e) {
       console.error('[html2pdf] erro ao gerar PDF:', formatarErroSeguro(e));
     } finally {
@@ -52322,6 +52364,7 @@ async function baixarPdfDocumento(conteudoNode, nomeFicheiro, opcoes) {
       try { if (window.scrollX !== sx || window.scrollY !== sy) window.scrollTo(sx, sy); } catch (e) { /* ignora */ }
     }
   }
+  if (opcoes.comoBlob) return null;
   showToast('Não foi possível gerar o PDF diretamente — usa "Imprimir" e escolhe "Guardar como PDF" na caixa de diálogo de impressão do browser.', 'info');
   imprimirDocumento(conteudoNode, { orientacao, semAlternativa: true });
 }
