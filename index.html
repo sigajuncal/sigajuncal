@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-24 21:10" />
+<meta name="siga-versao" content="2026-11-24 23:00" />
 <style id="siga-tema-base">html[data-tema="escuro"]{background:#161618;color-scheme:dark;}</style>
 <script>try{var sigaTemaP=localStorage.getItem('siga-tema')||'claro';if(!/[?&](ecra|quiosque|tv)=/.test(location.search)&&(sigaTemaP==='escuro'||(sigaTemaP==='auto'&&window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches)))document.documentElement.setAttribute('data-tema','escuro');}catch(e){}</script>
 <script>
@@ -12577,6 +12577,24 @@ html[data-tema="escuro"] .temp-hist-tipo.decl:not(#vidro-x2){color:#a5a3ff;} htm
 html[data-tema="escuro"] .decl-emitidas:not(#vidro-x2){border-top-color:rgba(255,255,255,.12);}
 html[data-tema="escuro"] .decl-emitida-txt span:not(#vidro-x2),html[data-tema="escuro"] .decl-emitida-guia:not(#vidro-x2){color:#aeaeb2;}
 @media (max-width:600px){ .decl-emitida{grid-template-columns:minmax(0,1fr) auto;} .decl-emitida-quem{grid-column:1;align-items:flex-start;flex-direction:row;gap:6px;} .decl-emitida-acoes{grid-row:1 / span 2;grid-column:2;} }
+/* 2026-11-24 (Hugo, iPhone: «melhora isto na vista telemóvel»): no Histórico de documentos, no telemóvel, cada registo
+   lê-se de cima para baixo — tipo e título, o resumo (até 2 linhas), quem e quando, e só no fim os botões, numa fila
+   que ocupa a largura toda. Os separadores do topo deslizam de lado em vez de se sobreporem. */
+@media (max-width:640px){
+  .temp-hist-modal .temp-hist-seg{display:flex !important;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;}
+  .temp-hist-modal .temp-hist-seg::-webkit-scrollbar{display:none;}
+  .temp-hist-modal .temp-hist-seg .tab-btn{flex:1 0 auto;white-space:nowrap;padding-left:12px;padding-right:12px;}
+  .temp-hist-modal .decl-emitida{grid-template-columns:minmax(0,1fr) !important;gap:8px;padding:12px;}
+  .temp-hist-modal .decl-emitida-txt{grid-row:1 !important;grid-column:1 !important;}
+  .temp-hist-modal .decl-emitida-txt strong{display:block;font-size:15px;line-height:1.5;}
+  .temp-hist-modal .decl-emitida-txt > span{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}
+  .temp-hist-modal .decl-emitida-txt strong span{white-space:nowrap;}
+  .temp-hist-modal .decl-emitida-txt strong .temp-hist-tipo{display:table;margin:0 0 4px;}
+  .temp-hist-modal .decl-emitida-quem{grid-row:2 !important;grid-column:1 !important;flex-direction:row;align-items:baseline;gap:6px;}
+  .temp-hist-modal .decl-emitida-acoes{grid-row:3 !important;grid-column:1 !important;display:flex;flex-wrap:wrap;justify-content:stretch;gap:6px;}
+  .temp-hist-modal .decl-emitida-acoes .btn{flex:1 1 40%;min-width:0;justify-content:center;padding:9px 6px;font-size:13.5px;white-space:nowrap;overflow:hidden;}
+  .temp-hist-modal .decl-emitida-acoes .ausencia-cancelar{flex:0 0 auto;align-self:center;}
+}
 /* Km do dia vs rotas (Estatísticas de Entregas) */
 .carrinha-div{margin:14px 0;padding:16px 18px;}
 .carrinha-div.tem-susp{box-shadow:inset 3px 0 0 #ef4444,0 0 0 .5px rgba(60,60,67,.12) !important;}
@@ -97528,7 +97546,7 @@ async function senhasEstCarregar(redesenhar) {
   const desde = k === 'tudo' ? new Date(2021, 0, 1) : (() => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - Number(k)); return d; })();
   try {
     const { data, error } = await sb.rpc('quiosque_estatisticas', { desde: desde.toISOString(), ate: ate.toISOString() });
-    SENHAS_EST.dados[k] = { em: Date.now(), erro: error ? (error.message || 'erro') : null, linhas: (data && data.linhas) || [], balcoes: (data && data.balcoes) || [] };
+    SENHAS_EST.dados[k] = { em: Date.now(), erro: error ? (error.message || 'erro') : null, linhas: (data && data.linhas) || [], balcoes: (data && data.balcoes) || [], massa: (data && data.massa) || [] };
   } catch (e) { SENHAS_EST.dados[k] = { em: Date.now(), erro: String(e && e.message || e), linhas: [], balcoes: [] }; }
   SENHAS_EST.aCarregar = false;
   if (typeof redesenhar === 'function') redesenhar();
@@ -97662,6 +97680,21 @@ function buildSenhasEstatisticas(redesenhar) {
     h('tbody', {}, top.map(d => h('tr', {}, [h('th', {}, `${formatDate(d.dia)} (${['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'][new Date(d.dia + 'T12:00:00').getDay()]}${senhasEstTipoDia(d.dia) === 'feriado' ? ', feriado' : ''})`), h('td', {}, String(d.n)), h('td', {}, senhasEstMin(d.espN ? d.espS / d.espN : 0))]))),
   ])]));
   card.appendChild(h('div', { class: 'senhas-est-extra' }, extra));
+  // 2026-11-24 (Hugo: senhas chamadas praticamente todas ao mesmo tempo, «apenas para não desvirtuar os dados»): o servidor
+  // marca as chamadas em massa (4+ no mesmo balcão, ou 8+ na farmácia, em ±60 s) e tira-as dos tempos de espera e de
+  // atendimento. As senhas continuam a contar. Aqui mostra-se o que ficou de fora, para se saber porquê.
+  const massa = (SENHAS_EST.dados[SENHAS_EST.periodo] || {}).massa || [];
+  if (massa.length) {
+    const nM = massa.reduce((t, m) => t + (Number(m[3]) || 0), 0);
+    card.appendChild(h('details', { class: 'senhas-est-massa', style: 'margin-top:12px;' }, [
+      h('summary', { style: 'cursor:pointer;font-weight:600;' }, `${nM} ${nM === 1 ? 'senha chamada' : 'senhas chamadas'} em massa — fora dos tempos de espera e de atendimento`),
+      h('p', { class: 'field-helper-text', style: 'margin:6px 0;' }, 'Chamadas quase todas ao mesmo tempo (4 ou mais no mesmo balcão, ou 8 ou mais na farmácia, no espaço de um minuto). Continuam a contar como senhas tiradas.'),
+      h('table', { class: 'senhas-est-tabela' }, [
+        h('thead', {}, h('tr', {}, ['Dia', 'Hora', 'Balcão', 'Senhas'].map(t => h('th', {}, t)))),
+        h('tbody', {}, massa.map(([dia, hm, balcao, n, lista]) => h('tr', {}, [h('th', {}, formatDate(dia)), h('td', {}, hm), h('td', {}, balcao || '—'), h('td', {}, `${n} · ${lista}`)]))),
+      ]),
+    ]));
+  }
   if (!temEspera) card.appendChild(h('p', { class: 'field-helper-text', style: 'margin-top:10px;' }, 'Os tempos de espera e de atendimento aparecem depois de importar o histórico do Qmagine (traz a hora em que cada senha foi chamada e fechada).'));
   return card;
 }
@@ -98981,7 +99014,7 @@ function abrirHistoricoDocumentosFrio() {
     const D = declEmitidas().map(x => ({ tipo: 'decl', x, em: x.em }));
     const T = tempDocEmitidos().map(x => ({ tipo: 'temp', x, em: x.em }));
     const todos = D.concat(T).sort((a, b) => String(b.em || '').localeCompare(String(a.em || '')));
-    const seg = h('div', { class: 'fin-seg temp-hist-seg' }, [['todos', `Todos (${todos.length})`], ['decl', `Declarações (${D.length})`], ['temp', `Registos de temperatura (${T.length})`]].map(([k, t]) =>
+    const seg = h('div', { class: 'fin-seg temp-hist-seg' }, [['todos', `Todos (${todos.length})`], ['decl', `Declarações (${D.length})`], ['temp', `Temperaturas (${T.length})`]].map(([k, t]) =>
       h('button', { type: 'button', class: 'tab-btn' + (TEMP_HIST_FILTRO === k ? ' active' : ''), onclick: () => { TEMP_HIST_FILTRO = k; desenhar(); } }, t)));
     corpo.appendChild(seg);
     const L = TEMP_HIST_FILTRO === 'todos' ? todos : todos.filter(i => i.tipo === TEMP_HIST_FILTRO);
