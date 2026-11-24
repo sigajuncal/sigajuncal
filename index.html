@@ -52239,7 +52239,37 @@ function imprimirDocumento(conteudoNode, opcoes) {
   };
   window.addEventListener('afterprint', () => { log('afterprint (janela de imprimir fechada)'); depois(); }, { once: true });
   setTimeout(depois, 8000);
-  setTimeout(() => { log('window.print()'); try { window.print(); } catch (e) { log('erro: ' + (e && e.message)); } }, 60);
+  const imprimir = () => { log('window.print()'); try { window.print(); } catch (e) { log('erro: ' + (e && e.message)); } };
+  // 2026-11-24 (Hugo, Safari no Mac: «clico no botão para imprimir e não acontece nada» — o PDF funciona): o Safari só
+  // abre a janela de imprimir se window.print() for chamado ainda dentro do clique; 60 ms depois ignora-o em silêncio.
+  // No Safari (browser ou app do Dock) chama-se já — o documento foi preparado de forma síncrona logo acima. Nos outros
+  // browsers fica o mecanismo de 22/11 (60 ms). Se ao fim de 1,5 s a janela não tiver aberto, aparece a dica do ⌘P
+  // (o documento continua pronto na área de impressão).
+  let abriu = false;
+  window.addEventListener('beforeprint', () => { abriu = true; }, { once: true });
+  // Além disso o Safari adia a janela de imprimir enquanto houver pedidos à rede em curso — e a ligação de tempo real
+  // está sempre aberta. No Safari fecha-se essa ligação mesmo antes de imprimir e volta a abrir-se quando a janela de
+  // imprimir fecha (ou ao fim de 60 s, por segurança).
+  if (sigaEhSafari()) {
+    let pausou = false;
+    try { pausou = !!(typeof sb !== 'undefined' && sb && typeof sb.pausarTempoReal === 'function' && sb.pausarTempoReal()); } catch (e) { pausou = false; }
+    if (pausou) {
+      log('tempo real em pausa');
+      let retomado = false;
+      const retomar = () => { if (retomado) return; retomado = true; try { sb.retomarTempoReal(); log('tempo real retomado'); } catch (e) { /* ignora */ } };
+      window.addEventListener('afterprint', () => setTimeout(retomar, 300), { once: true });
+      setTimeout(retomar, 60000);
+    }
+    imprimir();
+  } else setTimeout(imprimir, 60);
+  setTimeout(() => {
+    if (abriu || feito) return;
+    log('a janela de imprimir não abriu');
+    try { showToast(`Se a janela de imprimir não abriu, carrega ${/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? '⌘P' : 'Ctrl+P'} — o documento está pronto.`, 'info'); } catch (e) { /* ignora */ }
+  }, 1500);
+}
+function sigaEhSafari() {
+  try { const ua = navigator.userAgent || ''; return /Safari/.test(ua) && !/Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS/.test(ua); } catch (e) { return false; }
 }
 function pdfIgnorarElemento(el) {
   if (!el || el === document.body || el === document.documentElement || el.tagName === 'HEAD') return false;
