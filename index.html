@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-24 18:45" />
+<meta name="siga-versao" content="2026-11-24 19:00" />
 <style id="siga-tema-base">html[data-tema="escuro"]{background:#161618;color-scheme:dark;}</style>
 <script>try{var sigaTemaP=localStorage.getItem('siga-tema')||'claro';if(!/[?&](ecra|quiosque|tv)=/.test(location.search)&&(sigaTemaP==='escuro'||(sigaTemaP==='auto'&&window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches)))document.documentElement.setAttribute('data-tema','escuro');}catch(e){}</script>
 <script>
@@ -52217,9 +52217,15 @@ function imprimirDocumento(conteudoNode, opcoes) {
   let pausou = false;
   try { pausou = !!(sb && sb.pausarTempoReal && sb.pausarTempoReal()); } catch (e) { pausou = false; }
   let retomado = false;
-  const retomar = () => { if (retomado) return; retomado = true; window.removeEventListener('afterprint', retomar); if (pausou) { try { sb.retomarTempoReal(); } catch (e) { /* ignora */ } } };
+  // opcoes.depois (ex.: registar a declaração no histórico) só corre DEPOIS da impressão: um pedido à rede a meio
+  // (a gravar o documento) também faz o Safari adiar a janela de imprimir.
+  const retomar = () => {
+    if (retomado) return; retomado = true; window.removeEventListener('afterprint', retomar);
+    if (pausou) { try { sb.retomarTempoReal(); } catch (e) { /* ignora */ } }
+    if (typeof opcoes.depois === 'function') setTimeout(() => { try { opcoes.depois(); } catch (e) { /* ignora */ } }, 300);
+  };
   window.addEventListener('afterprint', retomar);
-  setTimeout(retomar, 120000); // rede de segurança: o tempo real nunca fica desligado
+  setTimeout(retomar, 120000); // rede de segurança: o tempo real (e o registo) nunca ficam por fazer
   let abriu = false;
   const marca = () => { abriu = true; };
   window.addEventListener('beforeprint', marca, { once: true });
@@ -98639,15 +98645,18 @@ async function tempDocCarregar() {
 function tempDocNivel(nome, v) { return tempNivelTemp(tempTipo(nome), v); }
 function tempSerie(nome) { try { return (TEMP.est && TEMP.est.series && TEMP.est.series[nome]) || ''; } catch (e) { return ''; } }
 function tempDesdeTexto() { const d = TEMP.est && TEMP.est.desde; return d ? `${String(d).slice(8, 10)}/${String(d).slice(5, 7)}/${String(d).slice(0, 4)}` : ''; }
-function tempDocGrafico(linhas, P) {
+// 2026-11-24 (Hugo: «acrescenta a humidade»): o mesmo gráfico serve para a humidade (opc.hum) — leituras l[3], em %.
+function tempDocGrafico(linhas, P, opc) {
+  opc = opc || {};
+  const iv = opc.hum ? 3 : 2, un = opc.hum ? '%' : '°';
   const NS = 'http://www.w3.org/2000/svg';
   const el = (tag, at, txt) => { const e = document.createElementNS(NS, tag); for (const k in at) e.setAttribute(k, at[k]); if (txt !== undefined) e.textContent = txt; return e; };
-  const W = 700, Ht = 210, pe = 34, pd = 8, pt = 8, pb = 22;
+  const W = 700, Ht = opc.altura || 210, pe = 34, pd = 8, pt = 8, pb = 22;
   const series = {};
-  linhas.forEach(l => { const d = tempDataDe(l[1]); if (d) (series[l[0]] = series[l[0]] || []).push([d.getTime(), l[2]]); });
+  linhas.forEach(l => { const d = tempDataDe(l[1]); if (d && l[iv] !== null && l[iv] !== undefined) (series[l[0]] = series[l[0]] || []).push([d.getTime(), l[iv]]); });
   const todos = Object.values(series).flat();
   if (!todos.length) return null;
-  const soFrio = Object.keys(series).every(n => tempTipo(n) === 'frio');
+  const soFrio = !opc.hum && Object.keys(series).every(n => tempTipo(n) === 'frio');
   let vmin = Math.min(...todos.map(p => p[1])), vmax = Math.max(...todos.map(p => p[1]));
   if (soFrio) { vmin = Math.min(vmin, 2); vmax = Math.max(vmax, 8); }
   vmin = Math.floor(vmin - 1); vmax = Math.ceil(vmax + 1);
@@ -98661,7 +98670,7 @@ function tempDocGrafico(linhas, P) {
   const passo = Math.max(1, Math.round((vmax - vmin) / 6));
   for (let v = Math.ceil(vmin); v <= vmax; v += passo) {
     svg.appendChild(el('line', { x1: pe, x2: W - pd, y1: Y(v), y2: Y(v), stroke: '#e5e7eb', 'stroke-width': 0.6 }));
-    svg.appendChild(el('text', { x: pe - 4, y: Y(v) + 3, 'text-anchor': 'end', 'font-size': 8, fill: '#475569' }, v + '°'));
+    svg.appendChild(el('text', { x: pe - 4, y: Y(v) + 3, 'text-anchor': 'end', 'font-size': 8, fill: '#475569' }, v + un));
   }
   const horas = (t1 - t0) / 3600000;
   tempMarcasTempo(t0, t1, 8).forEach(m => {
@@ -98673,7 +98682,8 @@ function tempDocGrafico(linhas, P) {
     tempSvgSerie(svg, series[nome].sort((a, b) => a[0] - b[0]), X, Y, i, { largura: 1.5, raio: 2.6, passoPx: 70 });
   });
   const legenda = h('div', { style: 'display:flex;flex-wrap:wrap;gap:4px 14px;font-size:9px;margin-top:2px;align-items:center;' }, Object.keys(series).sort().map((n, i) => h('span', { style: 'display:inline-flex;align-items:center;' }, [tempLegendaAmostra(i, 0.9), n])));
-  return h('div', { style: 'border:1px solid #cbd5e1;border-radius:4px;padding:6px 8px;margin:8px 0 10px;' }, [svg, legenda]);
+  const tit = opc.titulo ? h('div', { style: 'font-size:9px;font-weight:700;color:#334155;margin-bottom:2px;' }, opc.titulo) : null;
+  return h('div', { style: 'border:1px solid #cbd5e1;border-radius:4px;padding:6px 8px;margin:6px 0 8px;' }, [tit, svg, legenda].filter(Boolean));
 }
 function buildTempDocumento({ P, linhas }) {
   const fmtDH = (s) => `${String(s).slice(8, 10)}/${String(s).slice(5, 7)}/${String(s).slice(0, 4)} ${String(s).slice(11, 16)}`;
@@ -98694,13 +98704,15 @@ function buildTempDocumento({ P, linhas }) {
     let ant = tempDataDe(L[0][1]).getTime(); // falhas só a contar da 1.ª leitura guardada (antes disso o SIGA ainda não registava)
     L.forEach(l => { const t = tempDataDe(l[1]).getTime(); if (t - ant > 90 * 60000) falhas.push([ant, t]); ant = t; });
     if (Math.min(Date.now(), P.aI.getTime()) - ant > 90 * 60000) falhas.push([ant, Math.min(Date.now(), P.aI.getTime())]);
-    return { nome, n: L.length, min: Math.min(...vs), max: Math.max(...vs), med: vs.reduce((a, b) => a + b, 0) / vs.length, fora, falhas, primeira: L[0][1], ultima: L[L.length - 1][1] };
+    const hs = L.map(l => l[3]).filter(x => x !== null && x !== undefined);
+    const hum = hs.length ? { min: Math.min(...hs), max: Math.max(...hs), med: hs.reduce((a, b) => a + b, 0) / hs.length } : null;
+    return { nome, hum, n: L.length, min: Math.min(...vs), max: Math.max(...vs), med: vs.reduce((a, b) => a + b, 0) / vs.length, fora, falhas, primeira: L[0][1], ultima: L[L.length - 1][1] };
   });
   const primeiraSiga = linhas.length ? linhas.reduce((m, l) => l[1] < m ? l[1] : m, linhas[0][1]) : null;
   const css = 'font-size:10px;margin:2px 0;';
   const cabecalho = [
     buildDocLetterhead(),
-    h('h1', { class: 'doc-title', style: 'font-size:15px;letter-spacing:.02em;text-transform:none;margin:6px 0 8px;' }, 'Registo de temperatura — conservação de produtos'),
+    h('h1', { class: 'doc-title', style: 'font-size:15px;letter-spacing:.02em;text-transform:none;margin:6px 0 8px;' }, 'Registo de temperatura e humidade — conservação de produtos'),
     h('p', { style: css }, [h('b', {}, 'Período: '), `${fmtDH(P.de)} a ${fmtDH(P.ate)}`]),
     h('p', { style: css }, [h('b', {}, 'Equipamento(s): '), sondas.join(', ')]),
     // 2026-11-15 (Hugo): o responsável é sempre a Direção Técnica.
@@ -98708,19 +98720,21 @@ function buildTempDocumento({ P, linhas }) {
     TEMP_DOC.nota ? h('p', { style: css }, [h('b', {}, 'Produto / motivo: '), TEMP_DOC.nota]) : null,
     h('p', { style: css + 'color:#334155;' }, 'Leituras automáticas das sondas de temperatura e humidade (PharmaIoT), registadas automaticamente (cerca de 3 por hora). Intervalo de conservação no frio: 2 °C a 8 °C.'),
     h('table', { style: 'width:100%;border-collapse:collapse;margin:8px 0 4px;font-size:9.5px;' }, [
-      h('thead', {}, h('tr', {}, ['Equipamento (nº de série)', 'Leituras', 'Mínima', 'Máxima', 'Média', 'Fora do intervalo', 'Sem leituras (> 90 min)'].map(t => h('th', { style: 'border:1px solid #94a3b8;padding:3px 5px;text-align:left;background:#f1f5f9;' }, t)))),
+      h('thead', {}, h('tr', {}, ['Equipamento (nº de série)', 'Leituras', 'Mínima', 'Máxima', 'Média', 'Humidade', 'Fora do intervalo', 'Sem leituras (> 90 min)'].map(t => h('th', { style: 'border:1px solid #94a3b8;padding:3px 4px;text-align:left;background:#f1f5f9;text-transform:none;letter-spacing:0;font-size:9px;' }, t)))),
       h('tbody', {}, resumo.map(r => h('tr', {}, [
         h('td', { style: 'border:1px solid #94a3b8;padding:3px 5px;font-weight:700;' }, [r.nome, tempSerie(r.nome) ? h('div', { style: 'font-weight:400;font-size:8.5px;color:#334155;' }, tempSerie(r.nome)) : null].filter(Boolean)),
         h('td', { style: 'border:1px solid #94a3b8;padding:3px 5px;' }, r.n ? String(r.n) : 'sem leituras'),
         h('td', { style: 'border:1px solid #94a3b8;padding:3px 5px;' }, r.n ? `${tempNum(r.min)} °C` : '—'),
         h('td', { style: 'border:1px solid #94a3b8;padding:3px 5px;' }, r.n ? `${tempNum(r.max)} °C` : '—'),
         h('td', { style: 'border:1px solid #94a3b8;padding:3px 5px;' }, r.n ? `${tempNum(r.med)} °C` : '—'),
+        h('td', { style: 'border:1px solid #94a3b8;padding:3px 5px;' }, r.hum ? [`${tempNum(r.hum.min, 0)}–${tempNum(r.hum.max, 0)} %`, h('div', { style: 'font-size:8.5px;color:#334155;' }, `média ${tempNum(r.hum.med, 0)} %`)] : '—'),
         h('td', { style: 'border:1px solid #94a3b8;padding:3px 5px;' + (r.fora && r.fora.length ? 'color:#b91c1c;font-weight:700;' : '') }, !r.n ? '—' : r.fora.length ? `${r.fora.length} leitura${r.fora.length === 1 ? '' : 's'} (${fmtDH(r.fora[0][1])}${r.fora.length > 1 ? ' a ' + fmtDH(r.fora[r.fora.length - 1][1]) : ''})` : 'Nenhuma'),
         h('td', { style: 'border:1px solid #94a3b8;padding:3px 5px;' }, !r.n ? '—' : r.falhas.length ? r.falhas.slice(0, 3).map(([a, b]) => { const x = new Date(a), y = new Date(b); return `${pad2(x.getDate())}/${pad2(x.getMonth() + 1)} ${pad2(x.getHours())}:${pad2(x.getMinutes())}–${y.toDateString() === x.toDateString() ? '' : pad2(y.getDate()) + '/' + pad2(y.getMonth() + 1) + ' '}${pad2(y.getHours())}:${pad2(y.getMinutes())}`; }).join('; ') + (r.falhas.length > 3 ? ` (+${r.falhas.length - 3})` : '') : 'Nenhum'),
       ]))),
     ]),
     primeiraSiga && primeiraSiga > P.de ? h('p', { style: css + 'color:#b45309;' }, `Nota: o SigaFarmácia só tem leituras guardadas a partir de ${fmtDH(primeiraSiga)}.`) : null,
-    tempDocGrafico(linhas, P),
+    tempDocGrafico(linhas, P, { altura: 175, titulo: 'Temperatura (°C)' }),
+    tempDocGrafico(linhas, P, { hum: true, altura: 120, titulo: 'Humidade relativa (%)' }),
     detalhe === 'grafico' && !linhasFora.length ? null : h('p', { style: 'font-size:10px;font-weight:700;margin:6px 0 4px;' + (detalhe === 'grafico' ? 'color:#b91c1c;' : '') }, detalhe === 'grafico' ? 'Leituras fora do intervalo de conservação' : detalhe === 'todas' ? 'Leituras registadas' : detalhe === 'hora' ? 'Temperatura mínima e máxima por hora' : 'Temperatura mínima e máxima por dia'),
   ].filter(Boolean);
   // Linhas da tabela
@@ -98735,12 +98749,12 @@ function buildTempDocumento({ P, linhas }) {
   } else {
     const corte = detalhe === 'hora' ? 13 : 10;
     const g = {};
-    linhas.forEach(l => { const k = l[0] + '|' + String(l[1]).slice(0, corte); (g[k] = g[k] || { nome: l[0], chave: String(l[1]).slice(0, corte), v: [] }).v.push(l[2]); });
-    colunas = [{ label: detalhe === 'hora' ? 'Hora' : 'Dia', width: '22%' }, { label: 'Equipamento', width: '28%' }, { label: 'Mínima', width: '14%', align: 'center' }, { label: 'Máxima', width: '14%', align: 'center' }, { label: 'Leituras', width: '11%', align: 'center' }, { label: 'Intervalo', width: '11%', align: 'center' }];
+    linhas.forEach(l => { const k = l[0] + '|' + String(l[1]).slice(0, corte); const x = (g[k] = g[k] || { nome: l[0], chave: String(l[1]).slice(0, corte), v: [], hu: [] }); x.v.push(l[2]); if (l[3] !== null && l[3] !== undefined) x.hu.push(l[3]); });
+    colunas = [{ label: detalhe === 'hora' ? 'Hora' : 'Dia', width: '19%' }, { label: 'Equipamento', width: '23%' }, { label: 'Mínima', width: '12%', align: 'center' }, { label: 'Máxima', width: '12%', align: 'center' }, { label: 'Humidade', width: '14%', align: 'center' }, { label: 'Leituras', width: '10%', align: 'center' }, { label: 'Intervalo', width: '10%', align: 'center' }];
     linhasT = Object.values(g).sort((a, b) => a.chave < b.chave ? -1 : a.chave > b.chave ? 1 : a.nome.localeCompare(b.nome)).map(x => {
       const k = x.chave;
       const rot = detalhe === 'hora' ? `${k.slice(8, 10)}/${k.slice(5, 7)}/${k.slice(0, 4)} ${k.slice(11, 13)}h` : `${k.slice(8, 10)}/${k.slice(5, 7)}/${k.slice(0, 4)}`;
-      return [rot, x.nome, `${tempNum(Math.min(...x.v))} °C`, `${tempNum(Math.max(...x.v))} °C`, String(x.v.length), estado(x.nome, x.v)];
+      return [rot, x.nome, `${tempNum(Math.min(...x.v))} °C`, `${tempNum(Math.max(...x.v))} °C`, x.hu.length ? (Math.round(Math.min(...x.hu)) === Math.round(Math.max(...x.hu)) ? `${tempNum(Math.min(...x.hu), 0)} %` : `${tempNum(Math.min(...x.hu), 0)}–${tempNum(Math.max(...x.hu), 0)} %`) : '—', String(x.v.length), estado(x.nome, x.v)];
     });
   }
   const agora = new Date();
@@ -98906,9 +98920,9 @@ function buildTempDocCartao() {
     const txt = botao.textContent; botao.disabled = true;
     try {
       const dados = await tempDocCarregar();
-      if (acao === 'ver') preVisualizarDocumento(buildTempDocumento(dados), { pdf: async () => { await baixarPdfDocumento(buildTempDocumento(dados), nomeFicheiro()); tempDocRegistarEmissao('pdf', buildTempDocumento(dados)); }, imprimir: () => { imprimirDocumento(buildTempDocumento(dados)); tempDocRegistarEmissao('imprimir', buildTempDocumento(dados)); } });
+      if (acao === 'ver') preVisualizarDocumento(buildTempDocumento(dados), { pdf: async () => { await baixarPdfDocumento(buildTempDocumento(dados), nomeFicheiro()); tempDocRegistarEmissao('pdf', buildTempDocumento(dados)); }, imprimir: () => { const regDoc = buildTempDocumento(dados); imprimirDocumento(buildTempDocumento(dados), { depois: () => tempDocRegistarEmissao('imprimir', regDoc) }); } });
       else if (acao === 'pdf') { await baixarPdfDocumento(buildTempDocumento(dados), nomeFicheiro()); tempDocRegistarEmissao('pdf', buildTempDocumento(dados)); }
-      else { imprimirDocumento(buildTempDocumento(dados)); tempDocRegistarEmissao('imprimir', buildTempDocumento(dados)); }
+      else { const regDoc = buildTempDocumento(dados); imprimirDocumento(buildTempDocumento(dados), { depois: () => tempDocRegistarEmissao('imprimir', regDoc) }); }
     } catch (e) { showToast(/404|not found/i.test(String(e.message)) ? 'O servidor do SIGA ainda não tem esta função — falta atualizá-lo.' : `Não foi possível preparar o documento: ${e.message}`, 'error'); }
     botao.disabled = false; botao.textContent = txt;
   };
@@ -99258,16 +99272,16 @@ function buildDeclaracoesCartao() {
             const docSem = await buildDeclaracaoCompleta();
             const copiaSem = docSem.cloneNode(true);
             if (acao === 'pdf') { await baixarPdfDocumento(docSem, nomeF); declRegistarEmissao('pdf', copiaSem); }
-            else { imprimirDocumento(docSem); declRegistarEmissao('imprimir', copiaSem); }
+            else imprimirDocumento(docSem, { depois: () => declRegistarEmissao('imprimir', copiaSem) });
           } finally { DECL.comTemperatura = guardado; }
         }, { confirmLabel: acao === 'pdf' ? 'Descarregar sem o registo' : 'Imprimir sem o registo' });
         return;
       }
       const depois = () => { const c = document.querySelector('.decl-cartao'); if (c && c.isConnected) { const novo = buildDeclaracoesCartao(); c.replaceWith(novo); } };
       const copia = doc.cloneNode(true); // o que se guarda no histórico (a impressão esvazia a área depois)
-      if (acao === 'ver') preVisualizarDocumento(doc, { pdf: async () => { await baixarPdfDocumento(await buildDeclaracaoCompleta(), nomeF); if (await declRegistarEmissao('pdf', copia)) depois(); }, imprimir: () => { imprimirDocumento(doc.cloneNode(true)); declRegistarEmissao('imprimir', copia).then(ok => { if (ok) depois(); }); } });
+      if (acao === 'ver') preVisualizarDocumento(doc, { pdf: async () => { await baixarPdfDocumento(await buildDeclaracaoCompleta(), nomeF); if (await declRegistarEmissao('pdf', copia)) depois(); }, imprimir: () => { imprimirDocumento(doc.cloneNode(true), { depois: () => declRegistarEmissao('imprimir', copia).then(ok => { if (ok) depois(); }) }); } });
       else if (acao === 'pdf') { await baixarPdfDocumento(doc, nomeF); if (await declRegistarEmissao('pdf', copia)) depois(); }
-      else { imprimirDocumento(doc); if (await declRegistarEmissao('imprimir', copia)) depois(); }
+      else imprimirDocumento(doc, { depois: () => declRegistarEmissao('imprimir', copia).then(ok => { if (ok) depois(); }) });
     } catch (e) { showToast(`Não foi possível preparar a declaração: ${e.message}`, 'error'); }
     finally { botao.disabled = false; if (d.comTemperatura && botao.innerHTML !== rotuloAntes) botao.innerHTML = rotuloAntes; }
   };
