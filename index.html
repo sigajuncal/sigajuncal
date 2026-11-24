@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-24 18:15" />
+<meta name="siga-versao" content="2026-11-24 18:30" />
 <style id="siga-tema-base">html[data-tema="escuro"]{background:#161618;color-scheme:dark;}</style>
 <script>try{var sigaTemaP=localStorage.getItem('siga-tema')||'claro';if(!/[?&](ecra|quiosque|tv)=/.test(location.search)&&(sigaTemaP==='escuro'||(sigaTemaP==='auto'&&window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches)))document.documentElement.setAttribute('data-tema','escuro');}catch(e){}</script>
 <script>
@@ -52197,15 +52197,27 @@ function sigaEhAppSafari() {
   } catch (e) { return false; }
 }
 function imprimirDocumento(conteudoNode, opcoes) {
+  opcoes = opcoes || {};
+  // 2026-11-24 (Hugo, na app do Dock do Mac: aparecia só «Documento pronto… carrega ⌘P» e não percebia): se a janela de
+  // impressão não abrir (app do Dock no Mac, alguns PCs Windows), em vez de uma dica abre-se logo uma pergunta clara com
+  // o botão «Descarregar PDF» — o PDF abre-se e imprime-se dali, em qualquer computador.
+  const copia = opcoes.semAlternativa ? null : conteudoNode.cloneNode(true);
   prepararImpressaoGlobal(conteudoNode, opcoes);
   let abriu = false;
   const marca = () => { abriu = true; };
   window.addEventListener('beforeprint', marca, { once: true });
-  try { window.print(); } catch (e) { /* segue para a dica */ }
+  try { window.print(); } catch (e) { /* segue para a alternativa */ }
   setTimeout(() => {
     window.removeEventListener('beforeprint', marca);
-    if (!abriu && sigaEhAppSafari()) showToast('Documento pronto. Se a janela de impressão não abriu, carrega ⌘P (Ficheiro › Imprimir).', 'info');
-  }, 700);
+    if (!abriu && copia) imprimirAlternativaPdf(copia, opcoes);
+  }, 900);
+}
+function imprimirAlternativaPdf(copia, opcoes) {
+  const nome = opcoes.titulo && /\.pdf$/i.test(opcoes.titulo) ? opcoes.titulo : `documento_${todayISO()}.pdf`;
+  const mac = /Mac/i.test(navigator.platform || navigator.userAgent || '');
+  confirmDialog(`A janela de impressão não abriu neste computador.\n\nDescarrega o documento em PDF: abre-o e imprime a partir daí${mac ? ' (no Mac, ⌘P)' : ' (Ctrl+P)'}.`,
+    () => baixarPdfDocumento(copia, nome, { orientacao: opcoes.orientacao }),
+    { confirmLabel: 'Descarregar PDF', cancelLabel: 'Fechar' });
 }
 async function baixarPdfDocumento(conteudoNode, nomeFicheiro, opcoes) {
   opcoes = opcoes || {};
@@ -52230,7 +52242,7 @@ async function baixarPdfDocumento(conteudoNode, nomeFicheiro, opcoes) {
     }
   }
   showToast('Não foi possível gerar o PDF diretamente — usa "Imprimir" e escolhe "Guardar como PDF" na caixa de diálogo de impressão do browser.', 'info');
-  imprimirDocumento(conteudoNode, { orientacao });
+  imprimirDocumento(conteudoNode, { orientacao, semAlternativa: true });
 }
 
 // ---- Lista imprimível de um dia de Agenda/Evento (Hora · Cliente · Estado)
