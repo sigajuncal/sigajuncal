@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-24 19:15" />
+<meta name="siga-versao" content="2026-11-24 19:30" />
 <style id="siga-tema-base">html[data-tema="escuro"]{background:#161618;color-scheme:dark;}</style>
 <script>try{var sigaTemaP=localStorage.getItem('siga-tema')||'claro';if(!/[?&](ecra|quiosque|tv)=/.test(location.search)&&(sigaTemaP==='escuro'||(sigaTemaP==='auto'&&window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches)))document.documentElement.setAttribute('data-tema','escuro');}catch(e){}</script>
 <script>
@@ -52093,6 +52093,10 @@ function getPrintArea() {
     el = document.createElement('div');
     el.id = 'app-print-area';
     el.className = 'app-print-area';
+    // 2026-11-24 (Hugo: «está a guardar os documentos com o fundo»): com o tema escuro ligado, as cores escritas nos
+    // documentos eram convertidas para o escuro ao entrarem aqui — saíam PDFs pretos e impressões com texto claro.
+    // Tudo o que está dentro de [data-tema-fixo] fica com as cores originais (folha branca).
+    el.setAttribute('data-tema-fixo', '1');
     document.body.appendChild(el);
   }
   return el;
@@ -52160,7 +52164,7 @@ function prepararImpressaoGlobal(conteudoNode, opcoes) {
 function preVisualizarDocumento(conteudoNode, opcoes) {
   opcoes = opcoes || {};
   if (!conteudoNode) return;
-  const folhaWrap = h('div', { class: 'doc-previa-folha' }, conteudoNode);
+  const folhaWrap = h('div', { class: 'doc-previa-folha', 'data-tema-fixo': '1' }, conteudoNode); // sem conversão para o tema escuro
   const escala = h('div', { class: 'doc-previa-escala' }, folhaWrap);
   let fechar = () => {};
   const botao = (icone, texto, tom, fn) => {
@@ -52227,6 +52231,12 @@ function imprimirDocumento(conteudoNode, opcoes) {
   setTimeout(depois, 8000);
   setTimeout(() => { log('window.print()'); try { window.print(); } catch (e) { log('erro: ' + (e && e.message)); } }, 60);
 }
+function pdfIgnorarElemento(el) {
+  if (!el || el === document.body || el === document.documentElement || el.tagName === 'HEAD') return false;
+  if (el.closest && el.closest('head')) return false;
+  if (el.closest && el.closest('.html2pdf__overlay')) return false;
+  return true;
+}
 async function baixarPdfDocumento(conteudoNode, nomeFicheiro, opcoes) {
   opcoes = opcoes || {};
   const orientacao = opcoes.orientacao === 'landscape' ? 'landscape' : 'portrait';
@@ -52235,18 +52245,27 @@ async function baixarPdfDocumento(conteudoNode, nomeFicheiro, opcoes) {
   // folha tem exatamente a altura de um A4, por isso o corte bate certo).
   const folha = area.querySelector('.doc-a4-multipagina') || area.querySelector('.doc-a4') || area.querySelector('.doc-a4-horizontal') || area.firstChild;
   if (window.html2pdf && folha) {
+    // Tema escuro: as regras do escuro (só para o ecrã) também entravam na «fotografia» que gera o PDF — durante a
+    // geração a página fica marcada como clara e volta logo ao escuro.
+    const raiz = document.documentElement;
+    const temaAntes = raiz.getAttribute('data-tema');
+    if (temaAntes === 'escuro') raiz.setAttribute('data-tema', 'claro-pdf');
     try {
       await window.html2pdf().set({
         margin: 0,
         filename: nomeFicheiro,
         image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: { scale: 2, useCORS: true },
+        // «Descarregar demorou imenso»: o gerador copiava a app INTEIRA antes de fotografar a folha. Agora só copia
+        // os estilos e a folha (5× mais rápido; o PDF sai igual).
+        html2canvas: { scale: 2, useCORS: true, ignoreElements: pdfIgnorarElemento },
         jsPDF: { unit: 'mm', format: 'a4', orientation: orientacao },
       }).from(folha).save();
       area.innerHTML = ''; // isolamento rígido também depois de gerar o PDF (não passa por window.print/afterprint)
       return;
     } catch (e) {
       console.error('[html2pdf] erro ao gerar PDF:', formatarErroSeguro(e));
+    } finally {
+      if (temaAntes === 'escuro' && raiz.getAttribute('data-tema') === 'claro-pdf') raiz.setAttribute('data-tema', 'escuro');
     }
   }
   showToast('Não foi possível gerar o PDF diretamente — usa "Imprimir" e escolhe "Guardar como PDF" na caixa de diálogo de impressão do browser.', 'info');
