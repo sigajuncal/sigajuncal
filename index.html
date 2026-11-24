@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-24 18:30" />
+<meta name="siga-versao" content="2026-11-24 18:45" />
 <style id="siga-tema-base">html[data-tema="escuro"]{background:#161618;color-scheme:dark;}</style>
 <script>try{var sigaTemaP=localStorage.getItem('siga-tema')||'claro';if(!/[?&](ecra|quiosque|tv)=/.test(location.search)&&(sigaTemaP==='escuro'||(sigaTemaP==='auto'&&window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches)))document.documentElement.setAttribute('data-tema','escuro');}catch(e){}</script>
 <script>
@@ -20581,6 +20581,16 @@ function criarClienteServidorLocal(base) {
       try { localStorage.removeItem(ECRA_CHAVE_LS); } catch (e) { /* ignora */ }
     },
     guardarSessaoNoAparelho(sim) { S.guardarNoAparelho = !!sim; gravarPosto(); },
+    // 2026-11-24 (impressão no Safari): o Safari só abre a janela de imprimir quando a página não tem pedidos à rede em
+    // curso — e a ligação de tempo real (EventSource) está SEMPRE em curso, por isso o window.print() ficava adiado para
+    // sempre. Durante a impressão a ligação fecha-se e volta a abrir-se logo a seguir (os canais voltam a subscrever).
+    pausarTempoReal() {
+      if (!RT.fonte) return false;
+      try { RT.fonte.close(); } catch (e) { /* ignora */ }
+      RT.fonte = null; RT.clienteId = null; RT.ultimoSub = ''; RT.topicosOuvidos.clear(); RT.pausado = true;
+      return true;
+    },
+    retomarTempoReal() { if (!RT.pausado) return; RT.pausado = false; if (!RT.fonte) ligar(); },
     terminarSessao() { S.token = null; S.utilizadorId = null; S.guardarNoAparelho = false; gravarPosto(); desligar(); setTimeout(ligarComoPosto, 400); },
     farmacia: () => S.farmacia,
     // Dados que não podem estar no index.html público (2026-10-17) — ver pb_hooks/siga/privado.js.
@@ -52198,19 +52208,26 @@ function sigaEhAppSafari() {
 }
 function imprimirDocumento(conteudoNode, opcoes) {
   opcoes = opcoes || {};
-  // 2026-11-24 (Hugo, na app do Dock do Mac: aparecia só «Documento pronto… carrega ⌘P» e não percebia): se a janela de
-  // impressão não abrir (app do Dock no Mac, alguns PCs Windows), em vez de uma dica abre-se logo uma pergunta clara com
-  // o botão «Descarregar PDF» — o PDF abre-se e imprime-se dali, em qualquer computador.
+  // 2026-11-24 (Hugo: «sempre que se clicava em imprimir abria a pré-visualização»): no Safari (app do Dock e janela
+  // normal) a janela de imprimir deixou de abrir — o Safari adia o window.print() enquanto houver pedidos à rede em
+  // curso, e a ligação de tempo real fica sempre aberta. Fecha-se essa ligação durante a impressão e reabre-se depois.
+  // Se mesmo assim a janela não abrir, aparece a pergunta com «Descarregar PDF».
   const copia = opcoes.semAlternativa ? null : conteudoNode.cloneNode(true);
   prepararImpressaoGlobal(conteudoNode, opcoes);
+  let pausou = false;
+  try { pausou = !!(sb && sb.pausarTempoReal && sb.pausarTempoReal()); } catch (e) { pausou = false; }
+  let retomado = false;
+  const retomar = () => { if (retomado) return; retomado = true; window.removeEventListener('afterprint', retomar); if (pausou) { try { sb.retomarTempoReal(); } catch (e) { /* ignora */ } } };
+  window.addEventListener('afterprint', retomar);
+  setTimeout(retomar, 120000); // rede de segurança: o tempo real nunca fica desligado
   let abriu = false;
   const marca = () => { abriu = true; };
   window.addEventListener('beforeprint', marca, { once: true });
   try { window.print(); } catch (e) { /* segue para a alternativa */ }
   setTimeout(() => {
     window.removeEventListener('beforeprint', marca);
-    if (!abriu && copia) imprimirAlternativaPdf(copia, opcoes);
-  }, 900);
+    if (!abriu) { retomar(); if (copia) imprimirAlternativaPdf(copia, opcoes); }
+  }, 3000);
 }
 function imprimirAlternativaPdf(copia, opcoes) {
   const nome = opcoes.titulo && /\.pdf$/i.test(opcoes.titulo) ? opcoes.titulo : `documento_${todayISO()}.pdf`;
