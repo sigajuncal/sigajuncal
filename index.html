@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-24 19:00" />
+<meta name="siga-versao" content="2026-11-24 19:15" />
 <style id="siga-tema-base">html[data-tema="escuro"]{background:#161618;color-scheme:dark;}</style>
 <script>try{var sigaTemaP=localStorage.getItem('siga-tema')||'claro';if(!/[?&](ecra|quiosque|tv)=/.test(location.search)&&(sigaTemaP==='escuro'||(sigaTemaP==='auto'&&window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches)))document.documentElement.setAttribute('data-tema','escuro');}catch(e){}</script>
 <script>
@@ -52208,39 +52208,24 @@ function sigaEhAppSafari() {
 }
 function imprimirDocumento(conteudoNode, opcoes) {
   opcoes = opcoes || {};
-  // 2026-11-24 (Hugo: «sempre que se clicava em imprimir abria a pré-visualização»): no Safari (app do Dock e janela
-  // normal) a janela de imprimir deixou de abrir — o Safari adia o window.print() enquanto houver pedidos à rede em
-  // curso, e a ligação de tempo real fica sempre aberta. Fecha-se essa ligação durante a impressão e reabre-se depois.
-  // Se mesmo assim a janela não abrir, aparece a pergunta com «Descarregar PDF».
-  const copia = opcoes.semAlternativa ? null : conteudoNode.cloneNode(true);
+  // 2026-11-24 (Hugo: «continua tudo terrível no que diz respeito à impressão em toda a app, piorou»): volta EXATAMENTE
+  // ao mecanismo de 22/11, que sempre funcionou (prepara a área e chama window.print() 60 ms depois). Sai a pausa do
+  // tempo real e a pergunta «a janela não abriu» (no Safari aparecia por cima de impressões que estavam a abrir).
+  // Fica só: o registo no histórico (opcoes.depois) corre depois de fechar a janela de imprimir (ou ao fim de 8 s), e
+  // umas linhas na consola ([SIGA impressão]) para se ver no Web Inspector do Safari o que acontece em cada passo.
   prepararImpressaoGlobal(conteudoNode, opcoes);
-  let pausou = false;
-  try { pausou = !!(sb && sb.pausarTempoReal && sb.pausarTempoReal()); } catch (e) { pausou = false; }
-  let retomado = false;
-  // opcoes.depois (ex.: registar a declaração no histórico) só corre DEPOIS da impressão: um pedido à rede a meio
-  // (a gravar o documento) também faz o Safari adiar a janela de imprimir.
-  const retomar = () => {
-    if (retomado) return; retomado = true; window.removeEventListener('afterprint', retomar);
-    if (pausou) { try { sb.retomarTempoReal(); } catch (e) { /* ignora */ } }
-    if (typeof opcoes.depois === 'function') setTimeout(() => { try { opcoes.depois(); } catch (e) { /* ignora */ } }, 300);
+  const t0 = Date.now();
+  const log = (m) => { try { console.info(`[SIGA impressão] ${m} (+${Date.now() - t0} ms)`); } catch (e) { /* ignora */ } };
+  log(`documento preparado · readyState=${document.readyState}`);
+  window.addEventListener('beforeprint', () => log('beforeprint (janela de imprimir a abrir)'), { once: true });
+  let feito = false;
+  const depois = () => {
+    if (feito) return; feito = true;
+    if (typeof opcoes.depois === 'function') { try { opcoes.depois(); } catch (e) { /* ignora */ } }
   };
-  window.addEventListener('afterprint', retomar);
-  setTimeout(retomar, 120000); // rede de segurança: o tempo real (e o registo) nunca ficam por fazer
-  let abriu = false;
-  const marca = () => { abriu = true; };
-  window.addEventListener('beforeprint', marca, { once: true });
-  try { window.print(); } catch (e) { /* segue para a alternativa */ }
-  setTimeout(() => {
-    window.removeEventListener('beforeprint', marca);
-    if (!abriu) { retomar(); if (copia) imprimirAlternativaPdf(copia, opcoes); }
-  }, 3000);
-}
-function imprimirAlternativaPdf(copia, opcoes) {
-  const nome = opcoes.titulo && /\.pdf$/i.test(opcoes.titulo) ? opcoes.titulo : `documento_${todayISO()}.pdf`;
-  const mac = /Mac/i.test(navigator.platform || navigator.userAgent || '');
-  confirmDialog(`A janela de impressão não abriu neste computador.\n\nDescarrega o documento em PDF: abre-o e imprime a partir daí${mac ? ' (no Mac, ⌘P)' : ' (Ctrl+P)'}.`,
-    () => baixarPdfDocumento(copia, nome, { orientacao: opcoes.orientacao }),
-    { confirmLabel: 'Descarregar PDF', cancelLabel: 'Fechar' });
+  window.addEventListener('afterprint', () => { log('afterprint (janela de imprimir fechada)'); depois(); }, { once: true });
+  setTimeout(depois, 8000);
+  setTimeout(() => { log('window.print()'); try { window.print(); } catch (e) { log('erro: ' + (e && e.message)); } }, 60);
 }
 async function baixarPdfDocumento(conteudoNode, nomeFicheiro, opcoes) {
   opcoes = opcoes || {};
