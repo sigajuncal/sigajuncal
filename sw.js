@@ -53,6 +53,18 @@ const SIGA_SERVIDOR_EM_BAIXO = () => sigaPagina('O servidor da farmácia não es
    internet no aparelho. A app abre como a última pessoa com sessão no aparelho (com as permissões dela). */
 const SIGA_CACHE_APP = 'siga-app-copia-v1';
 const SIGA_CHAVE_APP = '/__siga_app_copia__';
+let sigaDescarga = null; // descarga por trás da versão nova da app (uma de cada vez)
+async function sigaVersaoDaCopia() {
+  try {
+    const r = await (await caches.open(SIGA_CACHE_APP)).match(SIGA_CHAVE_APP);
+    if (!r) return null;
+    const leitor = r.body.getReader(); const dec = new TextDecoder(); let txt = '';
+    while (txt.length < 16384) { const { done, value } = await leitor.read(); if (done) break; txt += dec.decode(value, { stream: true }); if (txt.includes('</head>') || /name="siga-versao"[^>]*>/.test(txt)) break; }
+    try { leitor.cancel(); } catch (e) { /* ignora */ }
+    const m = /<meta name="siga-versao" content="([^"]*)"/.exec(txt);
+    return m ? m[1] : null;
+  } catch (e) { return null; }
+}
 function sigaGuardarCopia(resposta) {
   return caches.open(SIGA_CACHE_APP).then((c) => c.put(SIGA_CHAVE_APP, resposta)).catch(() => {});
 }
@@ -69,6 +81,13 @@ function sigaAbrirConsulta(motivo, alternativa) {
     })
     .catch(() => alternativa());
 }
+// 2026-11-26 16:05 (Hugo: Safari «Response served by service worker has redirections»): o Safari recusa abrir uma página
+// cuja resposta, vinda do service worker, passou por um redirecionamento. Qualquer resposta redirecionada é agora
+// entregue como uma resposta nova (mesmo conteúdo, estado e cabeçalhos), sem a marca de redirecionamento.
+function sigaSemRedir(r) {
+  try { if (r && r.redirected) return new Response(r.body, { status: r.status, statusText: r.statusText, headers: r.headers }); } catch (e) { /* ignora */ }
+  return r;
+}
 self.addEventListener('fetch', (event) => {
   if (event.request.mode !== 'navigate') return;
   const url = new URL(event.request.url);
@@ -84,12 +103,79 @@ self.addEventListener('fetch', (event) => {
   // está em baixo. Com o servidor ligado custa uma revalidação rápida.
   let pedido = event.request;
   if (daApp) { try { pedido = new Request(event.request, { cache: 'no-cache' }); } catch (e) { pedido = event.request; } }
+  /* 2026-11-26 (Hugo: «verifica a mais eficiente que não sacrifique nada»): cada abertura descarregava a app inteira
+     (~2,6 MB comprimidos) mesmo sem versão nova — o browser não guardava a sua própria cópia. Agora pergunta-se ao
+     servidor COM a data da cópia que já está neste aparelho (a mesma do modo consulta): sem versão nova, o servidor
+     responde «não mudou» (304, sem conteúdo) e abre-se a cópia; com versão nova, vem a nova e fica guardada. Continua a
+     ir SEMPRE ao servidor (servidor em baixo e sem internet detetam-se como antes) e abre sempre a versão mais recente. */
+  const ehPaginaDaApp = podeConsulta && (url.pathname === '/' || /\/index\.html$/.test(url.pathname));
+  if (ehPaginaDaApp) {
+    event.respondWith((async () => {
+      let copia = null;
+      try { copia = await (await caches.open(SIGA_CACHE_APP)).match(SIGA_CHAVE_APP); } catch (e) { copia = null; }
+      const desde = copia && copia.headers.get('Last-Modified');
+      let pedidoCond = pedido;
+      if (desde) {
+        try { pedidoCond = new Request(event.request.url, { method: 'GET', headers: { 'If-Modified-Since': desde }, cache: 'no-store', credentials: 'same-origin' }); }
+        catch (e) { pedidoCond = pedido; }
+      }
+      let r;
+      /* 2026-11-26 21:25: com a ligação da farmácia lenta, até a pergunta «mudou?» chegou a levar 3 s. Com cópia neste
+         aparelho, se o servidor não responder em 1,2 s abre-se logo a cópia; a pergunta continua por trás e, se houver
+         versão nova, fica guardada para a próxima vez (a app avisa/atualiza-se sozinha). Sem cópia, espera-se como dantes. */
+      const pergunta = fetch(pedidoCond);
+      if (copia && !url.searchParams.get('atualizar')) {
+        const LENTO = {};
+        const primeiro = await Promise.race([pergunta.catch(() => null), new Promise((res) => setTimeout(() => res(LENTO), 1200))]);
+        if (primeiro === LENTO) {
+          event.waitUntil(pergunta.then((rr) => {
+            if (rr && rr.ok && rr.status !== 304 && /text\/html/i.test(rr.headers.get('Content-Type') || '') && !sigaDescarga) { sigaDescarga = sigaGuardarCopia(rr).finally(() => { sigaDescarga = null; }); return sigaDescarga; }
+            try { rr && rr.body && rr.body.cancel(); } catch (e) { /* ignora */ }
+            return null;
+          }).catch(() => {}));
+          const h = new Headers(copia.headers); h.delete('Content-Encoding'); h.delete('Content-Length'); h.set('Cache-Control', 'no-store'); h.set('X-Siga-Copia', 'lento');
+          return new Response(copia.body, { status: 200, statusText: 'OK', headers: h });
+        }
+      }
+      try { r = await pergunta; }
+      catch (e) { if (naRedeLocal) return emBaixo(); return semInternet(); }
+      if (ehServidorDaFarmacia && [502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 530].indexOf(r.status) >= 0) return emBaixo();
+      if (r.status === 304) {
+        if (copia) {
+          const h = new Headers(copia.headers); h.delete('Content-Encoding'); h.delete('Content-Length'); h.set('Cache-Control', 'no-store'); h.set('X-Siga-Copia', '1'); // o conteúdo guardado já vem descomprimido
+          return new Response(copia.body, { status: 200, statusText: 'OK', headers: h });
+        }
+        try { r = await fetch(pedido); } catch (e) { if (naRedeLocal) return emBaixo(); return semInternet(); }
+      }
+      /* 2026-11-26 21:05 (Hugo: «a demorar imenso a abrir… quero isto imediato»): com versão nova no servidor, esperar
+         pela app inteira (2,6 MB) podia levar muitos segundos com a ligação da farmácia lenta. Agora, se este aparelho já
+         tem uma cópia, abre-a LOGO (o servidor já respondeu — está ligado) e a versão nova descarrega por trás e fica
+         guardada; a app deteta sozinha que há versão nova e atualiza-se num momento calmo (ou na próxima abertura). */
+      // Recarga pedida pela própria app para uma versão concreta (?atualizar=…) por uma app antiga, que não pergunta antes
+      // se a cópia está pronta: aí espera-se pela versão nova (como dantes), para não voltar a abrir a antiga.
+      const querVersao = url.searchParams.get('atualizar');
+      if (copia && querVersao && r.ok) {
+        const servirCache = async () => { const nova = await (await caches.open(SIGA_CACHE_APP)).match(SIGA_CHAVE_APP); const h = new Headers(nova.headers); h.delete('Content-Encoding'); h.delete('Content-Length'); h.set('Cache-Control', 'no-store'); return new Response(nova.body, { status: 200, statusText: 'OK', headers: h }); };
+        if (sigaDescarga) { try { r.body && r.body.cancel(); } catch (e) { /* ignora */ } await sigaDescarga; return servirCache(); }
+        if ((await sigaVersaoDaCopia()) !== querVersao) { event.waitUntil(sigaGuardarCopia(r.clone())); return sigaSemRedir(r); }
+      }
+      if (copia && r.ok && /text\/html/i.test(r.headers.get('Content-Type') || '')) {
+        if (!sigaDescarga) { sigaDescarga = sigaGuardarCopia(r).finally(() => { sigaDescarga = null; }); event.waitUntil(sigaDescarga); }
+        else { try { r.body && r.body.cancel(); } catch (e) { /* ignora */ } } // já há uma descarga da versão nova a decorrer
+        const h = new Headers(copia.headers); h.delete('Content-Encoding'); h.delete('Content-Length'); h.set('Cache-Control', 'no-store'); h.set('X-Siga-Copia', 'anterior');
+        return new Response(copia.body, { status: 200, statusText: 'OK', headers: h });
+      }
+      if (r.ok && /text\/html/i.test(r.headers.get('Content-Type') || '')) event.waitUntil(sigaGuardarCopia(r.clone()));
+      return sigaSemRedir(r);
+    })());
+    return;
+  }
   event.respondWith(
     fetch(pedido).then((r) => {
       if (ehServidorDaFarmacia && [502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 530].indexOf(r.status) >= 0) return emBaixo();
       // A app abriu bem: guarda (ou renova) a cópia para o modo consulta.
       if (podeConsulta && r.ok && /text\/html/i.test(r.headers.get('Content-Type') || '')) event.waitUntil(sigaGuardarCopia(r.clone()));
-      return r;
+      return sigaSemRedir(r);
     }).catch(() => {
       if (naRedeLocal) return emBaixo();
       // Sem resposta nenhuma pela internet: o problema é deste aparelho (cabo desligado, modo de avião…), não do servidor
@@ -105,6 +191,22 @@ self.addEventListener('fetch', (event) => {
    torna-o mais fiável em PWAs instaladas. */
 self.addEventListener('message', (event) => {
   const dados = event.data || {};
+  /* A app pergunta se a cópia guardada já é a versão nova antes de se recarregar sozinha (assim a recarga é imediata,
+     nunca fica à espera da descarga). Se a cópia ainda é antiga e nada está a descarregar, começa a descarga. */
+  if (dados.tipo === 'copia-versao') {
+    const porta = event.ports && event.ports[0];
+    event.waitUntil((async () => {
+      let versao = await sigaVersaoDaCopia();
+      if (dados.quero && versao !== dados.quero && !sigaDescarga) {
+        sigaDescarga = fetch(new Request(self.registration.scope, { cache: 'no-store', credentials: 'same-origin' }))
+          .then((r) => (r.ok && /text\/html/i.test(r.headers.get('Content-Type') || '') ? sigaGuardarCopia(r) : null))
+          .catch(() => {}).finally(() => { sigaDescarga = null; });
+      }
+      if (porta) porta.postMessage({ versao, aDescarregar: !!sigaDescarga });
+      if (sigaDescarga) await sigaDescarga;
+    })());
+    return;
+  }
   if (dados.tipo !== 'badge') return;
   if (!('setAppBadge' in self.navigator)) return;
   try {
