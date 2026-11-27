@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-26 23:00" />
+<meta name="siga-versao" content="2026-11-27 07:05" />
 <style id="siga-tema-base">html[data-tema="escuro"]{background:#000;color-scheme:dark;}</style>
 <script>try{var sigaTemaP=localStorage.getItem('siga-tema')||'claro';if(!/[?&](ecra|quiosque|tv)=/.test(location.search)&&(sigaTemaP==='escuro'||(sigaTemaP==='auto'&&window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches)))document.documentElement.setAttribute('data-tema','escuro');}catch(e){}</script>
 <script>
@@ -14504,6 +14504,12 @@ input.hora-texto.data-texto-invalida{border-color:#dc2626 !important;box-shadow:
   .barra-inf-inicio:not(:active){-webkit-transform:translateZ(0);transform:translateZ(0);}
 }
 </style>
+<style id="escala-nomes-css">
+/* 2026-11-27: nomes por baixo do código na Timeline — os mais compridos encolhem um pouco em vez de ficarem cortados */
+.escala-titulo-nome.nome-longo{font-size:9px !important;letter-spacing:-.2px;}
+.escala-titulo-nome.nome-mlongo{font-size:8px !important;letter-spacing:-.3px;}
+</style>
+
 
 
 
@@ -20785,6 +20791,27 @@ function primeiroNomeDe(nomeCompleto) { return String(nomeCompleto || '').trim()
 // resto do nome também, para nunca ficar ambíguo. Um nome com uma só
 // palavra (sem apelido) nunca tem por onde desambiguar, por isso sai
 // sempre como está.
+// 2026-11-27 (Hugo: «não gosto como nos horários agora aparecem os nomes como J. ou A. para as pessoas com nomes
+// repetidos»): nome por baixo do código da posição, na Timeline dos horários. Primeiro nome sempre por extenso; se houver
+// colegas com o mesmo primeiro nome, junta a inicial do apelido («Joana C.», «Ana M.»); se a inicial também coincidir,
+// inicial do nome + apelido por extenso («A. Seixas» / «A. Sousa»).
+function nomeColunaEscala(nomeCompleto) {
+  const nome = String(nomeCompleto || '').trim();
+  if (!nome) return '';
+  const partes = nome.split(/\s+/);
+  const primeiro = partes[0];
+  if (partes.length === 1) return primeiro;
+  const apelidoDe = (n) => { const p = String(n || '').trim().split(/\s+/); return p.length > 1 ? p[p.length - 1] : ''; };
+  const homonimos = (STATE.usuarios || []).filter(u => u.ativo !== false && !usuarioOculto(u) && primeiroNomeDe(u.nomeCompleto) === primeiro && String(u.nomeCompleto || '').trim() !== nome);
+  if (!homonimos.length) return primeiro;
+  const meu = apelidoDe(nome);
+  if (!meu) return primeiro;
+  // inicial do apelido única → «Joana C.»; se a inicial coincidir (André Seixas / André Sousa) → «A. Seixas» / «A. Sousa»
+  const ini = meu.charAt(0).toLocaleLowerCase('pt');
+  if (!homonimos.some(u => apelidoDe(u.nomeCompleto).charAt(0).toLocaleLowerCase('pt') === ini)) return `${primeiro} ${meu.charAt(0)}.`;
+  if (!homonimos.some(u => apelidoDe(u.nomeCompleto).toLocaleLowerCase('pt') === meu.toLocaleLowerCase('pt'))) return `${primeiro.charAt(0)}. ${meu}`;
+  return `${primeiro} ${meu}`;
+}
 function nomeCurtoDesambiguado(nomeCompleto) {
   const nome = String(nomeCompleto || '').trim();
   if (!nome) return '';
@@ -77373,6 +77400,10 @@ function buildHorariosPage(container, goTo) {
       // sem ter nenhuma vaga nesse dia (limitação conhecida: a Timeline
       // é sempre organizada por vaga, não há onde a desenhar nesse caso;
       // continua visível no painel de qualquer forma).
+      // 2026-11-27 (Hugo: «porque aparece F6 nessa semana quando não tem ninguém atribuído?»): em modo de consulta, uma
+      // posição ativa sem ninguém nesse dia (nem turno, nem nome) não ocupa coluna — continua visível para quem gere
+      // (modo de edição), para poder atribuir alguém.
+      if (!editavel && !colaboradorIdDoDia && !nomeColaboradorDoDia && !escalaDiaTemPessoa(dia) && (!dia.tipo || dia.tipo === 'folga')) { legendaEntradas.pop(); return null; }
       const horasExtraOverlays = colaboradorIdDoDia
         ? construirBlocosHEOverlay(escalaHorasExtraDoDia(semana.id, diaKey).flatMap(bloco =>
             escalaReivindicacoesNoHorario(bloco.id).filter(r => String(r.utilizadorId) === String(colaboradorIdDoDia))))
@@ -77796,7 +77827,7 @@ function buildHorariosPage(container, goTo) {
         titulo.addEventListener('click', () => { titulo.classList.add('mostra-codigo'); clearTimeout(titulo.__euT); titulo.__euT = setTimeout(() => titulo.classList.remove('mostra-codigo'), 2500); });
       }
       // 2026-11-23 (aspeto Mac): o nome curto por baixo do código — já não é preciso ir à legenda para saber quem é.
-      if (colaboradorNome && !colunaSouEu) { titulo.appendChild(h('span', { class: 'escala-titulo-nome', title: colaboradorNome }, String(colaboradorNome).split(/\s+/)[0])); titulo.classList.add('com-nome'); }
+      if (colaboradorNome && !colunaSouEu) { { const nc = nomeColunaEscala(nomeColaboradorDoDia) || String(colaboradorNome).split(/\s+/)[0]; titulo.appendChild(h('span', { class: 'escala-titulo-nome' + (nc.length > 9 ? ' nome-mlongo' : nc.length > 6 ? ' nome-longo' : ''), title: nomeColaboradorDoDia || colaboradorNome }, nc)); } titulo.classList.add('com-nome'); }
       const colunaEl = h('div', { class: 'escala-vertical-coluna' + (emDestaque ? ' escala-vertical-coluna-destaque' : '') + (colunaSouEu ? ' escala-vertical-coluna-eu' : '') }, [titulo, trilho, buildRodapeHorasDia(horasTrabalhadasDia, tooltipHorasDia)]);
       // 2026-11-04 (Hugo: «a barra própria logo centrada no ecrã, desktop e telemóvel»): ao abrir a Timeline (ou mudar
       // de dia/semana) a própria coluna fica ao centro da área com scroll lateral — uma vez por dia mostrado, para não
@@ -78009,7 +78040,7 @@ function buildHorariosPage(container, goTo) {
       buildPainelAlertasCobertura(alertasCobertura, escalaDataOperacionalEspecial(dataDoDiaSelecionado)),
       h('div', { class: 'escala-vertical-wrap' }, [
         eixoHorasEsquerda,
-        h('div', { class: 'escala-vertical-colunas' }, [fundoHorasEl, ...colunas, ...colunasVirtuaisHE, colunaTotais]),
+        h('div', { class: 'escala-vertical-colunas' }, [fundoHorasEl, ...colunas.filter(Boolean), ...colunasVirtuaisHE, colunaTotais]),
         eixoHorasDireita,
       ]),
       legendaEl,
