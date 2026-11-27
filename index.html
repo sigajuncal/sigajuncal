@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-27 12:40" />
+<meta name="siga-versao" content="2026-11-27 13:10" />
 <style id="siga-tema-base">html[data-tema="escuro"]{background:#000;color-scheme:dark;}</style>
 <script>try{var sigaTemaP=localStorage.getItem('siga-tema')||'claro';if(!/[?&](ecra|quiosque|tv)=/.test(location.search)&&(sigaTemaP==='escuro'||(sigaTemaP==='auto'&&window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches)))document.documentElement.setAttribute('data-tema','escuro');}catch(e){}</script>
 <script>
@@ -14837,6 +14837,12 @@ html[data-tema="escuro"] .np-tarefas-voltar{color:#64a8ff;}
 /* 2026-11-27 (Hugo: «a pílula das senhas reajusta ligeiramente o tamanho quando passa do traço para o número»): o número
    tem sempre o mesmo espaço (o «—» e um algarismo ocupam o mesmo) */
 html body .estado-movel-senhas strong:not(#sx),html body .senhas-flutuante strong:not(#sx){display:inline-block;min-width:1.2em;text-align:center;font-variant-numeric:tabular-nums;}
+/* 2026-11-27 — avisos com ação: botão à vista («Anular» só desfaz por aqui) */
+html body .mac-notif.com-acao:not(#mn-x){grid-template-columns:38px minmax(0,1fr) auto;padding-right:12px !important;}
+.mac-notif-acao{align-self:center;flex-shrink:0;margin-left:8px;border:0;border-radius:999px;padding:7px 14px;font:inherit;font-size:13.5px;font-weight:650;cursor:pointer;
+  background:rgba(37,111,149,.14);color:var(--mac-accent,#256f95);}
+html[data-tema="escuro"] .mac-notif-acao{background:rgba(100,168,255,.18);color:#8cc0ff;}
+.mac-notif-acao:active{transform:scale(.96);}
 /* ===== 2026-11-27 — menu do telemóvel: janela de vidro que aproveita o ecrã, com a lista a deslizar por dentro ===== */
 @media (max-width:1023px){
  html body .sidebar-mobile-overlay .sidebar-mobile-panel:not(#mm-x1):not(#mm-x2):not(#mm-x3){
@@ -21004,6 +21010,46 @@ setInterval(() => {
     if (sig !== NP._tarefasSig) { NP._tarefasSig = sig; npNotificar(); }
   } catch (e) { /* ignora */ }
 }, 2000);
+// 2026-11-27 (Hugo: «elimina qualquer alusão a estas notas pessoais nos horários, passa a usar-se o bloco de notas que
+// já deixa o dia e a hora registados de cada anotação»): as notas do antigo cartão dos Horários (escala_notas_pessoais)
+// passam UMA vez para o Bloco de Notas de cada pessoa — mesmo texto, mesma data, concluídas continuam concluídas. Só
+// depois de o bloco as ter gravado no servidor é que as antigas são apagadas (nunca se perde nada pelo caminho).
+let NP_MIGRAR_ULT = 0;
+async function npMigrarNotasHorarios() {
+  if (!activeUser || !NP.carregado || NP.estado || NP.aGravar || NP.gravarT || NP.owner !== npOwner()) return;
+  if (Date.now() - NP_MIGRAR_ULT < 30000) return;
+  NP_MIGRAR_ULT = Date.now();
+  const eu = String(activeUser.id);
+  const CHAVE_LOCAL = 'sigajuncal_escala_notas_pessoais_local';
+  let locais = []; try { const b = JSON.parse(localStorage.getItem(CHAVE_LOCAL) || '[]'); locais = Array.isArray(b) ? b : []; } catch (e) { locais = []; }
+  const vistas = new Set();
+  const antigas = [...(STATE.escalaNotasPessoais || []), ...locais].filter(n => n && String(n.utilizadorId) === eu && String(n.texto || '').trim() && !vistas.has(n.id) && vistas.add(n.id));
+  if (!antigas.length) return;
+  const idNovo = (n) => `hor-${n.id}`;
+  const emFalta = antigas.filter(n => !NP.notas.some(x => x.id === idNovo(n)));
+  if (emFalta.length) {
+    npMudar(l => l.concat(emFalta.map(n => {
+      const em = n.createdAt || new Date().toISOString();
+      return { id: idNovo(n), texto: String(n.texto).trim().slice(0, 500), html: null, autor: currentUserName() || '', criadoEm: em, alteradoEm: em, resolvidoEm: n.resolvidoEm || null, arquivadoEm: null };
+    })));
+    NP_MIGRAR_ULT = 0; // volta a verificar assim que a gravação terminar
+    return;
+  }
+  // já estão todas no bloco e gravadas no servidor (NP.base = o que o servidor tem) → apaga as antigas
+  const gravadas = antigas.filter(n => (NP.base || []).includes(idNovo(n)));
+  for (const n of gravadas) {
+    try {
+      if (String(n.id).startsWith('local-') || n._local) {
+        STATE.escalaNotasPessoais = (STATE.escalaNotasPessoais || []).filter(x => x.id !== n.id);
+        try { localStorage.setItem(CHAVE_LOCAL, JSON.stringify(locais.filter(x => x.id !== n.id))); locais = locais.filter(x => x.id !== n.id); } catch (e) { /* ignora */ }
+        continue;
+      }
+      const ok = await dbDelete('escalaNotasPessoais', n.id);
+      if (ok) STATE.escalaNotasPessoais = STATE.escalaNotasPessoais.filter(x => x.id !== n.id);
+    } catch (e) { /* tenta da próxima vez */ }
+  }
+}
+setInterval(() => { try { npMigrarNotasHorarios(); } catch (e) { /* ignora */ } }, 5000);
 function npBloco() {
   if (NP_BLOCO) return NP_BLOCO;
   const estado = h('div', { class: 'np-estado' });
@@ -28018,6 +28064,14 @@ function mostrarNotificacaoMac(o) {
     ].filter(Boolean)),
   ]);
   let t = null, saiu = false;
+  if (o.acao && typeof o.acao.fn === 'function') {
+    let usada = false;
+    const bAcao = h('button', { type: 'button', class: 'mac-notif-acao' }, o.acao.rotulo || 'Anular');
+    bAcao.addEventListener('pointerdown', (e) => e.stopPropagation());
+    bAcao.addEventListener('click', (e) => { e.stopPropagation(); if (usada) return; usada = true; try { o.acao.fn(); } finally { sair(); } });
+    el.classList.add('com-acao');
+    el.appendChild(bAcao);
+  }
   const sair = (dir) => { if (saiu) return; saiu = true; clearTimeout(t); el.classList.add('a-sair', dir || 'dir'); setTimeout(() => el.remove(), 260); };
   const armar = () => { clearTimeout(t); t = setTimeout(() => sair(), o.duracao || 6000); };
   el.addEventListener('mouseenter', () => clearTimeout(t));
@@ -28065,12 +28119,18 @@ function mostrarNotificacaoMac(o) {
 }
 function showToast(message, kind, opts) {
   // Avisos que levam a algum lado (recados, tarefas, alertas com «abrir») passam a notificação macOS/iOS.
-  if (opts && !opts.onClick && opts.acao && typeof opts.acao.fn === 'function') opts = { ...opts, onClick: opts.acao.fn };
-  if (opts && (opts.onClick || opts.notificacao) && kind !== 'error') {
+  // 2026-11-27 (Hugo: «porque é que tive de concluir este lembrete duas vezes?»): a ação do aviso (ex.: «Anular») era
+  // passada a TOQUE NO AVISO INTEIRO, sem nada que o dissesse — tocar no «Marcado como feito» (ou um gesto curto para o
+  // fechar) desfazia sem querer. Agora a ação é um botão à vista; desfazer («Anular»/«Desfazer») só pelo botão. As
+  // outras ações (Ver, Abrir…) continuam também a abrir com um toque no aviso.
+  const acaoAviso = opts && opts.acao && typeof opts.acao.fn === 'function' ? opts.acao : null;
+  const acaoDesfaz = !!(acaoAviso && /anular|desfazer/i.test(String(acaoAviso.rotulo || 'Anular')));
+  if (opts && !opts.onClick && acaoAviso && !acaoDesfaz) opts = { ...opts, onClick: acaoAviso.fn };
+  if (opts && (opts.onClick || opts.notificacao || acaoAviso) && kind !== 'error') {
     let txt = typeof homeTextoSemEmojis === 'function' ? homeTextoSemEmojis(String(message)) : String(message);
     let titulo = opts.titulo || '', texto = txt;
     if (!titulo) { const m = /^([^:—]{2,48})(?::|\s—)\s+([\s\S]+)$/.exec(txt); if (m) { titulo = m[1].trim(); texto = m[2].trim(); } }
-    return mostrarNotificacaoMac({ titulo: titulo || (kind === 'success' ? 'Feito' : 'SIGA'), texto, icone: opts.icone || (kind === 'success' ? 'checkcircle' : 'bell'), tom: opts.tom || (kind === 'success' ? 'verde' : 'azul'), onClick: opts.onClick, duracao: opts.duracao ? Math.min(opts.duracao, 12000) : undefined });
+    return mostrarNotificacaoMac({ titulo: titulo || (kind === 'success' ? 'Feito' : 'SIGA'), texto, icone: opts.icone || (kind === 'success' ? 'checkcircle' : 'bell'), tom: opts.tom || (kind === 'success' ? 'verde' : 'azul'), onClick: opts.onClick, acao: acaoAviso, duracao: opts.duracao ? Math.min(opts.duracao, 12000) : undefined });
   }
   kind = kind || 'info'; // 'error' | 'success' | 'info'
   opts = opts || {};
@@ -73691,7 +73751,10 @@ function buildHorariosPage(container, goTo) {
     // buildNotasPessoaisSemana). Substitui o antigo bloco único de
     // "Observações" (esse ficou exclusivo de "Escala da Equipa", agora
     // como feed partilhado — ver buildFeedNotasEquipa).
-    const notasPessoaisEl = buildNotasPessoaisSemana(semana);
+    // 2026-11-27 (Hugo: «elimina qualquer alusão a estas notas pessoais nos horários, passa a usar-se o bloco de notas»):
+    // o cartão «Notas pessoais (só tu vês)» saiu; as notas que lá estavam passam sozinhas para o Bloco de Notas
+    // (npMigrarNotasHorarios), com a data em que foram escritas.
+    const notasPessoaisEl = null;
     // 2026-11-23 (Hugo: «organiza o sector dos horários para os prestadores, no computador e no telemóvel, como os
     // restantes colaboradores — está caótico»): os prestadores passam a ter exatamente o mesmo arranjo do Quadro
     // (duas colunas no computador; carrossel dos dias + lista recolhida no telemóvel). O ramo antigo fica desligado.
@@ -73705,7 +73768,7 @@ function buildHorariosPage(container, goTo) {
       wrap.appendChild(painelHE);
       wrap.appendChild(topoPessoal);
       wrap.appendChild(semanaCardsWrap);
-      wrap.appendChild(notasPessoaisEl);
+      if (notasPessoaisEl) wrap.appendChild(notasPessoaisEl);
       const trocasEl = buildCartaoTrocasPessoal(rerender); if (trocasEl) wrap.appendChild(trocasEl);
     } else {
       // Colaboradores do Quadro: em desktop (≥1150px) "Horas Extra
@@ -73730,7 +73793,7 @@ function buildHorariosPage(container, goTo) {
       // hoje, Horas Extra, Semanas com horário. Cada coluna corre sozinha, sem buracos. No telemóvel a ordem é
       // Picar Ponto → A Minha Semana → semanas → Trocas/Notas → Horas Extra (ver CSS .escala-pessoal-colunas).
       const trocasEl = buildCartaoTrocasPessoal(rerender); if (trocasEl) semanaCardsWrap.appendChild(trocasEl);
-      semanaCardsWrap.appendChild(notasPessoaisEl);
+      if (notasPessoaisEl) semanaCardsWrap.appendChild(notasPessoaisEl);
       const lateralAntiga = topoPessoal.querySelector(':scope > .escala-pessoal-lateral');
       const pontoEl = pontoWidget, calEl = lateralAntiga ? lateralAntiga.lastElementChild : null;
       const calWrap = (calEl && calEl !== pontoEl) ? escalaCalendarioRecolhivel(calEl) : null;
