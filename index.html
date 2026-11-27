@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-27 13:10" />
+<meta name="siga-versao" content="2026-11-27 13:40" />
 <style id="siga-tema-base">html[data-tema="escuro"]{background:#000;color-scheme:dark;}</style>
 <script>try{var sigaTemaP=localStorage.getItem('siga-tema')||'claro';if(!/[?&](ecra|quiosque|tv)=/.test(location.search)&&(sigaTemaP==='escuro'||(sigaTemaP==='auto'&&window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches)))document.documentElement.setAttribute('data-tema','escuro');}catch(e){}</script>
 <script>
@@ -14836,7 +14836,7 @@ html[data-tema="escuro"] .np-tarefas-voltar{color:#64a8ff;}
 @media (prefers-reduced-motion:reduce){.np-tarefas-pag{transition:none;}}
 /* 2026-11-27 (Hugo: «a pílula das senhas reajusta ligeiramente o tamanho quando passa do traço para o número»): o número
    tem sempre o mesmo espaço (o «—» e um algarismo ocupam o mesmo) */
-html body .estado-movel-senhas strong:not(#sx),html body .senhas-flutuante strong:not(#sx){display:inline-block;min-width:1.2em;text-align:center;font-variant-numeric:tabular-nums;}
+html body .senhas-flutuante strong:not(#sx){display:inline-block;min-width:1.2em;text-align:center;font-variant-numeric:tabular-nums;}
 /* 2026-11-27 — avisos com ação: botão à vista («Anular» só desfaz por aqui) */
 html body .mac-notif.com-acao:not(#mn-x){grid-template-columns:38px minmax(0,1fr) auto;padding-right:12px !important;}
 .mac-notif-acao{align-self:center;flex-shrink:0;margin-left:8px;border:0;border-radius:999px;padding:7px 14px;font:inherit;font-size:13.5px;font-weight:650;cursor:pointer;
@@ -31471,6 +31471,23 @@ function notifAposInserir(listKey, r) {
     return;
   }
   if (listKey === 'agendaMarcacoes') { notifMarcacaoAgenda(r); return; }
+  // 2026-11-27 (Hugo: «o João abriu nova data para vacinação e não se recebeu notificação, isso também deveria contar»):
+  // abrir um dia (Vacinação ou agenda de um prestador) passa a avisar a equipa.
+  if (listKey === 'agendaDias' && r.prestadorKey && r.data) {
+    const k = String(r.prestadorKey);
+    let nome = '', pagina = '';
+    if (k.startsWith('vacinacao-')) {
+      const camp = (STATE.vacinacaoCampanhas || []).find(c => `vacinacao-${c.id}` === k);
+      nome = camp && camp.nome ? `Vacinação · ${camp.nome}` : 'Vacinação'; pagina = 'vacinacao';
+    } else {
+      const p = (typeof PRESTADORES_AGENDA !== 'undefined' ? PRESTADORES_AGENDA : []).find(x => x.key === k);
+      if (p) { nome = p.especialidade || p.nome; pagina = 'agenda-' + k; }
+    }
+    if (!nome) return;
+    const dia = (() => { try { const d = new Date(r.data + 'T12:00:00'); return `${['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'][d.getDay()]} ${pgData(r.data)}`; } catch (e) { return pgData(r.data); } })();
+    notifCriar({ tipo: 'marcacao', titulo: `Novo dia aberto · ${nome}`, texto: [eu, dia].filter(Boolean).join(' · '), alvo: { pagina } }); // sem id: tocar abre a agenda
+    return;
+  }
   if (listKey === 'vacinacaoMarcacoes') {
     if (r.tipoLinha === 'bloqueado' || !r.nome) return;
     notifCriar({ tipo: 'marcacao', titulo: 'Nova marcação · Vacinação', texto: [eu, r.nome, `${pgData(r.data)}${r.hora ? ' ' + r.hora : ''}`].filter(Boolean).join(' · '),
@@ -102536,7 +102553,8 @@ function estadoMovelAtualizar() {
       el.__s.title = semSinal ? 'Senhas: sem sinal do quiosque' : total ? `${total} ${total === 1 ? 'senha' : 'senhas'} em espera${(E.senhas || []).length ? ' — ' + E.senhas.slice(0, 3).join(', ') : ''}${minAnt >= 1 ? ` · a mais antiga há ${Math.floor(minAnt)} min` : ''}` : 'Sem senhas em espera';
       el.__s.setAttribute('aria-label', el.__s.title);
       clear(el.__s);
-      el.__s.append(Icon('ticket', { size: 16, strokeWidth: 2.2 }), h('strong', {}, semSinal ? '—' : String(total)));
+      // 2026-11-27: sem sinal mostra «–» (da largura de um algarismo) — a cápsula não muda de tamanho quando chega o número
+      el.__s.append(Icon('ticket', { size: 16, strokeWidth: 2.2 }), h('strong', {}, semSinal ? '–' : String(total)));
     }
   } else if (el.__s.parentNode) el.__s.remove();
   // Termohigrómetros
