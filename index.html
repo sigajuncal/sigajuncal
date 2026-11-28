@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <!-- VERSÃO DA APP: muda este valor SEMPRE que o ficheiro muda (ver versaoAppVerificar) — é assim que cada aparelho sabe que há versão nova. -->
-<meta name="siga-versao" content="2026-11-28 07:50" />
+<meta name="siga-versao" content="2026-11-28 09:40" />
 <style id="siga-tema-base">html[data-tema="escuro"]{background:#000;color-scheme:dark;}</style>
 <!-- 2026-11-28 (Hugo: «no telemóvel… mostra demasiado tempo ecrã preto antes de mostrar a imagem de siga a abrir»): o ecrã
      de espera do arranque tem os seus estilos AQUI (pequenos, no topo) e os estilos grandes da app passaram para depois
@@ -17747,6 +17747,7 @@ async function agendaFechosVerificarAvisos() {
         const titulo = `📅 ${p ? p.especialidade : 'Agenda'} — dia ${formatDate(f.data)} cancelado`;
         const corpo = `${agendaFechoMotivoTxt(f)}${f.canceladas ? ` · ${f.canceladas} marcaç${f.canceladas === 1 ? 'ão cancelada' : 'ões canceladas'}` : ''}.`;
         showToast(`${titulo} — ${corpo}`, 'info', { duracao: 12000 });
+        notifPessoal({ tipo: 'agenda_fecho', chave: `fecho:${f.id}`, titulo: titulo.replace(/^📅 /, ''), texto: corpo, alvo: { pagina: 'agenda-' + f.prestadorKey } });
         try { if ('Notification' in window && Notification.permission === 'granted') new Notification(titulo, { body: corpo, tag: `fecho-${f.id}`, icon: 'icon-512.png' }); } catch (e) { /* ignora */ }
       } finally { AGENDA_FECHO_A_VERIFICAR.delete(suf); }
     }
@@ -21464,6 +21465,7 @@ function agendaAvisosVerificar() {
       } catch (e) { try { dispararNotificacaoNativa(titulo, corpo); } catch (e2) { } }
     }
     showToast(`${titulo.replace('📲 ', '')} — WhatsApp, telefone ou SMS.`, 'info', { duracao: 20000, acao: { rotulo: 'Ver', fn: () => abrirModalUtentesPorAvisar() } });
+    notifPessoal({ tipo: 'agenda_avisar', chave: `avisar:${chave}`, titulo: titulo.replace('📲 ', ''), texto: lista.slice(0, 3).map(m => `${agendaAvisoQuando(m)} · ${m.nomeCliente}`).join(' · ') + (n > 3 ? ` e mais ${n - 3}` : '') });
   } catch (e) { console.warn('[agenda] aviso falhou', e); }
 }
 setInterval(agendaAvisosVerificar, 60 * 1000);
@@ -31297,10 +31299,15 @@ const NOTIF_TIPOS = [
   { k: 'troca', rot: 'Trocas de turno', icon: 'rotatecw', tom: 'verde' },
   { k: 'ponto', rot: 'Picagens de ponto', icon: 'clock', tom: 'verde' },
   { k: 'gaveta', rot: 'Gaveta de Recados', icon: 'inbox', tom: 'vermelho' },
+  // 2026-11-28 (Hugo: «há coisas que são notificações e não estão a cair nas notificações»): avisos pessoais que antes
+  // eram só um aviso no ecrã passam também a ficar no painel (de quem os recebe, em todos os aparelhos).
+  { k: 'suspensas', rot: 'Vendas suspensas', icon: 'filetext', tom: 'roxo' },
+  { k: 'agenda', rot: 'Agendas', icon: 'calendar', tom: 'verde' },
+  { k: 'vendas', rot: 'Vendas', icon: 'filetext', tom: 'indigo' },
 ];
 // 2026-11-26: subtipos — entrega_concluida / entrega_km / entrega_ausencia contam como «Entregas»; ponto / ponto_validar
 // como «Picagens de ponto».
-function notifCategoria(n) { const t = String((n && n.tipo) || ''); return t.indexOf('horario') === 0 ? 'horario' : t.indexOf('entrega') === 0 ? 'entrega' : t.indexOf('ponto') === 0 ? 'ponto' : t; }
+function notifCategoria(n) { const t = String((n && n.tipo) || ''); return t.indexOf('horario') === 0 ? 'horario' : t.indexOf('entrega') === 0 ? 'entrega' : t.indexOf('ponto') === 0 ? 'ponto' : t.indexOf('agenda') === 0 ? 'agenda' : t; }
 // Ids da Direção (Hugo e Paulo) — destinatários das notificações que pedem validação.
 function notifIdsDirecao() { return (STATE.usuarios || []).filter(u => u && !u.eliminado && NOMES_DIRECAO_HORARIOS.includes(String(u.nomeCompleto || '').trim())).map(u => String(u.id)); }
 function notifTipoInfo(n) { return NOTIF_TIPOS.find(t => t.k === notifCategoria(n)) || { k: 'outro', rot: 'Outros', icon: 'bell', tom: 'azul' }; }
@@ -31434,7 +31441,7 @@ function notifGuardarFiltro(v) { try { localStorage.setItem(notifChave('filtro')
 // ---- o que cada pessoa vê ----
 // 2026-11-26 (Hugo: «se fui eu que fiz a alteração, não recebo a notificação em cartão, mas deve aparecer como já lida
 // nas minhas notificações»): o que a própria pessoa fez entra na lista (já lido) — nunca como cartão nem no número.
-function notifEhMinha(n) { return !!(n && activeUser && n.autorId !== null && n.autorId !== undefined && String(n.autorId) === String(activeUser.id)); }
+function notifEhMinha(n) { if (n && n.detalhe && n.detalhe.pessoal) return false; return !!(n && activeUser && n.autorId !== null && n.autorId !== undefined && String(n.autorId) === String(activeUser.id)); }
 function notifVisivelParaMim(n) {
   if (!n || !notifPodeReceber()) return false;
   if (notifEhMinha(n)) {
@@ -31499,6 +31506,20 @@ function notifCriar(n) {
     Promise.resolve(sb.from(NOTIF_TABELA).insert(row)).then(r => { if (r && r.error) console.warn('[Notificações] não gravou:', r.error.message); })
       .catch(e => console.warn('[Notificações] não gravou:', formatarErroSeguro(e)));
   } catch (e) { /* nunca impede o registo principal */ }
+}
+// Notificação PESSOAL (2026-11-28): só para quem está com sessão, no painel de todos os seus aparelhos, como não lida.
+// Quem a cria já mostrou o aviso no ecrã, por isso aqui não volta a aparecer em cartão (NOTIF.cartaoLocal). Não repete:
+// se já existe uma minha com a mesma «chave», não cria outra (ex.: o mesmo aviso visto noutro aparelho).
+function notifPessoal(o) {
+  try {
+    if (!NOTIF.ativo || !activeUser || !notifPodeReceber() || !o || !o.chave) return;
+    const uid = String(activeUser.id);
+    if ((NOTIF.lista || []).some(n => n && n.detalhe && n.detalhe.pessoal && n.detalhe.chave === o.chave && Array.isArray(n.destinatarios) && n.destinatarios.map(String).includes(uid))) return;
+    NOTIF.cartaoLocal = NOTIF.cartaoLocal || new Set();
+    NOTIF.cartaoLocal.add(o.chave);
+    notifCriar({ tipo: o.tipo, titulo: o.titulo, texto: o.texto, destinatarios: [uid], alvo: o.alvo || null, detalhe: Object.assign({}, o.detalhe || {}, { pessoal: true, chave: o.chave }),
+      farmacia: notifMinhaFarmacia() });
+  } catch (e) { /* nunca interfere */ }
 }
 // Chamado depois de cada inserção bem-sucedida (dbInsert).
 function notifAposInserir(listKey, r) {
@@ -31696,6 +31717,9 @@ function notifAbrir(n) {
   const naoExiste = () => showToast('Este registo já não existe (foi apagado entretanto).', 'info');
   try {
     if (n.tipo === 'gaveta') { abrirModalGaveta(); return; }
+    if (n.tipo === 'suspensas') { abrirMinhasSuspensas(); return; }
+    if (n.tipo === 'agenda_avisar') { abrirModalUtentesPorAvisar(); return; }
+    if (n.tipo === 'vendas_inicial') { VENDAS.vista = 'iniciais'; navegarParaPagina('vendas'); return; }
     if (n.tipo === 'entrega_km' || n.tipo === 'entrega_ausencia') { navegarParaPagina('entregas'); return; }
     if (!a.id && a.pagina && notifCategoria(n) !== 'ponto' && notifCategoria(n) !== 'horario') { try { navegarParaPagina(a.pagina); } catch (e) { /* ignora */ } return; } // registos apagados: abre a página
     if (notifCategoria(n) === 'ponto') { pgAbrirNoSeparador('horarios', n.tipo === 'ponto_validar' && souDirecaoHorariosGlobal() ? 'Validação de Horários' : null); return; }
@@ -31795,7 +31819,7 @@ function notifOuvir() {
         const novo = !NOTIF.lista.some(x => String(x.id) === String(n.id));
         NOTIF.lista = [n, ...NOTIF.lista.filter(x => String(x.id) !== String(n.id))];
         notifAtualizarSinos();
-        if (novo && payload.eventType === 'INSERT' && notifVisivelParaMim(n) && !notifEhMinha(n)) notifMostrarCartao(n);
+        if (novo && payload.eventType === 'INSERT' && notifVisivelParaMim(n) && !notifEhMinha(n) && !(n.detalhe && n.detalhe.chave && NOTIF.cartaoLocal && NOTIF.cartaoLocal.has(n.detalhe.chave))) notifMostrarCartao(n);
       })
       .subscribe();
   } catch (e) { NOTIF.canal = null; }
@@ -89279,6 +89303,8 @@ async function ausenciasVerificarAvisos() {
     const marcarLocal = (s) => { try { localStorage.setItem(chave(s), '1'); } catch (e) { /* ignora */ } };
     const avisar = (titulo, corpo, tag) => {
       showToast(`${titulo} — ${corpo}`, 'info', { duracao: 12000 });
+      // a marcação/alteração/cancelamento já tem notificação da equipa; a da véspera («Amanhã») não tinha
+      if (/Amanhã/.test(String(titulo))) notifPessoal({ tipo: 'entrega_ausencia', chave: `aus:${tag}`, titulo: 'Amanhã · Entregas', texto: corpo, alvo: { pagina: 'entregas' } });
       try { if ('Notification' in window && Notification.permission === 'granted') new Notification(titulo, { body: corpo, tag, icon: 'icon-512.png' }); } catch (e) { /* ignora */ }
     };
     const candidatos = [];
@@ -89360,6 +89386,7 @@ async function suspensasMinhasVerificarAviso() {
   try {
     if (!activeUser || !sb || (typeof acessoGeralValidado === 'function' && !acessoGeralValidado())) return;
     if ((typeof isEstafeta === 'function' && isEstafeta()) || (typeof isBoaNovaOperador === 'function' && isBoaNovaOperador())) return;
+    if (typeof isPrestadorServico === 'function' && isPrestadorServico()) return; // 2026-11-28: prestadores com agenda também não
     if (document.visibilityState === 'hidden') return;
     // nunca durante o arranque/login (os dados da app têm prioridade): espera que a sessão esteja montada há 30 s
     if (LOGIN_A_PREPARAR || (typeof SUSP_SESSAO_DESDE === 'number' && Date.now() - SUSP_SESSAO_DESDE < 30000)) return;
@@ -89380,6 +89407,7 @@ async function suspensasMinhasVerificarAviso() {
     const titulo = '🧾 As tuas vendas suspensas';
     const corpo = `${d.ativas ? `Tens ${d.ativas} por regularizar em ${d.ano}` : `Não tens nenhuma por regularizar em ${d.ano} 👏`}${variacao ? ` — a ${dia}: ${variacao}` : ` — sem mudanças a ${dia}`}.`;
     showToast(`${titulo} — ${corpo}`, 'info', { duracao: 15000, acao: { rotulo: 'Ver', fn: () => abrirMinhasSuspensas() } });
+    notifPessoal({ tipo: 'suspensas', chave: `susp:${d.ultimo}`, titulo: 'As tuas vendas suspensas', texto: corpo });
     try { if ('Notification' in window && Notification.permission === 'granted') { const n = new Notification(titulo, { body: corpo, tag: `suspensas-${d.ultimo}`, icon: 'icon-512.png' }); n.onclick = () => { try { window.focus(); } catch (e) { /* ignora */ } abrirMinhasSuspensas(); }; } } catch (e) { /* ignora */ }
   } catch (e) { /* nunca interfere com a app */ }
 }
@@ -89438,6 +89466,7 @@ async function ops4dVerificarNovas() {
       dbMarcarMensagemLida(uid, cod);
       const corpo = `Apareceu a inicial «${o.op}» no 4Digital (${vendasNum(o.docs || 0)} venda${o.docs === 1 ? '' : 's'}, desde ${vendasDiaTxt(o.primeira)}). Liga-a a um colaborador ou escreve o nome.`;
       showToast(`🧾 ${corpo}`, 'info', { duracao: 15000, acao: { rotulo: 'Ver', fn: () => { VENDAS.vista = 'iniciais'; navegarParaPagina('vendas'); } } });
+      notifPessoal({ tipo: 'vendas_inicial', chave: `op4d:${o.op}`, titulo: 'Nova inicial no 4Digital', texto: corpo });
       try { if ('Notification' in window && Notification.permission === 'granted') new Notification('Nova inicial no 4Digital', { body: corpo, tag: `op4d-${o.op}`, icon: 'icon-512.png' }); } catch (e) { /* ignora */ }
     }
   } catch (e) { /* nunca interfere com a app */ }
